@@ -100,7 +100,7 @@ public sealed record McpToolError(
             McpErrorCode.InvalidArgument => "INVALID_ARGUMENT",
             McpErrorCode.NotFound => "NOT_FOUND",
             McpErrorCode.PermissionDenied => "PERMISSION_DENIED",
-            McpErrorCode.Reserved => "RESERVED",
+            McpErrorCode.RevisionConflict => "REVISION_CONFLICT",
             McpErrorCode.InvalidContent => "INVALID_CONTENT",
             McpErrorCode.ResponseTruncated => "RESPONSE_TRUNCATED",
             McpErrorCode.Unavailable => "UNAVAILABLE",

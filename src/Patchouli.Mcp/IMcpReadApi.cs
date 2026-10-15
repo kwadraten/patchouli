@@ -6,6 +6,20 @@ namespace Patchouli.Mcp;
 /// <summary>Read-only, text-only service surface for the structured v3 MCP protocol adapters.</summary>
 public interface IMcpReadApi
 {
+    Task<Result<string>> GetItemYamlAsync(ItemId itemId, bool includeTags,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<string>.Failure(AppErrorCodes.UnsupportedOperation,
+            "YAML projection unavailable."));
+    }
+
+    Task<Result<McpPageXmlResponse>> GetPageXmlAsync(McpPageXmlRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<McpPageXmlResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+            "XML projection unavailable."));
+    }
+
     Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
         CancellationToken cancellationToken = default);
 
@@ -95,7 +109,7 @@ public interface IMcpReadApi
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Builds the patchouli://library.toon projection. Tags and Collections are included only
+    /// Builds the patchouli://library.yml projection. Tags and Collections are included only
     /// when the caller's device-local exposure settings enable them; the fixed library_id and
     /// display_name are always present.
     /// </summary>

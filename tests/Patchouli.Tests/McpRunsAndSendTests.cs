@@ -106,7 +106,7 @@ public sealed class McpRunsAndSendTests
             "patchouli://csl-styles/",
             "patchouli://runs/",
             "patchouli://workflows/",
-            "patchouli://library.toon");
+            "patchouli://library.yml");
         result.Envelope.Meta.DomainTotal.Should().Be(7);
         result.Envelope.Meta.FilteredTotal.Should().Be(7);
         result.Envelope.Meta.ShownTotal.Should().Be(7);

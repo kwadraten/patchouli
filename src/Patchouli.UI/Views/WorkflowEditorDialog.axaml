@@ -67,9 +67,11 @@
                               SelectedItem="{Binding SelectedChoice, Mode=TwoWay}"
                               IsVisible="{Binding IsChoice}" IsEnabled="{Binding IsEnabled}"
                               Classes.validation-error="{Binding HasError}" />
+                    <CheckBox Content="与聊天使用相同的模型" IsChecked="{Binding UseChatModel, Mode=TwoWay}"
+                              IsVisible="{Binding IsModel}" IsEnabled="{Binding IsEnabled}" />
                     <ComboBox Tag="{Binding Key}" ItemsSource="{Binding ModelProviders}"
                               SelectedItem="{Binding SelectedProvider, Mode=TwoWay}"
-                              IsVisible="{Binding IsModel}" IsEnabled="{Binding IsEnabled}"
+                              IsVisible="{Binding IsExplicitModel}" IsEnabled="{Binding IsEnabled}"
                               Classes.validation-error="{Binding HasError}">
                       <ComboBox.ItemTemplate>
                         <DataTemplate>
@@ -80,8 +82,9 @@
                     <ComboBox Tag="{Binding Key}" ItemsSource="{Binding AvailableModels}"
                               SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
                               TextSearch.TextBinding="{ReflectionBinding Model}"
-                              IsVisible="{Binding IsModel}" IsEnabled="{Binding IsEnabled}"
+                              IsVisible="{Binding IsExplicitModel}" IsEnabled="{Binding IsEnabled}"
                               IsEditable="True" Text="{Binding ModelName, Mode=TwoWay}"
+                              PlaceholderText="选择或直接填写模型 ID"
                               Classes.validation-error="{Binding HasError}">
                       <ComboBox.ItemTemplate>
                         <DataTemplate>

@@ -12,6 +12,12 @@ type TranslationState =
       Remaining: PageTarget list
       Results: (PageTarget * PageOutcome) list }
 
+let canonicalUri (uri: string) =
+    if uri.EndsWith(".md", StringComparison.Ordinal) then uri.Substring(0, uri.Length - 3) + ".xml"
+    elif uri.EndsWith(".bib", StringComparison.Ordinal) then uri.Substring(0, uri.Length - 4) + ".yml"
+    elif uri = "patchouli://library.toon" then "patchouli://library.yml"
+    else uri
+
 let info : WorkflowInfo =
     WorkflowInfo.create "全文翻译" "按文档和页码翻译并提交译文。"
     |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
@@ -40,10 +46,12 @@ Translate requested pages in document/page order, including pages with existing 
 Each translation turn owns only the specific page named by the workflow. Do not translate other pages in that turn.
 Fetch that page and the sliding window of neighboring source pages; use the preceding translation for continuity.
 Follow the launch window radius and backfill setting. Reuse previously fetched material where appropriate.
-Preserve Markdown block structure, math, figures, citations and reference identifiers.
-Persist the current page with commitTranslation({content = translatedMarkdown}). The page target is bound by the workflow and cannot be overridden.
+Preserve each source payload's meaning, math, citations, and identifiers; keep code and non-prose payloads unchanged unless asked to translate them.
+Fetch each requested source and translation resource as page XML. Read source_revision and translation_version from the translation page root; a missing translation view has version 0 and falls back to source payloads. Use stable box ids to translate the requested page's eligible leaf payloads, including existing translations when a page is requested again. Use prior translations as context. Keep the payload format and all structural metadata unchanged.
+Submit commitTranslation with source_revision, translation_version, and boxes as {box_id, content} entries. Each content value is a complete <box> XML element copied from the fetched page, with its stable id and every structural attribute preserved; change only translated="true" and the payload text. Include only boxes translated in this turn; do not send a reconstructed page or Markdown document.
+The page target is bound by the workflow and cannot be overridden. Box ids, hierarchy, ordering and structural metadata come from the fetched XML and remain unchanged.
 Use native commitTranslation or AgentTools.commitTranslation in granted FSI; both use the same validation and write path.
-Inspect the actual put result. Correct structure mismatches within the context retry limit.
+Inspect the actual put result, including modified_box_ids. Correct validation failures within the context retry limit.
 Report whether this page was committed or blocked, then yield to the workflow for the next page.
 The summary turn must report committed and failed page identifiers from the recorded tool outcomes.
 Never claim completion before actually attempting the requested tools or explaining a concrete blocker.
@@ -107,17 +115,17 @@ Include every requested page, with no duplicates or pages outside the selection.
     |> Agent.withBudget (AgentBudget.create 8 7)
 
 let outcomeFor (target: PageTarget) (operations: SdkObservation[]) =
-    let uri = LibraryUri.writable (WritableResource.TranslationPage(target.document, target.page))
+    let uri = canonicalUri (LibraryUri.writable (WritableResource.TranslationPageXml(target.document, target.page)))
     let writes = operations |> Array.filter (fun op ->
         if op.Name <> "put" then false else
         use arguments = JsonDocument.Parse op.Arguments
-        arguments.RootElement.GetProperty("uri").GetString() = uri)
+        canonicalUri (arguments.RootElement.GetProperty("uri").GetString()) = uri)
     match Array.tryLast writes with
     | Some op when op.Succeeded ->
         try
             use payload = JsonDocument.Parse op.Payload
             let committed = payload.RootElement.GetProperty("entries").EnumerateArray() |> Seq.exists (fun entry ->
-                entry.GetProperty("uri").GetString() = uri && entry.GetProperty("committed").GetBoolean())
+                canonicalUri (entry.GetProperty("uri").GetString()) = uri && entry.GetProperty("committed").GetBoolean())
             if committed then Ok(Committed op.OperationId) else Error "The write receipt does not prove this page was committed."
         with _ -> Error "The write receipt is not a valid commit envelope."
     | Some op when op.ErrorCode = "SDK_OPERATION_UNKNOWN" -> Error "This page has an unknown write outcome; reconcile it before advancing."
@@ -138,7 +146,7 @@ let translatePage =
     |> Agent.withTools [ AgentTool.Fetch; AgentTool.History; AgentTool.Fsi ]
     |> Agent.withSdkTools (fun state ->
         let target = List.head state.Remaining
-        [ LibraryTools.commitTranslation |> Tool.bind (WritableResource.TranslationPage(target.document, target.page)) |> Tool.export ])
+        [ LibraryTools.commitTranslation |> Tool.bind (WritableResource.TranslationPageXml(target.document, target.page)) |> Tool.export ])
     |> Agent.requireToolUse [ AgentTool.Fetch ]
     |> Agent.withBudget (AgentBudget.create 8 7)
     |> Agent.run AgentContext.main

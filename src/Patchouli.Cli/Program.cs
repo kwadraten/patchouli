@@ -29,10 +29,20 @@ try
     CliToolCall call = CliArguments.BuildToolCall(command, commandArgs, json);
     if (string.Equals(command, "put", StringComparison.Ordinal))
     {
-        string content = call.PutStdin
-            ? await Console.In.ReadToEndAsync()
-            : await File.ReadAllTextAsync(call.PutSourcePath!);
-        call = CliArguments.WithContent(call, content);
+        if (call.PutBoxesStdin || call.PutBoxesSourcePath is not null)
+        {
+            string batch = call.PutBoxesStdin
+                ? await Console.In.ReadToEndAsync()
+                : await File.ReadAllTextAsync(call.PutBoxesSourcePath!);
+            call = CliArguments.WithBoxesJson(call, batch);
+        }
+        else
+        {
+            string content = call.PutStdin
+                ? await Console.In.ReadToEndAsync()
+                : await File.ReadAllTextAsync(call.PutSourcePath!);
+            call = CliArguments.WithContent(call, content);
+        }
     }
 
     McpHttpClient client;
@@ -155,14 +165,18 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "    Filter keys include item_type, item_status, collection_id, tag (exact, case-sensitive), citable.");
     Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E>] [--limit-bytes <n>]");
-    Console.Error.WriteLine("    Library projection: patchouli://library.toon");
+    Console.Error.WriteLine("    Library projection: patchouli://library.yml");
     Console.Error.WriteLine(
-        "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>]");
+        "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>]");
     Console.Error.WriteLine(
-        "    Translations: patchouli://translations/, patchouli://translations/<document-id>/, or patchouli://translations/<document-id>/page-<index>.md");
-    Console.Error.WriteLine("  put <uri> --from <path>|--stdin");
+        "    Translations: patchouli://translations/, patchouli://translations/<document-id>/, or patchouli://translations/<document-id>/page-<index>.xml");
+    Console.Error.WriteLine("  put <uri> --from <path>|--stdin|--boxes-from <path>|--boxes-stdin");
     Console.Error.WriteLine(
-        "    Writable: patchouli://items/<id>.bib, patchouli://csl-styles/<id>.csl, patchouli://translations/<document-id>/page-<index>.md");
+        "    Batch JSON: {\"source_revision\":\"...\",\"translation_version\":1,\"boxes\":[{\"box_id\":\"...\",\"content\":\"...\"}]}");
+    Console.Error.WriteLine(
+        "    Box batches contain 1 to 100 entries; omit translation_version for source-page writes.");
+    Console.Error.WriteLine(
+        "    Writable: patchouli://items/<id>.yml, patchouli://csl-styles/<id>.csl, or page XML under texts/ and translations/.");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
     Console.Error.WriteLine("  send <start|message|cancel|resume> [OPTIONS]");
     Console.Error.WriteLine(

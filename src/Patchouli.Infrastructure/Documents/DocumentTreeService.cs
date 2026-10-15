@@ -18,6 +18,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
+    private readonly IMarkdownEngine _markdownEngine;
     private readonly DocumentTreeValidator _validator;
     private readonly ILibraryRevisionService? _revisions;
     private readonly ICompiledMarkdownCache? _compiledMarkdownCache;
@@ -31,6 +32,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
+        _markdownEngine = markdownEngine;
         _validator = new DocumentTreeValidator(markdownEngine);
         _revisions = revisions;
         _compiledMarkdownCache = compiledMarkdownCache;
@@ -612,6 +614,223 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             DocumentInstanceIds = [revision.DocumentInstanceId],
             PageIds = [revision.PageId]
         });
+    }
+
+    public async Task<Result<DocumentTreeRevision>> ReplaceBoxPayloadsAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        CancellationToken cancellationToken = default)
+    {
+        if (replacements is null || replacements.Count is < 1 or > 100)
+        {
+            return Result<DocumentTreeRevision>.Failure(AppErrorCodes.InvalidArgument,
+                "Between 1 and 100 box payload replacements are required.");
+        }
+
+        return await InTransactionAsync(async (connection, transaction) =>
+        {
+            Result page = await ValidatePageAsync(connection, transaction, documentInstanceId, pageId);
+            if (page.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(page.ErrorCode!, page.ErrorMessage!);
+            }
+
+            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+                connection, transaction, documentInstanceId, pageId);
+            if (current?.TreeRevisionId != expectedRevision.ToString())
+            {
+                return Result<DocumentTreeRevision>.Failure(AppErrorCodes.Conflict,
+                    "The current page revision changed. Fetch the page again before replacing box payloads.");
+            }
+
+            int activeEdits = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from document_tree_revisions
+                where document_instance_id = @DocumentInstanceId and page_id = @PageId
+                  and status = 'working' and edit_session_id is not null;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString() },
+                transaction);
+            if (activeEdits > 0)
+            {
+                return Result<DocumentTreeRevision>.Failure(AppErrorCodes.Conflict,
+                    "The page has an active edit session. Finish or discard it before replacing box payloads.");
+            }
+
+            DocumentTreeRevisionId currentRevisionId = DocumentTreeRevisionId.Parse(current.TreeRevisionId);
+            DocumentBox[] existingBoxes = await GetBoxesAsync(connection, transaction, currentRevisionId);
+            Dictionary<DocumentBoxId, DocumentBox> boxesById = existingBoxes.ToDictionary(box => box.BoxId);
+            HashSet<DocumentBoxId> nonLeafBoxIds = existingBoxes
+                .Where(box => box.ParentBoxId is not null)
+                .Select(box => box.ParentBoxId!.Value)
+                .ToHashSet();
+            foreach ((DocumentBoxId boxId, DocumentBoxPayload payload) in replacements)
+            {
+                if (!boxesById.TryGetValue(boxId, out DocumentBox? box))
+                {
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.NotFound,
+                        $"Box '{boxId}' does not belong to the current page revision.",
+                        details: BoxContentDetails(boxId, "The box does not belong to the current page revision."));
+                }
+
+                if (box.BoxType == DocumentBoxType.LogicalPage || nonLeafBoxIds.Contains(boxId))
+                {
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.ValidationFailed,
+                        "Only leaf boxes accept payload replacements.",
+                        details: BoxContentDetails(boxId, "Only leaf boxes accept payload replacements."));
+                }
+
+                if (payload is null)
+                {
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.ValidationFailed,
+                        $"Box '{boxId}' requires a typed payload.",
+                        details: BoxContentDetails(boxId, "A typed payload is required."));
+                }
+
+                string effectiveType = EffectivePayloadType(box.BoxType, box.BaseType);
+                if (!HasExpectedPayloadType(effectiveType, payload))
+                {
+                    string message = $"Box '{boxId}' requires a {PayloadName(effectiveType)} payload.";
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.ValidationFailed, message,
+                        details: BoxContentDetails(boxId, message));
+                }
+
+                DocumentBoxPayload replacement = (box.Payload, payload) switch
+                {
+                    (TableBoxPayload original, TableBoxPayload edited) => edited with { Html = original.Html },
+                    (MediaBoxPayload original, MediaBoxPayload edited) => edited with { AssetId = original.AssetId },
+                    _ => payload
+                };
+                Result payloadValidation = _markdownEngine.ValidateLeaf(effectiveType, replacement);
+                if (payloadValidation.IsFailure)
+                {
+                    return Result<DocumentTreeRevision>.Failure(payloadValidation.ErrorCode!,
+                        payloadValidation.ErrorMessage!, payloadValidation.Conflicts,
+                        BoxContentDetails(boxId, payloadValidation.ErrorMessage!));
+                }
+
+                boxesById[boxId] = box with { Payload = replacement };
+            }
+
+            DocumentTreeRevision working = NewRevision(
+                documentInstanceId,
+                pageId,
+                currentRevisionId,
+                DocumentTreeRevisionSource.ManualEdit,
+                DocumentTreeRevisionStatus.Working,
+                false,
+                null);
+            DocumentBox[] clonedBoxes = existingBoxes.Select(box =>
+            {
+                DocumentBox changed = boxesById[box.BoxId];
+                return changed with { TreeRevisionId = working.TreeRevisionId };
+            }).ToArray();
+
+            Result validation = _validator.Validate(working, clonedBoxes);
+            if (validation.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(
+                    validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+            }
+
+            await InsertRevisionAsync(connection, transaction, working, null);
+            await ReplaceBoxesAsync(connection, transaction, working.TreeRevisionId, clonedBoxes);
+
+            Result<DocumentCommit> commit = await CreateDocumentCommitInTransactionAsync(
+                connection,
+                transaction,
+                documentInstanceId,
+                DocumentTreeRevisionSource.ManualEdit,
+                "Replace page box payloads",
+                cancellationToken);
+            if (commit.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(commit.ErrorCode!, commit.ErrorMessage!);
+            }
+
+            Result link = await LinkRevisionToCommitAsync(
+                connection,
+                transaction,
+                commit.Value.CommitId,
+                documentInstanceId,
+                pageId,
+                working.TreeRevisionId);
+            if (link.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(link.ErrorCode!, link.ErrorMessage!);
+            }
+
+            DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
+            await ClearCurrentAsync(connection, transaction, documentInstanceId, pageId);
+            await connection.ExecuteAsync(
+                """
+                update document_tree_revisions
+                set status = 'committed', is_current = 1, committed_at = @CommittedAt
+                where tree_revision_id = @RevisionId and status = 'working';
+                """,
+                new { RevisionId = working.TreeRevisionId.ToString(), CommittedAt = FormatUtc(committedAt) },
+                transaction);
+            await MarkSearchStaleAsync(connection, transaction, documentInstanceId, pageId);
+            return Result<DocumentTreeRevision>.Success(working with
+            {
+                Status = DocumentTreeRevisionStatus.Committed,
+                IsCurrent = true,
+                CommittedAt = committedAt
+            });
+        }, cancellationToken, revision => LibraryChangeSet.Empty with
+        {
+            DocumentInstanceIds = [revision.DocumentInstanceId],
+            PageIds = [revision.PageId]
+        });
+    }
+
+    private static BoxContentFailureDetails BoxContentDetails(DocumentBoxId boxId, string message)
+    {
+        return new BoxContentFailureDetails([new BoxContentError(boxId.ToString(), message)]);
+    }
+
+    private static string EffectivePayloadType(string boxType, string? baseType)
+    {
+        if (DocumentBoxType.IsKnown(boxType))
+        {
+            return boxType;
+        }
+
+        return baseType switch
+        {
+            "image" => DocumentBoxType.Image,
+            "table" => DocumentBoxType.Table,
+            "code" => DocumentBoxType.Code,
+            _ => DocumentBoxType.Text
+        };
+    }
+
+    private static bool HasExpectedPayloadType(string boxType, DocumentBoxPayload payload)
+    {
+        return boxType switch
+        {
+            DocumentBoxType.Equation => payload is EquationBoxPayload,
+            DocumentBoxType.Code or DocumentBoxType.Algorithm => payload is CodeBoxPayload,
+            DocumentBoxType.List => payload is ListBoxPayload,
+            DocumentBoxType.Table => payload is TableBoxPayload,
+            DocumentBoxType.Image or DocumentBoxType.Chart => payload is MediaBoxPayload,
+            _ => payload is TextBoxPayload
+        };
+    }
+
+    private static string PayloadName(string boxType)
+    {
+        return boxType switch
+        {
+            DocumentBoxType.Equation => "equation",
+            DocumentBoxType.Code or DocumentBoxType.Algorithm => "code",
+            DocumentBoxType.List => "list",
+            DocumentBoxType.Table => "table",
+            DocumentBoxType.Image or DocumentBoxType.Chart => "media",
+            _ => "text"
+        };
     }
 
     public async Task<Result<DocumentTreeRevision>> CommitPageEditAsync(

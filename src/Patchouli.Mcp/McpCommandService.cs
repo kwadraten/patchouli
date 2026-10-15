@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Patchouli.Core.Mcp;
 using System.Text;
 using System.Text.Json;
@@ -86,6 +87,69 @@ public sealed class McpCommandService
     public async Task<McpCommandResult<McpFindMeta, object>> FindAsync(McpFindRequest request,
         CancellationToken cancellationToken = default)
     {
+        string? original = request.In;
+        McpFindRequest normalized = request with { In = original is null ? null : McpResourceUris.Normalize(original) };
+        return WithLegacyWarnings(await FindCoreAsync(normalized, cancellationToken), [original],
+            new McpFindMeta("lib:0", 0, 0, 0));
+    }
+
+    public async Task<McpCommandResult<McpFetchMeta, McpFetchResult>> FetchAsync(McpFetchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return WithLegacyWarnings(await FetchCoreAsync(request, cancellationToken), request.Uris ?? [],
+            new McpFetchMeta("lib:0"));
+    }
+
+    public async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutAsync(McpPutRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return WithLegacyWarnings(await PutCoreAsync(request, cancellationToken), [request.Uri],
+            new McpPutMeta("lib:0"));
+    }
+
+    public async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteAsync(McpCiteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return WithLegacyWarnings(await CiteCoreAsync(request, cancellationToken), request.Refs ?? [],
+            new McpCiteMeta("lib:0", null, null, "text", null));
+    }
+
+    public Task<McpCommandResult<McpSendMeta, McpSendResult>> SendAsync(McpSendRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return SendCoreAsync(request with
+        {
+            Workflow = request.Workflow is null ? null : McpResourceUris.Normalize(request.Workflow),
+            Session = request.Session is null ? null : McpResourceUris.Normalize(request.Session)
+        }, cancellationToken);
+    }
+
+    private static McpCommandResult<TMeta, TEntry> WithLegacyWarnings<TMeta, TEntry>(
+        McpCommandResult<TMeta, TEntry> result, IEnumerable<string?> addresses, TMeta fallbackMeta)
+    {
+        string[] warnings = addresses.Where(value => value is not null)
+            .Select(value => McpResourceUris.ObsoleteWarning(value!)).OfType<string>().Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (warnings.Length == 0)
+        {
+            return result;
+        }
+
+        McpEnvelope<TMeta, TEntry> envelope = result.Envelope ?? McpEnvelope<TMeta, TEntry>.Create(fallbackMeta, []);
+        return result with
+        {
+            Envelope = envelope with
+            {
+                Message = new McpMessage(
+                    envelope.Message?.Error ?? result.Error?.ToTerminalLine(),
+                    (envelope.Message?.Warnings ?? []).Concat(warnings).Distinct(StringComparer.Ordinal).ToArray())
+            }
+        };
+    }
+
+    private async Task<McpCommandResult<McpFindMeta, object>> FindCoreAsync(McpFindRequest request,
+        CancellationToken cancellationToken = default)
+    {
         Result<McpLibraryStateResponse> state = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         if (state.IsFailure)
         {
@@ -151,7 +215,7 @@ public sealed class McpCommandService
                 }
 
                 scope = parsedScope.Value;
-                scopeUri = decoded.Scope;
+                scopeUri = McpResourceUris.Normalize(decoded.Scope);
             }
 
             query = decoded.Query;
@@ -226,7 +290,7 @@ public sealed class McpCommandService
         return McpCommandResult<McpFindMeta, object>.Ok(envelope);
     }
 
-    public async Task<McpCommandResult<McpFetchMeta, McpFetchResult>> FetchAsync(McpFetchRequest request,
+    private async Task<McpCommandResult<McpFetchMeta, McpFetchResult>> FetchCoreAsync(McpFetchRequest request,
         CancellationToken cancellationToken = default)
     {
         if (request.Uris is null || request.Uris.Count == 0)
@@ -297,7 +361,7 @@ public sealed class McpCommandService
                 topError);
     }
 
-    public async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutAsync(McpPutRequest request,
+    private async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutCoreAsync(McpPutRequest request,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(request.Uri))
@@ -312,10 +376,10 @@ public sealed class McpCommandService
                 "put is disabled by the host's MCP tool switches.");
         }
 
-        if (request.Content is null)
+        if (request.Content is null == request.Boxes is null || request.Boxes is { Count: 0 or > 100 })
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
-                "content is required.");
+                "Supply either content or between 1 and 100 boxes.");
         }
 
         Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Uri);
@@ -326,6 +390,23 @@ public sealed class McpCommandService
         }
 
         McpUriKind kind = parsed.Value.Kind;
+        if (parsed.Value.TreeRevisionId is not null || parsed.Value.BoxId is not null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
+                "Only current page resources can be written; remove revision and box selectors.");
+        }
+
+        if (!parsed.Value.IsLegacy && kind is McpUriKind.Page or McpUriKind.TranslationPage)
+        {
+            return await PutTranslationAsync(request, parsed.Value, cancellationToken);
+        }
+
+        if (request.Boxes is not null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
+                "Box replacements require a current XML page URI.");
+        }
+
         if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
@@ -333,8 +414,8 @@ public sealed class McpCommandService
             or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
-                $"'{request.Uri}' is read-only; only items/*.bib, csl-styles/*.csl, and " +
-                "translations/{document-id}/page-{page-index}.md can be replaced.");
+                $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, and " +
+                "translations/{document-id}/page-{page-index}.xml can be replaced.");
         }
 
         if (kind == McpUriKind.TranslationPage)
@@ -368,8 +449,9 @@ public sealed class McpCommandService
 
         Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         string newRevision = afterWrite.IsSuccess ? afterWrite.Value.LibraryRevision : baseRevision;
-        McpPutResult putResult = new(request.Uri, result.Value.ResourceType, result.Value.Committed,
-            result.Value.ContentBytes);
+        McpPutResult putResult = new(parsed.Value.CanonicalUri, result.Value.ResourceType, result.Value.Committed,
+            result.Value.ContentBytes, SourceRevision: result.Value.SourceRevision,
+            TranslationVersion: result.Value.TranslationVersion, ModifiedBoxIds: result.Value.ModifiedBoxIds);
         IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
         McpEnvelope<McpPutMeta, McpPutResult> envelope =
             McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(newRevision), [putResult],
@@ -399,18 +481,24 @@ public sealed class McpCommandService
 
         Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         string baseRevision = beforeWrite.IsSuccess ? beforeWrite.Value.LibraryRevision : "lib:0";
-        Result<McpPutResponse> result = await _write.PutPageTranslationAsync(
-            request.Uri, documentId, pageRef.PageId, request.Content ?? string.Empty, cancellationToken);
+        Result<McpPutResponse> result = target.IsLegacy
+            ? await _write.PutPageTranslationAsync(target.CanonicalUri, documentId, pageRef.PageId,
+                request.Content ?? string.Empty, cancellationToken)
+            : await _write.PutPageXmlAsync(request, documentId, pageRef.PageId, pageIndex,
+                target.Kind == McpUriKind.TranslationPage, cancellationToken);
         if (result.IsFailure)
         {
             McpErrorCode code = McpErrorMappings.ToWriteError(result.ErrorCode);
             string detail = result.ErrorMessage ?? result.ErrorCode ?? "Put failed.";
             McpPutResult rejected = new(
-                request.Uri,
-                "translation_page",
+                target.CanonicalUri,
+                target.Kind == McpUriKind.TranslationPage ? "translation_page" : "text_page",
                 false,
+                request.Boxes?.Sum(box => Encoding.UTF8.GetByteCount(box.Content)) ??
                 Encoding.UTF8.GetByteCount(request.Content ?? string.Empty),
-                ExtractTranslationErrors(result.Details));
+                ExtractTranslationErrors(result.Details), BoxErrors: result.Details is BoxContentFailureDetails failures
+                    ? failures.Errors.Select(error => new McpBoxPutError(error.BoxId, error.Message)).ToArray()
+                    : null);
             McpEnvelope<McpPutMeta, McpPutResult> failed = McpEnvelope<McpPutMeta, McpPutResult>.Create(
                 new McpPutMeta(baseRevision), [rejected],
                 message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
@@ -419,8 +507,10 @@ public sealed class McpCommandService
 
         Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         string newRevision = afterWrite.IsSuccess ? afterWrite.Value.LibraryRevision : baseRevision;
-        McpPutResult putResult = new(request.Uri, result.Value.ResourceType, result.Value.Committed,
-            result.Value.ContentBytes);
+        McpPutResult putResult = new(target.CanonicalUri, result.Value.ResourceType, result.Value.Committed,
+            result.Value.ContentBytes, SourceRevision: result.Value.SourceRevision,
+            TranslationVersion: result.Value.TranslationVersion,
+            ModifiedBoxIds: result.Value.ModifiedBoxIds);
         IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
         McpEnvelope<McpPutMeta, McpPutResult> envelope = McpEnvelope<McpPutMeta, McpPutResult>.Create(
             new McpPutMeta(newRevision), [putResult],
@@ -437,7 +527,7 @@ public sealed class McpCommandService
             : null;
     }
 
-    public async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteAsync(McpCiteRequest request,
+    private async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteCoreAsync(McpCiteRequest request,
         CancellationToken cancellationToken = default)
     {
         if (request.Refs is null || request.Refs.Count == 0)
@@ -494,6 +584,7 @@ public sealed class McpCommandService
                 continue;
             }
 
+            reference = parsed.Value.CanonicalUri;
             Result<ItemId> resolved = await ResolveCitationItemAsync(parsed.Value, state.Value.LibraryId,
                 cancellationToken);
             if (resolved.IsFailure)
@@ -541,7 +632,7 @@ public sealed class McpCommandService
         }
 
         string? effectiveStyleUri = effectiveStyleId is null ? null : McpResourceUris.StyleUri(effectiveStyleId);
-        effectiveStyleUri ??= request.Style;
+        effectiveStyleUri ??= request.Style is null ? null : McpResourceUris.Normalize(request.Style);
 
         string? topError = null;
         if (results.Length > 0 && results.All(result => result.Error is not null))
@@ -570,7 +661,7 @@ public sealed class McpCommandService
     ///     (effective at the session's next Event boundary). Observed results are read back through
     ///     <c>patchouli://runs/</c>.
     /// </summary>
-    public async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendAsync(McpSendRequest request,
+    private async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendCoreAsync(McpSendRequest request,
         CancellationToken cancellationToken = default)
     {
         if (!_sendEnabled || !Allowed(await PermissionSettingsAsync(cancellationToken), "send",
@@ -850,7 +941,13 @@ public sealed class McpCommandService
                 parsed.ErrorMessage ?? "Invalid URI."), limitBytes);
         }
 
-        return parsed.Value.Kind switch
+        if (!parsed.Value.IsLegacy &&
+            parsed.Value.Kind is McpUriKind.Page or McpUriKind.Evidence or McpUriKind.TranslationPage)
+        {
+            return await FetchXmlPageAsync(parsed.Value, range, limitBytes, state, cancellationToken);
+        }
+
+        McpFetchResult fetched = parsed.Value.Kind switch
         {
             McpUriKind.Item => await FetchItemAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Document => await FetchDocumentAsync(parsed.Value, range, limitBytes, state, cancellationToken),
@@ -860,7 +957,8 @@ public sealed class McpCommandService
                 cancellationToken),
             McpUriKind.TranslationPage => await FetchTranslationAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
-            McpUriKind.Library => await FetchLibraryAsync(range, limitBytes, state, cancellationToken),
+            McpUriKind.Library => await FetchLibraryAsync(range, limitBytes, state, cancellationToken,
+                parsed.Value.IsLegacy),
             McpUriKind.RunOcrStatus => await FetchOcrRunStatusAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
             McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus => await FetchAgentRunStatusAsync(
@@ -872,6 +970,130 @@ public sealed class McpCommandService
             _ => FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument,
                 "Scopes cannot be fetched; use find to browse a scope."), limitBytes)
         };
+        return fetched with { Uri = parsed.Value.CanonicalUri, ContentType = parsed.Value.ContentType };
+    }
+
+    private async Task<McpFetchResult> FetchXmlPageAsync(McpUriParseResult target, string? range,
+        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        string uri = target.CanonicalUri;
+        Result<McpDocumentOutlineResponse> outline =
+            await _read.GetDocumentOutlineAsync(target.DocumentId!.Value, cancellationToken);
+        if (outline.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(outline.ErrorCode), outline.ErrorMessage), limitBytes);
+        }
+
+        McpDocumentPageRef? page = outline.Value.Pages.FirstOrDefault(value => value.PageIndex + 1 == target.PageIndex);
+        if (page is null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.NotFound, "Page not found."), limitBytes);
+        }
+
+        Result<McpPageXmlResponse> xml = await _read.GetPageXmlAsync(new McpPageXmlRequest(
+            target.DocumentId.Value, page.PageId, target.PageIndex!.Value,
+            target.Kind == McpUriKind.TranslationPage, target.TreeRevisionId, target.BoxId), cancellationToken);
+        if (xml.IsFailure)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorMappings.ToReadError(xml.ErrorCode), xml.ErrorMessage),
+                limitBytes);
+        }
+
+        string? rangeError = ValidateRange(range, "boxes");
+        if (rangeError is not null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
+        }
+
+        XDocument document = XDocument.Parse(xml.Value.Xml, LoadOptions.PreserveWhitespace);
+        XElement root = document.Root!;
+        XElement[] boxes = root.Descendants("box").ToArray();
+        int start = 1;
+        int end = boxes.Length;
+        if (TryParseRange(range, out _, out int requestedStart, out int requestedEnd))
+        {
+            start = requestedStart;
+            end = Math.Min(requestedEnd, boxes.Length);
+        }
+
+        if (target.BoxId is not null)
+        {
+            int index = Array.FindIndex(boxes, box => (string?)box.Attribute("id") == target.BoxId.Value.ToString());
+            if (index < 0)
+            {
+                return FailedFetch(uri,
+                    McpToolError.From(McpErrorCode.NotFound, "Box does not belong to this page revision."), limitBytes);
+            }
+
+            start = index + 1;
+            end = start;
+        }
+
+        if (start > boxes.Length && (boxes.Length > 0 || range is not null))
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, "Box range starts past the page."),
+                limitBytes);
+        }
+
+        string? itemUri = outline.Value.ItemId is null ? null : McpResourceUris.ItemUri(outline.Value.ItemId.Value);
+        int selectedEnd = end;
+        while (true)
+        {
+            XDocument selected = new(document);
+            XElement selectedRoot = selected.Root!;
+            XElement[] selectedBoxes = selectedRoot.Descendants("box").ToArray();
+            HashSet<string> keep = selectedBoxes.Skip(Math.Max(0, start - 1)).Take(Math.Max(0, selectedEnd - start + 1))
+                .SelectMany(box => box.AncestorsAndSelf("box")).Select(box => (string)box.Attribute("id")!)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (XElement box in selectedBoxes.Reverse())
+            {
+                if (!keep.Contains((string)box.Attribute("id")!))
+                {
+                    box.Remove();
+                }
+            }
+
+            bool complete = start == 1 && selectedEnd == boxes.Length && target.BoxId is null;
+            selectedRoot.SetAttributeValue("complete", complete ? "true" : "false");
+            if (!complete)
+            {
+                selectedRoot.SetAttributeValue("range", $"boxes:{start}-{selectedEnd}");
+            }
+
+            string content = selected.ToString(SaveOptions.DisableFormatting);
+            McpFetchResult candidate = CompleteFetch(uri,
+                    target.Kind switch
+                    {
+                        McpUriKind.TranslationPage => "translation_page",
+                        McpUriKind.Evidence => "evidence",
+                        _ => "text_page"
+                    },
+                    itemUri, content, limitBytes) with
+                {
+                    ContentType = "application/xml", Translation = xml.Value.Translation,
+                    Complete = complete,
+                    Continuation = selectedEnd < boxes.Length && target.BoxId is null
+                        ? $"boxes:{selectedEnd + 1}-{boxes.Length}"
+                        : null,
+                    NextRange = selectedEnd < boxes.Length && target.BoxId is null
+                        ? $"boxes:{selectedEnd + 1}-{boxes.Length}"
+                        : null
+                };
+            int size = SerializedSize(candidate, state.LibraryRevision);
+            if (size <= limitBytes)
+            {
+                return candidate;
+            }
+
+            if (selectedEnd <= start)
+            {
+                return FailedFetch(uri, McpToolError.From(McpErrorCode.ResponseTruncated,
+                    $"One XML box requires {size} response bytes; increase limit_bytes."), limitBytes);
+            }
+
+            selectedEnd--;
+        }
     }
 
     private async Task<McpFetchResult> FetchOcrRunStatusAsync(McpUriParseResult target, string? range,
@@ -993,7 +1215,7 @@ public sealed class McpCommandService
     }
 
     private async Task<McpFetchResult> FetchLibraryAsync(string? range, int limitBytes,
-        McpLibraryStateResponse state, CancellationToken cancellationToken)
+        McpLibraryStateResponse state, CancellationToken cancellationToken, bool legacy = false)
     {
         string uri = McpResourceUris.LibraryUri();
         Result<McpLibraryProjection> projection = await _read.GetLibraryProjectionAsync(
@@ -1011,8 +1233,11 @@ public sealed class McpCommandService
             return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
         }
 
-        string content = ApplyLines(DefaultToonEncoder(projection.Value), range, "lines");
-        return FitTextEntry(uri, "library_toon", uri, content, limitBytes, state.LibraryRevision);
+        string content =
+            ApplyLines(legacy ? DefaultToonEncoder(projection.Value) : McpYamlCodec.Encode(projection.Value), range,
+                "lines");
+        return FitTextEntry(uri, legacy ? "library_toon" : "library_yaml", uri, content, limitBytes,
+            state.LibraryRevision);
     }
 
     private async Task<McpFetchResult> FetchItemAsync(McpUriParseResult target, string? range, int limitBytes,
@@ -1062,8 +1287,9 @@ public sealed class McpCommandService
                     metadata.ErrorMessage ?? metadata.ErrorCode ?? "Item was not found."), limitBytes);
         }
 
-        Result<string> exported =
-            await _biblatex.ExportItemForAgentAsync(target.ItemId.Value, _exposeLibraryTags, cancellationToken);
+        Result<string> exported = target.IsLegacy
+            ? await _biblatex.ExportItemForAgentAsync(target.ItemId.Value, _exposeLibraryTags, cancellationToken)
+            : await _read.GetItemYamlAsync(target.ItemId.Value, _exposeLibraryTags, cancellationToken);
         if (exported.IsFailure)
         {
             return FailedFetch(uri,
@@ -1078,7 +1304,8 @@ public sealed class McpCommandService
         }
 
         string content = ApplyLines(exported.Value, range, "lines");
-        return FitTextEntry(uri, "item_bib", McpResourceUris.ItemUri(target.ItemId.Value), content, limitBytes,
+        return FitTextEntry(uri, target.IsLegacy ? "item_bib" : "item_yaml",
+            McpResourceUris.ItemUri(target.ItemId.Value), content, limitBytes,
             state.LibraryRevision);
     }
 
@@ -1262,7 +1489,7 @@ public sealed class McpCommandService
                 return FailedFetch(uri,
                     McpToolError.From(McpErrorCode.NotFound,
                         $"Page {pageIndex} of document {documentId} has no translation yet. " +
-                        $"Fetch the source page at patchouli://texts/{documentId}/page-{pageIndex}.md, " +
+                        $"Fetch the source page at patchouli://texts/{documentId}/page-{pageIndex}.xml, " +
                         $"translate it, and put the complete result back to {uri}."), limitBytes);
             }
 
@@ -2421,7 +2648,7 @@ public sealed class McpCommandService
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
             new(McpResourceUris.WorkflowsScopeUri(), "/workflows", "directory"),
-            new(McpResourceUris.LibraryUri(), "/library.toon", "file")
+            new(McpResourceUris.LibraryUri(), "/library.yml", "file")
         ];
         all = all.Where(entry => Allowed(permissions, "find", entry.Uri)).ToArray();
         int from = Math.Clamp(offset, 0, all.Length);
@@ -2620,7 +2847,7 @@ public sealed class McpCommandService
             return null;
         }
 
-        return inScope;
+        return McpResourceUris.Normalize(inScope);
     }
 
     private static string EncodeCursor(string? scope, string? query, bool literal,
@@ -2746,7 +2973,7 @@ public sealed class McpCommandService
         }
 
         string[] parts = range.Split(':', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length != 2 || parts[0] is not ("lines" or "pages"))
+        if (parts.Length != 2 || parts[0] is not ("lines" or "pages" or "boxes"))
         {
             return false;
         }

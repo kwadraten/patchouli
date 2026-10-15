@@ -16,10 +16,10 @@ public sealed record McpServerSettings(
     public int ShellCommandTimeoutSeconds { get; init; } = 15;
 
     /// <summary>Device-local MCP exposure policy: when false, Library tags are omitted from
-    /// patchouli://library.toon and item relationship output, and the tag filter is disabled.</summary>
+    /// patchouli://library.yml and item relationship output, and the tag filter is disabled.</summary>
     public bool ExposeLibraryTags { get; init; } = true;
 
     /// <summary>Device-local MCP exposure policy: when false, Collections are omitted from
-    /// patchouli://library.toon and item relationship output, and the collection filter is disabled.</summary>
+    /// patchouli://library.yml and item relationship output, and the collection filter is disabled.</summary>
     public bool ExposeLibraryCollections { get; init; } = true;
 }

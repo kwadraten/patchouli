@@ -24,7 +24,7 @@ public sealed class WorkflowEditorDialogTests
     public async Task Model_picker_displays_only_model_names_and_preserves_typed_selection()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(async () =>
+        await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
@@ -36,6 +36,8 @@ public sealed class WorkflowEditorDialogTests
             field.ModelOptions.Clear();
             field.ModelOptions.Add(first);
             field.ModelOptions.Add(second);
+            WorkflowModelOption custom = new("Custom", "custom", "configured-custom-model");
+            field.ModelOptions.Add(custom);
             field.ModelProviders.Add(new WorkflowModelProviderOption(first.ProviderLabel, first.ProviderId));
             field.Value = first.Value;
             using WorkflowEditorDialogViewModel model = new(section);
@@ -60,12 +62,39 @@ public sealed class WorkflowEditorDialogTests
                 Dispatcher.UIThread.RunJobs();
                 field.ModelName.Should().Be("custom-api-model");
                 ModelSelectionCodec.Decode(field.Value).Model.Should().Be("custom-api-model");
+
+                ComboBox provider = dialog.GetVisualDescendants().OfType<ComboBox>()
+                    .Single(control => ReferenceEquals(control.DataContext, field) &&
+                                       ReferenceEquals(control.ItemsSource, field.ModelProviders));
+                provider.SelectedItem = field.ModelProviders.Single(option => option.Value == "custom");
+                Dispatcher.UIThread.RunJobs();
+                picker.Text = "";
+                Dispatcher.UIThread.RunJobs();
+                field.ModelProviderId.Should().Be("custom");
+                provider.SelectedItem.Should().NotBeNull();
+                picker.ItemsSource!.Cast<WorkflowModelOption>().Should().Contain(custom);
+                picker.Text = "custom-translation-model";
+                Dispatcher.UIThread.RunJobs();
+                ModelSelectionCodec.Decode(field.Value).Should()
+                    .Be(new ModelSelection("custom", "custom-translation-model"));
+
+                CheckBox followChat = dialog.GetVisualDescendants().OfType<CheckBox>()
+                    .Single(control => ReferenceEquals(control.DataContext, field) &&
+                                       Equals(control.Content, "与聊天使用相同的模型"));
+                followChat.IsChecked = true;
+                Dispatcher.UIThread.RunJobs();
+                field.UseChatModel.Should().BeTrue();
+                picker.IsVisible.Should().BeFalse();
+                provider.IsVisible.Should().BeFalse();
+                field.HasError.Should().BeFalse();
             }
             finally
             {
                 dialog.DataContext = null;
                 dialog.Close();
             }
+
+            return 0;
         }, CancellationToken.None);
     }
 

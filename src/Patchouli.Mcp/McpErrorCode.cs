@@ -17,7 +17,7 @@ public enum McpErrorCode
     InvalidArgument = 2,
     NotFound = 3,
     PermissionDenied = 4,
-    Reserved = 5,
+    RevisionConflict = 5,
     InvalidContent = 6,
     ResponseTruncated = 7,
     Unavailable = 8,
@@ -44,7 +44,7 @@ public static class McpErrorMappings
             AppErrorCodes.NotFound => McpErrorCode.NotFound,
             AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
             AppErrorCodes.LibraryMismatch => McpErrorCode.NotFound,
-            AppErrorCodes.Conflict => McpErrorCode.InvalidArgument,
+            AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
             AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
             "general_type_not_renderable" => McpErrorCode.NotCitable,
             AppErrorCodes.BiblatexGeneralExportForbidden => McpErrorCode.PermissionDenied,
@@ -64,7 +64,7 @@ public static class McpErrorMappings
         {
             AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotFound => McpErrorCode.NotFound,
-            AppErrorCodes.Conflict => McpErrorCode.InvalidArgument,
+            AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
             AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
             AppErrorCodes.ValidationFailed => McpErrorCode.InvalidContent,
             AppErrorCodes.UnsupportedOperation or AppErrorCodes.BiblatexGeneralExportForbidden =>

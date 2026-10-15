@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Corvus.Toon.SystemTextJson" />
+    <PackageReference Include="YamlDotNet" />
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
   </ItemGroup>
 </Project>

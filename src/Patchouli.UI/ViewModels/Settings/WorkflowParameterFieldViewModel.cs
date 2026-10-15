@@ -50,7 +50,7 @@ public sealed partial class WorkflowParameterFieldViewModel : ObservableObject
             }
         }
 
-        if (IsModel && !string.IsNullOrWhiteSpace(ModelProviderId) &&
+        if (IsModel && !UseChatModel && !string.IsNullOrWhiteSpace(ModelProviderId) &&
             ModelProviders.All(option => option.Value != ModelProviderId))
         {
             ModelProviders.Add(new WorkflowModelProviderOption(
@@ -71,6 +71,24 @@ public sealed partial class WorkflowParameterFieldViewModel : ObservableObject
     [ExcludeFromDerivedGeneration] public bool IsBoolean => Descriptor.Type == WorkflowParameterValueType.Boolean;
     [ExcludeFromDerivedGeneration] public bool IsChoice => Descriptor.Type == WorkflowParameterValueType.Choice;
     [ExcludeFromDerivedGeneration] public bool IsModel => Descriptor.Type == WorkflowParameterValueType.Model;
+
+    [ExcludeFromDerivedGeneration]
+    public bool UseChatModel
+    {
+        get => ModelProviderId == ModelSelectionCodec.ChatProviderId && ModelName == ModelSelectionCodec.ChatModel;
+        set
+        {
+            if (value != UseChatModel)
+            {
+                Value = value
+                    ? ModelSelectionCodec.Encode(new ModelSelection(ModelSelectionCodec.ChatProviderId,
+                        ModelSelectionCodec.ChatModel))
+                    : "";
+            }
+        }
+    }
+
+    [ExcludeFromDerivedGeneration] public bool IsExplicitModel => IsModel && !UseChatModel;
 
     [ExcludeFromDerivedGeneration]
     public bool IsMultiline => Descriptor.Type is WorkflowParameterValueType.MultilineText or
@@ -206,6 +224,8 @@ public sealed partial class WorkflowParameterFieldViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(HasValue));
+        OnPropertyChanged(nameof(UseChatModel));
+        OnPropertyChanged(nameof(IsExplicitModel));
         if (!_isInitializing)
         {
             _onChanged(this);
@@ -232,16 +252,13 @@ public sealed partial class WorkflowParameterFieldViewModel : ObservableObject
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(ModelProviderId) || string.IsNullOrWhiteSpace(ModelName))
-        {
-            Value = "";
-            return;
-        }
-
         _isUpdatingModel = true;
         try
         {
-            Value = ModelSelectionCodec.Encode(new ModelSelection(ModelProviderId, ModelName));
+            // An incomplete model draft must retain the provider the user just selected.
+            Value = string.IsNullOrWhiteSpace(ModelProviderId) || string.IsNullOrWhiteSpace(ModelName)
+                ? ""
+                : ModelSelectionCodec.Encode(new ModelSelection(ModelProviderId, ModelName));
         }
         finally
         {

@@ -57,6 +57,77 @@ public sealed class McpReadApi : IMcpReadApi
             : new CachedDocumentMarkdownCompiler(compiler, _compiledMarkdownCache);
     }
 
+    public async Task<Result<string>> GetItemYamlAsync(ItemId itemId, bool includeTags,
+        CancellationToken cancellationToken = default)
+    {
+        Result<McpItemMetadataResponse> item = await GetItemMetadataAsync(itemId, cancellationToken);
+        return item.IsFailure
+            ? Result<string>.Failure(item.ErrorCode!, item.ErrorMessage!)
+            : Result<string>.Success(McpItemYamlCodec.Encode(item.Value, includeTags));
+    }
+
+    public async Task<Result<McpPageXmlResponse>> GetPageXmlAsync(McpPageXmlRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.Translation)
+        {
+            if (_pageTranslations is null)
+            {
+                return Result<McpPageXmlResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+                    "Translations unavailable.");
+            }
+
+            Result<PageXmlTranslation> translated = await _pageTranslations.GetPageXmlAsync(request.DocumentId,
+                request.PageId, request.PageIndex, cancellationToken);
+            return translated.IsFailure
+                ? Result<McpPageXmlResponse>.Failure(translated.ErrorCode!, translated.ErrorMessage!)
+                : Result<McpPageXmlResponse>.Success(new McpPageXmlResponse(translated.Value.Xml,
+                    translated.Value.Status.SourceTreeRevisionId.ToString(),
+                    translated.Value.Status.Version,
+                    Project(translated.Value.Status)));
+        }
+
+        DocumentTreeService trees = new(_connectionFactory, new SystemClock(), _markdown);
+        Result<DocumentTreeRevision> revision =
+            await trees.GetCurrentRevisionAsync(request.DocumentId, request.PageId, cancellationToken);
+        if (revision.IsFailure)
+        {
+            return Result<McpPageXmlResponse>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+        }
+
+        if (request.Revision is not null)
+        {
+            Result<IReadOnlyList<DocumentTreeRevision>> history =
+                await trees.ListRevisionsAsync(request.DocumentId, request.PageId, cancellationToken);
+            DocumentTreeRevision? selected = history.IsSuccess
+                ? history.Value.FirstOrDefault(value => value.TreeRevisionId == request.Revision)
+                : null;
+            if (selected is null)
+            {
+                return Result<McpPageXmlResponse>.Failure(AppErrorCodes.NotFound,
+                    "Revision does not belong to this page.");
+            }
+
+            revision = Result<DocumentTreeRevision>.Success(selected);
+        }
+
+        Result<IReadOnlyList<DocumentBox>> boxes =
+            await trees.ListBoxesAsync(revision.Value.TreeRevisionId, cancellationToken);
+        if (boxes.IsFailure)
+        {
+            return Result<McpPageXmlResponse>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
+        }
+
+        if (request.BoxId is not null && boxes.Value.All(box => box.BoxId != request.BoxId))
+        {
+            return Result<McpPageXmlResponse>.Failure(AppErrorCodes.NotFound,
+                "Box does not belong to this page revision.");
+        }
+
+        return Result<McpPageXmlResponse>.Success(new McpPageXmlResponse(PageXmlCodec.EncodePage(request.DocumentId,
+            request.PageIndex, revision.Value.TreeRevisionId, boxes.Value), revision.Value.TreeRevisionId.ToString()));
+    }
+
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -863,7 +934,7 @@ public sealed class McpReadApi : IMcpReadApi
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             DocumentOwnerRow? owner = await connection.QuerySingleOrDefaultAsync<DocumentOwnerRow>(
-                "select title, item_id as ItemId from document_instances where document_instance_id = @Id;",
+                "select coalesce(d.title, i.title, 'Untitled') as Title, d.item_id as ItemId from document_instances d left join items i on i.item_id = d.item_id where d.document_instance_id = @Id;",
                 new { Id = documentInstanceId.ToString() });
             if (owner is null || owner.Title is null)
             {
@@ -1026,7 +1097,7 @@ public sealed class McpReadApi : IMcpReadApi
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             DocumentOwnerRow? owner = await connection.QuerySingleOrDefaultAsync<DocumentOwnerRow>(
-                "select title, item_id as ItemId from document_instances where document_instance_id = @Id;",
+                "select coalesce(d.title, i.title, 'Untitled') as Title, d.item_id as ItemId from document_instances d left join items i on i.item_id = d.item_id where d.document_instance_id = @Id;",
                 new { Id = documentInstanceId.ToString() });
             if (owner is null || owner.Title is null)
             {

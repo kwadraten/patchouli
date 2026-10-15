@@ -14,7 +14,8 @@ public sealed record PageTranslationStatus(
     int TotalBoxCount,
     IReadOnlyList<DocumentBoxId> StaleBoxIds,
     DocumentTreeRevisionId SourceTreeRevisionId,
-    bool IsCurrent);
+    bool IsCurrent,
+    int Version = 0);
 
 /// <summary>
 /// A whole-page translated markdown compiled from the per-box translation rows, together with
@@ -24,6 +25,9 @@ public sealed record TranslatedPageMarkdown(
     string Markdown,
     IReadOnlyList<MarkdownSourceMapEntry> SourceMap,
     PageTranslationStatus Status);
+
+/// <summary>An editable page XML view and its current translation status.</summary>
+public sealed record PageXmlTranslation(string Xml, PageTranslationStatus Status);
 
 /// <summary>
 /// One block mismatch between the current page markdown and a submitted translation.
@@ -48,6 +52,27 @@ public sealed record TranslationStructureFailureDetails(
 /// </summary>
 public interface IPageTranslationService
 {
+    Task<Result<PageXmlTranslation>> GetPageXmlAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        int pageIndex,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PageTranslationStatus>> PutPageXmlAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        int pageIndex,
+        string xml,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PageTranslationStatus>> PutBoxPayloadsAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        int expectedTranslationVersion,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Returns the compiled translation for the page, or <c>null</c> when the page has no
     /// translation. When the stored translation predates the current tree revision it is

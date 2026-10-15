@@ -2,6 +2,7 @@ using FluentAssertions;
 using Patchouli.Host.Workflows;
 using Patchouli.Llm;
 using Patchouli.Workflows;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Tests;
 
@@ -109,6 +110,41 @@ public sealed class WorkflowConfigurationTests
 
         resolution.Succeeded.Should().BeFalse();
         resolution.Issues.Should().ContainSingle(issue => issue.Code == "model_binding_missing");
+    }
+
+    [Fact]
+    public async Task Chat_model_choice_is_saved_as_a_reference_and_resolved_for_each_launch()
+    {
+        await using Harness harness = await Harness.CreateAsync(Script("prompt"));
+        LlmAppSettings settings = LlmAppSettings.Default() with
+        {
+            ChatProviderId = "custom", ChatModel = "first-model"
+        };
+        // The provider intentionally reads updated settings to verify model resolution at each launch.
+        // ReSharper disable once AccessToModifiedClosure
+        WorkflowConfigurationService configuration = new(harness.Store, () => settings);
+        WorkflowConfigurationSnapshot snapshot = await configuration.ReadAsync(WorkflowId);
+        string followChat = ModelSelectionCodec.Encode(new ModelSelection(ModelSelectionCodec.ChatProviderId,
+            ModelSelectionCodec.ChatModel));
+        (await configuration.SaveAsync(WorkflowId, snapshot.DeclarationFingerprint,
+                new Dictionary<string, string> { ["model"] = followChat, ["prompt"] = "stored prompt" })).Saved.Should()
+            .BeTrue();
+        snapshot = await configuration.ReadAsync(WorkflowId);
+        snapshot.Values["model"].Should().Be(followChat);
+        Dictionary<string, string> context = new() { ["documents"] = "[\"doc\"]" };
+        WorkflowConfigurationResolution first = configuration.ResolveLaunch(snapshot, null, context);
+        first.Succeeded.Should().BeTrue();
+        first.ModelSelection.Should().Be(new ModelSelection("custom", "first-model"));
+        ModelSelectionCodec.Decode(first.Values["model"]).Should().Be(first.ModelSelection);
+        settings = settings with { ChatModel = "second-model" };
+        WorkflowConfigurationResolution second = configuration.ResolveLaunch(snapshot, null, context);
+        second.ModelSelection.Should().Be(new ModelSelection("custom", "second-model"));
+        first.ModelSelection!.Model.Should().Be("first-model");
+        snapshot.Values["model"].Should().Be(followChat);
+        WorkflowConfigurationResolution explicitModel = configuration.ResolveLaunch(snapshot,
+            new Dictionary<string, string>
+                { ["model"] = ModelSelectionCodec.Encode(new ModelSelection("openai", "override")) }, context);
+        explicitModel.ModelSelection.Should().Be(new ModelSelection("openai", "override"));
     }
 
     private static string Script(string textKey)

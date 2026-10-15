@@ -69,6 +69,16 @@ type ModelSelection =
 
 [<RequireQualifiedAccess>]
 module ModelSelectionCodec =
+    [<Literal>]
+    let ChatProviderId = "$chat"
+
+    [<Literal>]
+    let ChatModel = "$chat"
+
+    [<CompiledName("IsChatDefault")>]
+    let isChatDefault (selection: ModelSelection) =
+        selection.ProviderId = ChatProviderId && selection.Model = ChatModel
+
     let private jsonOptions = JsonSerializerOptions(PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                                                      PropertyNameCaseInsensitive = true)
     /// Stable JSON representation shared by the editor, host and script input.

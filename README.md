@@ -6,6 +6,10 @@
 
   <p>实验性的桌面端个人文献管理器，面向大型 PDF 文献库的题录管理、数字化、持续校正、有效召回与可复现证据引用，并可与 AI Agent 协同工作。</p>
 
+  <p>
+    <a href="https://deepwiki.com/kwadraten/patchouli"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+  </p>
+
 </div>
 
 ## 下载与更新日志

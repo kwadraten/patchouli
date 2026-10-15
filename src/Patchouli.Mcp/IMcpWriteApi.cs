@@ -4,23 +4,41 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
 
-public sealed record McpPutRequest(string Uri, string Content, bool PreserveTags = false);
+public sealed record McpBoxReplacement(string BoxId, string Content);
+
+public sealed record McpPutRequest(
+    string Uri,
+    string? Content = null,
+    bool PreserveTags = false,
+    string? SourceRevision = null,
+    int? TranslationVersion = null,
+    IReadOnlyList<McpBoxReplacement>? Boxes = null);
 
 public sealed record McpPutResponse(
     string Uri,
     string ResourceType,
     bool Committed,
     int ContentBytes,
-    IReadOnlyList<string>? Warnings = null);
+    IReadOnlyList<string>? Warnings = null,
+    string? SourceRevision = null,
+    int? TranslationVersion = null,
+    IReadOnlyList<string>? ModifiedBoxIds = null);
 
 /// <summary>
-/// The single host write service. put replaces exactly one whole writable resource after
-/// full-content validation and an atomic commit; it has no base-revision precondition. Resource
+/// The single host write service. put validates and atomically replaces a resource or a
+/// same-page batch of box payloads. XML writes require source and translation versions. Resource
 /// writes publish their authoritative <c>LibraryChangeSet</c> through the underlying host write
 /// service; this transport API intentionally exposes no competing UI notification stream.
 /// </summary>
 public interface IMcpWriteApi
 {
+    Task<Result<McpPutResponse>> PutPageXmlAsync(McpPutRequest request, DocumentInstanceId documentId,
+        PageId pageId, int pageIndex, bool translation, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+            "XML writes unavailable."));
+    }
+
     Task<Result<McpPutResponse>> PutAsync(
         McpPutRequest request,
         CancellationToken cancellationToken = default);

@@ -1,3 +1,4 @@
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
@@ -40,7 +41,10 @@ public sealed record McpUriParseResult(
     string? RunTaskId = null,
     string? SessionId = null,
     string? WorkflowId = null,
-    long? AfterSequence = null);
+    long? AfterSequence = null,
+    string CanonicalUri = "",
+    bool IsLegacy = false,
+    string? ContentType = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
@@ -48,7 +52,7 @@ public sealed record McpUriParseResult(
 /// text page URI's ?rev= and &amp;box= query parameters. Legacy documents/, styles/, and
 /// evidence/ roots are rejected, and legacy ?evref= queries are rejected with a clear error.
 /// The translations/ root mirrors texts/ but addresses the derived per-box translations of a
-/// page: page-{N}.md is the whole-page translated markdown and is readable and writable.
+/// page: page-{N}.xml is the whole-page translated markdown and is readable and writable.
 /// </summary>
 public static class McpResourceUris
 {
@@ -56,7 +60,7 @@ public static class McpResourceUris
 
     public static string ItemUri(ItemId itemId)
     {
-        return $"{Prefix}items/{itemId}.bib";
+        return $"{Prefix}items/{itemId}.yml";
     }
 
     public static string DocumentUri(DocumentInstanceId documentId)
@@ -69,7 +73,7 @@ public static class McpResourceUris
     /// </summary>
     public static string PageUri(DocumentInstanceId documentId, int pageIndex)
     {
-        return $"{Prefix}texts/{documentId}/page-{pageIndex}.md";
+        return $"{Prefix}texts/{documentId}/page-{pageIndex}.xml";
     }
 
     /// <summary>
@@ -102,7 +106,7 @@ public static class McpResourceUris
     /// <summary>Builds the canonical page URI of the derived translation resource tree.</summary>
     public static string TranslationPageUri(DocumentInstanceId documentId, int pageIndex)
     {
-        return $"{Prefix}translations/{documentId}/page-{pageIndex}.md";
+        return $"{Prefix}translations/{documentId}/page-{pageIndex}.xml";
     }
 
     public static string TranslationDocumentUri(DocumentInstanceId documentId)
@@ -123,7 +127,7 @@ public static class McpResourceUris
     /// <summary>The single root Library projection resource exposed to agents.</summary>
     public static string LibraryUri()
     {
-        return $"{Prefix}library.toon";
+        return $"{Prefix}library.yml";
     }
 
     /// <summary>The volatile runtime runs root: OCR task and agent session projections live under it.</summary>
@@ -189,7 +193,101 @@ public static class McpResourceUris
         return value;
     }
 
+    public static string Normalize(string uri)
+    {
+        Result<McpUriParseResult> parsed = Parse(uri);
+        return parsed.IsSuccess ? parsed.Value.CanonicalUri : uri;
+    }
+
+    public static string? ObsoleteWarning(string uri)
+    {
+        Result<McpUriParseResult> parsed = Parse(uri);
+        return parsed.IsSuccess && parsed.Value.IsLegacy
+            ? $"[obsoleted] 旧接口将在 0.4.0 时弃用，请改用 {parsed.Value.CanonicalUri}。"
+            : null;
+    }
+
     public static Result<McpUriParseResult> Parse(string uri)
+    {
+        if (!McpVfsAddress.TryNormalize(uri, out string normalized))
+        {
+            return Invalid(uri, "Expected a Library VFS address.");
+        }
+
+        int queryIndex = normalized.IndexOf('?');
+        string path = queryIndex < 0 ? normalized : normalized[..queryIndex];
+        string query = queryIndex < 0 ? string.Empty : normalized[queryIndex..];
+        bool legacy = path.EndsWith(".bib", StringComparison.Ordinal) ||
+                      path.EndsWith(".md", StringComparison.Ordinal) || path == "patchouli://library.toon";
+        string? contentType = path.EndsWith(".bib", StringComparison.Ordinal) ? "application/x-bibtex"
+            : path.EndsWith(".md", StringComparison.Ordinal) ? "text/markdown"
+            : path == "patchouli://library.toon" ? McpToonCodec.MediaType : null;
+        if (path.EndsWith(".bib", StringComparison.Ordinal))
+        {
+            path = path[..^4] + ".yml";
+        }
+
+        if (path.EndsWith(".md", StringComparison.Ordinal))
+        {
+            path = path[..^3] + ".xml";
+        }
+
+        if (path == "patchouli://library.toon")
+        {
+            path = "patchouli://library.yml";
+        }
+
+        string canonical = path + query;
+        Result<McpUriParseResult> result = ParseCore(canonical);
+        if (result.IsFailure)
+        {
+            return result;
+        }
+
+        contentType ??= path.EndsWith(".yml", StringComparison.Ordinal)
+            ? "application/yaml"
+            : path.EndsWith(".xml", StringComparison.Ordinal) || path.EndsWith(".csl", StringComparison.Ordinal)
+                ? "application/xml"
+                : null;
+        return Result<McpUriParseResult>.Success(result.Value with
+        {
+            CanonicalUri = CanonicalResourceUri(result.Value), IsLegacy = legacy, ContentType = contentType
+        });
+    }
+
+    private static string CanonicalResourceUri(McpUriParseResult target)
+    {
+        return target.Kind switch
+        {
+            McpUriKind.Root => Prefix,
+            McpUriKind.ItemsScope => Prefix + "items/",
+            McpUriKind.TextsScope => Prefix + "texts/",
+            McpUriKind.StylesScope => Prefix + "csl-styles/",
+            McpUriKind.TranslationsScope => TranslationsScopeUri(),
+            McpUriKind.Item => ItemUri(target.ItemId!.Value),
+            McpUriKind.Document => DocumentUri(target.DocumentId!.Value),
+            McpUriKind.Page => PageUri(target.DocumentId!.Value, target.PageIndex!.Value),
+            McpUriKind.Evidence => EvidencePageUri(target.DocumentId!.Value, target.PageIndex!.Value,
+                target.TreeRevisionId, target.BoxId),
+            McpUriKind.TranslationDocument => TranslationDocumentUri(target.DocumentId!.Value),
+            McpUriKind.TranslationPage => TranslationPageUri(target.DocumentId!.Value, target.PageIndex!.Value) +
+                                          (target.BoxId is null ? "" : $"?box={target.BoxId}"),
+            McpUriKind.Style => StyleUri(target.StyleId!),
+            McpUriKind.Library => LibraryUri(),
+            McpUriKind.RunsScope => RunsScopeUri(),
+            McpUriKind.RunsOcrScope => RunsOcrScopeUri(),
+            McpUriKind.RunOcrStatus => OcrRunStatusUri(target.RunTaskId!),
+            McpUriKind.RunsAgentScope => RunsAgentScopeUri(),
+            McpUriKind.RunAgentSession => AgentRunUri(target.SessionId!),
+            McpUriKind.RunAgentStatus => AgentRunStatusUri(target.SessionId!),
+            McpUriKind.RunAgentEvents => AgentRunEventsUri(target.SessionId!, target.AfterSequence),
+            McpUriKind.WorkflowsScope => WorkflowsScopeUri(),
+            McpUriKind.Workflow => WorkflowUri(target.WorkflowId!),
+            _ => throw new InvalidOperationException("Unknown VFS resource kind.")
+        };
+    }
+
+    private static Result<McpUriParseResult> ParseCore(string uri)
     {
         if (string.IsNullOrWhiteSpace(uri))
         {
@@ -218,8 +316,8 @@ public static class McpResourceUris
         }
 
         string[] segments = rest.Split('/');
-        if (rest.Length == "library.toon".Length &&
-            string.Equals(rest, "library.toon", StringComparison.Ordinal))
+        if (rest.Length == "library.yml".Length &&
+            string.Equals(rest, "library.yml", StringComparison.Ordinal))
         {
             return query is null
                 ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Library))
@@ -228,7 +326,7 @@ public static class McpResourceUris
 
         return segments[0] switch
         {
-            "items" => ParseItemUri(uri, segments),
+            "items" => query is null ? ParseItemUri(uri, segments) : Invalid(uri, "Item URIs do not accept queries."),
             "texts" => ParseTextsUri(uri, segments, query),
             "translations" => ParseTranslationsUri(uri, segments, query),
             "csl-styles" => ParseCslStylesUri(uri, segments, query),
@@ -386,7 +484,7 @@ public static class McpResourceUris
 
     private static Result<McpUriParseResult> ParseItemUri(string uri, string[] segments)
     {
-        // patchouli://items/ or patchouli://items/{id}.bib
+        // patchouli://items/ or patchouli://items/{id}.yml
         if (segments.Length == 2 && segments[0] == "items" && segments[1].Length == 0)
         {
             return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.ItemsScope));
@@ -394,18 +492,18 @@ public static class McpResourceUris
 
         if (segments.Length != 2 || segments[1].Length == 0)
         {
-            return Invalid(uri, "Item URIs must be patchouli://items/{item-id}.bib.");
+            return Invalid(uri, "Item URIs must be patchouli://items/{item-id}.yml.");
         }
 
-        if (!segments[1].EndsWith(".bib", StringComparison.Ordinal))
+        if (!segments[1].EndsWith(".yml", StringComparison.Ordinal))
         {
-            return Invalid(uri, "Item URIs must end with the .bib suffix: patchouli://items/{item-id}.bib.");
+            return Invalid(uri, "Item URIs must end with the .yml suffix: patchouli://items/{item-id}.yml.");
         }
 
         string idPart = segments[1][..^4];
         if (!TryParseGuid(idPart, out Guid itemId))
         {
-            return Invalid(uri, "Item URIs must be patchouli://items/{item-id}.bib.");
+            return Invalid(uri, "Item URIs must be patchouli://items/{item-id}.yml.");
         }
 
         return Result<McpUriParseResult>.Success(
@@ -415,7 +513,7 @@ public static class McpResourceUris
     private static Result<McpUriParseResult> ParseTextsUri(string uri, string[] segments, string? query)
     {
         // patchouli://texts/ or patchouli://texts/{id}/ or
-        // patchouli://texts/{id}/page-{page-index}.md[?rev=<id>[&box=<id>]]
+        // patchouli://texts/{id}/page-{page-index}.xml[?rev=<id>[&box=<id>]]
         if (segments.Length == 2 && segments[0] == "texts" && segments[1].Length == 0)
         {
             return query is null
@@ -432,7 +530,7 @@ public static class McpResourceUris
                 : Invalid(uri, "Document URIs do not accept query parameters.");
         }
 
-        // Page URI: texts/{id}/page-{index}.md with an optional versioned evidence query.
+        // Page URI: texts/{id}/page-{index}.xml with an optional versioned evidence query.
         if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
             TryParsePageIndex(segments[2], out int pageIndex))
         {
@@ -459,13 +557,13 @@ public static class McpResourceUris
         }
 
         return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/ or " +
-                            "patchouli://texts/{document-id}/page-{page-index}.md.");
+                            "patchouli://texts/{document-id}/page-{page-index}.xml.");
     }
 
     private static Result<McpUriParseResult> ParseTranslationsUri(string uri, string[] segments, string? query)
     {
         // patchouli://translations/ or patchouli://translations/{id}/ or
-        // patchouli://translations/{id}/page-{page-index}.md
+        // patchouli://translations/{id}/page-{page-index}.xml
         if (segments.Length == 2 && segments[0] == "translations" && segments[1].Length == 0)
         {
             return query is null
@@ -482,21 +580,29 @@ public static class McpResourceUris
                 : Invalid(uri, "Translation document URIs do not accept query parameters.");
         }
 
-        // Page URI: translations/{id}/page-{index}.md; translations are always HEAD-derived and
+        // Page URI: translations/{id}/page-{index}.xml; translations are always HEAD-derived and
         // therefore carry no versioned evidence query.
         if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
             TryParsePageIndex(segments[2], out int pageIndex))
         {
-            return query is null
-                ? Result<McpUriParseResult>.Success(new McpUriParseResult(
-                    McpUriKind.TranslationPage,
-                    DocumentId: new DocumentInstanceId(documentIdForPage),
-                    PageIndex: pageIndex))
-                : Invalid(uri, "Translation page URIs do not accept query parameters.");
+            if (query is null)
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.TranslationPage,
+                    DocumentId: new DocumentInstanceId(documentIdForPage), PageIndex: pageIndex));
+            }
+
+            if (TryParseVersionedQuery(query, out DocumentTreeRevisionId? revision, out DocumentBoxId? box) &&
+                revision is null && box is not null)
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.TranslationPage,
+                    DocumentId: new DocumentInstanceId(documentIdForPage), PageIndex: pageIndex, BoxId: box));
+            }
+
+            return Invalid(uri, "Translation pages accept only ?box={box-id}.");
         }
 
         return Invalid(uri, "Translation URIs must be patchouli://translations/{document-id}/ or " +
-                            "patchouli://translations/{document-id}/page-{page-index}.md.");
+                            "patchouli://translations/{document-id}/page-{page-index}.xml.");
     }
 
     private static Result<McpUriParseResult> ParseCslStylesUri(string uri, string[] segments, string? query)
@@ -539,12 +645,12 @@ public static class McpResourceUris
         pageIndex = 0;
         const string prefixText = "page-";
         if (!segment.StartsWith(prefixText, StringComparison.Ordinal) ||
-            !segment.EndsWith(".md", StringComparison.Ordinal))
+            !segment.EndsWith(".xml", StringComparison.Ordinal))
         {
             return false;
         }
 
-        string indexText = segment[prefixText.Length..^3];
+        string indexText = segment[prefixText.Length..^4];
         return indexText.Length > 0 && int.TryParse(indexText, out pageIndex) && pageIndex >= 1;
     }
 
@@ -567,6 +673,7 @@ public static class McpResourceUris
             return false;
         }
 
+        HashSet<string> keys = new(StringComparer.Ordinal);
         foreach (string part in query.Split('&'))
         {
             int separator = part.IndexOf('=');
@@ -576,6 +683,11 @@ public static class McpResourceUris
             }
 
             string key = part[..separator];
+            if (!keys.Add(key))
+            {
+                return false;
+            }
+
             string value = part[(separator + 1)..];
 
             switch (key)

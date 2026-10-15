@@ -91,7 +91,7 @@ public sealed class McpItemLifecycleErrorTests : IAsyncLifetime
     [Fact]
     public async Task Put_active_item_succeeds()
     {
-        string uri = McpResourceUris.ItemUri(_library.ActiveItem);
+        string uri = McpResourceUris.ItemUri(_library.ActiveItem).Replace(".yml", ".bib", StringComparison.Ordinal);
         McpCommandResult<McpPutMeta, McpPutResult> result = await _library.Commands.PutAsync(
             new McpPutRequest(uri,
                 """
@@ -141,7 +141,7 @@ public sealed class McpItemLifecycleErrorTests : IAsyncLifetime
 
         result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
         result.Envelope!.Entries.Should().ContainSingle();
-        result.Envelope.Entries.Single().ResourceType.Should().Be("item_bib");
+        result.Envelope.Entries.Single().ResourceType.Should().Be("item_yaml");
     }
 
     [Fact]
