@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Csl;
 using Patchouli.Mcp;
 using YamlDotNet.Core;
 
@@ -21,7 +22,12 @@ public static class McpItemYamlCodec
     ];
 
     private static readonly string[] DateRoles = ["issued", "accessed", "original-date", "event-date", "submitted"];
-    private static readonly string[] IdentifierSchemes = ["doi", "isbn", "issn", "url", "call-number"];
+
+    private static readonly string[] IdentifierSchemes =
+    [
+        BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.ISBN, BuiltInIdentifierSchemes.ISSN,
+        BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber
+    ];
 
     private static readonly HashSet<string> CslFieldNames = new(
     [
@@ -78,7 +84,8 @@ public static class McpItemYamlCodec
         foreach (string scheme in IdentifierSchemes)
         {
             string? key = CslIdentifierKey(scheme);
-            McpItemIdentifier? identifier = item.Identifiers.FirstOrDefault(i => IsRole(i.Scheme, scheme));
+            McpItemIdentifier? identifier = item.Identifiers.FirstOrDefault(i =>
+                BuiltInIdentifierSchemes.Normalize(i.Scheme) == scheme);
             csl[key!] = identifier?.Value;
         }
 
@@ -164,14 +171,14 @@ public static class McpItemYamlCodec
                 GetString(csl, "collection-title"),
                 GetString(csl, "publisher"),
                 GetString(csl, "publisher-place"),
-                GetString(csl, "edition"),
+                GetNumberOrString(csl, "edition"),
                 GetString(csl, "genre"),
-                GetString(csl, "number"),
-                GetString(csl, "chapter-number"),
-                GetString(csl, "volume"),
+                GetNumberOrString(csl, "number"),
+                GetNumberOrString(csl, "chapter-number"),
+                GetNumberOrString(csl, "volume"),
                 GetString(csl, "version"),
-                GetString(csl, "issue"),
-                GetString(csl, "page"),
+                GetNumberOrString(csl, "issue"),
+                GetNumberOrString(csl, "page"),
                 GetString(csl, "language"),
                 GetString(csl, "status"),
                 GetString(csl, "note"),
@@ -244,7 +251,7 @@ public static class McpItemYamlCodec
 
             ValidateNestedFields(date, $"CSL date '{role}'", ["date-parts", "circa", "season", "literal"]);
             dates.Add(new ItemDateInput(role, GetCslDatePartsJson(date) ?? "[]", GetBoolean(date, "circa"),
-                GetString(date, "season"), GetString(date, "literal")));
+                GetNumberOrString(date, "season"), GetString(date, "literal")));
         }
 
         return dates;
@@ -262,7 +269,8 @@ public static class McpItemYamlCodec
                                 throw new FormatException("Identifier scheme is required.");
                 string value = GetString(identifier, "value") ??
                                throw new FormatException("Identifier value is required.");
-                return new ItemIdentifierInput(scheme, value, GetString(identifier, "note"));
+                return new ItemIdentifierInput(BuiltInIdentifierSchemes.Normalize(scheme), value,
+                    GetString(identifier, "note"));
             }).ToList();
 
         foreach (string scheme in IdentifierSchemes)
@@ -275,13 +283,13 @@ public static class McpItemYamlCodec
 
             if (node is null)
             {
-                identifiers.RemoveAll(i => IsRole(i.Scheme, scheme));
+                identifiers.RemoveAll(i => i.Scheme == scheme);
                 continue;
             }
 
             string value = GetString(csl, key) ??
                            throw new FormatException($"CSL identifier '{key}' must be a string.");
-            int projectedIndex = identifiers.FindIndex(i => IsRole(i.Scheme, scheme));
+            int projectedIndex = identifiers.FindIndex(i => i.Scheme == scheme);
             if (projectedIndex < 0)
             {
                 identifiers.Add(new ItemIdentifierInput(scheme, value));
@@ -310,10 +318,11 @@ public static class McpItemYamlCodec
     private static JsonObject ToCslDate(McpItemDate date)
     {
         JsonObject result = new();
-        JsonNode? dateParts = JsonNode.Parse(date.DatePartsJson);
-        if (dateParts is JsonArray parts)
+        using JsonDocument dateParts = JsonDocument.Parse(date.DatePartsJson);
+        List<List<int>> parts = CslDateParts.Read(dateParts.RootElement);
+        if (parts.Count > 0)
         {
-            result["date-parts"] = parts.FirstOrDefault() is JsonArray ? parts : new JsonArray(parts.DeepClone());
+            result["date-parts"] = JsonSerializer.SerializeToNode(parts);
         }
 
         if (date.Circa)
@@ -328,13 +337,20 @@ public static class McpItemYamlCodec
 
     private static string? GetCslDatePartsJson(JsonObject date)
     {
-        if (date["date-parts"] is not JsonArray { Count: > 0 } parts)
+        if (!date.TryGetPropertyValue("date-parts", out JsonNode? parts))
         {
             return null;
         }
 
-        JsonNode? first = parts[0];
-        return first is JsonArray ? first.ToJsonString() : parts.ToJsonString();
+        // Earlier projections wrapped the empty array of literal-only dates once more.
+        if (parts is JsonArray { Count: 1 } legacy && legacy[0] is JsonArray { Count: 0 } &&
+            !string.IsNullOrWhiteSpace(GetString(date, "literal")))
+        {
+            return "[]";
+        }
+
+        using JsonDocument document = JsonDocument.Parse(parts?.ToJsonString() ?? "null");
+        return JsonSerializer.Serialize(CslDateParts.Read(document.RootElement));
     }
 
     private static string? GetDateDisplay(JsonNode? date)
@@ -354,13 +370,13 @@ public static class McpItemYamlCodec
 
     private static string? CslIdentifierKey(string scheme)
     {
-        return scheme.ToLowerInvariant() switch
+        return BuiltInIdentifierSchemes.Normalize(scheme) switch
         {
             "doi" => "DOI",
             "isbn" => "ISBN",
             "issn" => "ISSN",
             "url" => "URL",
-            "call-number" => "call-number",
+            BuiltInIdentifierSchemes.CallNumber => "call-number",
             _ => null
         };
     }
@@ -396,6 +412,17 @@ public static class McpItemYamlCodec
     {
         result = GetString(parent, key);
         return result is not null;
+    }
+
+    private static string? GetNumberOrString(JsonObject parent, string key)
+    {
+        JsonNode? node = parent[key];
+        if (node is JsonValue value && value.GetValueKind() == JsonValueKind.Number)
+        {
+            return value.ToJsonString();
+        }
+
+        return GetString(parent, key);
     }
 
     private static bool GetBoolean(JsonObject parent, string key)

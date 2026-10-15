@@ -85,7 +85,7 @@ public sealed class McpYamlCodecTests
         decoded.Value.Request.ItemType.Should().Be("general");
         decoded.Value.Request.Title.Should().Be("A title");
         decoded.Value.Request.Creators.Should().ContainSingle().Which.Particles.Should().Be("de");
-        decoded.Value.Request.Dates.Should().ContainSingle().Which.DatePartsJson.Should().Be("[2024,3,2]");
+        decoded.Value.Request.Dates.Should().ContainSingle().Which.DatePartsJson.Should().Be("[[2024,3,2]]");
         decoded.Value.Identifiers.Should().HaveCount(2);
         decoded.Value.Identifiers[0].Note.Should().Be("source note");
         decoded.Value.Request.CustomFieldsJson.Should().Contain("\"enabled\":true");
@@ -120,7 +120,7 @@ public sealed class McpYamlCodecTests
         decoded.IsSuccess.Should().BeTrue(decoded.ErrorMessage);
         decoded.Value.Request.ItemType.Should().Be("article-journal");
         decoded.Value.Request.Creators.Should().ContainSingle().Which.Family.Should().Be("Edited");
-        decoded.Value.Request.Dates.Should().ContainSingle().Which.DatePartsJson.Should().Be("[2032,4,5]");
+        decoded.Value.Request.Dates.Should().ContainSingle().Which.DatePartsJson.Should().Be("[[2032,4,5]]");
         decoded.Value.Request.Subtitle.Should().BeNull();
     }
 

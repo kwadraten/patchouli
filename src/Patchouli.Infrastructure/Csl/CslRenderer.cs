@@ -84,7 +84,7 @@ public sealed class CslRenderer : ICslRenderer
                 return Result<CslRenderResult>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
             }
 
-            mappedItems.Add(FsharpCiteprocJsonAdapter.ToItem(mapped.Value, warnings));
+            mappedItems.Add(FsharpCiteprocJsonAdapter.ToItem(mapped.Value));
         }
 
         Result<FsharpCiteprocRenderResponse> rendered = _citeproc.Render(

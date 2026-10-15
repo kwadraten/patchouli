@@ -61,9 +61,20 @@ public sealed class McpReadApi : IMcpReadApi
         CancellationToken cancellationToken = default)
     {
         Result<McpItemMetadataResponse> item = await GetItemMetadataAsync(itemId, cancellationToken);
-        return item.IsFailure
-            ? Result<string>.Failure(item.ErrorCode!, item.ErrorMessage!)
-            : Result<string>.Success(McpItemYamlCodec.Encode(item.Value, includeTags));
+        if (item.IsFailure)
+        {
+            return Result<string>.Failure(item.ErrorCode!, item.ErrorMessage!);
+        }
+
+        try
+        {
+            return Result<string>.Success(McpItemYamlCodec.Encode(item.Value, includeTags));
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException)
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                $"Invalid stored item metadata: {exception.Message}");
+        }
     }
 
     public async Task<Result<McpPageXmlResponse>> GetPageXmlAsync(McpPageXmlRequest request,
@@ -199,7 +210,7 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             McpItemIdentifier[] identifiers = (await connection.QueryAsync<IdentifierRow>(
-                    "select lower(trim(scheme)) as Scheme, value as Value, note as Note from item_identifiers where item_id = @ItemId order by created_at, scheme, value;",
+                    "select lower(trim(scheme)) as Scheme, value as Value, note as Note from item_identifiers where item_id = @ItemId order by created_at, rowid;",
                     new { ItemId = itemId.ToString() })).Select(i => new McpItemIdentifier(i.Scheme, i.Value, i.Note))
                 .ToArray();
             McpItemCreator[] creators = (await connection.QueryAsync<CreatorRow>(

@@ -1154,7 +1154,8 @@ public sealed class ItemService : IItemService
                 created_at as CreatedAt
             from item_identifiers
             where item_id in @ItemIds
-            order by item_id, created_at, identifier_id;
+            -- Preserve insertion order when a replacement batch shares one timestamp.
+            order by item_id, created_at, rowid;
             """,
             new { ItemIds = itemIds.Select(id => id.ToString()).ToArray() });
 
@@ -1811,7 +1812,7 @@ public sealed class ItemService : IItemService
 
     private static string NormalizeIdentifierScheme(string scheme)
     {
-        return scheme.Trim().ToLowerInvariant();
+        return BuiltInIdentifierSchemes.Normalize(scheme);
     }
 
     private static async Task InsertIdentifierAsync(

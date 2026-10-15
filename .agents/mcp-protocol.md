@@ -28,6 +28,20 @@ in `extensions.patchouli`. URI identity and citation keys cannot be changed thro
 Collections remain read-only; hidden tags are preserved. YAML has one document, unique mapping
 keys, JSON-shaped scalar types, and no custom tags or aliases.
 
+CSL dates retain the complete nested `date-parts` array, including both range endpoints.
+Rendering and projections also accept older flat stored dates; new YAML writes normalize to
+nested integer arrays and reject malformed shapes or invalid calendar dates before changing
+any metadata. Integer strings are accepted as date components. Literal-only dates need no
+`date-parts`; old `[[]]` wrappers with a literal remain readable as write input. Numeric CSL
+fields (`edition`, `volume`, `issue`, `number`, `chapter-number`, `page`, and `season`) accept
+numbers or strings and use the internal string representation. Custom CSL JSON retains its
+object, array, numeric and boolean types when rendering; null fields are omitted, never rendered
+as the string `null`. Core metadata wins over custom fallback fields. For multiple identifiers
+of one scheme, YAML and citation rendering select the first entry in the persisted list;
+replacement preserves input order, including entries sharing a creation timestamp.
+The CSL `call-number` field maps to the internal `call_number` identifier scheme; the older
+hyphenated scheme spelling is accepted and normalized on write.
+
 Page XML uses profile `patchouli-page-1`. The page identifies its document, one-based page,
 source revision, translation version, and completeness. Boxes retain stable IDs and source
 structure; payloads wrap existing Markdown, LaTeX, code, or descriptions. Suppressed nodes,
