@@ -93,12 +93,13 @@ public sealed class MultimodalLlmOcrAdapterTests
     }
 
     [Fact]
-    public async Task RunPageAsync_restricts_the_prompt_to_the_region_and_reports_the_region_bbox()
+    public async Task RunPageAsync_crops_the_region_before_recognition_and_maps_boxes_to_page_coordinates()
     {
         string imagePath = WriteTempPng();
         try
         {
             StubLlmChatClient client = new();
+            // The model sees only the cropped region: box coordinates are crop-relative.
             client.Enqueue(Completion("""{"boxes":[{"text":"in region","x":0.2,"y":0.3,"width":0.1,"height":0.1}]}"""));
             MultimodalLlmOcrAdapter adapter = new(new StubRuntime { Client = client });
             NormalizedBBox region = new(0.1, 0.2, 0.3, 0.4);
@@ -110,8 +111,16 @@ public sealed class MultimodalLlmOcrAdapterTests
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             result.Value.BBox.Should().Be(region);
             client.VisionCalls.Should().HaveCount(1);
-            client.VisionCalls[0].Vision.Text.Should().Contain("x=0.1");
-            client.VisionCalls[0].Vision.Text.Should().Contain("width=0.3");
+            // The prompt carries no region hint: the image itself is the cropped region.
+            client.VisionCalls[0].Vision.Text.Should().NotContain("x=0.1");
+            // Crop-relative (0.2,0.3,0.1,0.1) maps to page-relative
+            // (0.1+0.2*0.3, 0.2+0.3*0.4, 0.1*0.3, 0.1*0.4) = (0.16,0.32,0.03,0.04).
+            OcrEngineTextBox box = result.Value.TextBoxes!.Single();
+            box.Text.Should().Be("in region");
+            box.BBox.X.Should().BeApproximately(0.16, 1e-9);
+            box.BBox.Y.Should().BeApproximately(0.32, 1e-9);
+            box.BBox.Width.Should().BeApproximately(0.03, 1e-9);
+            box.BBox.Height.Should().BeApproximately(0.04, 1e-9);
         }
         finally
         {

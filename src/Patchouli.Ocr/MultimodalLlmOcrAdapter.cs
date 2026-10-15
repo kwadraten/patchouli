@@ -4,6 +4,7 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
+using SkiaSharp;
 
 namespace Patchouli.Ocr;
 
@@ -86,6 +87,8 @@ public sealed class MultimodalLlmOcrRuntime : IMultimodalLlmOcrRuntime
 /// normalized into <see cref="OcrEngineTextBox"/>es (the exact shape the other real adapters produce), and the
 /// OCR run engine turns that into an <see cref="OcrDocumentTreeCandidate"/> that enters the tree
 /// exclusively through the unified import/commit channel. This adapter never writes document_boxes itself.
+/// For region input the region is cropped out of the page image in-memory before recognition (issue #2);
+/// the model sees only the crop, and returned boxes are mapped back to page coordinates.
 /// </summary>
 public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
 {
@@ -194,19 +197,40 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
                 $"The rendered page image could not be read: {exception.Message}");
         }
 
-        string? mimeType = ResolveMimeType(input.ImagePath, imageBytes);
-        if (mimeType is null)
+        // Region OCR crops the region out of the page image before recognition (issue #2):
+        // the model sees only the cropped region, so its box coordinates are crop-relative
+        // and are mapped back to page coordinates below. This matches the NDL adapters,
+        // which crop in-memory via the same RegionImageCrop helper.
+        NormalizedBBox? region = input.InputKind == OcrInputKinds.RegionImage ? input.RegionBBox : null;
+        string mimeType;
+        if (region is not null)
         {
-            return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
-                $"The rendered page image '{input.ImagePath}' is not a recognized image format.");
+            Result<byte[]> cropped = CropRegionToPngBytes(imageBytes, region.Value);
+            if (cropped.IsFailure)
+            {
+                return Result<OcrEnginePageResult>.Failure(cropped.ErrorCode!, cropped.ErrorMessage!);
+            }
+
+            imageBytes = cropped.Value;
+            mimeType = "image/png";
+        }
+        else
+        {
+            string? detected = ResolveMimeType(input.ImagePath, imageBytes);
+            if (detected is null)
+            {
+                return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
+                    $"The rendered page image '{input.ImagePath}' is not a recognized image format.");
+            }
+
+            mimeType = detected;
         }
 
-        string prompt = BuildPrompt(input);
         string dataUri = $"data:{mimeType};base64,{Convert.ToBase64String(imageBytes)}";
         Result<LlmChatCompletion> completion = await client.Value.CompleteVisionAsync(
             $"{ConversationKeyPrefix}:{input.PageId}",
-            new LlmChatRequest(LlmChatHistory.Create(prompt)),
-            new LlmVisionInput(dataUri, mimeType, prompt, "high"),
+            new LlmChatRequest(LlmChatHistory.Create(Prompt)),
+            new LlmVisionInput(dataUri, mimeType, Prompt, "high"),
             cancellationToken);
         if (completion.IsFailure)
         {
@@ -220,10 +244,13 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             return Result<OcrEnginePageResult>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
         }
 
-        NormalizedBBox pageBBox = input.RegionBBox ?? new NormalizedBBox(0, 0, 1, 1);
-        string? text = boxes.Value.Count == 0
+        IReadOnlyList<OcrEngineTextBox> pageBoxes = region is null
+            ? boxes.Value
+            : boxes.Value.Select(box => box with { BBox = MapCropBoxToPage(box.BBox, region.Value) }).ToArray();
+        NormalizedBBox pageBBox = region ?? new NormalizedBBox(0, 0, 1, 1);
+        string? text = pageBoxes.Count == 0
             ? null
-            : string.Join('\n', boxes.Value.Select(box => box.Text));
+            : string.Join('\n', pageBoxes.Select(box => box.Text));
         return Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(
             input.PageId,
             true,
@@ -232,7 +259,7 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             null,
             null,
             null,
-            boxes.Value));
+            pageBoxes));
     }
 
     private (string ProviderId, string Model) ResolveSelection(OcrPresetVersion presetVersion)
@@ -286,17 +313,37 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             OcrRequiredAction.None, []);
     }
 
-    private static string BuildPrompt(OcrInputDescriptor input)
+    private static Result<byte[]> CropRegionToPngBytes(byte[] imageBytes, NormalizedBBox region)
     {
-        if (input.InputKind != OcrInputKinds.RegionImage || input.RegionBBox is not { } region)
+        using SKBitmap? source = SKBitmap.Decode(imageBytes);
+        if (source is null)
         {
-            return Prompt;
+            return Result<byte[]>.Failure(AppErrorCodes.InvalidState,
+                "The rendered page image could not be decoded for region cropping.");
         }
 
-        return Prompt +
-               $"\nOnly recognize text inside the normalized rectangle x={region.X}, y={region.Y}, " +
-               $"width={region.Width}, height={region.Height} of the image; " +
-               "still report coordinates relative to the full image.";
+        try
+        {
+            return Result<byte[]>.Success(RegionImageCrop.CropToPngBytes(source, region));
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "ocr-multimodal-llm"))
+        {
+            return Result<byte[]>.Failure(AppErrorCodes.InvalidState,
+                $"The OCR region could not be cropped: {exception.Message}");
+        }
+    }
+
+    private static NormalizedBBox MapCropBoxToPage(NormalizedBBox cropBox, NormalizedBBox region)
+    {
+        double x = region.X + cropBox.X * region.Width;
+        double y = region.Y + cropBox.Y * region.Height;
+        double width = cropBox.Width * region.Width;
+        double height = cropBox.Height * region.Height;
+        return new NormalizedBBox(
+            Math.Clamp(x, 0.0, 1.0),
+            Math.Clamp(y, 0.0, 1.0),
+            Math.Clamp(width, 0.0, 1.0 - Math.Clamp(x, 0.0, 1.0)),
+            Math.Clamp(height, 0.0, 1.0 - Math.Clamp(y, 0.0, 1.0)));
     }
 
     private static string? ResolveMimeType(string path, byte[] bytes)
