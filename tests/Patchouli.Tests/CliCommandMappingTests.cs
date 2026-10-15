@@ -56,15 +56,18 @@ public sealed class CliCommandMappingTests
         act.Should().Throw<CliUsageException>();
     }
 
-    [Fact]
-    public void Fetch_maps_uris_range_and_limit_bytes()
+    [Theory]
+    [InlineData("patchouli://items/abc.yml", "lines:1-5")]
+    [InlineData("texts/doc/page-1.xml", "boxes:1-5")]
+    [InlineData("patchouli://texts/doc/page-1.md", "pages:1-5")]
+    public void Fetch_maps_uris_range_and_limit_bytes(string uri, string range)
     {
         CliToolCall call = CliArguments.BuildToolCall("fetch",
-            ["patchouli://items/abc.yml", "--range", "lines:1-5", "--limit-bytes", "128"], false);
+            [uri, "--range", range, "--limit-bytes", "128"], false);
         call.Tool.Should().Be(CliArguments.Fetch);
         call.Arguments["uris"].Should().BeAssignableTo<string[]>()
-            .Which.Should().Equal("patchouli://items/abc.yml");
-        call.Arguments["range"].Should().Be("lines:1-5");
+            .Which.Should().Equal(uri);
+        call.Arguments["range"].Should().Be(range);
         call.Arguments["limit_bytes"].Should().Be(128);
         call.Arguments.Should().NotContainKey("revision");
     }

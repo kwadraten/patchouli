@@ -462,11 +462,13 @@ CLI                                             MCP
 patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
+patchouli-cli put <URI> --boxes-from <PATH>|--boxes-stdin
+                                                patchouli.put { uri, source_revision, translation_version?, boxes }
 patchouli-cli cite                              patchouli.cite
 patchouli-cli send <VERB> [OPTIONS]             patchouli.send { instruction, ... }
 ```
 
-CLI 是本地 MCP HTTP 端点的客户端，五个 CLI 动词分别映射为五个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 content，MCP 从不接受或暴露本地路径。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
+CLI 是本地 MCP HTTP 端点的客户端，五个 CLI 动词分别映射为五个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 `content`，或读取 JSON batch 后发送版本字段与 `boxes`；MCP 从不接受或暴露本地路径。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
 
 共享响应外壳：CLI 的 JSON、MCP `format=json` 与默认 TOON 使用**同一**逻辑 schema；TOON 仅是该对象的确定性编码，不能省略、提升或重命名字段。干净成功的 JSON 例如：
 

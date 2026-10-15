@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Patchouli.Cli;
 
@@ -32,10 +33,33 @@ public sealed class CliPutBoxesTests
         act.Should().Throw<CliUsageException>();
     }
 
+    [Fact]
+    public void Boxes_file_preserves_source_xml_and_omits_translation_version()
+    {
+        const string xml = "<box id=\"b1\"><text>修订 &amp; updated</text></box>";
+        CliToolCall call = CliArguments.BuildToolCall("put",
+            ["texts/doc/page-1.xml", "--boxes-from", "batch.json"], true);
+        call.PutBoxesSourcePath.Should().Be("batch.json");
+        call = CliArguments.WithBoxesJson(call, JsonSerializer.Serialize(new
+        {
+            source_revision = "rev-1", boxes = new[] { new { box_id = "b1", content = xml } }
+        }));
+
+        call.Arguments["uri"].Should().Be("texts/doc/page-1.xml");
+        call.Arguments["format"].Should().Be("json");
+        call.Arguments.Should().NotContainKey("translation_version").And.NotContainKey("content");
+        using JsonDocument arguments = JsonDocument.Parse(JsonSerializer.Serialize(call.Arguments));
+        arguments.RootElement.GetProperty("boxes")[0].GetProperty("content").GetString().Should().Be(xml);
+        call.PutBoxesSourcePath.Should().BeNull();
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"source_revision\":\"rev\",\"boxes\":[]}")]
     [InlineData("{\"source_revision\":\"rev\",\"boxes\":[{\"content\":\"x\"}]}")]
+    [InlineData(
+        "{\"source_revision\":\"rev\",\"source_revision\":\"other\",\"boxes\":[{\"box_id\":\"b1\",\"content\":\"x\"}]}")]
+    [InlineData("{\"source_revision\":\"rev\",\"boxes\":[{\"box_id\":\"b1\",\"content\":\"x\",\"unknown\":true}]}")]
     public void Boxes_input_requires_revision_and_nonempty_identified_items(string json)
     {
         CliToolCall call = CliArguments.BuildToolCall("put",

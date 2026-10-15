@@ -164,17 +164,24 @@ static void PrintUsage()
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine(
         "    Filter keys include item_type, item_status, collection_id, tag (exact, case-sensitive), citable.");
-    Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E>] [--limit-bytes <n>]");
+    Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E|boxes:S-E>] [--limit-bytes <n>]");
     Console.Error.WriteLine("    Library projection: patchouli://library.yml");
     Console.Error.WriteLine(
         "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>]");
     Console.Error.WriteLine(
         "    Translations: patchouli://translations/, patchouli://translations/<document-id>/, or patchouli://translations/<document-id>/page-<index>.xml");
+    Console.Error.WriteLine("    Page indexes are one-based; boxes:S-E selects complete XML box elements.");
     Console.Error.WriteLine("  put <uri> --from <path>|--stdin|--boxes-from <path>|--boxes-stdin");
     Console.Error.WriteLine(
         "    Batch JSON: {\"source_revision\":\"...\",\"translation_version\":1,\"boxes\":[{\"box_id\":\"...\",\"content\":\"...\"}]}");
     Console.Error.WriteLine(
-        "    Box batches contain 1 to 100 entries; omit translation_version for source-page writes.");
+        "    Box batches contain 1 to 100 entries and require source_revision; translation writes also require translation_version.");
+    Console.Error.WriteLine(
+        "    Each content is a complete <box> XML element copied from fetch; preserve its structural attributes and edit its payload.");
+    Console.Error.WriteLine(
+        "    Source pages (texts/) accept box batches only; omit translation_version. Translation pages accept batches or whole-page XML.");
+    Console.Error.WriteLine(
+        "    Whole-page translation XML must retain the fetched source revision and translation version attributes.");
     Console.Error.WriteLine(
         "    Writable: patchouli://items/<id>.yml, patchouli://csl-styles/<id>.csl, or page XML under texts/ and translations/.");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
@@ -189,6 +196,10 @@ static void PrintUsage()
         "The CLI is a thin client of the local MCP HTTP host; it never opens the library database directly.");
     Console.Error.WriteLine(
         "Without --mcp-url, the CLI discovers the selected Library host and starts Patchouli headlessly when needed.");
+    Console.Error.WriteLine(
+        "VFS addresses may omit patchouli:// (for example, library.yml or texts/<document-id>/page-1.xml).");
+    Console.Error.WriteLine(
+        "Legacy .bib, .md and library.toon interfaces are deprecated in 0.4.0; migrate to .yml and .xml using the canonical URIs returned by the host.");
     Console.Error.WriteLine($"UNAVAILABLE: {CliUnavailableException.Guidance}");
     Console.Error.WriteLine(
         "A clean success response has no message field; message is only present for warnings or errors.");
