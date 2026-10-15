@@ -77,7 +77,8 @@ public sealed class LlmProviderAgentClientProvider : IAgentLlmClientProvider
                 return Result<ILlmChatClient>.Success(existing);
             }
 
-            ILlmChatClient client = new LlmChatClient(runtime, LlmClientFactory.CreateTransport(runtime));
+            ILlmChatClient client = new LlmChatClient(runtime, LlmClientFactory.CreateTransport(runtime),
+                settings.AgentReasoningEffort);
             _clients[key] = client;
             return Result<ILlmChatClient>.Success(client);
         }

@@ -7,6 +7,10 @@ cached prefix until 80% of the configured context capacity, then compact the who
 and continue from a persisted summary. The session-local `history` tool retrieves original
 entries on demand; see [ADR 0040](adr/0040-cache-preserving-whole-prefix-compaction.md).
 Oversized tool results, including aggregate FSI SDK receipts, are folded only in model requests.
+The Model and Translation settings expose a shared reasoning effort for built-in chat and workflow
+model calls. Empty means provider default; explicit levels use the native API/subscription parameter
+and depend on model support. OCR clients retain their provider defaults. The setting is saved
+automatically and applies to subsequent calls, including explicitly selected workflow models.
 The Model and Translation settings expose the maximum result length in characters; the warning
 states that limit and directs the agent to request smaller batches. Original history stays intact.
 The ordered context journal freezes model-visible results before requests, so replay and setting

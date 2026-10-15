@@ -26,11 +26,15 @@ public sealed class LlmChatClient : ILlmChatClient
     private readonly Lock _gate = new();
     private readonly LlmProviderRuntimeSettings _provider;
     private readonly ILlmChatTransport _transport;
+    private readonly string? _reasoningEffort;
 
-    public LlmChatClient(LlmProviderRuntimeSettings provider, ILlmChatTransport transport)
+    public LlmChatClient(LlmProviderRuntimeSettings provider, ILlmChatTransport transport,
+        string? reasoningEffort = null)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        string normalized = LlmAppSettings.NormalizeReasoningEffort(reasoningEffort);
+        _reasoningEffort = normalized.Length == 0 ? null : normalized;
     }
 
     /// <summary>Catalog id of the provider this client talks to.</summary>
@@ -43,7 +47,7 @@ public sealed class LlmChatClient : ILlmChatClient
     public string ConfigurationKey => System.Text.Json.JsonSerializer.Serialize(new
     {
         _provider.ProviderId, _provider.Model, _provider.BaseUrl, _provider.Subscription,
-        _provider.Deployment, _provider.ApiVersion, _provider.AuthenticationMode
+        _provider.Deployment, _provider.ApiVersion, _provider.AuthenticationMode, ReasoningEffort = _reasoningEffort
     });
 
     /// <inheritdoc />
@@ -101,7 +105,7 @@ public sealed class LlmChatClient : ILlmChatClient
                 options.MaxTokens,
                 cache.AutoCache,
                 cache.PromptCacheKey,
-                cache.CacheRetention);
+                cache.CacheRetention) { ReasoningEffort = _reasoningEffort };
         }
         catch (LlmChatException exception)
         {

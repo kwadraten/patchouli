@@ -94,6 +94,7 @@ public sealed class LlmTornadoSubscriptionTransport(
                 : string.Concat(promptMessage.Parts.OfType<LlmMessagePart.LlmTextPart>().Select(part => part.Text));
             CodexOAuthTurnOptions turnOptions = new()
             {
+                ReasoningEffort = request.ReasoningEffort,
                 Tools = request.ToolDefinitions.Select(definition =>
                     Newtonsoft.Json.JsonConvert.DeserializeObject<LlmTornado.Common.Tool>(definition)!).ToArray()
             };

@@ -141,6 +141,31 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ObservableProperty] public partial int AgentMaxRetries { get; set; } = LlmAppSettings.DefaultAgentMaxRetries;
 
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<LlmSelectionOption> AgentReasoningEffortOptions { get; } =
+    [
+        new("", "默认（由供应商决定）"), new("none", "关闭（none）"), new("minimal", "最小（minimal）"),
+        new("low", "低（low）"), new("medium", "中（medium）"), new("high", "高（high）"),
+        new("xhigh", "极高（xhigh）"), new("max", "最高（max）")
+    ];
+
+    [ExcludeFromDerivedGeneration]
+    public LlmSelectionOption? SelectedAgentReasoningEffort
+    {
+        get => AgentReasoningEffortOptions.First(option => option.ProviderId == _current.AgentReasoningEffort);
+        set
+        {
+            if (value is null || IsWaitingForDraftSync() || value.ProviderId == _current.AgentReasoningEffort)
+            {
+                return;
+            }
+
+            _current = _current with { AgentReasoningEffort = value.ProviderId };
+            Raise();
+            MarkDirty("有未保存的更改");
+        }
+    }
+
     partial void OnAgentMaxRetriesChanged(int value)
     {
         if (IsWaitingForDraftSync())
@@ -662,6 +687,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         try
         {
             _current = _persisted;
+            Raise(nameof(SelectedAgentReasoningEffort));
 
             foreach (LlmProviderSettingsRowViewModel row in Providers)
             {

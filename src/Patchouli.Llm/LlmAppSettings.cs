@@ -65,6 +65,18 @@ public sealed record LlmAppSettings(
 
     public int AgentMaxRetries { get; init; } = DefaultAgentMaxRetries;
 
+    /// <summary>Reasoning effort for built-in chat and workflows; empty uses the provider default.</summary>
+    public string AgentReasoningEffort { get; init; } = "";
+
+    public static IReadOnlyList<string> ReasoningEfforts { get; } =
+        ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+    public static string NormalizeReasoningEffort(string? value)
+    {
+        string normalized = value?.Trim().ToLowerInvariant() ?? "";
+        return ReasoningEfforts.Contains(normalized) ? normalized : "";
+    }
+
     public const int DefaultToolResultMaxCharacters = 32768;
     public const int MinToolResultMaxCharacters = 4096;
     public const int MaxToolResultMaxCharacters = 1048576;
@@ -185,6 +197,7 @@ public sealed record LlmAppSettings(
             OcrModel = ocrModel,
             ChatProviderId = chatProviderId,
             ChatModel = chatModel,
+            AgentReasoningEffort = NormalizeReasoningEffort(AgentReasoningEffort),
             AgentMaxRetries = Math.Clamp(AgentMaxRetries, 0, MaxAgentMaxRetries),
             ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
                 MinToolResultMaxCharacters, MaxToolResultMaxCharacters)

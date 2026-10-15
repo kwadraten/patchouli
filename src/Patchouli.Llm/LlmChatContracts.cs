@@ -120,7 +120,10 @@ public sealed record LlmTransportRequest(
     int? MaxTokens,
     bool AutoCache,
     string? PromptCacheKey,
-    TimeSpan? CacheRetention);
+    TimeSpan? CacheRetention)
+{
+    public string? ReasoningEffort { get; init; }
+}
 
 /// <summary>
 /// Outcome of a transport call. A failure carries an <see cref="LlmFailureCodes"/> code so the caller can

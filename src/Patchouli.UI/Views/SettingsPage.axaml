@@ -617,6 +617,13 @@
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="内置 Agent" Classes="CardTitle" />
+                  <TextBlock Text="推理强度" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <ComboBox Name="AgentReasoningEffortInput" ItemsSource="{Binding AgentReasoningEffortOptions}"
+                            DisplayMemberBinding="{Binding DisplayName}"
+                            SelectedItem="{Binding SelectedAgentReasoningEffort}" MinWidth="220"
+                            HorizontalAlignment="Left" />
+                  <TextBlock Text="用于聊天和工作流的模型请求。默认使用供应商设置；可用强度取决于模型，不支持的值可能导致请求失败。修改自动保存，对后续请求生效。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                   <TextBlock Text="模型请求自动重试次数" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <NumericUpDown Name="AgentMaxRetriesInput" Value="{Binding AgentMaxRetries}" Minimum="0" Maximum="20"
                                  Increment="1" Width="180" HorizontalAlignment="Left" />
