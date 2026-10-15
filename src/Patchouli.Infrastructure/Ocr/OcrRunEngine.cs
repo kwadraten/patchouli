@@ -850,8 +850,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (version.Value.EngineId == OcrEngineIds.MultimodalLlm && region is null && imagePath is null)
         {
             return await RunMultimodalLlmWithMinerULayoutAsync(
-                documentInstanceId, presetId, version.Value, pages, cancellationToken, progress,
-                allowAutoCommit);
+                documentInstanceId, presetId, version.Value, pages, cancellationToken, progress);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
@@ -1017,30 +1016,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 ReportPageProgress(progress, ++processedPages, pages.Count);
             }
 
-            string state = failures == pages.Count
-                ? OcrRunState.Failed
-                : failures > 0
-                    ? OcrRunState.CompletedWithErrors
-                    : OcrRunState.Completed;
-            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
-            {
-                await using SqliteConnection connection = _connectionFactory.CreateConnection();
-                await connection.OpenAsync(cancellationToken);
-                await connection.ExecuteAsync(
-                    """
-                    update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
-                    where ocr_run_id = @RunId;
-                    """,
-                    new
-                    {
-                        State = state,
-                        RevisionId = firstWorking?.ToString(),
-                        Now = FormatUtc(_clock.UtcNow),
-                        RunId = run.OcrRunId.ToString()
-                    });
-            }
-
-            return await CompleteRunAsync(run.OcrRunId, version.Value, cancellationToken);
+            return await FinalizeRunAsync(run, pages, version.Value, failures, firstWorking, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1075,8 +1051,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetVersion version,
         IReadOnlyList<Page> pages,
         CancellationToken cancellationToken,
-        IProgress<OcrTaskStageProgress>? progress,
-        bool allowAutoCommit)
+        IProgress<OcrTaskStageProgress>? progress)
     {
         if (_pageRenderService is null)
         {
@@ -1084,15 +1059,17 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 "Multimodal LLM OCR with MinerU layout requires page rendering.");
         }
 
-        // MinerU layout is the preferred path (issue #2), but if no MinerU client is
-        // configured we fall back to whole-page multimodal recognition rather than failing.
-        bool useLayout = _minerUClientFactory is not null && _credentialResolver is not null;
+        // P1b: MinerU layout requires an actually-configured client (credential present),
+        // not merely an injected factory. The normal host always injects the factory,
+        // so injection alone would force MinerU on users who only configured LLM credentials.
+        bool useLayout = await IsMinerULayoutReadyAsync(version, cancellationToken);
 
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
         int failures = 0;
         int processedPages = 0;
+        DocumentTreeRevisionId? firstWorking = null;
         ReportPageProgress(progress, processedPages, pages.Count);
 
         try
@@ -1121,27 +1098,70 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     continue;
                 }
 
-                // Reuse the standard page-result → candidate → import flow below by faking a
-                // single merged engine result. The per-region boxes are in page coordinates.
-                Result<OcrRun> pageHandled = await CompleteMultimodalPageAsync(
-                    run, page, version, output.Value, allowAutoCommit, cancellationToken);
+                // The per-region boxes are in page coordinates; import them through the
+                // unified channel like the standard flow.
+                Result<DocumentTreeRevisionId> pageHandled = await CompleteMultimodalPageAsync(
+                    run, page, output.Value, cancellationToken);
                 if (pageHandled.IsFailure)
                 {
                     failures++;
                     await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Failed, null,
                         pageHandled.ErrorCode, pageHandled.ErrorMessage);
                 }
+                else
+                {
+                    firstWorking ??= pageHandled.Value;
+                }
 
                 ReportPageProgress(progress, ++processedPages, pages.Count);
             }
+
+            return await FinalizeRunAsync(run, pages, version, failures, firstWorking, cancellationToken);
         }
         catch (OperationCanceledException)
         {
             await CancelRunAsync(run.OcrRunId, CancellationToken.None);
             throw;
         }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, pages, exception);
+        }
+    }
 
-        return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
+    /// <summary>
+    /// P1b: Explicit MinerU layout readiness contract. Returns true only when a MinerU
+    /// credential is actually available and the client reports configured. Injection of
+    /// the factory alone (which the normal host always does) is not sufficient.
+    /// </summary>
+    private async Task<bool> IsMinerULayoutReadyAsync(OcrPresetVersion version, CancellationToken cancellationToken)
+    {
+        if (_minerUClientFactory is null || _credentialResolver is null)
+        {
+            return false;
+        }
+
+        Result<string> secret;
+        try
+        {
+            secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return false;
+        }
+
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return false;
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        return client.IsConfigured;
     }
 
     private async Task<Result<OcrEnginePageResult>> RunMultimodalLlmPageWithLayoutAsync(
@@ -1191,13 +1211,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
             }
         }
 
-        // Reading order: top-to-bottom, then left-to-right.
-        mergedBoxes.Sort((a, b) =>
-        {
-            int y = a.BBox.Y.CompareTo(b.BBox.Y);
-            return y != 0 ? y : a.BBox.X.CompareTo(b.BBox.X);
-        });
-
+        // Preserve MinerU's layout region order and each region's internal line order
+        // (the model returns boxes in reading order per the prompt). A global Y/X sort
+        // would interleave multi-column layouts incorrectly (e.g. L1,L2,R1,R2 -> L1,R1,L2,R2).
         string? text = mergedBoxes.Count == 0 ? null : string.Join('\n', mergedBoxes.Select(box => box.Text));
         return Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(
             page.PageId, true, text, new NormalizedBBox(0, 0, 1, 1), null, null, null, mergedBoxes));
@@ -1314,12 +1330,10 @@ public sealed class OcrRunEngine : IOcrRunEngine
             Math.Clamp(height, 0.0, 1.0 - Math.Clamp(y, 0.0, 1.0)));
     }
 
-    private async Task<Result<OcrRun>> CompleteMultimodalPageAsync(
+    private async Task<Result<DocumentTreeRevisionId>> CompleteMultimodalPageAsync(
         OcrRun run,
         Page page,
-        OcrPresetVersion version,
         OcrEnginePageResult output,
-        bool allowAutoCommit,
         CancellationToken cancellationToken)
     {
         // Mirrors the page-completion tail of RunPagesAsync: build a candidate from the merged
@@ -1373,20 +1387,60 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
         else
         {
-            return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "OCR returned no text.");
+            return Result<DocumentTreeRevisionId>.Failure(AppErrorCodes.InvalidState, "OCR returned no text.");
         }
 
         Result<OcrDocumentTreeImportResult> working = await _treeImporter.BeginWorkingAsync(
             new OcrDocumentTreeImportRequest(run.DocumentInstanceId, candidate), cancellationToken);
         if (working.IsFailure)
         {
-            return Result<OcrRun>.Failure(working.ErrorCode!, working.ErrorMessage!);
+            return Result<DocumentTreeRevisionId>.Failure(working.ErrorCode!, working.ErrorMessage!);
         }
 
         DocumentTreeRevisionId revisionId = working.Value.WorkingRevisionIds.Single();
         await UpdatePageResultAsync(
             run.OcrRunId, page.PageId, OcrPageResultState.Succeeded, revisionId, null, null);
-        return Result<OcrRun>.Success(run);
+        return Result<DocumentTreeRevisionId>.Success(revisionId);
+    }
+
+    /// <summary>
+    /// P1a: Unified run finalization. Writes the terminal state (Completed / CompletedWithErrors /
+    /// Failed) and the output revision, then delegates to <see cref="CompleteRunAsync"/> for the
+    /// auto-commit. Reused by the standard page flow and the multimodal-with-layout flow so neither
+    /// leaves a run stuck in Running.
+    /// </summary>
+    private async Task<Result<OcrRun>> FinalizeRunAsync(
+        OcrRun run,
+        IReadOnlyList<Page> pages,
+        OcrPresetVersion version,
+        int failures,
+        DocumentTreeRevisionId? firstWorking,
+        CancellationToken cancellationToken)
+    {
+        string state = failures == pages.Count
+            ? OcrRunState.Failed
+            : failures > 0
+                ? OcrRunState.CompletedWithErrors
+                : OcrRunState.Completed;
+        using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await connection.ExecuteAsync(
+                """
+                update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
+                where ocr_run_id = @RunId;
+                """,
+                new
+                {
+                    State = state,
+                    RevisionId = firstWorking?.ToString(),
+                    Now = FormatUtc(_clock.UtcNow),
+                    RunId = run.OcrRunId.ToString()
+                });
+        }
+
+        return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
     }
 
     private async Task<Result<OcrRun>> RunMinerUDocumentAsync(
