@@ -21,6 +21,8 @@ set -euo pipefail
 # /tmp is often a tiny tmpfs in containers; keep all temp work on disk.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export TMPDIR="$root/.tmp"
+# A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
+mkdir -p "$TMPDIR"
 
 version="${VERSION:-0.3.10}"
 runtime="${RUNTIME:-linux-x64}"
