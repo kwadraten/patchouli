@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace Patchouli.Cli;
 
 /// <summary>
@@ -12,7 +15,9 @@ internal sealed record CliToolCall(
     string Tool,
     IReadOnlyDictionary<string, object?> Arguments,
     string? PutSourcePath = null,
-    bool PutStdin = false);
+    bool PutStdin = false,
+    string? PutBoxesSourcePath = null,
+    bool PutBoxesStdin = false);
 
 /// <summary>
 /// Pure argument-to-request mapping used by the patchouli-cli executable. Kept free of I/O
@@ -61,6 +66,63 @@ internal static class CliArguments
             ["content"] = content
         };
         return call with { Arguments = arguments, PutSourcePath = null, PutStdin = false };
+    }
+
+    public static CliToolCall WithBoxesJson(CliToolCall call, string json)
+    {
+        PutBoxesInput input;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            ValidateBoxesBatchShape(document.RootElement);
+            input = JsonSerializer.Deserialize<PutBoxesInput>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = false
+            }) ?? throw new CliUsageException("--boxes input must be a JSON object.");
+        }
+        catch (JsonException)
+        {
+            throw new CliUsageException(
+                "--boxes input must be JSON with source_revision, optional translation_version, and boxes.");
+        }
+
+        IReadOnlyList<PutBoxInput?>? boxes = input.Boxes;
+        if (string.IsNullOrWhiteSpace(input.SourceRevision) || boxes is not { Count: > 0 and <= 100 })
+        {
+            throw new CliUsageException(
+                "--boxes input requires source_revision and 1 through 100 boxes with box_id and content.");
+        }
+
+        List<PutBoxInput> validBoxes = [];
+        foreach (PutBoxInput? box in boxes)
+        {
+            if (box is null || string.IsNullOrWhiteSpace(box.BoxId) || box.Content is null)
+            {
+                throw new CliUsageException(
+                    "--boxes input requires source_revision and 1 through 100 boxes with box_id and content.");
+            }
+
+            validBoxes.Add(box);
+        }
+
+        Dictionary<string, object?> arguments = new(call.Arguments, StringComparer.Ordinal)
+        {
+            ["source_revision"] = input.SourceRevision,
+            ["boxes"] = validBoxes.Select(box => (object)new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["box_id"] = box.BoxId!, ["content"] = box.Content!
+            }).ToArray()
+        };
+        if (input.TranslationVersion is { } version)
+        {
+            arguments["translation_version"] = version;
+        }
+
+        return call with
+        {
+            Arguments = arguments, PutSourcePath = null, PutStdin = false,
+            PutBoxesSourcePath = null, PutBoxesStdin = false
+        };
     }
 
     private static CliToolCall BuildFind(IReadOnlyList<string> args, bool json)
@@ -156,6 +218,8 @@ internal static class CliArguments
         string? uri = null;
         string? fromPath = null;
         bool stdin = false;
+        string? boxesPath = null;
+        bool boxesStdin = false;
         for (int index = 0; index < args.Count; index++)
         {
             switch (args[index])
@@ -165,6 +229,12 @@ internal static class CliArguments
                     break;
                 case "--stdin":
                     stdin = true;
+                    break;
+                case "--boxes-from":
+                    boxesPath = TakeValue(args, ref index, "--boxes-from");
+                    break;
+                case "--boxes-stdin":
+                    boxesStdin = true;
                     break;
                 case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
                     throw new CliUsageException($"unknown option '{args[index]}' for put.");
@@ -184,18 +254,20 @@ internal static class CliArguments
             throw new CliUsageException("put requires a URI argument.");
         }
 
-        if (fromPath is not null && stdin)
+        if ((fromPath is not null && stdin) || (boxesPath is not null && boxesStdin))
         {
-            throw new CliUsageException("put requires either --from <path> or --stdin, not both.");
+            throw new CliUsageException(
+                "put accepts one input source for --from/--stdin or --boxes-from/--boxes-stdin.");
         }
 
-        if (fromPath is null && !stdin)
+        if ((fromPath is null && !stdin) == (boxesPath is null && !boxesStdin))
         {
-            throw new CliUsageException("put requires --from <path> or --stdin.");
+            throw new CliUsageException(
+                "put requires exactly one of --from <path>, --stdin, --boxes-from <path>, or --boxes-stdin.");
         }
 
         arguments["uri"] = uri;
-        return new CliToolCall(Put, WithFormat(arguments, json), fromPath, stdin);
+        return new CliToolCall(Put, WithFormat(arguments, json), fromPath, stdin, boxesPath, boxesStdin);
     }
 
     private static CliToolCall BuildCite(IReadOnlyList<string> args, bool json)
@@ -326,6 +398,54 @@ internal static class CliArguments
 
         return parsed;
     }
+
+    private static void ValidateBoxesBatchShape(JsonElement root)
+    {
+        ValidateObjectProperties(root, "boxes batch", "source_revision", "translation_version", "boxes");
+        if (!root.TryGetProperty("boxes", out JsonElement boxes) || boxes.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("boxes must be an array.");
+        }
+
+        foreach (JsonElement box in boxes.EnumerateArray())
+        {
+            ValidateObjectProperties(box, "box", "box_id", "content");
+        }
+    }
+
+    private static void ValidateObjectProperties(JsonElement value, string name, params string[] allowed)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException($"{name} must be an object.");
+        }
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (!seen.Add(property.Name))
+            {
+                throw new JsonException($"Duplicate {name} field '{property.Name}'.");
+            }
+
+            if (!allowed.Contains(property.Name, StringComparer.Ordinal))
+            {
+                throw new JsonException($"Unknown {name} field '{property.Name}'.");
+            }
+        }
+    }
+
+    private sealed record PutBoxesInput(
+        [property: JsonPropertyName("source_revision")]
+        string? SourceRevision,
+        [property: JsonPropertyName("translation_version")]
+        int? TranslationVersion,
+        [property: JsonPropertyName("boxes")] IReadOnlyList<PutBoxInput?>? Boxes);
+
+    private sealed record PutBoxInput(
+        [property: JsonPropertyName("box_id")] string? BoxId,
+        [property: JsonPropertyName("content")]
+        string? Content);
 }
 
 /// <summary>

@@ -41,6 +41,11 @@ SDK symbol identity is checked, so unrelated functions with the same name are no
 All declared parameters appear in source order. `Parameter.get` returns an ordinary typed value;
 its subsequent use is not restricted by declaration syntax. Model values are a provider/model
 pair; credential material remains in the platform credential store.
+The model control also offers “与聊天使用相同的模型”. Its saved reference uses
+`{"providerId":"$chat","model":"$chat"}`. Host launch resolves every such model parameter
+against the current chat selection before creating the session and freezes the concrete pair
+in resolved values and the run snapshot; resume continues with that recorded model.
+Custom OpenAI-compatible providers support both their configured model and manually entered IDs.
 
 The generated form is displayed only inside the workflow editor. Built-in script locking does
 not prevent editing user configuration. Launch uses saved configuration plus declared context

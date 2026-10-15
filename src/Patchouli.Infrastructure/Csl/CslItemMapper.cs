@@ -54,7 +54,7 @@ public sealed class CslItemMapper : ICslItemMapper
                     ["given"] = creator.Given,
                     ["literal"] = creator.Literal,
                     ["suffix"] = creator.Suffix,
-                    ["particles"] = creator.Particles
+                    ["non-dropping-particle"] = creator.Particles
                 }).ToArray(),
                 StringComparer.Ordinal);
         foreach (KeyValuePair<string, object?> creatorGroup in creators)
@@ -64,32 +64,40 @@ public sealed class CslItemMapper : ICslItemMapper
 
         foreach (ItemDate date in item.Dates)
         {
-            variables[date.Role] = CreateDateObject(date);
+            try
+            {
+                variables[date.Role] = CreateDateObject(date);
+            }
+            catch (Exception exception) when (exception is JsonException or FormatException)
+            {
+                return Task.FromResult(Result<CslMappedItem>.Failure(AppErrorCodes.ValidationFailed,
+                    $"Invalid CSL date '{date.Role}': {exception.Message}"));
+            }
         }
 
-        foreach (ItemIdentifier identifier in item.Identifiers)
+        foreach (ItemIdentifier identifier in item.Identifiers
+                     .GroupBy(identifier => BuiltInIdentifierSchemes.Normalize(identifier.Scheme),
+                         StringComparer.Ordinal)
+                     .Select(group => group.First()))
         {
-            if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.DOI, StringComparison.OrdinalIgnoreCase))
+            string scheme = BuiltInIdentifierSchemes.Normalize(identifier.Scheme);
+            if (scheme == BuiltInIdentifierSchemes.DOI)
             {
                 variables["DOI"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISBN,
-                         StringComparison.OrdinalIgnoreCase))
+            else if (scheme == BuiltInIdentifierSchemes.ISBN)
             {
                 variables["ISBN"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISSN,
-                         StringComparison.OrdinalIgnoreCase))
+            else if (scheme == BuiltInIdentifierSchemes.ISSN)
             {
                 variables["ISSN"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.URL,
-                         StringComparison.OrdinalIgnoreCase))
+            else if (scheme == BuiltInIdentifierSchemes.URL)
             {
                 variables["URL"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.CallNumber,
-                         StringComparison.OrdinalIgnoreCase))
+            else if (scheme == BuiltInIdentifierSchemes.CallNumber)
             {
                 variables["call-number"] = identifier.Value;
             }
@@ -108,20 +116,14 @@ public sealed class CslItemMapper : ICslItemMapper
             ["season"] = date.Season
         };
 
-        try
+        if (!string.IsNullOrWhiteSpace(date.DatePartsJson))
         {
-            if (!string.IsNullOrWhiteSpace(date.DatePartsJson))
+            using JsonDocument document = JsonDocument.Parse(date.DatePartsJson);
+            List<List<int>> parts = CslDateParts.Read(document.RootElement);
+            if (parts.Count > 0)
             {
-                List<List<int>>? parts = JsonSerializer.Deserialize<List<List<int>>>(date.DatePartsJson);
-                if (parts is { Count: > 0 })
-                {
-                    dictionary["date-parts"] = parts;
-                }
+                dictionary["date-parts"] = parts;
             }
-        }
-        catch
-        {
-            dictionary["date-parts"] = Array.Empty<object>();
         }
 
         return dictionary;
@@ -169,15 +171,7 @@ public sealed class CslItemMapper : ICslItemMapper
             Dictionary<string, object?> result = new(StringComparer.Ordinal);
             foreach (JsonProperty property in document.RootElement.EnumerateObject())
             {
-                result[property.Name] = property.Value.ValueKind switch
-                {
-                    JsonValueKind.String => property.Value.GetString(),
-                    JsonValueKind.Number when property.Value.TryGetInt64(out long longValue) => longValue,
-                    JsonValueKind.Number => property.Value.GetDouble(),
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => property.Value.GetRawText()
-                };
+                result[property.Name] = ReadJsonValue(property.Value);
             }
 
             return result;
@@ -186,5 +180,21 @@ public sealed class CslItemMapper : ICslItemMapper
         {
             return new Dictionary<string, object?>(StringComparer.Ordinal);
         }
+    }
+
+    private static object? ReadJsonValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Object => value.EnumerateObject().ToDictionary(
+                property => property.Name, property => ReadJsonValue(property.Value), StringComparer.Ordinal),
+            JsonValueKind.Array => value.EnumerateArray().Select(ReadJsonValue).ToArray(),
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number when value.TryGetInt64(out long number) => number,
+            JsonValueKind.Number => value.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
     }
 }

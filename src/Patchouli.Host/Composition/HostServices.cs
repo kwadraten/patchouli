@@ -158,7 +158,7 @@ public sealed class HostServices
             new CachedPageTranslationCompiler(
                 new PageTranslationCompiler(ConnectionFactory, DocumentTrees, Markdown), pageTranslationCache),
             pageTranslationCache,
-            Clock);
+            Clock, LibraryRevisions);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
@@ -230,7 +230,7 @@ public sealed class HostServices
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache, PageTranslations);
-        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations);
+        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees);
         CliPath = new CliPathService();
         // The built-in agent acts through exactly the same MCP command surface as every other MCP
         // client: identical validation, permissions, atomic write set and error vocabulary. Its OCR

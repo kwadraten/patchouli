@@ -196,7 +196,7 @@ public sealed record McpLibraryStateResponse(
     string LibraryId,
     string LibraryRevision);
 
-/// <summary>The fixed Library identity projection exposed at patchouli://library.toon.</summary>
+/// <summary>The fixed Library identity projection exposed at patchouli://library.yml.</summary>
 public sealed record McpLibraryProjection(
     [property: JsonPropertyName("library_id")]
     string LibraryId,
@@ -279,3 +279,17 @@ public static class McpErrorCodes
     public const string Unauthorized = "unauthorized";
     public const string UnsafeConfiguration = "unsafe_configuration";
 }
+
+public sealed record McpPageXmlRequest(
+    DocumentInstanceId DocumentId,
+    PageId PageId,
+    int PageIndex,
+    bool Translation = false,
+    DocumentTreeRevisionId? Revision = null,
+    DocumentBoxId? BoxId = null);
+
+public sealed record McpPageXmlResponse(
+    string Xml,
+    string SourceRevision,
+    int? TranslationVersion = null,
+    McpTranslationStatusProjection? Translation = null);

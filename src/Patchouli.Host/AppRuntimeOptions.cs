@@ -1234,6 +1234,7 @@ public sealed record PatchouliAppSettings(
                     ReadString(element, "TranslationModel", fallback.ChatModel)))
             {
                 AgentMaxRetries = ReadInt(element, "AgentMaxRetries", fallback.AgentMaxRetries),
+                AgentReasoningEffort = ReadString(element, "AgentReasoningEffort", fallback.AgentReasoningEffort),
                 ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
                 LegacyWorkflowValues = legacyValues.Count == 0 ? fallback.LegacyWorkflowValues : legacyValues
             }
@@ -1251,6 +1252,7 @@ public sealed record PatchouliAppSettings(
             normalized.ChatProviderId,
             normalized.ChatModel,
             normalized.AgentMaxRetries,
+            normalized.AgentReasoningEffort,
             normalized.ToolResultMaxCharacters
         }) as JsonObject ?? new JsonObject();
         // Retain pending values until workflow storage has consumed them, even if settings save first.

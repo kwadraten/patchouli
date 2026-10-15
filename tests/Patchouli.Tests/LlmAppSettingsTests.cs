@@ -19,6 +19,9 @@ public sealed class LlmAppSettingsTests
         settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
         settings.ToolResultMaxCharacters.Should().Be(32768);
         settings.AgentMaxRetries.Should().Be(3);
+        settings.AgentReasoningEffort.Should().BeEmpty();
+        (settings with { AgentReasoningEffort = " XHIGH " }).Normalize().AgentReasoningEffort.Should().Be("xhigh");
+        (settings with { AgentReasoningEffort = "unknown" }).Normalize().AgentReasoningEffort.Should().BeEmpty();
         (settings with { AgentMaxRetries = -1 }).Normalize().AgentMaxRetries.Should().Be(0);
         (settings with { AgentMaxRetries = 99 }).Normalize().AgentMaxRetries.Should().Be(20);
     }

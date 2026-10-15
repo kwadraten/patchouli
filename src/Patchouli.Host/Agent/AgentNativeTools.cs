@@ -43,8 +43,36 @@ public static class AgentNativeTools
             HashSet<string> required = parameters["required"]?.AsArray().Select(field => field!.GetValue<string>())
                 .ToHashSet(StringComparer.Ordinal) ?? [];
             JsonObject properties = parameters["properties"]?.AsObject() ?? new JsonObject();
+
+            string FSharpType(JsonNode schema, string fieldName)
+            {
+                string type = schema["type"]!.GetValue<string>() switch
+                {
+                    "string" => "string",
+                    "integer" => "int64",
+                    "boolean" => "bool",
+                    "array" => FSharpType(schema["items"]!, fieldName + "Item") + " list",
+                    "object" => BuildObject(schema, fieldName),
+                    string other => throw new InvalidOperationException("Unsupported tool parameter type: " + other)
+                };
+                return type;
+            }
+
+            string BuildObject(JsonNode schema, string name)
+            {
+                JsonObject objectProperties = schema["properties"]?.AsObject() ?? new JsonObject();
+                HashSet<string> objectRequired = schema["required"]?.AsArray()
+                    .Select(field => field!.GetValue<string>()).ToHashSet(StringComparer.Ordinal) ?? [];
+                string nestedName = type + "_" + char.ToUpperInvariant(name[0]) + name[1..];
+                string nestedFields = string.Join("; ", objectProperties.Select(field =>
+                    "``" + field.Key + "``: " + FSharpType(field.Value!, field.Key) +
+                    (objectRequired.Contains(field.Key) ? "" : " option")));
+                text.AppendLine("type " + nestedName + " = { " + nestedFields + " }");
+                return nestedName;
+            }
+
             string fields = string.Join("; ", properties.Select(field =>
-                "``" + field.Key + "``: " + FSharpType(field.Value!) +
+                "``" + field.Key + "``: " + FSharpType(field.Value!, field.Key) +
                 (required.Contains(field.Key) ? "" : " option")));
             text.AppendLine("type " + type + " = { " + fields + " }");
             cases.Add(caseName + " of " + type);
@@ -67,15 +95,18 @@ public static class AgentNativeTools
     private static string BuildInstructions()
     {
         StringBuilder text = new(InstructionsFor(Definitions));
-        text.AppendLine("Actual FSI SDK (already installed; open Patchouli.Agent.Sdk):");
+        text.AppendLine(
+            "Actual FSI SDK (already installed; open Patchouli.Agent.Sdk). Resource constructors generate canonical .xml page, .yml item, and library.yml links; enum names remain stable for existing scripts.");
         text.AppendLine("type LibraryDomain = Items | Texts | Translations | CslStyles | Runs | Workflows");
         text.AppendLine("type BrowseScope = Root | Domain of LibraryDomain | DocumentTexts of string");
         text.AppendLine(
             "type ReadableResource = Uri of string | SourcePage of string * int | TranslationPage of string * int | ItemBibliography of string | CslStyle of string | LibrarySummary");
         text.AppendLine(
-            "type WritableResource = TranslationPage of string * int | ItemBibliography of string | CslStyle of string");
+            "type WritableResource = TranslationPage of string * int | SourcePageXml of string * int | TranslationPageXml of string * int | ItemBibliography of string | CslStyle of string");
         text.AppendLine(
-            "val Sdk.find: BrowseScope -> Task<SdkResult>\nval Sdk.fetch: ReadableResource list -> Task<SdkResult>\nval Sdk.put: WritableResource -> string -> Task<SdkResult>");
+            "val Sdk.find: BrowseScope -> Task<SdkResult>\nval Sdk.fetch: ReadableResource list -> Task<SdkResult>\nval Sdk.put: WritableResource -> string -> Task<SdkResult>\nval Sdk.putBoxes: string -> string -> int option -> (string * string) list -> Task<SdkResult>");
+        text.AppendLine(
+            "For Sdk.putBoxes and LibraryTools.commitTranslation, each box content is a complete <box> XML element copied from the fetched page. Keep the id and structural attributes unchanged; edit only translated state and payload text.");
         text.AppendLine(
             "SdkResult has Succeeded, Payload, ErrorCode, OperationId. Sdk.requireSuccess returns the lossless domain JSON or raises SdkCallException. For all other declared native arguments use Sdk.call name json. SDK operations use the same permission, validation and receipt path as native calls; each nested operation is recorded even when code catches its exception. Compile errors execute no SDK operations. Temporary FSI bindings are not checkpoints.");
         text.AppendLine(
@@ -85,23 +116,11 @@ public static class AgentNativeTools
         text.AppendLine(AgentSdkBindings.Source([]));
         text.AppendLine("Native function examples (name => arguments):");
         text.AppendLine("""find => {"in":"patchouli://texts/document-id/","limit":10}""");
-        text.AppendLine("""fetch => {"uris":["patchouli://texts/document-id/page-1.md"]}""");
+        text.AppendLine("""fetch => {"uris":["patchouli://texts/document-id/page-1.xml"]}""");
         text.AppendLine(
-            """put => {"uri":"patchouli://translations/document-id/page-1.md","content":"# Translated page\n..."}""");
-        text.AppendLine("""cite => {"refs":["patchouli://items/item-id.bib"]}""");
+            """put => {"uri":"patchouli://translations/document-id/page-1.xml","source_revision":"rev-id","translation_version":1,"boxes":[{"box_id":"box-id","content":"<box id=\"box-id\" type=\"text\" sub_type=\"\" base_type=\"\" heading_level=\"\" code_language=\"\" suppressed=\"false\" readonly=\"false\" translated=\"true\"><payload format=\"markdown\">Translated text</payload></box>"}]}""");
+        text.AppendLine("""cite => {"refs":["patchouli://items/item-id.yml"]}""");
         text.AppendLine("""fsi => {"code":"printfn \"%d\" (1 + 1)"}""");
         return text.ToString();
-    }
-
-    private static string FSharpType(JsonNode schema)
-    {
-        return schema["type"]!.GetValue<string>() switch
-        {
-            "string" => "string",
-            "integer" => "int64",
-            "boolean" => "bool",
-            "array" => FSharpType(schema["items"]!) + " list",
-            string other => throw new InvalidOperationException("Unsupported tool parameter type: " + other)
-        };
     }
 }

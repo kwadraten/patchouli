@@ -106,7 +106,7 @@ public sealed class BiblatexCustomFieldWriteTests : IAsyncLifetime
     {
         ItemMetadata local = await CreateItem();
         Result<McpPutResponse> changed = await _writes.PutAsync(new McpPutRequest(
-            McpResourceUris.ItemUri(local.ItemId),
+            McpResourceUris.ItemUri(local.ItemId).Replace(".yml", ".bib", StringComparison.Ordinal),
             "@unpublished{k,title={T},archive={New archive},license={New license},eventtitle={Conference}}"));
         changed.IsSuccess.Should().BeTrue(changed.ErrorMessage);
         ItemMetadata stored = (await _items.GetItemAsync(local.ItemId)).Value;
@@ -118,7 +118,8 @@ public sealed class BiblatexCustomFieldWriteTests : IAsyncLifetime
         exported.Value.Should().Contain("New archive").And.Contain("New license").And.Contain("Conference");
 
         Result<McpPutResponse> removed = await _writes.PutAsync(new McpPutRequest(
-            McpResourceUris.ItemUri(local.ItemId), "@unpublished{k,title={T}}"));
+            McpResourceUris.ItemUri(local.ItemId).Replace(".yml", ".bib", StringComparison.Ordinal),
+            "@unpublished{k,title={T}}"));
         removed.IsSuccess.Should().BeTrue(removed.ErrorMessage);
         Fields((await _items.GetItemAsync(local.ItemId)).Value).Should().BeEmpty();
         Result<string> afterRemoval = await _import.ExportItemsAsync([local.ItemId]);

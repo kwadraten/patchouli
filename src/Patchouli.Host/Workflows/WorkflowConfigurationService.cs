@@ -227,6 +227,21 @@ public sealed class WorkflowConfigurationService
             issues.AddRange(resolution.Issues.Select(ToIssue));
         }
 
+        Dictionary<string, string> resolvedValues = new(resolution.Values, StringComparer.Ordinal);
+        if (resolution.Succeeded)
+        {
+            (string providerId, string modelName) = _settings().ChatSelection;
+            foreach (ParameterDescriptor field in snapshot.Analysis.Fields.Where(field =>
+                         field.Type == WorkflowParameterValueType.Model))
+            {
+                if (resolvedValues.TryGetValue(field.Key, out string? value) && !string.IsNullOrWhiteSpace(value) &&
+                    ModelSelectionCodec.IsChatDefault(ModelSelectionCodec.Decode(value)))
+                {
+                    resolvedValues[field.Key] = ModelSelectionCodec.Encode(new ModelSelection(providerId, modelName));
+                }
+            }
+        }
+
         ModelSelection? model = null;
         string? modelKey = snapshot.Analysis.SessionModelKey;
         if (string.IsNullOrWhiteSpace(modelKey))
@@ -234,7 +249,7 @@ public sealed class WorkflowConfigurationService
             issues.Add(new WorkflowValidationIssue(null, "model_binding_missing",
                 "该工作流未声明会话模型。请在 fsx 中通过 Workflow.withModel 绑定模型参数。"));
         }
-        else if (resolution.Values.TryGetValue(modelKey, out string? encoded))
+        else if (resolvedValues.TryGetValue(modelKey, out string? encoded))
         {
             try
             {
@@ -250,7 +265,7 @@ public sealed class WorkflowConfigurationService
             }
         }
 
-        return new WorkflowConfigurationResolution(snapshot.Analysis, resolution.Values,
+        return new WorkflowConfigurationResolution(snapshot.Analysis, resolvedValues,
             snapshot.DeclarationFingerprint, model, issues);
     }
 

@@ -110,6 +110,22 @@ public interface IDocumentTreeService
         PageEditSessionId sessionId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Replaces payloads on existing leaf boxes by creating and committing one new page revision.
+    /// The current revision must match <paramref name="expectedRevision"/>; box identity and
+    /// structural metadata are retained from the current revision.
+    /// </summary>
+    Task<Result<DocumentTreeRevision>> ReplaceBoxPayloadsAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<DocumentTreeRevision>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Committed box payload replacement is not supported by this service."));
+    }
+
     Task<Result> DiscardPageEditAsync(
         PageEditSessionId sessionId,
         CancellationToken cancellationToken = default);

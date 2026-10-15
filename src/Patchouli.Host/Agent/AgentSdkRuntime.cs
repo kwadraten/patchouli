@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Agent.Sdk;
+using Patchouli.Core.Mcp;
+using Patchouli.Mcp;
 
 namespace Patchouli.Host.Agent;
 
@@ -336,7 +338,13 @@ public sealed class AgentSdkRuntime(IAgentMcpGateway gateway)
         {
             using JsonDocument a = JsonDocument.Parse(left), b = JsonDocument.Parse(right);
             return a.RootElement.TryGetProperty("uri", out JsonElement x) &&
-                   b.RootElement.TryGetProperty("uri", out JsonElement y) && x.GetString() == y.GetString();
+                   b.RootElement.TryGetProperty("uri", out JsonElement y) &&
+                   NormalizeTarget(x.GetString()) == NormalizeTarget(y.GetString());
+        }
+
+        private static string? NormalizeTarget(string? uri)
+        {
+            return uri is null ? null : McpResourceUris.Normalize(uri);
         }
 
         private static SdkResult Result(AgentSdkReceipt receipt)

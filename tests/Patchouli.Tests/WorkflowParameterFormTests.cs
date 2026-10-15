@@ -59,6 +59,39 @@ public sealed class WorkflowParameterFormTests
         field.HasEffectiveContext.Should().BeTrue();
     }
 
+    [Fact]
+    public void Clearing_a_model_name_keeps_the_selected_custom_provider_and_accepts_a_typed_id()
+    {
+        WorkflowModelOption custom = new("Custom", "custom", "configured-model");
+        WorkflowParameterFieldViewModel field = new(Descriptor("model", WorkflowParameterValueType.Model, true),
+            custom.Value, [custom], _ => { });
+        field.ModelName = "";
+        field.ModelProviderId.Should().Be("custom");
+        field.SelectedProvider!.Value.Should().Be("custom");
+        field.AvailableModels.Should().Contain(custom);
+        field.ModelName = "typed-model";
+        ModelSelectionCodec.Decode(field.Value).Should().Be(new ModelSelection("custom", "typed-model"));
+        field.HasError.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Chat_model_choice_round_trips_without_becoming_an_unavailable_provider()
+    {
+        WorkflowParameterFieldViewModel field = new(Descriptor("model", WorkflowParameterValueType.Model, true),
+            null, [], _ => { });
+        field.UseChatModel = true;
+        field.IsExplicitModel.Should().BeFalse();
+        field.HasError.Should().BeFalse();
+        ModelSelectionCodec.IsChatDefault(ModelSelectionCodec.Decode(field.Value)).Should().BeTrue();
+        WorkflowParameterFieldViewModel reopened = new(field.Descriptor, field.Value, [], _ => { });
+        reopened.UseChatModel.Should().BeTrue();
+        reopened.HasError.Should().BeFalse();
+        reopened.ModelProviders.Should().NotContain(option => option.IsUnavailable);
+        reopened.UseChatModel = false;
+        reopened.IsExplicitModel.Should().BeTrue();
+        reopened.Value.Should().BeEmpty();
+    }
+
     private static ParameterDescriptor Descriptor(string key, WorkflowParameterValueType type,
         bool required = false, decimal? minimum = null, decimal? maximum = null, string contextBinding = "")
     {

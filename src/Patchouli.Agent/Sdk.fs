@@ -24,6 +24,8 @@ type ReadableResource =
 [<RequireQualifiedAccess>]
 type WritableResource =
     | TranslationPage of documentId: string * page: int
+    | SourcePageXml of documentId: string * page: int
+    | TranslationPageXml of documentId: string * page: int
     | ItemBibliography of itemId: string
     | CslStyle of styleId: string
 
@@ -66,7 +68,7 @@ module LibraryUri =
 
     let private page domain document index =
         if index < 1 then invalidArg "page" "A page index must be positive."
-        $"patchouli://{domain}/{part document}/page-{index}.md"
+        $"patchouli://{domain}/{part document}/page-{index}.xml"
 
     let readable = function
         | ReadableResource.Uri uri ->
@@ -74,13 +76,15 @@ module LibraryUri =
             uri
         | ReadableResource.SourcePage(document, index) -> page "texts" document index
         | ReadableResource.TranslationPage(document, index) -> page "translations" document index
-        | ReadableResource.ItemBibliography item -> "patchouli://items/" + part item + ".bib"
+        | ReadableResource.ItemBibliography item -> "patchouli://items/" + part item + ".yml"
         | ReadableResource.CslStyle style -> "patchouli://csl-styles/" + part style + ".csl"
-        | ReadableResource.LibrarySummary -> "patchouli://library.toon"
+        | ReadableResource.LibrarySummary -> "patchouli://library.yml"
 
     let writable = function
+        | WritableResource.SourcePageXml(document, index) -> page "texts" document index
+        | WritableResource.TranslationPageXml(document, index) -> page "translations" document index
         | WritableResource.TranslationPage(document, index) -> page "translations" document index
-        | WritableResource.ItemBibliography item -> "patchouli://items/" + part item + ".bib"
+        | WritableResource.ItemBibliography item -> "patchouli://items/" + part item + ".yml"
         | WritableResource.CslStyle style -> "patchouli://csl-styles/" + part style + ".csl"
 
 [<RequireQualifiedAccess>]
@@ -109,6 +113,26 @@ module Sdk =
     let find scope = call "find" (JsonSerializer.Serialize {| ``in`` = LibraryUri.scope scope |})
     let fetch targets = call "fetch" (JsonSerializer.Serialize {| uris = targets |> List.map LibraryUri.readable |})
     let put target content = call "put" (JsonSerializer.Serialize {| uri = LibraryUri.writable target; content = content |})
+    let putXml target sourceRevision content =
+        call "put" (JsonSerializer.Serialize {| uri = LibraryUri.writable target; source_revision = sourceRevision; content = content |})
+    let putTranslationXml target sourceRevision translationVersion content =
+        call "put" (JsonSerializer.Serialize {| uri = LibraryUri.writable target; source_revision = sourceRevision; translation_version = translationVersion; content = content |})
+    let putBoxes (target: WritableResource) (sourceRevision: string) (translationVersion: int option)
+                 (boxes: (string * string) list) =
+        let replacements = JsonArray()
+        for boxId, content in boxes do
+            let replacement = JsonObject()
+            replacement["box_id"] <- JsonValue.Create boxId
+            replacement["content"] <- JsonValue.Create content
+            replacements.Add replacement
+        let arguments = JsonObject()
+        arguments["uri"] <- JsonValue.Create(LibraryUri.writable target)
+        arguments["source_revision"] <- JsonValue.Create sourceRevision
+        match translationVersion with
+        | Some version -> arguments["translation_version"] <- JsonValue.Create version
+        | None -> ()
+        arguments["boxes"] <- replacements
+        call "put" (arguments.ToJsonString())
 
 /// An exported function retains its typed codecs and implementation. Native is only a projection.
 [<Sealed>]
@@ -186,14 +210,21 @@ module Tool =
 
     let export (tool: Tool<'i, 'o>) = exportWith (ValueCodec.create<'i>()) (ValueCodec.create<'o>()) tool
 
-/// Standard statically bound translation capability. Target is absent from model arguments.
-type TranslationContent = { content: string }
+/// One complete replacement box XML element keyed by its stable source-box id.
+type TranslationBox = { box_id: string; content: string }
+
+/// A partial page translation of complete box XML elements bound to the fetched source revision and translation version.
+type TranslationContent =
+    { source_revision: string
+      translation_version: int
+      boxes: TranslationBox list }
 
 [<RequireQualifiedAccess>]
 module LibraryTools =
     let commitTranslation =
-        Tool.create "commitTranslation" "Commit the current workflow page; provide only its translated Markdown." (fun (target, input: TranslationContent) -> task {
-            let! result = Sdk.put target input.content
+        Tool.create "commitTranslation" "Commit complete replacement box XML elements for selected source boxes on the bound page." (fun (target, input: TranslationContent) -> task {
+            let replacements = input.boxes |> List.map (fun box -> box.box_id, box.content)
+            let! result = Sdk.putBoxes target input.source_revision (Some input.translation_version) replacements
             return Sdk.requireSuccess result })
         |> Tool.withCapabilities [ "put" ]
         |> Tool.withVersion "1"

@@ -2,6 +2,12 @@ namespace Patchouli.Core.Bibliography;
 
 public static class BuiltInIdentifierSchemes
 {
+    public static string Normalize(string scheme)
+    {
+        string normalized = scheme.Trim().ToLowerInvariant();
+        return normalized == "call-number" ? CallNumber : normalized;
+    }
+
     public const string DOI = "doi";
     public const string ISBN = "isbn";
     public const string ISSN = "issn";

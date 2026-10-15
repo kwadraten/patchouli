@@ -1,0 +1,14 @@
+# Categories for merged pull requests in GitHub's generated release notes.
+changelog:
+  categories:
+    - title: 新功能
+      labels:
+        - enhancement
+        - feature
+    - title: 修复
+      labels:
+        - bug
+        - fix
+    - title: 其他更改
+      labels:
+        - "*"

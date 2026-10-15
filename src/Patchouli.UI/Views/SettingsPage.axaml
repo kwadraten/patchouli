@@ -507,9 +507,9 @@
                     Text="仅对 MCP/CLI agent 生效，保存在本设备。隐藏后对应筛选返回 PERMISSION_DENIED；隐藏标签同时隐藏 BibLaTeX keyword，写入时保留现有标签。"
                     FontSize="12" TextWrapping="Wrap"
                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <CheckBox Content="暴露标签（patchouli://library.toon 与题录关系）"
+                  <CheckBox Content="暴露标签（patchouli://library.yml 与题录关系）"
                             IsChecked="{Binding ExposeLibraryTags}" />
-                  <CheckBox Content="暴露集合（patchouli://library.toon 与题录关系）"
+                  <CheckBox Content="暴露集合（patchouli://library.yml 与题录关系）"
                             IsChecked="{Binding ExposeLibraryCollections}" />
                   <Button Content="刷新预览" Command="{Binding RefreshLibraryPreviewCommand}"
                           HorizontalAlignment="Left" />
@@ -617,6 +617,13 @@
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="内置 Agent" Classes="CardTitle" />
+                  <TextBlock Text="推理强度" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <ComboBox Name="AgentReasoningEffortInput" ItemsSource="{Binding AgentReasoningEffortOptions}"
+                            DisplayMemberBinding="{Binding DisplayName}"
+                            SelectedItem="{Binding SelectedAgentReasoningEffort}" MinWidth="220"
+                            HorizontalAlignment="Left" />
+                  <TextBlock Text="用于聊天和工作流的模型请求。默认使用供应商设置；可用强度取决于模型，不支持的值可能导致请求失败。修改自动保存，对后续请求生效。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                   <TextBlock Text="模型请求自动重试次数" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <NumericUpDown Name="AgentMaxRetriesInput" Value="{Binding AgentMaxRetries}" Minimum="0" Maximum="20"
                                  Increment="1" Width="180" HorizontalAlignment="Left" />

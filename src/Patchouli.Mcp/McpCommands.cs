@@ -96,7 +96,7 @@ public sealed record McpTranslationPageEntry(
     int TotalBoxCount);
 
 /// <summary>
-/// Long projection of the fixed <c>patchouli://library.toon</c> singleton. It carries only the
+/// Long projection of the fixed <c>patchouli://library.yml</c> singleton. It carries only the
 /// universal entry fields because library identity, tags, and collections are already the
 /// resource content returned by <c>fetch</c>; it is never an Item projection.
 /// </summary>
@@ -134,7 +134,10 @@ public sealed record McpFetchResult(
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("translation")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    McpTranslationStatusProjection? Translation = null);
+    McpTranslationStatusProjection? Translation = null,
+    [property: JsonPropertyName("content_type")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ContentType = null);
 
 public sealed record McpCiteRequest(
     IReadOnlyList<string> Refs,
@@ -216,7 +219,24 @@ public sealed record McpPutResult(
     int ContentBytes,
     [property: JsonPropertyName("translation_errors")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<McpTranslationStructureError>? TranslationErrors = null);
+    IReadOnlyList<McpTranslationStructureError>? TranslationErrors = null,
+    [property: JsonPropertyName("source_revision")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SourceRevision = null,
+    [property: JsonPropertyName("translation_version")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? TranslationVersion = null,
+    [property: JsonPropertyName("modified_box_ids")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? ModifiedBoxIds = null,
+    [property: JsonPropertyName("box_errors")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpBoxPutError>? BoxErrors = null);
+
+public sealed record McpBoxPutError(
+    [property: JsonPropertyName("box_id")] string BoxId,
+    [property: JsonPropertyName("message")]
+    string Message);
 
 /// <summary>Stable warning names rendered as compact terminal-style message lines.</summary>
 public static class McpWarningCodes

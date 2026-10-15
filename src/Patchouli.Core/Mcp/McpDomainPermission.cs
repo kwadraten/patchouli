@@ -6,7 +6,7 @@ public sealed record McpDomainPermission(string Domain, string Verb, bool Enable
 public static class McpPermissionPolicy
 {
     public static IReadOnlyList<string> Domains { get; } =
-        ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "library.toon"];
+        ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "library.yml"];
 
     public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send"];
 
@@ -17,10 +17,10 @@ public static class McpPermissionPolicy
         {
             "/" => verb == "find",
             "items" => verb is "find" or "fetch" or "put" or "cite",
-            "texts" => verb is "find" or "fetch" or "cite",
+            "texts" => verb is "find" or "fetch" or "cite" or "put",
             "translations" or "csl-styles" => verb is "find" or "fetch" or "put",
             "runs" or "workflows" => verb is "find" or "fetch" or "send",
-            "library.toon" => verb is "find" or "fetch",
+            "library.yml" => verb is "find" or "fetch",
             _ => false
         };
     }
@@ -33,12 +33,13 @@ public static class McpPermissionPolicy
         }
 
         const string prefix = "patchouli://";
-        if (!uri.StartsWith(prefix, StringComparison.Ordinal))
+        if (!McpVfsAddress.TryNormalize(uri, out string normalized))
         {
             return string.Empty;
         }
 
-        return uri[prefix.Length..].Split('/', '?', '#')[0];
+        string domain = normalized[prefix.Length..].Split('/', '?', '#')[0];
+        return domain == "library.toon" ? "library.yml" : domain;
     }
 
     public static bool Allows(McpServerSettings settings, string verb, string? uri)
@@ -49,6 +50,8 @@ public static class McpPermissionPolicy
         }
 
         string domain = DomainOf(uri);
-        return !settings.DomainPermissions.Any(value => value.Domain == domain && value.Verb == verb && !value.Enabled);
+        return !settings.DomainPermissions.Any(value =>
+            (value.Domain == domain || (domain == "library.yml" && value.Domain == "library.toon")) &&
+            value.Verb == verb && !value.Enabled);
     }
 }

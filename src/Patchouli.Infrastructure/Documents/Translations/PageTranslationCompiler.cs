@@ -84,7 +84,8 @@ public sealed class PageTranslationCompiler : IPageTranslationCompiler
                 contentBoxes.Length,
                 staleBoxIds,
                 treeRevisionId,
-                true);
+                true,
+                version);
 
             string? FragmentOverride(DocumentBox box)
             {
@@ -126,6 +127,21 @@ public sealed class PageTranslationCompiler : IPageTranslationCompiler
 /// </summary>
 internal static class TranslationBoxCodec
 {
+    public static DocumentBoxPayload? FromStorage(DocumentBox box, string stored)
+    {
+        return box.Payload switch
+        {
+            TextBoxPayload => new TextBoxPayload(stored),
+            EquationBoxPayload => new EquationBoxPayload(stored),
+            ListBoxPayload => new ListBoxPayload(stored),
+            TableBoxPayload table => new TableBoxPayload(stored, table.Html),
+            CodeBoxPayload => new CodeBoxPayload(stored),
+            MediaBoxPayload media when TryReadMediaDescription(box.BoxType, stored, out string? description) =>
+                new MediaBoxPayload(media.AssetId, description),
+            _ => null
+        };
+    }
+
     public static string? ToStorage(DocumentBox box, string fragment)
     {
         string trimmed = fragment?.Trim() ?? string.Empty;
@@ -207,5 +223,26 @@ internal static class TranslationBoxCodec
         string trimmed = line.TrimStart();
         return trimmed.StartsWith("```", StringComparison.Ordinal) ||
                trimmed.StartsWith("~~~", StringComparison.Ordinal);
+    }
+
+    private static bool TryReadMediaDescription(string boxType, string stored, out string? description)
+    {
+        string label = boxType == DocumentBoxType.Chart ? "Chart" : "Image";
+        string emptyDescription = $"[{label}]";
+        if (string.Equals(stored, emptyDescription, StringComparison.Ordinal))
+        {
+            description = string.Empty;
+            return true;
+        }
+
+        string prefix = $"[{label}: ";
+        if (stored.StartsWith(prefix, StringComparison.Ordinal) && stored.EndsWith(']'))
+        {
+            description = stored[prefix.Length..^1];
+            return true;
+        }
+
+        description = null;
+        return false;
     }
 }

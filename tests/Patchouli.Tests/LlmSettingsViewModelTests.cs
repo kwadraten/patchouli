@@ -88,6 +88,14 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     retries.Value = 0;
                     Dispatcher.UIThread.RunJobs();
                     section.AgentMaxRetries.Should().Be(0);
+                    ComboBox effort = page.GetVisualDescendants().OfType<ComboBox>()
+                        .Single(input => input.Name == "AgentReasoningEffortInput");
+                    effort.SelectedItem =
+                        section.AgentReasoningEffortOptions.Single(option => option.ProviderId == "high");
+                    Dispatcher.UIThread.RunJobs();
+                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
+                    section.SelectedAgentReasoningEffort = null;
+                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
                     payloadLimit.Value.Should().Be(32768);
                     payloadLimit.Value = 16384;
                     Dispatcher.UIThread.RunJobs();
@@ -100,6 +108,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
 
                     store.SavedSecrets["deepseek"].Should().Be("replacement-secret");
                     PatchouliAppSettings.Load(_settings.Path).Llm.AgentMaxRetries.Should().Be(0);
+                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentReasoningEffort.Should().Be("high");
+                    (await main.ServicesAsync()).LlmSettings.AgentReasoningEffort.Should().Be("high");
                     (await main.ServicesAsync()).LlmSettings.AgentMaxRetries.Should().Be(0);
                     PatchouliAppSettings.Load(_settings.Path).Llm.ToolResultMaxCharacters.Should().Be(16384);
                     (await main.ServicesAsync()).LlmSettings.ToolResultMaxCharacters.Should().Be(16384);

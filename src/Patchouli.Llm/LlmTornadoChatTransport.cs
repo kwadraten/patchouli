@@ -121,6 +121,9 @@ public sealed class LlmTornadoChatTransport : ILlmChatTransport
             ],
             Temperature = request.Temperature,
             MaxTokens = request.MaxTokens,
+            ReasoningEffort = string.IsNullOrEmpty(request.ReasoningEffort)
+                ? null
+                : Enum.Parse<ChatReasoningEfforts>(request.ReasoningEffort, true),
             CancellationToken = cancellationToken
         };
         chatRequest.Tools = request.ToolDefinitions.Count == 0
