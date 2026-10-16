@@ -107,7 +107,7 @@ public sealed class CatWalkTests
     [Fact]
     public async Task CatGeometryProvider_loads_all_six_frames_and_shares_bounds()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             CatGeometrySet geometrySet = CatGeometryProvider.Instance;

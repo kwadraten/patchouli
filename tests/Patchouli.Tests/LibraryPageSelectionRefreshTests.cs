@@ -29,7 +29,7 @@ public sealed class LibraryPageSelectionRefreshTests : IDisposable
     [Fact]
     public async Task Refreshing_replaced_items_restores_selection_by_item_id_without_throwing()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-selection-refresh");

@@ -23,7 +23,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
     [Fact]
     public async Task Switching_scope_changes_item_source_between_active_and_trash()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-trash-scope");
@@ -63,7 +63,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
     [Fact]
     public void Trash_scope_hides_active_only_context_menu_items()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         session.Dispatch(() =>
         {
             MainWindowViewModel viewModel = new(settingsPath: _settings.Path);
@@ -90,7 +90,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
     [Fact]
     public async Task Delete_selected_items_command_calls_item_service()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-delete-command");
@@ -126,7 +126,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
     [Fact]
     public async Task Restore_selected_items_command_calls_item_service()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-restore-command");

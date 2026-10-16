@@ -31,7 +31,7 @@ public sealed class PdfWorkspaceTabPersistenceTests : IDisposable
     [Fact]
     public async Task Deactivate_and_reactivate_preserves_both_scroll_offsets_and_reading_scene()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
             using MainWindowViewModel main = CreateMainWindow();
@@ -87,7 +87,7 @@ public sealed class PdfWorkspaceTabPersistenceTests : IDisposable
     [Fact]
     public async Task Pages_delivered_while_inactive_are_reconciled_without_resetting_reading_position()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
             using MainWindowViewModel main = CreateMainWindow();
@@ -137,7 +137,7 @@ public sealed class PdfWorkspaceTabPersistenceTests : IDisposable
     [Fact]
     public async Task Closing_page_detaches_from_workspace_events_and_disposes_view_resources()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
             using MainWindowViewModel main = CreateMainWindow();
@@ -169,7 +169,7 @@ public sealed class PdfWorkspaceTabPersistenceTests : IDisposable
     [Fact]
     public async Task Inactive_reading_view_cancels_pending_image_load_and_releases_its_stale_result()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
             using WriteableBitmap firstImage = new(

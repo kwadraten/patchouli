@@ -123,6 +123,6 @@ public sealed class RuntimeHostCoordinatorTests : IDisposable
 
     public void Dispose()
     {
-        Directory.Delete(_root, true);
+        TestTempFileCleanup.DeleteDirectoryWithRetry(_root);
     }
 }

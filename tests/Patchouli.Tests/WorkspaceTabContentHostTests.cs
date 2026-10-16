@@ -32,8 +32,7 @@ public sealed class WorkspaceTabContentHostTests
     [Fact]
     public async Task Pages_are_created_lazily_and_retained_per_tab_even_for_the_same_view_model_type()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(() =>
+        await _headless.Session.Dispatch(() =>
         {
             using TemplateRegistration templates = RegisterTemplates();
             ProbeViewModel firstModel = new("first");
@@ -78,8 +77,7 @@ public sealed class WorkspaceTabContentHostTests
     [Fact]
     public async Task Switching_and_resizing_preserves_scroll_and_caret_and_skips_inactive_layout()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(() =>
+        await _headless.Session.Dispatch(() =>
         {
             using TemplateRegistration templates = RegisterTemplates();
             ProbeViewModel firstModel = new("first");
@@ -122,8 +120,7 @@ public sealed class WorkspaceTabContentHostTests
     [Fact]
     public async Task Removing_resetting_and_replacing_tabs_closes_pages_and_invalid_active_tabs_are_ignored()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(() =>
+        await _headless.Session.Dispatch(() =>
         {
             using TemplateRegistration templates = RegisterTemplates();
             ProbeViewModel firstModel = new("first");
@@ -179,8 +176,7 @@ public sealed class WorkspaceTabContentHostTests
     [Fact]
     public async Task Closing_window_releases_retained_page_references()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(() =>
+        await _headless.Session.Dispatch(() =>
         {
             using TemplateRegistration templates = RegisterTemplates();
             WorkspaceTabViewModel tab = Tab("window", new ProbeViewModel("window"));

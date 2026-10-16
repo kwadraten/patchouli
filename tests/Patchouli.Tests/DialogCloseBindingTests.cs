@@ -23,7 +23,7 @@ public sealed class DialogCloseBindingTests
     [InlineData("TagNamePrompt")]
     public void Callback_is_detached_when_context_changes_and_when_window_closes(string name)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         session.Dispatch(() =>
         {
             (Window dialog, object original) = CreateDialog(name);
@@ -59,7 +59,7 @@ public sealed class DialogCloseBindingTests
     public async Task Confirmation_returns_explicit_choices_and_cancels_title_bar_close(
         string action, ConfirmDialogResult expected)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             Window owner = new();

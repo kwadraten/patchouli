@@ -27,7 +27,7 @@ public class SearchResultsPageDetailsTests : IDisposable
     [Fact]
     public async Task Expanding_and_collapsing_all_hit_rows_keeps_layout_stable()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
@@ -82,7 +82,7 @@ public class SearchResultsPageDetailsTests : IDisposable
     [Fact]
     public async Task Single_row_expansion_does_not_resurrect_on_recycled_rows()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
@@ -139,7 +139,7 @@ public class SearchResultsPageDetailsTests : IDisposable
     [InlineData(1280, 400)]
     public async Task Consecutive_manual_expansions_keep_layout_stable(int width, int height)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);

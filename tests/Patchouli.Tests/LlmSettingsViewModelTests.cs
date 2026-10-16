@@ -28,7 +28,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     [InlineData("mcp")]
     public async Task Rendering_an_api_provider_preserves_its_saved_model_and_reopened_form(string awaySection)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<bool>(async () =>
         {
             RecordingCredentialStore store = new();
@@ -136,7 +136,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     [Fact]
     public async Task Empty_provider_selectors_do_not_clear_defaults_or_prevent_saving_a_provider()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<bool>(async () =>
         {
             RecordingCredentialStore store = new();

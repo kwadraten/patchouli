@@ -21,9 +21,16 @@ namespace Patchouli.Tests;
 ///     from the append-only event log, the send acknowledgement, stop / resume, and the D9 contract
 ///     that closing the tab removes the front end only.
 /// </summary>
-[Collection("Avalonia")]
+[Collection("RetainedTabUI")]
 public sealed class AgentChatTabViewModelTests : IDisposable
 {
+    private readonly AvaloniaSharedSessionFixture _headless;
+
+    public AgentChatTabViewModelTests(AvaloniaSharedSessionFixture headless)
+    {
+        _headless = headless;
+    }
+
     [Fact]
     public async Task Nested_sdk_operations_merge_by_operation_id_without_overwriting_the_parent_activity()
     {
@@ -115,8 +122,7 @@ public sealed class AgentChatTabViewModelTests : IDisposable
     [Fact]
     public async Task Chat_reply_renders_mermaid_and_clickable_citations_and_updates_streamed_text()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(ChatRenderApp));
-        await session.Dispatch(async () =>
+        await _headless.Session.Dispatch(async () =>
         {
             const string citationUri =
                 "patchouli://texts/00000000-0000-0000-0000-000000000001/page-2.md?box=00000000-0000-0000-0000-000000000002";
@@ -213,8 +219,7 @@ public sealed class AgentChatTabViewModelTests : IDisposable
     [Fact]
     public async Task Chat_page_selects_a_session_and_starts_a_new_one_from_the_composer()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
-        await session.Dispatch(async () =>
+        await _headless.Session.Dispatch(async () =>
         {
             StubSessionService service = new();
             service.Sessions.Add(Snapshot("live", AgentSessionStatus.Running));
@@ -264,8 +269,7 @@ public sealed class AgentChatTabViewModelTests : IDisposable
     [InlineData(640, false)]
     public async Task Chat_page_keeps_the_composer_visible_at_desktop_and_narrow_widths(int width, bool sidebar)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(ChatRenderApp));
-        await session.Dispatch(async () =>
+        await _headless.Session.Dispatch(async () =>
         {
             StubSessionService service = new();
             using AgentChatTabViewModel chat = new(new StubChatHost(),
@@ -315,8 +319,7 @@ public sealed class AgentChatTabViewModelTests : IDisposable
     [InlineData(640)]
     public async Task Detailed_tool_failure_is_expanded_and_composer_remains_available(int width)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(ChatRenderApp));
-        await session.Dispatch(async () =>
+        await _headless.Session.Dispatch(async () =>
         {
             StubSessionService service = new();
             service.Sessions.Add(Snapshot("translation", AgentSessionStatus.Failed));
@@ -368,15 +371,6 @@ public sealed class AgentChatTabViewModelTests : IDisposable
         using RenderTargetBitmap bitmap = new(new PixelSize(width, 760), new Vector(96, 96));
         bitmap.Render(page);
         bitmap.Save(Path.Combine(directory, $"chat-{state}-{width}.png"));
-    }
-
-    public static class ChatRenderApp
-    {
-        public static AppBuilder BuildAvaloniaApp()
-        {
-            return AppBuilder.Configure<UI.App>().UseSkia()
-                .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
-        }
     }
 
     [Fact]

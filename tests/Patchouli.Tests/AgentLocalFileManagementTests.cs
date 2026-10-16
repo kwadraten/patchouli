@@ -17,7 +17,7 @@ public sealed class AgentLocalFileManagementTests
     public async Task The_settings_entry_measures_and_clears_scratch_files_without_deleting_the_conversation()
     {
         using TemporaryAppSettingsFile settings = new();
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             await using MainWindowViewModel main = new(dialogs: new ConfirmingDialogs(), settingsPath: settings.Path);

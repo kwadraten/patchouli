@@ -33,7 +33,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_and_exit_toggle_IsBookReadingMode_with_a_streamed_document()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -70,7 +70,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_loads_only_the_initial_window_around_the_current_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -96,7 +96,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_preloads_the_pages_behind_the_start_page_after_the_pages_ahead()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -122,7 +122,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Forward_requests_load_the_next_batch_and_stop_at_the_end()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -154,7 +154,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Backward_requests_load_the_previous_batch_as_prepends_and_stop_at_the_start()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -186,7 +186,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Requests_are_no_ops_outside_reading_mode()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -206,7 +206,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Replay_reannounces_the_start_and_every_delivered_page_in_order()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -231,7 +231,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Exit_clears_the_session_cache_so_reentering_reloads()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -297,7 +297,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task BookReadingFontFamilies_leads_with_the_system_default_label()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         IReadOnlyList<string> families = await session.Dispatch(() =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -329,7 +329,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task ExitBookReadingToPage_leaves_reading_mode()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -352,7 +352,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Concurrent_forward_requests_serialize_sequentially_without_overlap()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -380,7 +380,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Clear_cancels_in_flight_book_reading()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -409,7 +409,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Scroll_requests_during_initial_window_load_are_dropped_preserving_initial_order()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -455,7 +455,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Scroll_requests_after_initial_window_load_deliver_expected_batches()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -492,7 +492,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task PdfWorkspacePage_initial_load_from_non_zero_page_preserves_scroll_offset()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -525,7 +525,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Initial_window_completion_raises_anchor_before_prefetch_guard_lifts()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -554,7 +554,7 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Replay_after_view_recreation_anchors_to_start_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(settingsPath: _settings.Path);
