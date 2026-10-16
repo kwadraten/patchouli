@@ -456,7 +456,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     [ObservableProperty] public partial string MergeText { get; set; } = string.Empty;
 
-    public string OcrPresetStatusText => "局部与页面 OCR 使用当前库的 MinerU preset。";
+    public string OcrPresetStatusText => "页面与区域 OCR 使用各自配置的引擎；多模态 OCR 按设置使用本地版面模型或直接识别。";
 
     [ObservableProperty] public partial string SplitFirstText { get; set; } = string.Empty;
 

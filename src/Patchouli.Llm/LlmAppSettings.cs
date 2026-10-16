@@ -63,6 +63,13 @@ public sealed record LlmAppSettings(
     int TranslationWindowRadius,
     bool BackfillPreviousWindowTranslation)
 {
+    /// <summary>Local layout detection is the default; weights are always supplied by the user.</summary>
+    public bool OcrUseLocalLayout { get; init; } = true;
+
+    public string OcrLayoutModel { get; init; } = OcrLayoutModelIds.PpDocLayoutV3;
+    public string OcrReasoningEffort { get; init; } = "none";
+    public int OcrConcurrency { get; init; } = OcrPerformanceSettings.DefaultConcurrency;
+
     /// <summary>Largest accepted sliding-window radius (D5 keeps the default at 1).</summary>
     public const int MaxTranslationWindowRadius = 5;
 
@@ -194,6 +201,9 @@ public sealed record LlmAppSettings(
             Providers = normalized,
             OcrProviderId = ocrProviderId,
             OcrModel = ocrModel,
+            OcrLayoutModel = OcrLayoutModelIds.Normalize(OcrLayoutModel),
+            OcrReasoningEffort = OcrPerformanceSettings.NormalizeReasoning(OcrReasoningEffort),
+            OcrConcurrency = Math.Clamp(OcrConcurrency, 1, OcrPerformanceSettings.MaxConcurrency),
             TranslationProviderId = translationProviderId,
             TranslationModel = translationModel,
             TargetLanguage = EffectiveTargetLanguage,

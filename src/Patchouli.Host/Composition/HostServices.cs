@@ -66,6 +66,7 @@ public sealed class HostServices
                 $"Patchouli unexpected error at {boundary}/{operation}: {exception}");
 
     private readonly OcrRunEngine _ocrEngine;
+    private readonly OnnxDocumentLayoutDetector _documentLayoutDetector = new();
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private LlmAppSettings _llmSettings;
@@ -74,6 +75,7 @@ public sealed class HostServices
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
+    private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
@@ -89,6 +91,7 @@ public sealed class HostServices
         _llmSettings = settings.Llm;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
+        LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
@@ -171,8 +174,9 @@ public sealed class HostServices
         }
 
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
-        adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter(
-            new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)));
+        adapterRegistry.RegisterAdapter(new LayoutAwareMultimodalOcrAdapter(
+            new MultimodalLlmOcrAdapter(new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)),
+            _documentLayoutDetector, () => LlmSettings, OcrStorage.GetLayoutModelPath));
         adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
@@ -365,6 +369,7 @@ public sealed class HostServices
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
+    public LayoutModelDownloadService LayoutModelDownload { get; }
     public INdlKotenModelDownloadService NdlKotenModelDownload { get; }
     public INdlLiteModelDownloadService NdlLiteModelDownload { get; }
     public IRapidOcrModelDownloadService RapidOcrModelDownload { get; }
@@ -638,6 +643,8 @@ public sealed class HostServices
         _lifetimeCancellation.Cancel();
         LibraryRevisionMonitor.Stop();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        _documentLayoutDetector.Dispose();
+        _layoutModelHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 

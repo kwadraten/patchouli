@@ -8,9 +8,11 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
+using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.NdlKoten;
 using Patchouli.Infrastructure.Ocr.NdlLite;
 using Patchouli.Infrastructure.Ocr.RapidOcr;
+using Patchouli.Llm;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 
@@ -50,6 +52,13 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
             Locations.Clear();
             HostServices services = await _main.ServicesAsync();
             OcrStorageLocations storage = services.OcrStorage;
+
+            Locations.Add(new ManagedLocationViewModel(this,
+                "DocLayout-YOLO 版面模型", storage.DocLayoutYoloModelsDirectory, true, true,
+                ModelDownloadKind.DocLayoutYolo));
+            Locations.Add(new ManagedLocationViewModel(this,
+                "PP-DocLayoutV3 版面模型", storage.PpDocLayoutV3ModelsDirectory, true, true,
+                ModelDownloadKind.PpDocLayoutV3));
 
             Locations.Add(new ManagedLocationViewModel(
                 this,
@@ -148,6 +157,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
         (string title, long totalBytes) = location.DownloadKind switch
         {
+            ModelDownloadKind.DocLayoutYolo => ("下载 DocLayout-YOLO 版面模型",
+                LayoutModelDownloadService.Yolo.ExpectedBytes),
+            ModelDownloadKind.PpDocLayoutV3 => ("下载 PP-DocLayoutV3 版面模型",
+                LayoutModelDownloadService.Paddle.ExpectedBytes),
             ModelDownloadKind.NdlKoten => ("下载 NDL Koten 模型",
                 NdlKotenModelFiles.Files.Sum(static file => file.ExpectedBytes)),
             ModelDownloadKind.NdlLite => ("下载 NDLOCR-Lite 模型",
@@ -182,6 +195,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
             Progress<double> progress = new(value => DownloadProgress = value);
             Result result = location.DownloadKind switch
             {
+                ModelDownloadKind.DocLayoutYolo => await services.LayoutModelDownload.DownloadAsync(
+                    OcrLayoutModelIds.DocLayoutYolo, progress),
+                ModelDownloadKind.PpDocLayoutV3 => await services.LayoutModelDownload.DownloadAsync(
+                    OcrLayoutModelIds.PpDocLayoutV3, progress),
                 ModelDownloadKind.NdlKoten => await services.NdlKotenModelDownload.DownloadAllAsync(progress),
                 ModelDownloadKind.NdlLite => await services.NdlLiteModelDownload.DownloadAllAsync(progress),
                 ModelDownloadKind.RapidOcr => await services.RapidOcrModelDownload.DownloadAllAsync(progress),
@@ -328,6 +345,8 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 public enum ModelDownloadKind
 {
     None,
+    DocLayoutYolo,
+    PpDocLayoutV3,
     NdlKoten,
     NdlLite,
     RapidOcr

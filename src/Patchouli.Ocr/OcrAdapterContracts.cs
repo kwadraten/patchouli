@@ -95,6 +95,13 @@ public interface IRealOcrAdapter
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Region recognition can have fewer prerequisites than automatic page layout.</summary>
+public interface IRegionOcrPresetValidator
+{
+    Task<Result> ValidateRegionPresetAsync(OcrPresetVersion presetVersion,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IOcrModelPathValidator
 {
     Task<OcrEnvironmentCheckResult> ValidateModelPathAsync(string? modelPath, bool required,

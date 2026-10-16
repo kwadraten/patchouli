@@ -23,6 +23,41 @@ public sealed class LlmSettingsViewModelTests : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
+    [Fact]
+    public async Task Multimodal_layout_selection_and_mode_are_saved_and_discarded()
+    {
+        (MainWindowViewModel main, LlmSettingsViewModel section) = CreateSection(new RecordingCredentialStore());
+        await using (main)
+        {
+            section.OcrUseLocalLayout.Should().BeTrue();
+            section.SelectedOcrLayoutModel!.ModelId.Should().Be(OcrLayoutModelIds.PpDocLayoutV3);
+            section.SelectedOcrLayoutModel = section.OcrLayoutModelOptions.Single(option =>
+                option.ModelId == OcrLayoutModelIds.DocLayoutYolo);
+            section.SelectedOcrLayoutModel = null;
+            section.SelectedOcrLayoutModel!.ModelId.Should().Be(OcrLayoutModelIds.DocLayoutYolo);
+            section.OcrUseLocalLayout = false;
+            section.OcrConcurrency = 6;
+            section.SelectedOcrReasoning = section.OcrReasoningOptions.Single(option => option.ModelId == "low");
+            section.SelectedOcrReasoning = null;
+            await section.SaveAsync();
+
+            LlmAppSettings saved = PatchouliAppSettings.Load(_settings.Path).Llm;
+            saved.OcrUseLocalLayout.Should().BeFalse();
+            saved.OcrLayoutModel.Should().Be(OcrLayoutModelIds.DocLayoutYolo);
+            saved.OcrConcurrency.Should().Be(6);
+            saved.OcrReasoningEffort.Should().Be("low");
+            section.OcrUseLocalLayout = true;
+            section.OcrConcurrency = 1;
+            section.SelectedOcrReasoning = section.OcrReasoningOptions.First();
+            section.SelectedOcrLayoutModel = section.OcrLayoutModelOptions.First();
+            await section.DiscardAsync();
+            section.OcrUseLocalLayout.Should().BeFalse();
+            section.OcrConcurrency.Should().Be(6);
+            section.SelectedOcrReasoning!.ModelId.Should().Be("low");
+            section.IsDirty.Should().BeFalse();
+        }
+    }
+
     [Theory]
     [InlineData("sync")]
     [InlineData("mcp")]

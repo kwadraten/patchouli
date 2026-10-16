@@ -1185,15 +1185,20 @@ public sealed record PatchouliAppSettings(
         }
 
         return new LlmAppSettings(
-                providers,
-                ReadString(element, "OcrProviderId", fallback.OcrProviderId),
-                ReadString(element, "OcrModel", fallback.OcrModel),
-                ReadString(element, "TranslationProviderId", fallback.TranslationProviderId),
-                ReadString(element, "TranslationModel", fallback.TranslationModel),
-                ReadString(element, "TargetLanguage", fallback.TargetLanguage),
-                ReadInt(element, "TranslationWindowRadius", fallback.TranslationWindowRadius),
-                ReadBool(element, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation))
-            .Normalize();
+            providers,
+            ReadString(element, "OcrProviderId", fallback.OcrProviderId),
+            ReadString(element, "OcrModel", fallback.OcrModel),
+            ReadString(element, "TranslationProviderId", fallback.TranslationProviderId),
+            ReadString(element, "TranslationModel", fallback.TranslationModel),
+            ReadString(element, "TargetLanguage", fallback.TargetLanguage),
+            ReadInt(element, "TranslationWindowRadius", fallback.TranslationWindowRadius),
+            ReadBool(element, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation))
+        {
+            OcrUseLocalLayout = ReadBool(element, "OcrUseLocalLayout", fallback.OcrUseLocalLayout),
+            OcrLayoutModel = ReadString(element, "OcrLayoutModel", fallback.OcrLayoutModel),
+            OcrReasoningEffort = ReadString(element, "OcrReasoningEffort", fallback.OcrReasoningEffort),
+            OcrConcurrency = ReadInt(element, "OcrConcurrency", fallback.OcrConcurrency)
+        }.Normalize();
     }
 
     private static JsonObject SerializeLlm(LlmAppSettings llm)
@@ -1204,6 +1209,10 @@ public sealed record PatchouliAppSettings(
             normalized.Providers,
             normalized.OcrProviderId,
             normalized.OcrModel,
+            normalized.OcrUseLocalLayout,
+            normalized.OcrLayoutModel,
+            normalized.OcrReasoningEffort,
+            normalized.OcrConcurrency,
             normalized.TranslationProviderId,
             normalized.TranslationModel,
             normalized.TargetLanguage,

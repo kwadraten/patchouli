@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Text.Json;
 using Dapper;
@@ -361,7 +361,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
             return Result<OcrRegionCandidate>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
-        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken, true);
         if (adapterValidation.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
@@ -833,7 +833,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
             version = Result<OcrPresetVersion>.Success(version.Value with { ApplyOnSuccess = false });
         }
 
-        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken, region is not null);
         if (adapterValidation.IsFailure)
         {
             return Result<OcrRun>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
@@ -843,14 +843,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
         {
             return await RunMinerUDocumentAsync(
                 documentInstanceId, presetId, version.Value, pages, region, imagePath, cancellationToken, progress);
-        }
-
-        // Issue #2: document/page-level multimodal LLM OCR runs MinerU layout detection first,
-        // then recognizes each cropped region with the multimodal model.
-        if (version.Value.EngineId == OcrEngineIds.MultimodalLlm && region is null && imagePath is null)
-        {
-            return await RunMultimodalLlmWithMinerULayoutAsync(
-                documentInstanceId, presetId, version.Value, pages, cancellationToken, progress);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
@@ -1040,374 +1032,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
     }
 
     /// <summary>
-    /// Issue #2: document/page-level multimodal LLM OCR. MinerU performs layout detection on the
-    /// rendered page image; each detected region is cropped and recognized separately by the
-    /// multimodal model (via <see cref="RunEngineAsync"/>, which crops region inputs). The
-    /// per-region boxes are already in page coordinates, so they merge directly into one page result.
-    /// </summary>
-    private async Task<Result<OcrRun>> RunMultimodalLlmWithMinerULayoutAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        OcrPresetVersion version,
-        IReadOnlyList<Page> pages,
-        CancellationToken cancellationToken,
-        IProgress<OcrTaskStageProgress>? progress)
-    {
-        if (_pageRenderService is null)
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
-                "Multimodal LLM OCR with MinerU layout requires page rendering.");
-        }
-
-        // P1b: MinerU layout requires an actually-configured client (credential present),
-        // not merely an injected factory. The normal host always injects the factory,
-        // so injection alone would force MinerU on users who only configured LLM credentials.
-        bool useLayout = await IsMinerULayoutReadyAsync(version, cancellationToken);
-
-        OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
-        await InsertRunAsync(run, cancellationToken);
-        await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
-        int failures = 0;
-        int processedPages = 0;
-        DocumentTreeRevisionId? firstWorking = null;
-        ReportPageProgress(progress, processedPages, pages.Count);
-
-        try
-        {
-            foreach (Page page in pages)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
-
-                Result<OcrEnginePageResult> output = useLayout
-                    ? await RunMultimodalLlmPageWithLayoutAsync(page, version, cancellationToken)
-                    : await RunEngineAsync(page, version, null, null, cancellationToken);
-                if (output.IsFailure || !output.Value.Succeeded)
-                {
-                    failures++;
-                    await UpdatePageResultAsync(
-                        run.OcrRunId,
-                        page.PageId,
-                        OcrPageResultState.Failed,
-                        null,
-                        output.ErrorCode ?? (output.IsSuccess ? output.Value.ErrorCode : null) ??
-                        AppErrorCodes.InvalidState,
-                        output.ErrorMessage ?? (output.IsSuccess ? output.Value.ErrorMessage : null) ??
-                        "OCR returned no text.");
-                    ReportPageProgress(progress, ++processedPages, pages.Count);
-                    continue;
-                }
-
-                // The per-region boxes are in page coordinates; import them through the
-                // unified channel like the standard flow.
-                Result<DocumentTreeRevisionId> pageHandled = await CompleteMultimodalPageAsync(
-                    run, page, output.Value, cancellationToken);
-                if (pageHandled.IsFailure)
-                {
-                    failures++;
-                    await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Failed, null,
-                        pageHandled.ErrorCode, pageHandled.ErrorMessage);
-                }
-                else
-                {
-                    firstWorking ??= pageHandled.Value;
-                }
-
-                ReportPageProgress(progress, ++processedPages, pages.Count);
-            }
-
-            return await FinalizeRunAsync(run, pages, version, failures, firstWorking, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
-            throw;
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
-        {
-            return await FailRunAfterExceptionAsync(run, pages, exception);
-        }
-    }
-
-    /// <summary>
-    /// P1b: Explicit MinerU layout readiness contract. Returns true only when a MinerU
-    /// credential is actually available and the client reports configured. Injection of
-    /// the factory alone (which the normal host always does) is not sufficient.
-    /// </summary>
-    private async Task<bool> IsMinerULayoutReadyAsync(OcrPresetVersion version, CancellationToken cancellationToken)
-    {
-        if (_minerUClientFactory is null || _credentialResolver is null)
-        {
-            return false;
-        }
-
-        Result<string> secret;
-        try
-        {
-            secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
-        {
-            return false;
-        }
-
-        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
-        {
-            return false;
-        }
-
-        IMinerUClient client = CreateMinerUClient(version, secret.Value);
-        return client.IsConfigured;
-    }
-
-    private async Task<Result<OcrEnginePageResult>> RunMultimodalLlmPageWithLayoutAsync(
-        Page page,
-        OcrPresetVersion version,
-        CancellationToken cancellationToken)
-    {
-        Result<OcrInputDescriptor> rendered = await _pageRenderService!.BuildOcrInputFromRenderedPageAsync(
-            page.DocumentInstanceId, page.PageId, cancellationToken: cancellationToken);
-        if (rendered.IsFailure || string.IsNullOrWhiteSpace(rendered.Value.ImagePath))
-        {
-            return Result<OcrEnginePageResult>.Failure(
-                rendered.ErrorCode ?? AppErrorCodes.InvalidState,
-                rendered.ErrorMessage ?? "Rendered page image is unavailable.");
-        }
-
-        Result<IReadOnlyList<NormalizedBBox>> layout = await GetMinerULayoutRegionsAsync(
-            rendered.Value.ImagePath, version, cancellationToken);
-        if (layout.IsFailure)
-        {
-            return Result<OcrEnginePageResult>.Failure(layout.ErrorCode!, layout.ErrorMessage!);
-        }
-
-        // No layout blocks: fall back to whole-page recognition so the page is not silently skipped.
-        IReadOnlyList<NormalizedBBox> regions = layout.Value.Count > 0
-            ? layout.Value
-            : [new NormalizedBBox(0, 0, 1, 1)];
-
-        List<OcrEngineTextBox> mergedBoxes = [];
-        foreach (NormalizedBBox region in regions)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Result<OcrEnginePageResult> regionResult = await RunEngineAsync(
-                page, version, region, null, cancellationToken);
-            if (regionResult.IsFailure || !regionResult.Value.Succeeded)
-            {
-                return Result<OcrEnginePageResult>.Failure(
-                    regionResult.ErrorCode ?? (regionResult.IsSuccess ? regionResult.Value.ErrorCode : null) ??
-                    AppErrorCodes.InvalidState,
-                    regionResult.ErrorMessage ?? (regionResult.IsSuccess ? regionResult.Value.ErrorMessage : null) ??
-                    "Region OCR failed.");
-            }
-
-            if (regionResult.Value.TextBoxes is { Count: > 0 } boxes)
-            {
-                mergedBoxes.AddRange(boxes);
-            }
-        }
-
-        // Preserve MinerU's layout region order and each region's internal line order
-        // (the model returns boxes in reading order per the prompt). A global Y/X sort
-        // would interleave multi-column layouts incorrectly (e.g. L1,L2,R1,R2 -> L1,R1,L2,R2).
-        string? text = mergedBoxes.Count == 0 ? null : string.Join('\n', mergedBoxes.Select(box => box.Text));
-        return Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(
-            page.PageId, true, text, new NormalizedBBox(0, 0, 1, 1), null, null, null, mergedBoxes));
-    }
-
-    /// <summary>
-    /// Uploads a rendered page image to MinerU and returns the layout blocks as normalized bboxes.
-    /// Only the block geometry is used; MinerU's own text output is discarded because the
-    /// multimodal model performs the actual recognition per region (issue #2).
-    /// </summary>
-    private async Task<Result<IReadOnlyList<NormalizedBBox>>> GetMinerULayoutRegionsAsync(
-        string imagePath,
-        OcrPresetVersion version,
-        CancellationToken cancellationToken)
-    {
-        Result<string> secret = await _credentialResolver!(ProviderIds.MinerU, cancellationToken);
-        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
-        {
-            return Result<IReadOnlyList<NormalizedBBox>>.Failure(
-                secret.ErrorCode ?? AppErrorCodes.InvalidState,
-                secret.ErrorMessage ?? "MinerU credential is unavailable for layout detection.");
-        }
-
-        IMinerUClient client = CreateMinerUClient(version, secret.Value);
-        if (!client.IsConfigured)
-        {
-            return Result<IReadOnlyList<NormalizedBBox>>.Failure(
-                AppErrorCodes.InvalidState, "MinerU client is not configured for layout detection.");
-        }
-
-        string downloadDirectory = Path.Combine(_minerUCacheRoot, $"layout-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(downloadDirectory);
-        Result<MinerUPreparedResult> prepared;
-        try
-        {
-            prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits).PrepareAndUploadAsync(
-                new OcrUploadSource.PageImage(imagePath, new OcrImageContext(0, 0, 0, null)),
-                downloadDirectory, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
-        {
-            return Result<IReadOnlyList<NormalizedBBox>>.Failure(
-                AppErrorCodes.InvalidState, $"MinerU layout detection failed: {exception.Message}");
-        }
-
-        if (prepared.IsFailure)
-        {
-            return Result<IReadOnlyList<NormalizedBBox>>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!);
-        }
-
-        try
-        {
-            using MinerUZipReader reader = MinerUZipReader.Open(prepared.Value.ZipPath);
-            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
-                                     ?? reader.ReadFileContent("_content_list.json");
-            if (string.IsNullOrWhiteSpace(contentListJson))
-            {
-                return Result<IReadOnlyList<NormalizedBBox>>.Failure(
-                    AppErrorCodes.InvalidState, "MinerU layout result contained no content list.");
-            }
-
-            MinerUContentListDocument? document = new MinerUContentListParser().Parse(contentListJson);
-            if (document?.Pages.Count is not > 0)
-            {
-                return Result<IReadOnlyList<NormalizedBBox>>.Success([]);
-            }
-
-            // A single uploaded image yields a single page; extra pages are ignored.
-            MinerUContentListPage contentPage = document.Pages[0];
-            List<NormalizedBBox> regions = [];
-            foreach (MinerUContentBlock block in contentPage.Blocks)
-            {
-                NormalizedBBox? bbox = ToNormalizedBBox(block.Bbox, contentPage.Width, contentPage.Height);
-                if (bbox is not null && bbox.Value.Validate().IsSuccess)
-                {
-                    regions.Add(bbox.Value);
-                }
-            }
-
-            return Result<IReadOnlyList<NormalizedBBox>>.Success(regions);
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
-        {
-            return Result<IReadOnlyList<NormalizedBBox>>.Failure(
-                AppErrorCodes.InvalidState, $"MinerU layout result could not be parsed: {exception.Message}");
-        }
-    }
-
-    private static NormalizedBBox? ToNormalizedBBox(double[]? bbox, double pageWidth, double pageHeight)
-    {
-        if (bbox is not { Length: 4 } || pageWidth <= 0 || pageHeight <= 0)
-        {
-            return null;
-        }
-
-        // MinerU bboxes are [x0, y0, x1, y1] in page pixels.
-        double x = bbox[0] / pageWidth;
-        double y = bbox[1] / pageHeight;
-        double width = (bbox[2] - bbox[0]) / pageWidth;
-        double height = (bbox[3] - bbox[1]) / pageHeight;
-        if (width <= 0 || height <= 0)
-        {
-            return null;
-        }
-
-        return new NormalizedBBox(
-            Math.Clamp(x, 0.0, 1.0),
-            Math.Clamp(y, 0.0, 1.0),
-            Math.Clamp(width, 0.0, 1.0 - Math.Clamp(x, 0.0, 1.0)),
-            Math.Clamp(height, 0.0, 1.0 - Math.Clamp(y, 0.0, 1.0)));
-    }
-
-    private async Task<Result<DocumentTreeRevisionId>> CompleteMultimodalPageAsync(
-        OcrRun run,
-        Page page,
-        OcrEnginePageResult output,
-        CancellationToken cancellationToken)
-    {
-        // Mirrors the page-completion tail of RunPagesAsync: build a candidate from the merged
-        // boxes and import it through the unified channel.
-        OcrDocumentTreeCandidate candidate;
-        if (string.IsNullOrWhiteSpace(output.Text) && output.TextBoxes is not { Count: > 0 })
-        {
-            candidate = new OcrDocumentTreeCandidate(
-                [
-                    new OcrPageCandidate(page.PageId, page.PageIndex,
-                    [
-                        new OcrBoxCandidate(
-                            DocumentBoxType.LogicalPage,
-                            null,
-                            null,
-                            0,
-                            new TextBoxPayload("Blank page (OCR returned no content)."),
-                            new NormalizedBBox(0, 0, 1, 1),
-                            null,
-                            null,
-                            false)
-                    ])
-                ],
-                [
-                    new OcrDiagnostic(
-                        "blank_page_placeholder",
-                        "OCR engine returned no content for this physical page; a logical-page placeholder was created.",
-                        page.PageId)
-                ]);
-        }
-        else if (output.TextBoxes is { Count: > 0 } textBoxes)
-        {
-            List<OcrBoxCandidate> boxCandidates = new();
-            for (int i = 0; i < textBoxes.Count; i++)
-            {
-                OcrEngineTextBox box = textBoxes[i];
-                boxCandidates.Add(new OcrBoxCandidate(
-                    DocumentBoxType.Text,
-                    null,
-                    null,
-                    i,
-                    new TextBoxPayload(box.Text.Trim()),
-                    box.BBox,
-                    null,
-                    box.Confidence,
-                    false));
-            }
-
-            candidate = new OcrDocumentTreeCandidate(
-                [new OcrPageCandidate(page.PageId, page.PageIndex, boxCandidates)], []);
-        }
-        else
-        {
-            return Result<DocumentTreeRevisionId>.Failure(AppErrorCodes.InvalidState, "OCR returned no text.");
-        }
-
-        Result<OcrDocumentTreeImportResult> working = await _treeImporter.BeginWorkingAsync(
-            new OcrDocumentTreeImportRequest(run.DocumentInstanceId, candidate), cancellationToken);
-        if (working.IsFailure)
-        {
-            return Result<DocumentTreeRevisionId>.Failure(working.ErrorCode!, working.ErrorMessage!);
-        }
-
-        DocumentTreeRevisionId revisionId = working.Value.WorkingRevisionIds.Single();
-        await UpdatePageResultAsync(
-            run.OcrRunId, page.PageId, OcrPageResultState.Succeeded, revisionId, null, null);
-        return Result<DocumentTreeRevisionId>.Success(revisionId);
-    }
-
-    /// <summary>
     /// P1a: Unified run finalization. Writes the terminal state (Completed / CompletedWithErrors /
     /// Failed) and the output revision, then delegates to <see cref="CompleteRunAsync"/> for the
-    /// auto-commit. Reused by the standard page flow and the multimodal-with-layout flow so neither
-    /// leaves a run stuck in Running.
+    /// auto-commit. Every page adapter uses this finalization path.
     /// </summary>
     private async Task<Result<OcrRun>> FinalizeRunAsync(
         OcrRun run,
@@ -1888,12 +1515,18 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 page.PageId, regionBBox, DocumentBoxType.Text, new TextBoxPayload(text.Value.Trim())));
     }
 
-    private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken)
+    private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken,
+        bool isRegion = false)
     {
         IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
         if (adapter is null)
         {
             return Result.Success();
+        }
+
+        if (isRegion && adapter is IRegionOcrPresetValidator regionValidator)
+        {
+            return await regionValidator.ValidateRegionPresetAsync(version, cancellationToken);
         }
 
         Result preset = await adapter.ValidatePresetAsync(version, cancellationToken);
