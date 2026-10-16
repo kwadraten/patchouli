@@ -9,7 +9,6 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
-using Patchouli.Core.Credentials;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Documents;
@@ -1216,10 +1215,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         _main.OcrQueue.ObserveQueue(queue.Value);
-        string adapterKind = version.Value.EngineId == OcrEngineIds.MinerU
-            ? OcrAdapterKind.CloudApi
-            : OcrAdapterKind.LocalLibrary;
-        string? providerId = version.Value.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        (string adapterKind, string? providerId) = services.OcrDefaults.QueueRoutingFor(version.Value.EngineId);
         Result<OcrQueueTask> queued = await services.Ocr.QueueDocumentOcrAsync(
             documentId, presetId.Value, pageIds, version.Value.EngineId, adapterKind, providerId,
             OcrQueuePriority.UserStartedDocument);

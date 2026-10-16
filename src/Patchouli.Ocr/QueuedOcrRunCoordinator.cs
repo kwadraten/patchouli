@@ -1,4 +1,3 @@
-using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -12,11 +11,14 @@ namespace Patchouli.Ocr;
 public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
 {
     private readonly IOcrRunEngine _engine;
+    private readonly Func<string>? _multimodalProviderId;
 
-    public QueuedOcrRunCoordinator(IOcrQueueScheduler queue, IOcrRunEngine engine)
+    public QueuedOcrRunCoordinator(IOcrQueueScheduler queue, IOcrRunEngine engine,
+        Func<string>? multimodalProviderId = null)
     {
         Queue = queue;
         _engine = engine;
+        _multimodalProviderId = multimodalProviderId;
         _engine.CommitCompleted += (_, args) => CommitCompleted?.Invoke(this, args);
     }
 
@@ -290,11 +292,11 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
 
     private static string AdapterKindFor(OcrPresetVersion version)
     {
-        return version.EngineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
+        return OcrQueueRouting.ForEngine(version.EngineId).AdapterKind;
     }
 
-    private static string? ProviderIdFor(OcrPresetVersion version)
+    private string? ProviderIdFor(OcrPresetVersion version)
     {
-        return version.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        return OcrQueueRouting.ForEngine(version.EngineId, _multimodalProviderId?.Invoke()).ProviderId;
     }
 }

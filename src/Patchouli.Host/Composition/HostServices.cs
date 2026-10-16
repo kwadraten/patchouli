@@ -160,6 +160,7 @@ public sealed class HostServices
             pageTranslationCache,
             Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
+        OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings);
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
@@ -224,7 +225,7 @@ public sealed class HostServices
             loopErrorLogger: exception =>
                 _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
             activityTracker: activityTracker);
-        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine);
+        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine, () => LlmSettings.OcrSelection.ProviderId);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
@@ -250,7 +251,7 @@ public sealed class HostServices
         OcrQueueHostPrimitives agentHostPrimitives = new(
             ocrQueueScheduler,
             Pages,
-            OcrPresets,
+            OcrDefaults,
             () => Settings.OcrEngines.DocumentOcrEngine,
             LifetimeToken);
         AgentSessionStore agentStore = AgentSessionStore.ForLibrary(runtimeDatabasePath);
@@ -360,6 +361,7 @@ public sealed class HostServices
     public IDocumentMarkdownCompiler DocumentMarkdown { get; }
     public IPageTranslationService PageTranslations { get; }
     public IOcrPresetService OcrPresets { get; }
+    public OcrPresetDefaults OcrDefaults { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
