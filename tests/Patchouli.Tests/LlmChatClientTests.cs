@@ -264,13 +264,16 @@ public sealed class LlmChatClientTests
         LlmChatHistory history = LlmChatHistory.Create("instructions").Append([LlmChatMessage.User("hi")]);
 
         await client.CompleteAsync("session-1",
-            new LlmChatRequest(history, null, new LlmChatRequestOptions("override-model", 0.2, 512),
+            new LlmChatRequest(history, null,
+                new LlmChatRequestOptions("override-model", 0.2, 512) { ReasoningEffort = "low" },
                 LlmCacheOptions.Ephemeral("session-1")));
         await client.CompleteAsync("session-1", new LlmChatRequest(history));
 
         transport.Requests[0].Model.Should().Be("override-model");
         transport.Requests[0].Temperature.Should().Be(0.2);
         transport.Requests[0].MaxTokens.Should().Be(512);
+        transport.Requests[0].ReasoningEffort.Should().Be("low");
+        transport.Requests[1].ReasoningEffort.Should().BeNull();
         transport.Requests[0].AutoCache.Should().BeTrue();
         transport.Requests[0].PromptCacheKey.Should().Be("session-1");
         transport.Requests[1].Model.Should().Be("gpt-4o-mini");

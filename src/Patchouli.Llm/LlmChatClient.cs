@@ -93,7 +93,7 @@ public sealed class LlmChatClient : ILlmChatClient
                 options.MaxTokens,
                 cache.AutoCache,
                 cache.PromptCacheKey,
-                cache.CacheRetention);
+                cache.CacheRetention) { ReasoningEffort = options.ReasoningEffort };
         }
         catch (LlmChatException exception)
         {

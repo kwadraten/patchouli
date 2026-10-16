@@ -137,6 +137,18 @@ public sealed class LlmTornadoChatTransport : ILlmChatTransport
             chatRequest.PromptCacheKey = request.PromptCacheKey;
         }
 
+        if (request.ReasoningEffort is { } requested && requested != "default")
+        {
+            chatRequest.ReasoningEffort = requested switch
+            {
+                "low" => ChatReasoningEfforts.Low,
+                "medium" => ChatReasoningEfforts.Medium,
+                "high" => ChatReasoningEfforts.High,
+                "max" => ChatReasoningEfforts.Max,
+                _ => ChatReasoningEfforts.None
+            };
+        }
+
         return chatRequest;
     }
 
