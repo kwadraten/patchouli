@@ -7,6 +7,43 @@ namespace Patchouli.Tests;
 
 public sealed class LlmSettingsPersistenceTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Multimodal_layout_choices_survive_field_level_saves(bool local)
+    {
+        using TemporaryAppSettingsFile file = new();
+        PatchouliAppSettings settings = PatchouliAppSettings.Default();
+        settings = settings with
+        {
+            Llm = settings.Llm with
+            {
+                OcrUseLocalLayout = local,
+                OcrLayoutModel = OcrLayoutModelIds.DocLayoutYolo,
+                OcrReasoningEffort = "low", OcrConcurrency = 7
+            }
+        };
+
+        (await settings.SaveFieldLevelAsync(file.Path, new HashSet<string> { "Llm" })).IsSuccess.Should().BeTrue();
+        LlmAppSettings loaded = PatchouliAppSettings.Load(file.Path).Llm;
+        loaded.OcrUseLocalLayout.Should().Be(local);
+        loaded.OcrLayoutModel.Should().Be(OcrLayoutModelIds.DocLayoutYolo);
+        loaded.OcrReasoningEffort.Should().Be("low");
+        loaded.OcrConcurrency.Should().Be(7);
+    }
+
+    [Fact]
+    public void Old_settings_default_to_local_layout_without_bundled_weights()
+    {
+        using TemporaryAppSettingsFile file = new();
+        File.WriteAllText(file.Path, "{\"Llm\":{\"OcrProviderId\":\"deepseek\",\"OcrModel\":\"deepseek-flash\"}}");
+        LlmAppSettings loaded = PatchouliAppSettings.Load(file.Path).Llm;
+        loaded.OcrUseLocalLayout.Should().BeTrue();
+        loaded.OcrLayoutModel.Should().Be(OcrLayoutModelIds.PpDocLayoutV3);
+        loaded.OcrReasoningEffort.Should().Be("none");
+        loaded.OcrConcurrency.Should().Be(4);
+    }
+
     [Fact]
     public void Llm_section_round_trips_through_the_app_settings_file()
     {

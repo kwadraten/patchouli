@@ -68,7 +68,12 @@ public sealed class CslItemMapper : ICslItemMapper
             {
                 variables[date.Role] = CreateDateObject(date);
             }
-            catch (Exception exception) when (exception is JsonException or FormatException)
+            catch (JsonException exception)
+            {
+                return Task.FromResult(Result<CslMappedItem>.Failure(AppErrorCodes.ValidationFailed,
+                    $"Invalid CSL date '{date.Role}': {exception.Message}"));
+            }
+            catch (FormatException exception)
             {
                 return Task.FromResult(Result<CslMappedItem>.Failure(AppErrorCodes.ValidationFailed,
                     $"Invalid CSL date '{date.Role}': {exception.Message}"));

@@ -38,4 +38,7 @@
     </PackageReference>
     <PackageReference Include="Avalonia.Headless" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

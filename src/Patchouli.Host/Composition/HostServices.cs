@@ -66,6 +66,7 @@ public sealed class HostServices
                 $"Patchouli unexpected error at {boundary}/{operation}: {exception}");
 
     private readonly OcrRunEngine _ocrEngine;
+    private readonly OnnxDocumentLayoutDetector _documentLayoutDetector = new();
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private LlmAppSettings _llmSettings;
@@ -74,6 +75,7 @@ public sealed class HostServices
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
+    private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
@@ -89,6 +91,7 @@ public sealed class HostServices
         _llmSettings = settings.Llm;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
+        LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
@@ -160,6 +163,7 @@ public sealed class HostServices
             pageTranslationCache,
             Clock, LibraryRevisions);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
+        OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings);
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
@@ -170,8 +174,9 @@ public sealed class HostServices
         }
 
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
-        adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter(
-            new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)));
+        adapterRegistry.RegisterAdapter(new LayoutAwareMultimodalOcrAdapter(
+            new MultimodalLlmOcrAdapter(new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)),
+            _documentLayoutDetector, () => LlmSettings, OcrStorage.GetLayoutModelPath));
         adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
@@ -224,7 +229,7 @@ public sealed class HostServices
             loopErrorLogger: exception =>
                 _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
             activityTracker: activityTracker);
-        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine);
+        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine, () => LlmSettings.OcrSelection.ProviderId);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
@@ -250,7 +255,7 @@ public sealed class HostServices
         OcrQueueHostPrimitives agentHostPrimitives = new(
             ocrQueueScheduler,
             Pages,
-            OcrPresets,
+            OcrDefaults,
             () => Settings.OcrEngines.DocumentOcrEngine,
             LifetimeToken);
         AgentSessionStore agentStore = AgentSessionStore.ForLibrary(runtimeDatabasePath);
@@ -370,9 +375,11 @@ public sealed class HostServices
     public IDocumentMarkdownCompiler DocumentMarkdown { get; }
     public IPageTranslationService PageTranslations { get; }
     public IOcrPresetService OcrPresets { get; }
+    public OcrPresetDefaults OcrDefaults { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
+    public LayoutModelDownloadService LayoutModelDownload { get; }
     public INdlKotenModelDownloadService NdlKotenModelDownload { get; }
     public INdlLiteModelDownloadService NdlLiteModelDownload { get; }
     public IRapidOcrModelDownloadService RapidOcrModelDownload { get; }
@@ -647,6 +654,8 @@ public sealed class HostServices
         _lifetimeCancellation.Cancel();
         LibraryRevisionMonitor.Stop();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        _documentLayoutDetector.Dispose();
+        _layoutModelHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 

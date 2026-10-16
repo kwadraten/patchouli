@@ -259,7 +259,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
     [Fact]
     public async Task Bursts_of_queue_changed_events_are_coalesced_and_result_in_eventual_consistency()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string path = _settings.CreateDatabasePath("ui-ocr-coalesced");

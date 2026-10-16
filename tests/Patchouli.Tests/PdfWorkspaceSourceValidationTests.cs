@@ -41,7 +41,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [InlineData(true)]
     public async Task Page_ocr_refreshes_the_open_working_box_tree_and_preview_without_committing(bool logicalPages)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             using MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path,
@@ -140,7 +140,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public async Task Marquee_and_control_selection_delete_boxes_and_parent_subtrees_from_draft()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("ui-pdf-selection"));
@@ -237,7 +237,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public async Task Successful_render_transitions_validating_then_current_and_stays_interactive()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string pdf = CreatePdfPath();
@@ -280,7 +280,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public async Task Changed_source_shows_a_warning_distinct_from_validating()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string pdf = CreatePdfPath();
@@ -320,7 +320,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public async Task Rapid_page_flipping_discards_obsolete_renders_and_applies_latest()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-rapid-flip"));
@@ -370,7 +370,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public async Task Clear_cancels_in_flight_render_and_leaves_workspace_clean()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-clear-render"));

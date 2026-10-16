@@ -60,6 +60,13 @@ public sealed record LlmAppSettings(
     string ChatProviderId,
     string ChatModel)
 {
+    /// <summary>Local layout detection is the default; weights are always supplied by the user.</summary>
+    public bool OcrUseLocalLayout { get; init; } = true;
+
+    public string OcrLayoutModel { get; init; } = OcrLayoutModelIds.PpDocLayoutV3;
+    public string OcrReasoningEffort { get; init; } = "none";
+    public int OcrConcurrency { get; init; } = OcrPerformanceSettings.DefaultConcurrency;
+
     public const int DefaultAgentMaxRetries = 3;
     public const int MaxAgentMaxRetries = 20;
 
@@ -195,6 +202,9 @@ public sealed record LlmAppSettings(
             Providers = normalized,
             OcrProviderId = ocrProviderId,
             OcrModel = ocrModel,
+            OcrLayoutModel = OcrLayoutModelIds.Normalize(OcrLayoutModel),
+            OcrReasoningEffort = OcrPerformanceSettings.NormalizeReasoning(OcrReasoningEffort),
+            OcrConcurrency = Math.Clamp(OcrConcurrency, 1, OcrPerformanceSettings.MaxConcurrency),
             ChatProviderId = chatProviderId,
             ChatModel = chatModel,
             AgentReasoningEffort = NormalizeReasoningEffort(AgentReasoningEffort),

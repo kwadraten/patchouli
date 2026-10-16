@@ -22,7 +22,7 @@ public sealed class ReadingFontSettingsTests : IDisposable
     [Fact]
     public async Task Font_picker_echoes_system_default_and_a_saved_font_missing_from_the_catalog()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             await using MainWindowViewModel vm = new(settingsPath: _settings.Path);
@@ -130,7 +130,7 @@ public sealed class ReadingFontSettingsTests : IDisposable
     [Fact]
     public async Task Reading_font_family_list_starts_with_system_default_and_is_non_empty()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         IReadOnlyList<string> families = await session.Dispatch(() =>
         {
             MainWindowViewModel vm = new(settingsPath: _settings.Path);

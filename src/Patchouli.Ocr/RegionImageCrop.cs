@@ -24,6 +24,29 @@ public static class RegionImageCrop
         return new RegionPixelRect(left, top, right - left, bottom - top);
     }
 
+    /// <summary>
+    /// Crops a normalized page region out of a decoded source bitmap and returns the crop as PNG bytes.
+    /// Used when the caller already holds the image in memory and must not touch the filesystem
+    /// (e.g. the multimodal LLM adapter, which forwards the bytes as a data URI).
+    /// </summary>
+    public static byte[] CropToPngBytes(SKBitmap source, NormalizedBBox region)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        RegionPixelRect rect = ComputePixelRect(region, source.Width, source.Height);
+        using SKBitmap crop = new(rect.Width, rect.Height, source.ColorType, source.AlphaType);
+        using (SKCanvas canvas = new(crop))
+        {
+            canvas.DrawBitmap(source,
+                SKRect.Create(rect.Left, rect.Top, rect.Width, rect.Height),
+                SKRect.Create(0, 0, rect.Width, rect.Height));
+            canvas.Flush();
+        }
+
+        using SKImage image = SKImage.FromBitmap(crop);
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        return png.ToArray();
+    }
+
     public static void CropPngToFile(string sourcePngPath, NormalizedBBox region, string outputPath)
     {
         using SKBitmap? source = SKBitmap.Decode(sourcePngPath);

@@ -98,7 +98,7 @@ public static class UiPerfProbe
             await CompleteUiFixtureSetupAsync(seedDatabase, settingsPath, root, cancellationToken);
             SqliteConnection.ClearAllPools();
 
-            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
             Trace(!options.Quiet, $"[ui-perf] session ready");
 
             UiPerfResult result = await session.Dispatch(

@@ -16,7 +16,7 @@ public class LibraryGridSelectionBrushTests
     [Fact]
     public async Task LibraryGrid_selected_row_uses_tertiary_brush()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             Window window = new()

@@ -108,6 +108,40 @@
                         </Grid>
                       </StackPanel>
                     </Border>
+                    <Border Classes="Card" Margin="0,16,0,0">
+                      <StackPanel Spacing="10">
+                        <TextBlock Text="识别性能" Classes="CardTitle" />
+                        <TextBlock Text="推理强度（用于阅读顺序和文字识别）" />
+                        <ComboBox ItemsSource="{Binding OcrReasoningOptions}"
+                                  DisplayMemberBinding="{Binding DisplayName}"
+                                  SelectedItem="{Binding SelectedOcrReasoning}" HorizontalAlignment="Stretch" />
+                        <TextBlock Text="分块识别并发数（1–16）" />
+                        <NumericUpDown Value="{Binding OcrConcurrency}" Minimum="1" Maximum="16" Increment="1"
+                                       FormatString="0" />
+                        <TextBlock Text="默认关闭推理，并发识别 4 个区域。推理选项是否生效取决于服务商和模型；提高并发可能触发限流。"
+                                   TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <TextBlock Text="版面识别" Classes="CardTitle" />
+                        <CheckBox Content="先进行本地版面识别，再分块识别文字（默认）"
+                                  IsChecked="{Binding OcrUseLocalLayout}" />
+                        <TextBlock Text="关闭后，整页交给多模态 LLM，直接输出边界框和文本。手动画框的区域始终跳过版面识别。"
+                                   TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <StackPanel Spacing="10" IsEnabled="{Binding OcrUseLocalLayout}">
+                          <TextBlock Text="本地版面模型" />
+                          <ComboBox ItemsSource="{Binding OcrLayoutModelOptions}"
+                                    DisplayMemberBinding="{Binding DisplayName}"
+                                    SelectedItem="{Binding SelectedOcrLayoutModel}"
+                                    HorizontalAlignment="Stretch" />
+                          <TextBlock
+                            Text="权重不随应用提供；请在「本地文件」页点击「下载模型」，下载完成后即可使用。"
+                            TextWrapping="Wrap" FontSize="12"
+                            Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding OcrLayoutStatus}" TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      </StackPanel>
+                    </Border>
                   </StackPanel>
                 </DataTemplate>
               </ContentControl.ContentTemplate>

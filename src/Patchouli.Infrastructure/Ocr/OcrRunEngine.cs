@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Text.Json;
 using Dapper;
@@ -361,7 +361,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
             return Result<OcrRegionCandidate>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
-        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken, true);
         if (adapterValidation.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
@@ -833,7 +833,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
             version = Result<OcrPresetVersion>.Success(version.Value with { ApplyOnSuccess = false });
         }
 
-        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken, region is not null);
         if (adapterValidation.IsFailure)
         {
             return Result<OcrRun>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
@@ -1008,30 +1008,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 ReportPageProgress(progress, ++processedPages, pages.Count);
             }
 
-            string state = failures == pages.Count
-                ? OcrRunState.Failed
-                : failures > 0
-                    ? OcrRunState.CompletedWithErrors
-                    : OcrRunState.Completed;
-            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
-            {
-                await using SqliteConnection connection = _connectionFactory.CreateConnection();
-                await connection.OpenAsync(cancellationToken);
-                await connection.ExecuteAsync(
-                    """
-                    update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
-                    where ocr_run_id = @RunId;
-                    """,
-                    new
-                    {
-                        State = state,
-                        RevisionId = firstWorking?.ToString(),
-                        Now = FormatUtc(_clock.UtcNow),
-                        RunId = run.OcrRunId.ToString()
-                    });
-            }
-
-            return await CompleteRunAsync(run.OcrRunId, version.Value, cancellationToken);
+            return await FinalizeRunAsync(run, pages, version.Value, failures, firstWorking, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1052,6 +1029,45 @@ public sealed class OcrRunEngine : IOcrRunEngine
             OcrTaskStage.Recognizing,
             fraction,
             $"pages:{processedPages}/{totalPages}"));
+    }
+
+    /// <summary>
+    /// P1a: Unified run finalization. Writes the terminal state (Completed / CompletedWithErrors /
+    /// Failed) and the output revision, then delegates to <see cref="CompleteRunAsync"/> for the
+    /// auto-commit. Every page adapter uses this finalization path.
+    /// </summary>
+    private async Task<Result<OcrRun>> FinalizeRunAsync(
+        OcrRun run,
+        IReadOnlyList<Page> pages,
+        OcrPresetVersion version,
+        int failures,
+        DocumentTreeRevisionId? firstWorking,
+        CancellationToken cancellationToken)
+    {
+        string state = failures == pages.Count
+            ? OcrRunState.Failed
+            : failures > 0
+                ? OcrRunState.CompletedWithErrors
+                : OcrRunState.Completed;
+        using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await connection.ExecuteAsync(
+                """
+                update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
+                where ocr_run_id = @RunId;
+                """,
+                new
+                {
+                    State = state,
+                    RevisionId = firstWorking?.ToString(),
+                    Now = FormatUtc(_clock.UtcNow),
+                    RunId = run.OcrRunId.ToString()
+                });
+        }
+
+        return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
     }
 
     private async Task<Result<OcrRun>> RunMinerUDocumentAsync(
@@ -1499,12 +1515,18 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 page.PageId, regionBBox, DocumentBoxType.Text, new TextBoxPayload(text.Value.Trim())));
     }
 
-    private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken)
+    private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken,
+        bool isRegion = false)
     {
         IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
         if (adapter is null)
         {
             return Result.Success();
+        }
+
+        if (isRegion && adapter is IRegionOcrPresetValidator regionValidator)
+        {
+            return await regionValidator.ValidateRegionPresetAsync(version, cancellationToken);
         }
 
         Result preset = await adapter.ValidatePresetAsync(version, cancellationToken);

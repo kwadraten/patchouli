@@ -264,13 +264,16 @@ public sealed class LlmChatClientTests
         LlmChatHistory history = LlmChatHistory.Create("instructions").Append([LlmChatMessage.User("hi")]);
 
         await client.CompleteAsync("session-1",
-            new LlmChatRequest(history, null, new LlmChatRequestOptions("override-model", 0.2, 512),
+            new LlmChatRequest(history, null,
+                new LlmChatRequestOptions("override-model", 0.2, 512) { ReasoningEffort = "low" },
                 LlmCacheOptions.Ephemeral("session-1")));
         await client.CompleteAsync("session-1", new LlmChatRequest(history));
 
         transport.Requests[0].Model.Should().Be("override-model");
         transport.Requests[0].Temperature.Should().Be(0.2);
         transport.Requests[0].MaxTokens.Should().Be(512);
+        transport.Requests[0].ReasoningEffort.Should().Be("low");
+        transport.Requests[1].ReasoningEffort.Should().BeNull();
         transport.Requests[0].AutoCache.Should().BeTrue();
         transport.Requests[0].PromptCacheKey.Should().Be("session-1");
         transport.Requests[1].Model.Should().Be("gpt-4o-mini");
@@ -425,6 +428,13 @@ public sealed class LlmChatClientTests
         LlmTornadoChatTransport.PrepareRequest(transport.Requests.Single()).ReasoningEffort.Should()
             .Be(LlmTornado.Code.ChatReasoningEfforts.High);
         client.ConfigurationKey.Should().NotBe(CreateClient(transport).ConfigurationKey);
+        await client.CompleteAsync("ocr-low", new LlmChatRequest(history,
+            Options: new LlmChatRequestOptions { ReasoningEffort = "low" }));
+        transport.Requests.Last().ReasoningEffort.Should().Be("low");
+        await client.CompleteAsync("ocr-default", new LlmChatRequest(history,
+            Options: new LlmChatRequestOptions { ReasoningEffort = "default" }));
+        transport.Requests.Last().ReasoningEffort.Should().BeEmpty();
+        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
         await CreateClient(transport).CompleteAsync("default", new LlmChatRequest(history));
         transport.Requests.Last().ReasoningEffort.Should().BeNull();
         LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();

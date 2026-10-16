@@ -19,11 +19,13 @@ public sealed record LlmUsage(
 }
 
 /// <summary>
-/// Options that shape one request. Only <see cref="Model"/>, <see cref="Temperature"/> and
-/// <see cref="MaxTokens"/> are sent; everything else is either fixed by the transport or derived from the
-/// provider settings, so a request cannot silently change the deterministic prefix.
+/// Options that shape one request without changing its deterministic history prefix.
+/// Reasoning effort is passed through the SDK's generic setting; provider adaptation belongs to the SDK.
 /// </summary>
-public sealed record LlmChatRequestOptions(string? Model = null, double? Temperature = null, int? MaxTokens = null);
+public sealed record LlmChatRequestOptions(string? Model = null, double? Temperature = null, int? MaxTokens = null)
+{
+    public string? ReasoningEffort { get; init; }
+}
 
 /// <summary>
 /// Auto-caching (prefix cache) hints. The prefix stays stable either way; this only asks for retention.

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using LlmTornado.Chat;
+using LlmTornado.Code;
 using Patchouli.Llm;
 using Patchouli.Host.Agent;
 using Newtonsoft.Json;
@@ -10,6 +11,30 @@ namespace Patchouli.Tests;
 
 public sealed class NativeProviderAdapterTests
 {
+    [Theory]
+    [InlineData("none", ChatReasoningEfforts.None)]
+    [InlineData("low", ChatReasoningEfforts.Low)]
+    [InlineData("medium", ChatReasoningEfforts.Medium)]
+    [InlineData("high", ChatReasoningEfforts.High)]
+    [InlineData("max", ChatReasoningEfforts.Max)]
+    [InlineData("default", null)]
+    public void Ocr_effort_uses_the_sdk_generic_setting_without_provider_specific_toggles(
+        string effort, ChatReasoningEfforts? expected)
+    {
+        foreach (string providerId in new[] { "deepseek", "openai", "anthropic", "google" })
+        {
+            LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(providerId)!;
+            LlmProviderRuntimeSettings settings = new(entry, "test", "https://example.invalid", "model", "", "", "");
+            LlmTransportRequest request = new(settings, "model",
+                [new LlmTransportMessage(LlmChatRole.User, [new LlmMessagePart.LlmTextPart("OCR")])],
+                [], null, null, false, null, null) { ReasoningEffort = effort };
+            ChatRequest native = LlmTornadoChatTransport.PrepareRequest(request);
+            native.ReasoningEffort.Should().Be(expected);
+            native.ReasoningBudget.Should().BeNull();
+            native.OnSerialize.Should().BeNull();
+        }
+    }
+
     [Theory]
     [InlineData("deepseek")]
     [InlineData("openai")]

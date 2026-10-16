@@ -16,7 +16,7 @@ public sealed class PurgeConfirmDialogTests
     [InlineData(null)]
     public async Task Closing_dialog_completes_confirmation_with_the_expected_result(bool? expected)
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<bool>(async () =>
         {
             Window owner = new();

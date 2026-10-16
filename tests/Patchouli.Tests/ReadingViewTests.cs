@@ -20,7 +20,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Empty_scene_returns_zero_height()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -35,7 +35,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task More_paragraphs_increase_height()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -56,7 +56,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Narrower_width_wraps_taller()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -77,7 +77,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Repeated_measure_same_scene_reuses_cache()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -95,7 +95,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task HitTest_returns_true_everywhere()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -112,7 +112,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task HitTest_returns_false_outside_the_control_bounds()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -132,7 +132,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task BlockClicked_carries_box_id_of_clicked_block()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             DocumentBoxId first = DocumentBoxId.New();
@@ -161,7 +161,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task BlockClicked_is_null_on_empty_space()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new()
@@ -192,7 +192,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task SelectedBoxId_change_does_not_affect_desired_size()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -211,7 +211,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Table_block_measures_and_renders()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingTable table = new(
@@ -237,7 +237,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Scene_replacement_re_measures()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -257,7 +257,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Selection_highlight_uses_injected_accent_brush()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new();
@@ -289,7 +289,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Selection_spans_blocks_within_one_column_but_never_crosses_columns()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new()
@@ -320,7 +320,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task GetSelectedBoxIds_returns_boxes_in_reading_order()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             DocumentBoxId first = DocumentBoxId.New();
@@ -344,7 +344,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Copy_selection_copies_within_one_column()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new()
@@ -367,7 +367,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Edit_selection_request_carries_source_box_ids_and_text()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             DocumentBoxId boxId = DocumentBoxId.New();
@@ -395,7 +395,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Stacked_compare_places_the_translation_below_its_source_with_an_indent()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new()
@@ -427,7 +427,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Media_region_crops_from_the_source_image_subrect()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             using WriteableBitmap bitmap = new(new PixelSize(100, 50), new Vector(96, 96),
@@ -460,7 +460,7 @@ public sealed class ReadingViewTests
     [Fact]
     public async Task Media_without_an_image_region_stays_a_placeholder()
     {
-        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(UI.App));
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             ReadingView view = new()

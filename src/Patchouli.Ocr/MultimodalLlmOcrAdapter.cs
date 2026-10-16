@@ -1,9 +1,11 @@
 using System.Text.Json;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
+using SkiaSharp;
 
 namespace Patchouli.Ocr;
 
@@ -14,6 +16,8 @@ namespace Patchouli.Ocr;
 /// </summary>
 public interface IMultimodalLlmOcrRuntime
 {
+    string ReasoningEffort => "none";
+
     /// <summary>The default OCR provider/model pair, taken from <see cref="LlmAppSettings.OcrSelection"/>.</summary>
     (string ProviderId, string Model) ResolveOcrSelection();
 
@@ -31,6 +35,7 @@ public interface IMultimodalLlmOcrRuntime
 /// </summary>
 public sealed class MultimodalLlmOcrRuntime : IMultimodalLlmOcrRuntime
 {
+    public string ReasoningEffort => _settingsProvider().OcrReasoningEffort;
     private readonly Func<LlmAppSettings> _settingsProvider;
     private readonly ICredentialStore _credentialStore;
 
@@ -86,10 +91,18 @@ public sealed class MultimodalLlmOcrRuntime : IMultimodalLlmOcrRuntime
 /// normalized into <see cref="OcrEngineTextBox"/>es (the exact shape the other real adapters produce), and the
 /// OCR run engine turns that into an <see cref="OcrDocumentTreeCandidate"/> that enters the tree
 /// exclusively through the unified import/commit channel. This adapter never writes document_boxes itself.
+/// For region input the region is cropped out of the page image in-memory before recognition (issue #2);
+/// the model returns only text, which is anchored to the existing page-relative region box.
 /// </summary>
-public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
+public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter, IMultimodalLayoutOrderResolver
 {
     private const string ConversationKeyPrefix = "patchouli.ocr.multimodal";
+
+    private const string TextPrompt =
+        "You are a strict OCR engine. Transcribe all text visible in this cropped region in reading order. " +
+        "Preserve line breaks and the original language. Return ONLY JSON {\"text\":\"recognized text\"}. " +
+        "The region boundary is already known. Do not output coordinates, boxes, confidence, or commentary. " +
+        "If there is no text, return {\"text\":\"\"}.";
 
     private const string Prompt =
         "You are a strict OCR engine. Extract every text line visible in the image.\n" +
@@ -128,7 +141,7 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
     {
         return new OcrEngineCapability(EngineId, DisplayName, false, true, true, false, true, true, false, true, false,
             [OcrInputKinds.PageImage, OcrInputKinds.RegionImage],
-            "Accepts page or region images from a multimodal LLM endpoint and must normalize output into the MinerU-compatible layout pipeline before commit.");
+            "Accepts page or region images and normalizes recognized text boxes into the shared document-tree import pipeline.");
     }
 
     public async Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,
@@ -194,23 +207,49 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
                 $"The rendered page image could not be read: {exception.Message}");
         }
 
-        string? mimeType = ResolveMimeType(input.ImagePath, imageBytes);
-        if (mimeType is null)
+        // Region OCR crops the region out of the page image before recognition (issue #2):
+        // the model only transcribes text because the page-relative region box is already known.
+        // Cropping uses the same in-memory helper as the NDL adapters.
+        NormalizedBBox? region = input.InputKind == OcrInputKinds.RegionImage ? input.RegionBBox : null;
+        string mimeType;
+        if (region is not null)
         {
-            return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
-                $"The rendered page image '{input.ImagePath}' is not a recognized image format.");
+            Result<byte[]> cropped = CropRegionToPngBytes(imageBytes, region.Value);
+            if (cropped.IsFailure)
+            {
+                return Result<OcrEnginePageResult>.Failure(cropped.ErrorCode!, cropped.ErrorMessage!);
+            }
+
+            imageBytes = cropped.Value;
+            mimeType = "image/png";
+        }
+        else
+        {
+            string? detected = ResolveMimeType(input.ImagePath, imageBytes);
+            if (detected is null)
+            {
+                return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
+                    $"The rendered page image '{input.ImagePath}' is not a recognized image format.");
+            }
+
+            mimeType = detected;
         }
 
-        string prompt = BuildPrompt(input);
         string dataUri = $"data:{mimeType};base64,{Convert.ToBase64String(imageBytes)}";
+        string prompt = region is null ? Prompt : TextPrompt;
         Result<LlmChatCompletion> completion = await client.Value.CompleteVisionAsync(
             $"{ConversationKeyPrefix}:{input.PageId}",
-            new LlmChatRequest(LlmChatHistory.Create(prompt)),
+            new LlmChatRequest(LlmChatHistory.Create(prompt), Options: OcrRequestOptions()),
             new LlmVisionInput(dataUri, mimeType, prompt, "high"),
             cancellationToken);
         if (completion.IsFailure)
         {
             return Result<OcrEnginePageResult>.Failure(completion.ErrorCode!, completion.ErrorMessage!);
+        }
+
+        if (region is { } knownRegion)
+        {
+            return ParseRegionText(completion.Value.Text, input.PageId, knownRegion);
         }
 
         Result<IReadOnlyList<OcrEngineTextBox>> boxes =
@@ -220,10 +259,11 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             return Result<OcrEnginePageResult>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
         }
 
-        NormalizedBBox pageBBox = input.RegionBBox ?? new NormalizedBBox(0, 0, 1, 1);
-        string? text = boxes.Value.Count == 0
+        IReadOnlyList<OcrEngineTextBox> pageBoxes = boxes.Value;
+        NormalizedBBox pageBBox = new(0, 0, 1, 1);
+        string? text = pageBoxes.Count == 0
             ? null
-            : string.Join('\n', boxes.Value.Select(box => box.Text));
+            : string.Join('\n', pageBoxes.Select(box => box.Text));
         return Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(
             input.PageId,
             true,
@@ -232,7 +272,97 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             null,
             null,
             null,
-            boxes.Value));
+            pageBoxes));
+    }
+
+    public async Task<Result<IReadOnlyList<int>>> ResolveReadingOrderAsync(byte[] imageBytes,
+        IReadOnlyList<DocumentLayoutRegion> regions, OcrPresetVersion presetVersion,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (regions.Count <= 1)
+        {
+            return Result<IReadOnlyList<int>>.Success(Enumerable.Range(0, regions.Count).ToArray());
+        }
+
+        (string providerId, string model) = ResolveSelection(presetVersion);
+        Result<ILlmChatClient> client = await _runtime.CreateClientAsync(providerId, model, cancellationToken);
+        if (client.IsFailure)
+        {
+            return Result<IReadOnlyList<int>>.Failure(client.ErrorCode!, client.ErrorMessage!);
+        }
+
+        string descriptors = JsonSerializer.Serialize(regions.Select((region, id) => new
+        {
+            id, label = region.Label,
+            bbox = new[] { region.BBox.X, region.BBox.Y, region.BBox.Width, region.BBox.Height }
+        }));
+        string prompt = "Determine the logical reading order of the numbered document regions in this image. " +
+                        "The regions and their bounding boxes are already detected; do not change them. " +
+                        "Respect text direction, separate columns, headings, captions, and footnotes. " +
+                        "Return ONLY JSON {\"order\":[0,1,...]} listing EVERY supplied region ID exactly once. " +
+                        "Each region ID is printed in its rectangle on the image. " +
+                        "Finish one text column before moving to the next; do not zigzag between unrelated columns. " +
+                        $"There are exactly {regions.Count} regions. Required IDs: " +
+                        JsonSerializer.Serialize(Enumerable.Range(0, regions.Count)) + ". " +
+                        "Region bbox is normalized [x,y,width,height], origin top-left. Regions: " + descriptors;
+        using SKBitmap? image = SKBitmap.Decode(imageBytes);
+        if (image is null)
+        {
+            return Result<IReadOnlyList<int>>.Failure(AppErrorCodes.ValidationFailed,
+                "The reading-order image could not be decoded.");
+        }
+
+        byte[] markedImage = MarkRegionIds(image, regions);
+        string dataUri = $"data:image/png;base64,{Convert.ToBase64String(markedImage)}";
+        Result<IReadOnlyList<int>> order = MultimodalLayoutReadingOrder.Parse("", regions.Count);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            Result<LlmChatCompletion> completion = await client.Value.CompleteVisionAsync(
+                $"{ConversationKeyPrefix}:layout-order:{Guid.NewGuid():N}",
+                new LlmChatRequest(LlmChatHistory.Create(prompt), Options: OcrRequestOptions()),
+                new LlmVisionInput(dataUri, "image/png", prompt, "high"), cancellationToken);
+            if (completion.IsFailure)
+            {
+                return Result<IReadOnlyList<int>>.Failure(completion.ErrorCode!, completion.ErrorMessage!);
+            }
+
+            order = MultimodalLayoutReadingOrder.Parse(completion.Value.Text, regions.Count);
+            if (order.IsSuccess)
+            {
+                return order;
+            }
+
+            prompt += " Your previous response was invalid: " + completion.Value.Text +
+                      ". Correct it: every required ID must appear exactly once; do not omit, duplicate, or invent IDs.";
+        }
+
+        return order;
+    }
+
+    private static byte[] MarkRegionIds(SKBitmap image, IReadOnlyList<DocumentLayoutRegion> regions)
+    {
+        using SKCanvas canvas = new(image);
+        using SKPaint border = new() { Color = SKColors.Red, Style = SKPaintStyle.Stroke, StrokeWidth = 2 };
+        using SKPaint background = new() { Color = SKColors.White };
+        using SKPaint text = new() { Color = SKColors.Red, IsAntialias = true };
+        float size = Math.Max(18, Math.Min(image.Width, image.Height) / 55f);
+        using SKFont font = new(SKTypeface.Default, size);
+        for (int index = 0; index < regions.Count; index++)
+        {
+            NormalizedBBox b = regions[index].BBox;
+            float x = (float)(b.X * image.Width), y = (float)(b.Y * image.Height);
+            canvas.DrawRect(SKRect.Create(x, y, (float)(b.Width * image.Width), (float)(b.Height * image.Height)),
+                border);
+            string label = index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            canvas.DrawRect(SKRect.Create(x, y, font.MeasureText(label) + 4, size + 4), background);
+            canvas.DrawText(label, x + 2, y + size, SKTextAlign.Left, font, text);
+        }
+
+        canvas.Flush();
+        using SKImage marked = SKImage.FromBitmap(image);
+        using SKData data = marked.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
     }
 
     private (string ProviderId, string Model) ResolveSelection(OcrPresetVersion presetVersion)
@@ -286,17 +416,57 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
             OcrRequiredAction.None, []);
     }
 
-    private static string BuildPrompt(OcrInputDescriptor input)
+    private static Result<byte[]> CropRegionToPngBytes(byte[] imageBytes, NormalizedBBox region)
     {
-        if (input.InputKind != OcrInputKinds.RegionImage || input.RegionBBox is not { } region)
+        using SKBitmap? source = SKBitmap.Decode(imageBytes);
+        if (source is null)
         {
-            return Prompt;
+            return Result<byte[]>.Failure(AppErrorCodes.InvalidState,
+                "The rendered page image could not be decoded for region cropping.");
         }
 
-        return Prompt +
-               $"\nOnly recognize text inside the normalized rectangle x={region.X}, y={region.Y}, " +
-               $"width={region.Width}, height={region.Height} of the image; " +
-               "still report coordinates relative to the full image.";
+        try
+        {
+            return Result<byte[]>.Success(RegionImageCrop.CropToPngBytes(source, region));
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "ocr-multimodal-llm"))
+        {
+            return Result<byte[]>.Failure(AppErrorCodes.InvalidState,
+                $"The OCR region could not be cropped: {exception.Message}");
+        }
+    }
+
+    private LlmChatRequestOptions OcrRequestOptions()
+    {
+        return new LlmChatRequestOptions { ReasoningEffort = _runtime.ReasoningEffort };
+    }
+
+    private static Result<OcrEnginePageResult> ParseRegionText(string content, PageId pageId, NormalizedBBox region)
+    {
+        int start = content.IndexOf('{'), end = content.LastIndexOf('}');
+        if (start >= 0 && end > start)
+        {
+            try
+            {
+                using JsonDocument json = JsonDocument.Parse(content[start..(end + 1)]);
+                if (json.RootElement.TryGetProperty("text", out JsonElement value) &&
+                    value.ValueKind == JsonValueKind.String)
+                {
+                    string text = value.GetString()!.Trim();
+                    OcrEngineTextBox[] boxes = text.Length == 0 ? [] : [new OcrEngineTextBox(text, region)];
+                    return Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(pageId, true,
+                        text.Length == 0 ? null : text, region, null, null, TextBoxes: boxes));
+                }
+            }
+            catch (JsonException)
+            {
+                return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
+                    "The region OCR response was not valid JSON.");
+            }
+        }
+
+        return Result<OcrEnginePageResult>.Failure(AppErrorCodes.InvalidState,
+            "The region OCR response must contain a text string.");
     }
 
     private static string? ResolveMimeType(string path, byte[] bytes)

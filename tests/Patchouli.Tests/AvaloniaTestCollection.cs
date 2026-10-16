@@ -1,5 +1,4 @@
 using Avalonia.Headless;
-using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
@@ -11,7 +10,9 @@ public sealed class RetainedTabUITestCollection : ICollectionFixture<AvaloniaSha
 
 public sealed class AvaloniaSharedSessionFixture : IDisposable
 {
-    public HeadlessUnitTestSession Session { get; } = HeadlessUnitTestSession.StartNew(typeof(App));
+    // Markdown text decorations are static AvaloniaObjects: all Markdown tests must use this thread.
+    // Per-test application isolation is retained by each Dispatch call.
+    public HeadlessUnitTestSession Session { get; } = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
 
     public void Dispose()
     {

@@ -14,9 +14,14 @@ public static class TestTempFileCleanup
         for (int attempt = 0; attempt < 10; attempt++)
         {
             SqliteConnection.ClearAllPools();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            SqliteConnection.ClearAllPools();
+            if (attempt > 0)
+            {
+                // Finalize abandoned handles only after deletion fails; normal cleanup needs no full-heap GC.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                SqliteConnection.ClearAllPools();
+            }
+
             try
             {
                 if (File.Exists(path))
@@ -43,9 +48,14 @@ public static class TestTempFileCleanup
         for (int attempt = 0; attempt < 10; attempt++)
         {
             SqliteConnection.ClearAllPools();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            SqliteConnection.ClearAllPools();
+            if (attempt > 0)
+            {
+                // Finalize abandoned handles only after deletion fails; normal cleanup needs no full-heap GC.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                SqliteConnection.ClearAllPools();
+            }
+
             try
             {
                 if (Directory.Exists(path))

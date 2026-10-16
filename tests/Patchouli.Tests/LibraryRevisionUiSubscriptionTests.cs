@@ -22,7 +22,7 @@ public sealed class LibraryRevisionUiSubscriptionTests : IDisposable
     [Fact]
     public async Task Committed_item_change_updates_the_existing_shell_row_incrementally()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-library-revision");
@@ -60,7 +60,7 @@ public sealed class LibraryRevisionUiSubscriptionTests : IDisposable
     [Fact]
     public async Task Imported_item_does_not_leak_into_the_selected_empty_collection()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-empty-collection-import");
@@ -97,7 +97,7 @@ public sealed class LibraryRevisionUiSubscriptionTests : IDisposable
     [Fact]
     public async Task Imported_item_does_not_leak_into_the_selected_tag_filter()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-tag-filter-import");

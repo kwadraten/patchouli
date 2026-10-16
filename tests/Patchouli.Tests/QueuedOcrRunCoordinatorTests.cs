@@ -232,6 +232,42 @@ public sealed class QueuedOcrRunCoordinatorTests
             ["cancel_run", "hide_run", "unset_current", "get_run", "list_results", "adopt"]);
     }
 
+    [Theory]
+    [InlineData("document")]
+    [InlineData("pages")]
+    [InlineData("region")]
+    [InlineData("working-page")]
+    public async Task Multimodal_runs_use_cloud_limits_and_configured_provider(string scope)
+    {
+        FakeEngine engine = new(OcrEngineIds.MultimodalLlm);
+        OcrQueueTaskExecutor executor = new(engine);
+        OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
+            loopInterval: TimeSpan.FromMilliseconds(10));
+        QueuedOcrRunCoordinator facade = new(scheduler, engine, () => "anthropic");
+        try
+        {
+            Result<OcrRun> result = scope switch
+            {
+                "document" => await facade.RunPresetOnDocumentAsync(engine.Run.DocumentInstanceId, engine.Run.PresetId),
+                "pages" => await facade.RunPresetOnPagesAsync(engine.Run.DocumentInstanceId, engine.Run.PresetId,
+                    engine.PageIds),
+                "region" => await facade.RunPresetOnRegionAsync(engine.Run.DocumentInstanceId, engine.Run.PresetId,
+                    engine.PageIds[0], new NormalizedBBox(.1, .2, .3, .4)),
+                _ => await facade.RunWorkingOnPageAsync(engine.Run.DocumentInstanceId, engine.Run.PresetId,
+                    engine.PageIds[0])
+            };
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            OcrQueueTask task = (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
+            task.EngineId.Should().Be(OcrEngineIds.MultimodalLlm);
+            task.AdapterKind.Should().Be(OcrAdapterKind.CloudApi);
+            task.ProviderId.Should().Be("anthropic");
+        }
+        finally
+        {
+            await scheduler.StopAsync();
+        }
+    }
+
     private static (QueuedOcrRunCoordinator Facade, OcrQueueScheduler Scheduler, FakeEngine Engine) Create()
     {
         FakeEngine engine = new();
@@ -266,9 +302,9 @@ public sealed class QueuedOcrRunCoordinatorTests
             remove { }
         }
 
-        public FakeEngine()
+        public FakeEngine(string engineId = OcrEngineIds.Mock)
         {
-            OcrPresetVersion version = new(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.Mock, "model",
+            OcrPresetVersion version = new(OcrPresetVersionId.New(), OcrPresetId.New(), engineId, "model",
                 null, "{}", false, DateTimeOffset.UtcNow);
             Version = version;
             Run = new OcrRun(OcrRunId.New(), DocumentInstanceId.New(), version.PresetId, version.PresetVersionId,
@@ -321,6 +357,12 @@ public sealed class QueuedOcrRunCoordinatorTests
             IProgress<OcrTaskStageProgress>? progress = null)
         {
             return RunAsync("pages", c);
+        }
+
+        public Task<Result<OcrRun>> RunWorkingOnPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
+            CancellationToken c = default)
+        {
+            return RunAsync("working-page", c);
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,

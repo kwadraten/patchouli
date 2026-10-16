@@ -192,8 +192,19 @@ public static class McpItemYamlCodec
 
             return Result<(UpdateItemRequest, IReadOnlyList<ItemIdentifierInput>)>.Success((request, identifiers));
         }
-        catch (Exception exception) when (exception is FormatException or JsonException or InvalidOperationException or
-                                              YamlException)
+        catch (FormatException exception)
+        {
+            return Failure($"Invalid Patchouli item YAML: {exception.Message}");
+        }
+        catch (JsonException exception)
+        {
+            return Failure($"Invalid Patchouli item YAML: {exception.Message}");
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Failure($"Invalid Patchouli item YAML: {exception.Message}");
+        }
+        catch (YamlException exception)
         {
             return Failure($"Invalid Patchouli item YAML: {exception.Message}");
         }

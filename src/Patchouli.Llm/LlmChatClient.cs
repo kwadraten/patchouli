@@ -105,7 +105,12 @@ public sealed class LlmChatClient : ILlmChatClient
                 options.MaxTokens,
                 cache.AutoCache,
                 cache.PromptCacheKey,
-                cache.CacheRetention) { ReasoningEffort = _reasoningEffort };
+                cache.CacheRetention)
+            {
+                ReasoningEffort = options.ReasoningEffort is { } effort
+                    ? LlmAppSettings.NormalizeReasoningEffort(effort)
+                    : _reasoningEffort
+            };
         }
         catch (LlmChatException exception)
         {

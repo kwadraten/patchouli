@@ -20,6 +20,103 @@ namespace Patchouli.Tests;
 
 public sealed class MultimodalLlmOcrAdapterTests
 {
+    [Theory]
+    [InlineData("{\"text\":\"\"}", true)]
+    [InlineData("```json\n{\"text\":\"a\\nb\"}\n```", true)]
+    [InlineData("{\"boxes\":[]}", false)]
+    [InlineData("{\"text\":null}", false)]
+    [InlineData("{bad}", false)]
+    public async Task Region_text_protocol_handles_blank_pages_and_rejects_malformed_results(string reply, bool valid)
+    {
+        string path = WriteTempPng();
+        try
+        {
+            StubLlmChatClient client = new();
+            client.Enqueue(Completion(reply));
+            MultimodalLlmOcrAdapter adapter = new(new StubRuntime { Client = client });
+            OcrInputDescriptor input = PageInput(path) with
+            {
+                InputKind = OcrInputKinds.RegionImage, RegionBBox = new NormalizedBBox(0, 0, 1, 1)
+            };
+            Result<OcrEnginePageResult> result = await adapter.RunPageAsync(input, Preset("vision"));
+            result.IsSuccess.Should().Be(valid);
+            if (valid && reply == "{\"text\":\"\"}")
+            {
+                result.Value.TextBoxes.Should().BeEmpty();
+                result.Value.Text.Should().BeNull();
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Region_entry_points_do_not_require_layout_weights(bool candidateOnly)
+    {
+        await using Context context = await Context.CreateAsync(localLayout: true);
+        NormalizedBBox region = new(0, 0, 1, 1);
+        if (candidateOnly)
+        {
+            Result<OcrRegionCandidate> candidate = await context.Engine.RecognizeRegionCandidateAsync(
+                context.Document.DocumentInstanceId, context.OcrPreset.PresetId, context.Pages[0].PageId, region);
+            candidate.IsSuccess.Should().BeTrue(candidate.ErrorMessage);
+            candidate.Value.BBox.Should().Be(region);
+        }
+        else
+        {
+            Result<OcrRun> run = await context.Engine.RunPresetOnRegionAsync(
+                context.Document.DocumentInstanceId, context.OcrPreset.PresetId, context.Pages[0].PageId, region);
+            run.IsSuccess.Should().BeTrue(run.ErrorMessage);
+            run.Value.State.Should().Be(OcrRunState.Completed);
+        }
+
+        context.StubClient.VisionCalls.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reading_order_marks_region_ids_and_retries_one_invalid_permutation(bool remainsInvalid)
+    {
+        string imagePath = WriteTempPng();
+        try
+        {
+            StubLlmChatClient client = new();
+            client.Enqueue(Completion("{\"order\":[0,0]}"));
+            client.Enqueue(Completion(remainsInvalid ? "{\"order\":[1]}" : "{\"order\":[1,0]}"));
+            MultimodalLlmOcrAdapter adapter = new(new StubRuntime { Client = client });
+            DocumentLayoutRegion[] regions =
+            [
+                new("text", new NormalizedBBox(0, 0, .4, 1), .9),
+                new("text", new NormalizedBBox(.6, 0, .4, 1), .9)
+            ];
+
+            Result<IReadOnlyList<int>> result = await adapter.ResolveReadingOrderAsync(
+                await File.ReadAllBytesAsync(imagePath), regions, Preset("vision"));
+
+            client.VisionCalls.Should().HaveCount(2);
+            client.Requests.Should().OnlyContain(request => request.Options!.ReasoningEffort == "none");
+            client.VisionCalls[0].Vision.Text.Should().Contain("exactly 2 regions");
+            client.VisionCalls[1].Vision.Text.Should().Contain("previous response was invalid");
+            if (remainsInvalid)
+            {
+                result.IsFailure.Should().BeTrue();
+            }
+            else
+            {
+                result.Value.Should().Equal(1, 0);
+            }
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
+    }
+
     private const string TwoBoxesJson =
         """
         {"boxes":[
@@ -59,6 +156,7 @@ public sealed class MultimodalLlmOcrAdapterTests
             client.VisionCalls[0].Vision.MimeType.Should().Be("image/png");
             client.VisionCalls[0].Vision.DataUriOrUrl.Should().StartWith("data:image/png;base64,");
             client.VisionCalls[0].Vision.Detail.Should().Be("high");
+            client.Requests.Single().Options!.ReasoningEffort.Should().Be("none");
         }
         finally
         {
@@ -93,13 +191,13 @@ public sealed class MultimodalLlmOcrAdapterTests
     }
 
     [Fact]
-    public async Task RunPageAsync_restricts_the_prompt_to_the_region_and_reports_the_region_bbox()
+    public async Task RunPageAsync_crops_known_regions_and_requests_only_text_anchored_to_the_existing_box()
     {
         string imagePath = WriteTempPng();
         try
         {
             StubLlmChatClient client = new();
-            client.Enqueue(Completion("""{"boxes":[{"text":"in region","x":0.2,"y":0.3,"width":0.1,"height":0.1}]}"""));
+            client.Enqueue(Completion("""{"text":"in region"}"""));
             MultimodalLlmOcrAdapter adapter = new(new StubRuntime { Client = client });
             NormalizedBBox region = new(0.1, 0.2, 0.3, 0.4);
             OcrInputDescriptor input = new(PageId.New(), DocumentInstanceId.New(), OcrInputKinds.RegionImage,
@@ -110,8 +208,12 @@ public sealed class MultimodalLlmOcrAdapterTests
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             result.Value.BBox.Should().Be(region);
             client.VisionCalls.Should().HaveCount(1);
-            client.VisionCalls[0].Vision.Text.Should().Contain("x=0.1");
-            client.VisionCalls[0].Vision.Text.Should().Contain("width=0.3");
+            // The prompt carries no region hint: the image itself is the cropped region.
+            client.VisionCalls[0].Vision.Text.Should().NotContain("x=0.1");
+            client.VisionCalls[0].Vision.Text.Should().Contain("{\"text\":").And.NotContain("\"boxes\":");
+            OcrEngineTextBox box = result.Value.TextBoxes!.Single();
+            box.Text.Should().Be("in region");
+            box.BBox.Should().Be(region);
         }
         finally
         {
@@ -457,6 +559,7 @@ public sealed class MultimodalLlmOcrAdapterTests
         private readonly Queue<Result<LlmChatCompletion>> _completions = new();
 
         public List<(string Key, LlmVisionInput Vision)> VisionCalls { get; } = [];
+        public List<LlmChatRequest> Requests { get; } = [];
 
         public void Enqueue(Result<LlmChatCompletion> completion)
         {
@@ -473,6 +576,7 @@ public sealed class MultimodalLlmOcrAdapterTests
             LlmVisionInput vision, CancellationToken cancellationToken = default)
         {
             VisionCalls.Add((conversationKey, vision));
+            Requests.Add(request);
             return Task.FromResult(_completions.Count > 0
                 ? _completions.Dequeue()
                 : Result<LlmChatCompletion>.Failure(LlmFailureCodes.EmptyResponse, "no stubbed completion"));
@@ -662,7 +766,7 @@ public sealed class MultimodalLlmOcrAdapterTests
             return await connection.ExecuteScalarAsync<int>(sql);
         }
 
-        public static async Task<Context> CreateAsync(bool blockImport = false)
+        public static async Task<Context> CreateAsync(bool blockImport = false, bool localLayout = false)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
@@ -696,11 +800,15 @@ public sealed class MultimodalLlmOcrAdapterTests
                 : new RecordingTreeImporter(new OcrDocumentTreeImporter(trees));
             StubLlmChatClient stubClient = new();
             stubClient.Enqueue(Result<LlmChatCompletion>.Success(new LlmChatCompletion(
-                TwoBoxesJson, "gpt-4o-mini", "openai", "stop", LlmUsage.Empty, false, null, "signature")));
+                localLayout ? """{"text":"Hello\nWorld"}""" : TwoBoxesJson, "gpt-4o-mini", "openai", "stop",
+                LlmUsage.Empty, false, null, "signature")));
             StubRuntime runtime = new() { Client = stubClient };
             MultimodalLlmOcrAdapter adapter = new(runtime);
             OcrAdapterRegistry adapterRegistry = new();
-            adapterRegistry.RegisterAdapter(adapter);
+            adapterRegistry.RegisterAdapter(localLayout
+                ? new LayoutAwareMultimodalOcrAdapter(adapter, new MissingLayoutDetector(), LlmAppSettings.Default,
+                    _ => Path.Combine(rootDirectory, "missing.onnx"))
+                : adapter);
             OcrRunEngine engine = new(
                 database.ConnectionFactory,
                 clock,
@@ -720,6 +828,20 @@ public sealed class MultimodalLlmOcrAdapterTests
             {
                 Directory.Delete(_rootDirectory, true);
             }
+        }
+    }
+
+    private sealed class MissingLayoutDetector : IDocumentLayoutDetector
+    {
+        public Result ValidateModel(string modelId, string modelPath)
+        {
+            return Result.Failure(AppErrorCodes.NotFound, "No layout weights installed");
+        }
+
+        public Task<Result<IReadOnlyList<DocumentLayoutRegion>>> DetectAsync(byte[] imageBytes, string modelId,
+            string modelPath, CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("Region OCR must not detect layout");
         }
     }
 }

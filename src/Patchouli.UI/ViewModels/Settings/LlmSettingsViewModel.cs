@@ -239,6 +239,85 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ObservableProperty] public partial string OcrModel { get; set; } = "";
 
+
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<OcrLayoutModelOption> OcrLayoutModelOptions { get; } =
+    [
+        new(OcrLayoutModelIds.PpDocLayoutV3, "PP-DocLayoutV3"),
+        new(OcrLayoutModelIds.DocLayoutYolo, "DocLayout-YOLO")
+    ];
+
+    [ObservableProperty] public partial bool OcrUseLocalLayout { get; set; } = true;
+
+    [ObservableProperty] public partial int OcrConcurrency { get; set; } = OcrPerformanceSettings.DefaultConcurrency;
+
+    partial void OnOcrConcurrencyChanged(int value)
+    {
+        if (!IsWaitingForDraftSync())
+        {
+            _current = _current with { OcrConcurrency = Math.Clamp(value, 1, OcrPerformanceSettings.MaxConcurrency) };
+            MarkDirty("有未保存的更改");
+        }
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<OcrLayoutModelOption> OcrReasoningOptions { get; } =
+    [
+        new("default", "跟随服务商"), new("none", "关闭（默认）"), new("low", "低"),
+        new("medium", "中"), new("high", "高"), new("max", "最大")
+    ];
+
+    [ExcludeFromDerivedGeneration]
+    public OcrLayoutModelOption? SelectedOcrReasoning
+    {
+        get => OcrReasoningOptions.FirstOrDefault(option => option.ModelId == _current.OcrReasoningEffort);
+        set
+        {
+            if (value is null || IsWaitingForDraftSync() || value.ModelId == _current.OcrReasoningEffort)
+            {
+                return;
+            }
+
+            _current = _current with { OcrReasoningEffort = value.ModelId };
+            Raise(nameof(SelectedOcrReasoning));
+            MarkDirty("有未保存的更改");
+        }
+    }
+
+    partial void OnOcrUseLocalLayoutChanged(bool value)
+    {
+        if (!IsWaitingForDraftSync())
+        {
+            _current = _current with { OcrUseLocalLayout = value };
+            MarkDirty("有未保存的更改");
+        }
+
+        Raise(nameof(OcrLayoutStatus));
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public OcrLayoutModelOption? SelectedOcrLayoutModel
+    {
+        get => OcrLayoutModelOptions.FirstOrDefault(option => option.ModelId == _current.OcrLayoutModel);
+        set
+        {
+            if (value is null || IsWaitingForDraftSync() || value.ModelId == _current.OcrLayoutModel)
+            {
+                return;
+            }
+
+            _current = _current with { OcrLayoutModel = value.ModelId };
+            Raise(nameof(SelectedOcrLayoutModel));
+            Raise(nameof(OcrLayoutStatus));
+            MarkDirty("有未保存的更改");
+        }
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public string OcrLayoutStatus => !OcrUseLocalLayout
+        ? "直接识别：由多模态 LLM 输出边界框和文本，无需本地版面权重。"
+        : "请在「本地文件」页管理版面模型。阅读顺序由多模态 LLM 决定，文字按检测区域分块识别；手动画框的区域直接识别。";
+
     public override bool SupportsEditing => true;
 
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
@@ -702,6 +781,11 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             ChatModel = chatModel;
             OcrProviderId = ocrProviderId;
             OcrModel = ocrModel;
+            OcrUseLocalLayout = _persisted.OcrUseLocalLayout;
+            OcrConcurrency = _persisted.OcrConcurrency;
+            Raise(nameof(SelectedOcrReasoning));
+            Raise(nameof(SelectedOcrLayoutModel));
+            Raise(nameof(OcrLayoutStatus));
             AgentMaxRetries = _persisted.AgentMaxRetries;
             ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
             RebuildChatModelOptions();

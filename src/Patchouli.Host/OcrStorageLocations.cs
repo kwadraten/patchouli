@@ -10,6 +10,16 @@ public sealed record OcrStorageLocations(
     string NdlLiteWorkDirectory,
     string RapidOcrWorkDirectory)
 {
+    public string DocLayoutYoloModelsDirectory => Path.Combine(ModelsRoot, "doclayout-yolo");
+    public string PpDocLayoutV3ModelsDirectory => Path.Combine(ModelsRoot, "pp-doclayout-v3");
+
+    public string GetLayoutModelPath(string modelId)
+    {
+        return modelId == Llm.OcrLayoutModelIds.DocLayoutYolo
+            ? Path.Combine(DocLayoutYoloModelsDirectory, "doclayout_yolo_docstructbench_imgsz1024.onnx")
+            : Path.Combine(PpDocLayoutV3ModelsDirectory, "inference.onnx");
+    }
+
     public static OcrStorageLocations FromAppPaths(IAppPaths appPaths)
     {
         return FromResolved(appPaths.Resolve());

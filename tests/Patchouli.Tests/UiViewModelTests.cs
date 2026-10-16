@@ -340,7 +340,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Toolbar_patchouli_uri_opens_item_and_one_based_text_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");
@@ -846,7 +846,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public void LucideIcon_renders_svg_resource_without_external_package()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         session.Dispatch(() =>
         {
             Lucide.Avalonia.Lucide icon = new()
@@ -868,7 +868,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public void MainWindow_constructs_with_local_lucide_icons()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         session.Dispatch(() =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -879,7 +879,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_new_item_editor_renders_without_recursive_templates()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -913,7 +913,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_returns_to_rendered_library_after_switching_tabs()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -949,7 +949,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public void LibraryGrid_ctrl_and_shift_selection_survive_drag_handlers()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         session.Dispatch(() =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -2056,7 +2056,7 @@ public sealed class UiViewModelTests : IDisposable
         string path = Path.Combine(root, "failure.sqlite");
         string pdf = Path.Combine(root, "failure.pdf");
         MainWindowViewModel? vm = null;
-        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>
@@ -2127,7 +2127,7 @@ public sealed class UiViewModelTests : IDisposable
     {
         string path = _settings.CreateDatabasePath("ui-queue-success");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-success-{Guid.NewGuid():N}.pdf");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>
@@ -3006,7 +3006,7 @@ public sealed class UiViewModelTests : IDisposable
         string pdf = Path.Combine(root, "general.pdf");
         string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
         string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>
@@ -3070,7 +3070,7 @@ public sealed class UiViewModelTests : IDisposable
         string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
         string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
         string path = _settings.CreateDatabasePath("ui-isolation");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>
@@ -3365,7 +3365,7 @@ public sealed class UiViewModelTests : IDisposable
         MainWindowViewModel? vm = null;
         HostServices? services = null;
         PdfImportResult? import = null;
-        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>

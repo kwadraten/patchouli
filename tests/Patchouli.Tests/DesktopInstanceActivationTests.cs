@@ -33,7 +33,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Closing_tray_enabled_window_hides_it_without_closing()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel(), true);
@@ -55,7 +55,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Activation_shows_hidden_window()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -81,7 +81,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Activation_restores_minimized_window()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -117,7 +117,7 @@ public sealed class DesktopInstanceActivationTests
         DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         secondary.IsPrimary.Should().BeFalse();
 
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         try
         {
             await session.Dispatch(async () =>
@@ -166,7 +166,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Pre_window_pending_activation_consumed_on_subscribe()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             App app = (App)Avalonia.Application.Current!;

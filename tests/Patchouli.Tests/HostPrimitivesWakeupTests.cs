@@ -3,6 +3,9 @@ using Patchouli.Agent;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Host;
+using Patchouli.Llm;
+using Patchouli.UI;
 using Patchouli.Host.Agent;
 using Patchouli.Host.Workflows;
 using Patchouli.Ocr;
@@ -98,7 +101,7 @@ public sealed class HostPrimitivesWakeupTests
         OcrQueueHostPrimitives primitives = new(
             queue,
             new StubPageService((first, PagesFor(first, 2)), (second, PagesFor(second, 2))),
-            new StubPresetService(),
+            Defaults(),
             () => OcrEngineIds.RapidOcr);
 
         Task<Result<string>> waitFirst = primitives.WaitRunEventAsync(
@@ -130,7 +133,7 @@ public sealed class HostPrimitivesWakeupTests
         OcrQueueHostPrimitives primitives = new(
             queue,
             new StubPageService((first, PagesFor(first, 1)), (second, PagesFor(second, 1))),
-            new StubPresetService(),
+            Defaults(),
             () => OcrEngineIds.RapidOcr,
             hostLifetime.Token);
 
@@ -176,13 +179,46 @@ public sealed class HostPrimitivesWakeupTests
         runEvent.payload.Should().Contain("\"state\":\"succeeded\"");
     }
 
+    [Fact]
+    public async Task Multimodal_enqueue_creates_missing_preset_and_uses_cloud_provider_routing()
+    {
+        DocumentInstanceId document = DocumentInstanceId.New();
+        StubOcrQueueScheduler queue = new();
+        StubPresetService presets = new(true);
+        LlmAppSettings settings = LlmAppSettings.Default() with
+        {
+            OcrProviderId = "anthropic", OcrModel = "vision-model"
+        };
+        OcrPresetDefaults defaults = new(presets,
+            new OcrStorageLocations("", "", "", "", "", "", "", ""), () => settings);
+        using OcrQueueHostPrimitives primitives = new(queue,
+            new StubPageService((document, PagesFor(document, 3))), defaults, () => OcrEngineIds.MultimodalLlm);
+
+        AgentOcrEnqueueOutcome result = await primitives.EnqueueOcrAsync(Id(document), "1-2", CancellationToken.None);
+
+        result.Accepted.Should().BeTrue(result.Payload);
+        presets.CreatedModel.Should().Be("vision-model");
+        queue.Enqueued.Should().ContainSingle();
+        queue.Enqueued[0].EngineId.Should().Be(OcrEngineIds.MultimodalLlm);
+        queue.Enqueued[0].AdapterKind.Should().Be(OcrAdapterKind.CloudApi);
+        queue.Enqueued[0].ProviderId.Should().Be("anthropic");
+        queue.Enqueued[0].PageIds.Should().HaveCount(2);
+        queue.Started.Should().BeTrue();
+    }
+
     private static OcrQueueHostPrimitives Primitives(StubOcrQueueScheduler queue, DocumentInstanceId document)
     {
         return new OcrQueueHostPrimitives(
             queue,
             new StubPageService((document, PagesFor(document, 3))),
-            new StubPresetService(),
+            Defaults(),
             () => OcrEngineIds.RapidOcr);
+    }
+
+    private static OcrPresetDefaults Defaults()
+    {
+        return new OcrPresetDefaults(new StubPresetService(),
+            new OcrStorageLocations("", "", "", "", "", "", "", ""), LlmAppSettings.Default);
     }
 
     private static string Id(DocumentInstanceId document)
@@ -412,21 +448,25 @@ public sealed class HostPrimitivesWakeupTests
         }
     }
 
-    private sealed class StubPresetService : IOcrPresetService
+    private sealed class StubPresetService(bool initiallyMissing = false) : IOcrPresetService
     {
+        public string? CreatedModel { get; private set; }
+
         private static readonly OcrPreset Preset = new(
             OcrPresetId.New(), LibraryId.New(), "test preset", null, null, false, Now, Now);
 
         public Task<Result<OcrPreset?>> FindActivePresetByEngineIdAsync(string engineId,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(Result<OcrPreset?>.Success(Preset));
+            return Task.FromResult(
+                Result<OcrPreset?>.Success(initiallyMissing && CreatedModel is null ? null : Preset));
         }
 
         public Task<Result<OcrPreset>> CreatePresetAsync(string name, string? description, string engineId,
             string modelId, string? modelPath, string parametersJson, bool applyOnSuccess,
             CancellationToken cancellationToken = default)
         {
+            CreatedModel = modelId;
             return Task.FromResult(Result<OcrPreset>.Success(Preset));
         }
 

@@ -1,4 +1,5 @@
 using System.Reflection;
+using Avalonia.Headless;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
@@ -15,6 +16,7 @@ using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
+[Collection("Avalonia")]
 public sealed class MetadataLookupSettingsTests
 {
     [Fact]
@@ -221,62 +223,69 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public async Task Sync_settings_reload_after_database_switch_uses_the_new_library_id()
     {
-        string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-library-switch-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        string settingsPath = Path.Combine(root, "appsettings.json");
-        string firstDatabase = Path.Combine(root, "first.sqlite");
-        string secondDatabase = Path.Combine(root, "second.sqlite");
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
         {
-            PatchouliAppSettings initial = PatchouliAppSettings.Default() with
+            string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-library-switch-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(root);
+            string settingsPath = Path.Combine(root, "appsettings.json");
+            string firstDatabase = Path.Combine(root, "first.sqlite");
+            string secondDatabase = Path.Combine(root, "second.sqlite");
+            try
             {
-                Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = firstDatabase }
-            };
-            initial.Save(settingsPath).IsSuccess.Should().BeTrue();
-            MainWindowViewModel main = new(settingsPath: settingsPath) { RuntimeDatabasePath = firstDatabase };
+                PatchouliAppSettings initial = PatchouliAppSettings.Default() with
+                {
+                    Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = firstDatabase }
+                };
+                initial.Save(settingsPath).IsSuccess.Should().BeTrue();
+                await using MainWindowViewModel main = new(settingsPath: settingsPath)
+                    { RuntimeDatabasePath = firstDatabase };
 
-            await main.OpenDatabaseCommand.ExecuteAsync();
-            await main.Library.CreateCommand.ExecuteAsync();
-            string firstLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
-                .Value.LibraryId.ToString();
-            SyncSettingsViewModel sync = main.Settings.SyncSettings;
-            await sync.LoadAsync();
-            string firstSyncRoot = Path.Combine(root, "sync-one");
-            sync.SyncRoot = firstSyncRoot;
-            sync.SyncMetadataLookup = true;
-            await sync.SaveAsync();
+                await main.OpenDatabaseCommand.ExecuteAsync();
+                await main.Library.CreateCommand.ExecuteAsync();
+                string firstLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
+                    .Value.LibraryId.ToString();
+                SyncSettingsViewModel sync = main.Settings.SyncSettings;
+                await sync.LoadAsync();
+                string firstSyncRoot = Path.Combine(root, "sync-one");
+                sync.SyncRoot = firstSyncRoot;
+                sync.SyncMetadataLookup = true;
+                await sync.SaveAsync();
 
-            main.RuntimeDatabasePath = secondDatabase;
-            await main.OpenDatabaseCommand.ExecuteAsync();
-            await main.Library.CreateCommand.ExecuteAsync();
-            string secondLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
-                .Value.LibraryId.ToString();
-            await sync.LoadAsync();
+                main.RuntimeDatabasePath = secondDatabase;
+                await main.OpenDatabaseCommand.ExecuteAsync();
+                await main.Library.CreateCommand.ExecuteAsync();
+                string secondLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
+                    .Value.LibraryId.ToString();
+                await sync.LoadAsync();
 
-            sync.SyncRoot.Should().Be("");
-            sync.SyncMetadataLookup.Should().BeFalse();
+                sync.SyncRoot.Should().Be("");
+                sync.SyncMetadataLookup.Should().BeFalse();
 
-            string secondSyncRoot = Path.Combine(root, "sync-two");
-            sync.SyncRoot = secondSyncRoot;
-            await sync.SaveAsync();
-            PatchouliAppSettings saved = PatchouliAppSettings.Load(settingsPath);
+                string secondSyncRoot = Path.Combine(root, "sync-two");
+                sync.SyncRoot = secondSyncRoot;
+                await sync.SaveAsync();
+                PatchouliAppSettings saved = PatchouliAppSettings.Load(settingsPath);
 
-            saved.Sync.Bindings.Should().Contain(binding =>
-                binding.LibraryId == firstLibraryId &&
-                binding.LocalPath == Path.GetFullPath(firstSyncRoot) &&
-                binding.SyncedSettingKeys!.Contains(LibrarySettingKeys.MetadataLookup));
-            saved.Sync.Bindings.Should().Contain(binding =>
-                binding.LibraryId == secondLibraryId &&
-                binding.LocalPath == Path.GetFullPath(secondSyncRoot) &&
-                binding.SyncedSettingKeys!.Count == 0);
-            firstLibraryId.Should().NotBe(secondLibraryId);
-        }
-        finally
-        {
-            SqliteTestCleanup.ReleasePools(firstDatabase);
-            SqliteTestCleanup.ReleasePools(secondDatabase);
-            Directory.Delete(root, true);
-        }
+                saved.Sync.Bindings.Should().Contain(binding =>
+                    binding.LibraryId == firstLibraryId &&
+                    binding.LocalPath == Path.GetFullPath(firstSyncRoot) &&
+                    binding.SyncedSettingKeys!.Contains(LibrarySettingKeys.MetadataLookup));
+                saved.Sync.Bindings.Should().Contain(binding =>
+                    binding.LibraryId == secondLibraryId &&
+                    binding.LocalPath == Path.GetFullPath(secondSyncRoot) &&
+                    binding.SyncedSettingKeys!.Count == 0);
+                firstLibraryId.Should().NotBe(secondLibraryId);
+            }
+            finally
+            {
+                SqliteTestCleanup.ReleasePools(firstDatabase);
+                SqliteTestCleanup.ReleasePools(secondDatabase);
+                Directory.Delete(root, true);
+            }
+
+            return true;
+        }, CancellationToken.None);
     }
 
     [Fact]

@@ -31,7 +31,7 @@ public sealed class PdfWorkspaceTranslationTests : IDisposable
     [Fact]
     public async Task Loading_a_page_populates_the_translation_scene_and_copy_command()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path)

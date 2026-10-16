@@ -275,16 +275,7 @@ public sealed class LibraryImportOrchestrator
         string engineId,
         CancellationToken cancellationToken = default)
     {
-        return engineId switch
-        {
-            OcrEngineIds.MinerU => await EnsureMinerUPresetAsync(cancellationToken),
-            OcrEngineIds.NdlKoten => await EnsureNdlKotenPresetAsync(cancellationToken),
-            OcrEngineIds.NdlLite => await EnsureNdlLitePresetAsync(cancellationToken),
-            OcrEngineIds.RapidOcr => await EnsureRapidOcrPresetAsync(cancellationToken),
-            _ => Result<OcrPresetId>.Failure(
-                AppErrorCodes.UnsupportedOperation,
-                $"未实现默认 OCR preset 的引擎：{engineId}")
-        };
+        return await _services.OcrDefaults.EnsurePresetAsync(engineId, cancellationToken);
     }
 
     /// <summary>
@@ -428,10 +419,7 @@ public sealed class LibraryImportOrchestrator
             return Result<OcrQueueTask>.Failure(queue.ErrorCode!, queue.ErrorMessage!);
         }
 
-        string adapterKind = version.Value.EngineId == OcrEngineIds.MinerU
-            ? OcrAdapterKind.CloudApi
-            : OcrAdapterKind.LocalLibrary;
-        string? providerId = version.Value.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        (string adapterKind, string? providerId) = _services.OcrDefaults.QueueRoutingFor(version.Value.EngineId);
         return await _services.Ocr.QueueDocumentOcrAsync(
             documentInstanceId,
             presetId,
@@ -441,118 +429,5 @@ public sealed class LibraryImportOrchestrator
             providerId,
             priority,
             cancellationToken);
-    }
-
-    private async Task<Result<OcrPresetId>> EnsureMinerUPresetAsync(CancellationToken cancellationToken)
-    {
-        Result<OcrPreset?> existing =
-            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.MinerU, cancellationToken);
-        if (existing.IsFailure)
-        {
-            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
-        }
-
-        if (existing.Value is not null)
-        {
-            return Result<OcrPresetId>.Success(existing.Value.PresetId);
-        }
-
-        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
-            "MinerU OCR",
-            "MinerU document OCR preset",
-            OcrEngineIds.MinerU,
-            OcrModelIds.MinerUDefault,
-            null,
-            """{"isOcr":true,"enableTable":true,"enableFormula":true}""",
-            true,
-            cancellationToken);
-        return created.IsFailure
-            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
-            : Result<OcrPresetId>.Success(created.Value.PresetId);
-    }
-
-    private async Task<Result<OcrPresetId>> EnsureNdlKotenPresetAsync(CancellationToken cancellationToken)
-    {
-        Result<OcrPreset?> existing =
-            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.NdlKoten, cancellationToken);
-        if (existing.IsFailure)
-        {
-            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
-        }
-
-        if (existing.Value is not null)
-        {
-            return Result<OcrPresetId>.Success(existing.Value.PresetId);
-        }
-
-        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
-            "NDL Koten OCR Lite",
-            "Local classical Japanese OCR preset",
-            OcrEngineIds.NdlKoten,
-            OcrModelIds.NdlKotenDefault,
-            _services.OcrStorage.NdlKotenModelsDirectory,
-            "{}",
-            true,
-            cancellationToken);
-        return created.IsFailure
-            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
-            : Result<OcrPresetId>.Success(created.Value.PresetId);
-    }
-
-    private async Task<Result<OcrPresetId>> EnsureNdlLitePresetAsync(CancellationToken cancellationToken)
-    {
-        Result<OcrPreset?> existing =
-            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.NdlLite, cancellationToken);
-        if (existing.IsFailure)
-        {
-            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
-        }
-
-        if (existing.Value is not null)
-        {
-            return Result<OcrPresetId>.Success(existing.Value.PresetId);
-        }
-
-        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
-            "NDLOCR-Lite",
-            "Local Japanese OCR preset for ndlocr-lite",
-            OcrEngineIds.NdlLite,
-            OcrModelIds.NdlLiteDefault,
-            _services.OcrStorage.NdlLiteModelsDirectory,
-            "{}",
-            true,
-            cancellationToken);
-        return created.IsFailure
-            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
-            : Result<OcrPresetId>.Success(created.Value.PresetId);
-    }
-
-    private async Task<Result<OcrPresetId>> EnsureRapidOcrPresetAsync(CancellationToken cancellationToken)
-    {
-        Result<OcrPreset?> existing =
-            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.RapidOcr, cancellationToken);
-        if (existing.IsFailure)
-        {
-            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
-        }
-
-        if (existing.Value is not null)
-        {
-            return Result<OcrPresetId>.Success(existing.Value.PresetId);
-        }
-
-        // Empty parameters keep the RapidOCR ONNX pipeline on the upstream v3.9.2 defaults.
-        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
-            "RapidOCR",
-            "Local RapidOCR preset using the pinned PP-OCRv6 models",
-            OcrEngineIds.RapidOcr,
-            OcrModelIds.RapidOcrDefault,
-            _services.OcrStorage.RapidOcrModelsDirectory,
-            "{}",
-            true,
-            cancellationToken);
-        return created.IsFailure
-            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
-            : Result<OcrPresetId>.Success(created.Value.PresetId);
     }
 }

@@ -26,7 +26,7 @@ public sealed class LibraryTagReactivityTests : IDisposable
     [Fact]
     public async Task Committed_tag_add_updates_sidebar_tags_without_full_refresh()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-tag-sidebar-reactive");
@@ -61,7 +61,7 @@ public sealed class LibraryTagReactivityTests : IDisposable
     [Fact]
     public async Task Committed_tag_change_reapplies_the_active_sidebar_filter()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-tag-filter-reactive");
@@ -124,7 +124,7 @@ public sealed class LibraryTagReactivityTests : IDisposable
     [Fact]
     public async Task Deleting_the_selected_item_clears_the_inspector()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             string databasePath = _settings.CreateDatabasePath("ui-inspector-cleared-on-delete");

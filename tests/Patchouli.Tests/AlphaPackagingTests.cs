@@ -262,7 +262,7 @@ public sealed class AlphaPackagingTests
         AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
 
         about.ThirdPartyLibraries.Should().Contain(library =>
-            library.Name == "NDL Koten OCR Lite" &&
+            library.Name == "NDL古典籍OCR-Lite" &&
             library.License == "CC-BY-4.0" &&
             library.Url == "https://github.com/ndl-lab/ndlkotenocr-lite");
     }

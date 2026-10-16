@@ -23,12 +23,47 @@ public sealed class LlmSettingsViewModelTests : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
+    [Fact]
+    public async Task Multimodal_layout_selection_and_mode_are_saved_and_discarded()
+    {
+        (MainWindowViewModel main, LlmSettingsViewModel section) = CreateSection(new RecordingCredentialStore());
+        await using (main)
+        {
+            section.OcrUseLocalLayout.Should().BeTrue();
+            section.SelectedOcrLayoutModel!.ModelId.Should().Be(OcrLayoutModelIds.PpDocLayoutV3);
+            section.SelectedOcrLayoutModel = section.OcrLayoutModelOptions.Single(option =>
+                option.ModelId == OcrLayoutModelIds.DocLayoutYolo);
+            section.SelectedOcrLayoutModel = null;
+            section.SelectedOcrLayoutModel!.ModelId.Should().Be(OcrLayoutModelIds.DocLayoutYolo);
+            section.OcrUseLocalLayout = false;
+            section.OcrConcurrency = 6;
+            section.SelectedOcrReasoning = section.OcrReasoningOptions.Single(option => option.ModelId == "low");
+            section.SelectedOcrReasoning = null;
+            await section.SaveAsync();
+
+            LlmAppSettings saved = PatchouliAppSettings.Load(_settings.Path).Llm;
+            saved.OcrUseLocalLayout.Should().BeFalse();
+            saved.OcrLayoutModel.Should().Be(OcrLayoutModelIds.DocLayoutYolo);
+            saved.OcrConcurrency.Should().Be(6);
+            saved.OcrReasoningEffort.Should().Be("low");
+            section.OcrUseLocalLayout = true;
+            section.OcrConcurrency = 1;
+            section.SelectedOcrReasoning = section.OcrReasoningOptions.First();
+            section.SelectedOcrLayoutModel = section.OcrLayoutModelOptions.First();
+            await section.DiscardAsync();
+            section.OcrUseLocalLayout.Should().BeFalse();
+            section.OcrConcurrency.Should().Be(6);
+            section.SelectedOcrReasoning!.ModelId.Should().Be("low");
+            section.IsDirty.Should().BeFalse();
+        }
+    }
+
     [Theory]
     [InlineData("sync")]
     [InlineData("mcp")]
     public async Task Rendering_an_api_provider_preserves_its_saved_model_and_reopened_form(string awaySection)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<bool>(async () =>
         {
             RecordingCredentialStore store = new();
@@ -163,7 +198,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     [Fact]
     public async Task Empty_provider_selectors_do_not_clear_defaults_or_prevent_saving_a_provider()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<bool>(async () =>
         {
             RecordingCredentialStore store = new();

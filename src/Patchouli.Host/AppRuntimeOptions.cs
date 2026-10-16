@@ -1233,6 +1233,10 @@ public sealed record PatchouliAppSettings(
                 ReadString(element, "ChatModel",
                     ReadString(element, "TranslationModel", fallback.ChatModel)))
             {
+                OcrUseLocalLayout = ReadBool(element, "OcrUseLocalLayout", fallback.OcrUseLocalLayout),
+                OcrLayoutModel = ReadString(element, "OcrLayoutModel", fallback.OcrLayoutModel),
+                OcrReasoningEffort = ReadString(element, "OcrReasoningEffort", fallback.OcrReasoningEffort),
+                OcrConcurrency = ReadInt(element, "OcrConcurrency", fallback.OcrConcurrency),
                 AgentMaxRetries = ReadInt(element, "AgentMaxRetries", fallback.AgentMaxRetries),
                 AgentReasoningEffort = ReadString(element, "AgentReasoningEffort", fallback.AgentReasoningEffort),
                 ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
@@ -1249,6 +1253,10 @@ public sealed record PatchouliAppSettings(
             normalized.Providers,
             normalized.OcrProviderId,
             normalized.OcrModel,
+            normalized.OcrUseLocalLayout,
+            normalized.OcrLayoutModel,
+            normalized.OcrReasoningEffort,
+            normalized.OcrConcurrency,
             normalized.ChatProviderId,
             normalized.ChatModel,
             normalized.AgentMaxRetries,

@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
-using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -48,7 +47,7 @@ public sealed class OcrQueueHostPrimitives : IAgentHostPrimitives, IDisposable
 
     private readonly IOcrQueueScheduler _queue;
     private readonly IPageService _pages;
-    private readonly IOcrPresetService _presets;
+    private readonly OcrPresetDefaults _defaults;
     private readonly Func<string> _documentOcrEngineId;
     private readonly CancellationToken _hostLifetime;
     private readonly ConcurrentDictionary<long, ArmedWait> _armed = new();
@@ -57,19 +56,19 @@ public sealed class OcrQueueHostPrimitives : IAgentHostPrimitives, IDisposable
     /// <summary>Creates the primitives over the OCR queue and the document/preset resolution services.</summary>
     /// <param name="queue">The OCR queue everything is enqueued through and observed from.</param>
     /// <param name="pages">The page listing used to resolve a document's page range.</param>
-    /// <param name="presets">The preset service used to resolve the active preset of the document engine.</param>
+    /// <param name="defaults">Shared default preset creation and engine queue routing.</param>
     /// <param name="documentOcrEngineId">The configured document OCR engine id, read live so settings changes apply.</param>
     /// <param name="hostLifetime">Cancels every armed wait when the host shuts down.</param>
-    public OcrQueueHostPrimitives(IOcrQueueScheduler queue, IPageService pages, IOcrPresetService presets,
+    public OcrQueueHostPrimitives(IOcrQueueScheduler queue, IPageService pages, OcrPresetDefaults defaults,
         Func<string> documentOcrEngineId, CancellationToken hostLifetime = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(pages);
-        ArgumentNullException.ThrowIfNull(presets);
+        ArgumentNullException.ThrowIfNull(defaults);
         ArgumentNullException.ThrowIfNull(documentOcrEngineId);
         _queue = queue;
         _pages = pages;
-        _presets = presets;
+        _defaults = defaults;
         _documentOcrEngineId = documentOcrEngineId;
         _hostLifetime = hostLifetime;
         _queue.Changed += OnQueueChanged;
@@ -113,7 +112,7 @@ public sealed class OcrQueueHostPrimitives : IAgentHostPrimitives, IDisposable
             return Rejected("no document OCR engine is configured.");
         }
 
-        Result<OcrPreset?> preset = await _presets.FindActivePresetByEngineIdAsync(engineId, cancellationToken)
+        Result<OcrPresetId> preset = await _defaults.EnsurePresetAsync(engineId, cancellationToken)
             .ConfigureAwait(false);
         if (preset.IsFailure)
         {
@@ -121,18 +120,15 @@ public sealed class OcrQueueHostPrimitives : IAgentHostPrimitives, IDisposable
                             $"({preset.ErrorCode}: {preset.ErrorMessage}).");
         }
 
-        if (preset.Value is null)
-        {
-            return Rejected($"engine '{engineId}' has no active OCR preset.");
-        }
+        (string adapterKind, string? providerId) = _defaults.QueueRoutingFor(engineId);
 
         Result<OcrQueueTask> queued = await _queue.EnqueueDocumentAsync(
             document,
-            preset.Value.PresetId,
+            preset.Value,
             selected.Select(static page => page.PageId).ToArray(),
             engineId,
-            AdapterKindFor(engineId),
-            ProviderIdFor(engineId),
+            adapterKind,
+            providerId,
             OcrQueuePriority.UserStartedDocument,
             cancellationToken).ConfigureAwait(false);
         if (queued.IsFailure)
@@ -240,16 +236,6 @@ public sealed class OcrQueueHostPrimitives : IAgentHostPrimitives, IDisposable
     {
         return state is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
             or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked;
-    }
-
-    private static string AdapterKindFor(string engineId)
-    {
-        return engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
-    }
-
-    private static string? ProviderIdFor(string engineId)
-    {
-        return engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
     }
 
     private void OnQueueChanged(object? sender, OcrQueueChangedEventArgs args)

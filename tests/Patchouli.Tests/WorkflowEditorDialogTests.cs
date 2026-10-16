@@ -101,11 +101,8 @@ public sealed class WorkflowEditorDialogTests
     [Fact]
     public async Task Editor_renders_line_numbers_and_fsharp_highlighting_and_preserves_undo_and_drafts()
     {
-        // Skia and mock headless typefaces cannot share a process-wide font cache. Generate the
-        // visual preview in a separate test process with this flag; the suite uses its usual backend.
         bool renderPreview = Environment.GetEnvironmentVariable("PATCHOULI_WORKFLOW_EDITOR_PREVIEW") == "1";
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(
-            renderPreview ? typeof(EditorRenderApp) : typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -229,15 +226,6 @@ public sealed class WorkflowEditorDialogTests
         {
             Shown = viewModel;
             return Task.FromResult(default(TResult));
-        }
-    }
-
-    public static class EditorRenderApp
-    {
-        public static AppBuilder BuildAvaloniaApp()
-        {
-            return AppBuilder.Configure<App>().UseSkia()
-                .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
         }
     }
 }
