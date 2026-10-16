@@ -12,7 +12,31 @@ namespace Patchouli.Tests;
 
 public sealed class AgentSdkRuntimeTests
 {
-    private const string Put = """{"uri":"patchouli://translations/doc/page-1.md","content":"translated"}""";
+    private const string Put =
+        """{"uri":"patchouli://translations/doc/page-1.xml","source_revision":"rev","translation_version":0,"boxes":[{"box_id":"b1","content":"translated"}]}""";
+
+    [Fact]
+    public async Task SDK_resource_constructors_generate_canonical_yaml_and_xml_links()
+    {
+        Gateway gateway = new();
+        AgentEffectContext context = new("canonical-links", "", [], []);
+        using AgentSdkRuntime.Scope scope = new AgentSdkRuntime(gateway)
+            .Activate(context, "effect/1", CancellationToken.None);
+        await using AgentFsiRepl worker = new();
+        AgentToolOutcome result = await worker.ExecuteAsync(context.SessionId, JsonSerializer.Serialize(new
+        {
+            code = """
+                   Sdk.fetch [ReadableResource.SourcePage("doc", 1); ReadableResource.TranslationPage("doc", 2); ReadableResource.ItemBibliography("item"); ReadableResource.LibrarySummary]
+                   |> Async.AwaitTask |> Async.RunSynchronously |> Sdk.requireSuccess |> ignore
+                   """
+        }), scope.InvokeAsync, CancellationToken.None);
+
+        result.Succeeded.Should().BeTrue(result.Payload);
+        gateway.Calls.Should().ContainSingle().Which.Arguments.Should().Contain(
+                "patchouli://texts/doc/page-1.xml").And.Contain("patchouli://translations/doc/page-2.xml")
+            .And.Contain("patchouli://items/item.yml").And.Contain("patchouli://library.yml")
+            .And.NotContain(".md").And.NotContain(".bib").And.NotContain("library.toon");
+    }
 
     [Fact]
     public async Task Worker_settles_unawaited_sdk_tasks_and_rejects_tasks_from_an_ended_evaluation()
@@ -92,10 +116,11 @@ public sealed class AgentSdkRuntimeTests
         using ScriptHostSession script = ScriptHostSession.Create();
         script.EvaluateScript("""
                               open Patchouli.Agent.Sdk
-                              let exported = LibraryTools.commitTranslation |> Tool.bind (WritableResource.TranslationPage("bound", 7)) |> Tool.export
+                              let exported = LibraryTools.commitTranslation |> Tool.bind (WritableResource.TranslationPageXml("bound", 7)) |> Tool.export
                               """, "bound.fsx").Succeeded.Should().BeTrue();
         ExportedTool exported = (ExportedTool)script.EvaluateExpression("exported", "bound.fsx").Value!;
-        exported.InputSchema.Should().Contain("content").And.NotContain("uri");
+        exported.InputSchema.Should().Contain("source_revision").And.Contain("translation_version").And.Contain("boxes")
+            .And.NotContain("uri");
         Gateway gateway = new();
         AgentEffectContext context = new("bound-worker", "", [], [])
         {
@@ -104,8 +129,12 @@ public sealed class AgentSdkRuntimeTests
         };
         AgentSdkRuntime runtime = new(gateway);
         using AgentSdkRuntime.Scope native = runtime.Activate(context, "effect/1", CancellationToken.None);
-        (await native.InvokeAsync("commitTranslation", """{"content":"translated"}""")).Succeeded.Should().BeTrue();
-        (await native.InvokeAsync("commitTranslation", """{"content":"translated","uri":"other"}""")).ErrorCode.Should()
+        const string input =
+            """{"source_revision":"rev","translation_version":0,"boxes":[{"box_id":"b1","content":"translated"}]}""";
+        (await native.InvokeAsync("commitTranslation", input)).Succeeded.Should().BeTrue();
+        (await native.InvokeAsync("commitTranslation",
+                """{"source_revision":"rev","translation_version":0,"boxes":[{"box_id":"b1","content":"translated"}],"uri":"other"}"""))
+            .ErrorCode.Should()
             .Be("INVALID_ARGUMENT");
         (await native.InvokeAsync("put", Put)).ErrorCode.Should().Be("AGENT_TOOL_DENIED");
         using AgentSdkRuntime.Scope fsi = runtime.Activate(context, "effect/2", CancellationToken.None);
@@ -113,13 +142,50 @@ public sealed class AgentSdkRuntimeTests
         AgentToolOutcome result = await worker.ExecuteAsync(context.SessionId, JsonSerializer.Serialize(new
         {
             code =
-                "AgentTools.commitTranslation { content = \"translated\" } |> Async.AwaitTask |> Async.RunSynchronously |> printfn \"%s\""
+                "AgentTools.commitTranslation { source_revision = \"rev\"; translation_version = 0L; boxes = [{ box_id = \"b1\"; content = \"translated\" }] } |> Async.AwaitTask |> Async.RunSynchronously |> printfn \"%s\""
         }), fsi.InvokeAsync, CancellationToken.None, AgentSdkBindings.Source([exported]));
         result.Succeeded.Should().BeTrue(result.Payload);
         gateway.Calls.Should().HaveCount(2);
         gateway.Calls[0].Should().Be(gateway.Calls[1]);
-        gateway.Calls[0].Arguments.Should().Contain("bound/page-7.md");
+        gateway.Calls[0].Arguments.Should().Contain("bound/page-7.xml");
         fsi.Receipts.Single().ParentId.Should().Contain("commitTranslation");
+    }
+
+    [Fact]
+    public async Task Local_effect_ids_are_namespaced_by_activation_for_durable_sdk_operations()
+    {
+        string directory = TemporaryDirectory();
+        try
+        {
+            Gateway gateway = new();
+            AgentEffectInterpreter interpreter = new(new NoModels(), gateway, new PlaceholderAgentHostPrimitives());
+            AgentEffectContext firstContext = new("activation-namespace", "", [], [])
+            {
+                ContextId = "shared-context",
+                ActivationId = "activation-a",
+                SessionDirectory = directory
+            };
+            AgentEffectContext secondContext = firstContext with { ActivationId = "activation-b" };
+
+            AgentEffectOutcome first = await interpreter.ExecuteAsync(firstContext,
+                Effect.NewMcpToolCall(EffectId.NewEffectId(1), "put", Put), CancellationToken.None);
+            AgentEffectOutcome second = await interpreter.ExecuteAsync(secondContext,
+                Effect.NewMcpToolCall(EffectId.NewEffectId(1), "put", Put), CancellationToken.None);
+
+            first.FailureCode.Should().BeNull();
+            second.FailureCode.Should().BeNull();
+            first.Receipts.Should().ContainSingle();
+            second.Receipts.Should().ContainSingle();
+            first.Receipts[0].OperationId.Should().NotBe(second.Receipts[0].OperationId);
+            first.Receipts[0].ActivationId.Should().Be("activation-a");
+            second.Receipts[0].ActivationId.Should().Be("activation-b");
+            gateway.Calls.Should().HaveCount(2,
+                "the same local EffectId in a later activation is a distinct operation, not a replay of the earlier receipt");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
     }
 
     [Fact]
@@ -129,27 +195,41 @@ public sealed class AgentSdkRuntimeTests
         try
         {
             Gateway gateway = new();
-            AgentEffectContext context = new("durable", "", [], []) { SessionDirectory = directory };
+            AgentEffectContext context = new("durable", "", [], [])
+            {
+                ContextId = "context-a",
+                ActivationId = "activation-a",
+                SessionDirectory = directory
+            };
             AgentSdkRuntime runtime = new(gateway);
-            using (AgentSdkRuntime.Scope first = runtime.Activate(context, "effect/1", CancellationToken.None))
+            using (AgentSdkRuntime.Scope first =
+                   runtime.Activate(context, "activation-a/effect/1", CancellationToken.None))
             {
                 (await first.InvokeAsync("put", Put)).Succeeded.Should().BeTrue();
             }
 
-            using (AgentSdkRuntime.Scope replay = runtime.Activate(context, "effect/1", CancellationToken.None))
+            using (AgentSdkRuntime.Scope replay =
+                   runtime.Activate(context, "activation-a/effect/1", CancellationToken.None))
             {
                 (await replay.InvokeAsync("put", Put)).Succeeded.Should().BeTrue();
             }
 
             gateway.Calls.Should().ContainSingle();
             gateway.Interrupt = true;
-            using (AgentSdkRuntime.Scope interrupted = runtime.Activate(context, "effect/2", CancellationToken.None))
+            using (AgentSdkRuntime.Scope interrupted =
+                   runtime.Activate(context, "activation-a/effect/2", CancellationToken.None))
             {
                 await Assert.ThrowsAsync<OperationCanceledException>(() => interrupted.InvokeAsync("put", Put));
             }
 
             gateway.Interrupt = false;
-            using (AgentSdkRuntime.Scope next = runtime.Activate(context, "effect/3", CancellationToken.None))
+            AgentEffectContext otherContext = context with
+            {
+                ContextId = "context-b",
+                ActivationId = "activation-b"
+            };
+            using (AgentSdkRuntime.Scope next =
+                   runtime.Activate(otherContext, "activation-b/effect/2", CancellationToken.None))
             {
                 (await next.InvokeAsync("put", Put)).ErrorCode.Should().Be("SDK_OPERATION_UNKNOWN");
             }
@@ -158,7 +238,8 @@ public sealed class AgentSdkRuntimeTests
             WorkflowEffectHostAdapter adapter = new(new AgentEffectInterpreter(new NoModels(), gateway,
                 new PlaceholderAgentHostPrimitives()), _ => "", sessionDirectory: _ => directory);
             WorkflowEffectOutcome observed = await adapter.ExecuteEffectAsync(context.SessionId,
-                new WorkflowEffectScope(AgentCoreModule.initial),
+                new WorkflowEffectScope(AgentCoreModule.initial, null, null, Array.Empty<ExportedTool>(), "worker",
+                    otherContext.ContextId, otherContext.ActivationId, "", false, ""),
                 Effect.NewMcpToolCall(EffectId.NewEffectId(2), "put", Put), CancellationToken.None);
             observed.Should().BeOfType<WorkflowEffectOutcome.ObservedEvent>().Which.operations.Single().ErrorCode
                 .Should().Be("SDK_OPERATION_UNKNOWN",
@@ -216,7 +297,7 @@ public sealed class AgentSdkRuntimeTests
             Effect call = Effect.NewMcpToolCall(EffectId.NewEffectId(1), "fsi", JsonSerializer.Serialize(new
             {
                 code = """
-                       Sdk.put (WritableResource.TranslationPage("doc", 1)) "translated" |> Async.AwaitTask |> Async.RunSynchronously |> Sdk.requireSuccess |> ignore
+                       Sdk.putBoxes (WritableResource.TranslationPage("doc", 1)) "rev" (Some 0) ["b1", "translated"] |> Async.AwaitTask |> Async.RunSynchronously |> Sdk.requireSuccess |> ignore
                        System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite)
                        """
             }));
@@ -229,6 +310,69 @@ public sealed class AgentSdkRuntimeTests
             resumed.Receipts.Should().ContainSingle().Which.Status.Should().Be("Succeeded");
             gateway.Calls.Should().ContainSingle();
             resumed.ResultEvent.Should().BeOfType<Event.ToolFailure>().Which.payload.Should().Contain("sdkOperations");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_write_receipt_keeps_its_original_uri_and_blocks_a_canonical_alias_retry()
+    {
+        string directory = TemporaryDirectory();
+        try
+        {
+            Gateway gateway = new() { Interrupt = true };
+            List<AgentSdkReceipt> observed = [];
+            AgentEffectContext legacyContext = new("legacy-sdk-write", "", [], [])
+            {
+                ContextId = "legacy-context",
+                ActivationId = "legacy-activation",
+                SessionDirectory = directory,
+                RecordSdk = receipt =>
+                {
+                    observed.Add(receipt);
+                    return Task.CompletedTask;
+                }
+            };
+            AgentSdkRuntime runtime = new(gateway);
+            const string legacyArguments =
+                """{"uri":"patchouli://translations/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/page-1.md","content":"legacy payload","format":"json"}""";
+            using (AgentSdkRuntime.Scope interrupted =
+                   runtime.Activate(legacyContext, "legacy-activation/effect/1", CancellationToken.None))
+            {
+                await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                    interrupted.InvokeAsync("put", legacyArguments));
+            }
+
+            observed.Should().ContainSingle().Which.Arguments.Should()
+                .Contain("patchouli://translations/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/page-1.md")
+                .And.NotContain("patchouli://translations/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/page-1.xml");
+
+            gateway.Interrupt = false;
+            AgentEffectContext canonicalContext = legacyContext with
+            {
+                ContextId = "canonical-context",
+                ActivationId = "canonical-activation",
+                RecordSdk = null
+            };
+            const string canonicalArguments =
+                """{"uri":"patchouli://translations/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/page-1.xml","content":"legacy payload","format":"json"}""";
+            using (AgentSdkRuntime.Scope sameOperation =
+                   runtime.Activate(legacyContext with { RecordSdk = null },
+                       "legacy-activation/effect/1", CancellationToken.None))
+            {
+                (await sameOperation.InvokeAsync("put", canonicalArguments)).ErrorCode
+                    .Should().Be("SDK_REPLAY_DIVERGED",
+                        "the same operation ID cannot change its recorded arguments");
+            }
+
+            using AgentSdkRuntime.Scope retry =
+                runtime.Activate(canonicalContext, "canonical-activation/effect/1", CancellationToken.None);
+
+            (await retry.InvokeAsync("put", canonicalArguments)).ErrorCode.Should().Be("SDK_OPERATION_UNKNOWN");
+            gateway.Calls.Should().ContainSingle("the old unresolved write and new canonical alias share one target");
         }
         finally
         {

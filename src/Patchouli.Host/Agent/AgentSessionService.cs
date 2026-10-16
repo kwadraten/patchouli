@@ -1,6 +1,9 @@
 using Microsoft.FSharp.Collections;
+using System.Text.Json;
 using Patchouli.Agent;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Workflows;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
 
@@ -47,14 +50,20 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     private int _disposed;
     private readonly AgentFsiRepl? _fsi;
     private readonly AgentWorkspaceStore _workspaces;
+    private readonly Func<int>? _maxRequestRetries;
+
+    public int MaxRequestRetries =>
+        Math.Clamp(_maxRequestRetries?.Invoke() ?? Llm.LlmAppSettings.DefaultAgentMaxRetries, 0,
+            Llm.LlmAppSettings.MaxAgentMaxRetries);
 
     /// <summary>Creates the service over a session store and an effect interpreter.</summary>
     public AgentSessionService(AgentSessionStore store, IAgentEffectInterpreter interpreter,
         IHostActivityTracker? activityTracker = null, TimeProvider? timeProvider = null, AgentFsiRepl? fsi = null,
-        AgentWorkspaceStore? workspaces = null)
+        AgentWorkspaceStore? workspaces = null, Func<int>? maxRequestRetries = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(interpreter);
+        _maxRequestRetries = maxRequestRetries;
         _store = store;
         _interpreter = interpreter;
         _activity = activityTracker;
@@ -227,16 +236,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(launch);
-        Context initial = AgentCoreModule.initial;
-        if (launch.Parameters.TryGetValue("toolRetryLimit", out string? configured))
-        {
-            if (!int.TryParse(configured, out int limit) || limit < 0)
-            {
-                throw new ArgumentException("toolRetryLimit must be a non-negative integer.", nameof(launch));
-            }
-
-            initial = AgentCoreModule.withRetryLimit(limit, initial);
-        }
+        Context initial = AgentCoreModule.withRetryLimit(MaxRequestRetries, AgentCoreModule.initial);
 
         _workspaces.Ensure(launch.SessionId);
         await _store.CreateSessionAsync(launch, cancellationToken).ConfigureAwait(false);
@@ -245,7 +245,8 @@ public sealed partial class AgentSessionService : IAsyncDisposable
             // The head is part of the deterministic prefix: a caller that supplies one (a .fsx
             // workflow session supplies its script contract) keeps it byte-stable for the whole run.
             Instructions = InstructionPrefixOf(launch),
-            Context = initial
+            Context = initial,
+            MainActivationId = Guid.NewGuid().ToString("N")
         };
         session.Status = AgentSessionStatus.Running;
         session.Detail = "created";
@@ -293,6 +294,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         AgentSession session = new(launch, _lifetime.Token)
         {
             Context = context,
+            MainActivationId = state?.MainActivationId ?? "main",
             Started = !string.Equals(launch.WorkflowUri, ChatWorkflowUri, StringComparison.Ordinal) ||
                       context.ProcessedMessageIds.Contains("launch:" + sessionId)
         };
@@ -732,6 +734,9 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     {
         if (evt is Event.UserMessage)
         {
+            // A user message starts a new main-chat activation. The id is saved before any model
+            // effect can run and therefore remains stable for request retries and recovery.
+            session.MainActivationId = Guid.NewGuid().ToString("N");
             await AppendLogAsync(session, "turn/start", "{}", cancellationToken).ConfigureAwait(false);
         }
 
@@ -871,7 +876,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
     private static string LogStatusPayload(AgentSessionStatus status, string detail)
     {
-        return "{\"status\":\"" + status + "\",\"detail\":" + System.Text.Json.JsonSerializer.Serialize(detail) + "}";
+        return "{\"status\":\"" + status + "\",\"detail\":" + JsonSerializer.Serialize(detail) + "}";
     }
 
     private static Context WithStatus(Context context, RunStatus status)
@@ -901,18 +906,46 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
     public async Task RecordSdkAsync(string sessionId, AgentSdkReceipt receipt)
     {
-        await _store.AppendLogAsync(sessionId, "sdk/operation", System.Text.Json.JsonSerializer.Serialize(receipt),
+        await _store.AppendLogAsync(sessionId, "sdk/operation", JsonSerializer.Serialize(receipt),
             CancellationToken.None).ConfigureAwait(false);
+    }
+
+    public async Task ReleaseContextAsync(string sessionId, string contextId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.Equals(contextId, "main", StringComparison.Ordinal) ||
+            string.Equals(contextId, sessionId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (_fsi is not null)
+        {
+            await _fsi.ForgetContextAsync(sessionId, contextId).ConfigureAwait(false);
+        }
     }
 
     private AgentEffectContext ContextFor(AgentSession session)
     {
+        ModelSelection? modelSelection = session.Launch.Parameters.TryGetValue(
+                                             AgentEffectContext.ModelSelectionParameter, out string? encodedModel) &&
+                                         !string.IsNullOrWhiteSpace(encodedModel)
+            ? ModelSelectionCodec.Decode(encodedModel)
+            : null;
         return new AgentEffectContext(session.SessionId,
             InstructionsFor(session) + "\n" + AgentNativeTools.Instructions, AgentNativeTools.Definitions,
             [..ListModule.ToSeq(session.Context.History)])
         {
+            // Runtime scopes call the platform context "main"; Host uses the owning session id
+            // so chat and workflow-main share history compaction and the same FSI worker.
+            ContextId = session.SessionId,
+            ActivationId = session.MainActivationId,
             SessionDirectory = _store.ResolveSessionDirectory(session.SessionId),
-            RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt)
+            RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt),
+            RequestRetryAttempt = session.Context.Retry.Attempts,
+            ModelSelection = modelSelection
         };
     }
 
@@ -1069,7 +1102,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
         session.UpdatedAt = _time.GetUtcNow();
         AgentSessionStateDocument document = new(Snapshot(session), [..session.Inbox], [..session.PendingEvents],
-            session.Instructions);
+            session.Instructions, session.MainActivationId);
         return _store.WriteStateAsync(session.SessionId, document, cancellationToken);
     }
 
@@ -1089,6 +1122,21 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (effect is Effect.LlmChat && session.Context.Retry.Attempts == 0)
+            {
+                session.Context = AgentCoreModule.withRetryLimit(MaxRequestRetries, session.Context);
+                await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (effect is Effect.LlmChat && session.Context.Retry.Attempts > 0)
+            {
+                session.Detail = $"模型请求重试 {session.Context.Retry.Attempts}/{session.Context.Retry.Limit}，等待后重试";
+                await AppendLogAsync(session, AgentLogKinds.Event,
+                        AgentSessionCodec.ToJson(Event.NewScriptProgress(session.Detail)), cancellationToken)
+                    .ConfigureAwait(false);
+                Report(session);
+            }
+
             await AppendLogAsync(session, AgentLogKinds.EffectIssued, EffectPayload(effect, session.Context),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -1099,7 +1147,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     }
 
     private async Task AppendEffectResultAsync(AgentSession session, Effect effect, AgentEffectOutcome outcome,
-        CancellationToken cancellationToken, double elapsedMs = 0)
+        CancellationToken cancellationToken, double elapsedMs = 0, WorkflowEffectScope? scope = null)
     {
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1119,13 +1167,18 @@ public sealed partial class AgentSessionService : IAsyncDisposable
                 : outcome.FailureCode is not null || outcome.TerminalStatus == AgentSessionStatus.Failed
                     ? "failed"
                     : "completed";
-            string payload = System.Text.Json.JsonSerializer.Serialize(new
+            string payload = JsonSerializer.Serialize(new
             {
                 effectId = EffectIdOf(effect), disposition = outcome.Disposition.ToString(), state,
                 commitPointEntered = outcome.CommitPointEntered, summary = outcome.Summary,
                 errorCode = outcome.FailureCode, elapsedMs, output,
                 model = outcome.ResultEvent is Event.AssistantReply modelReply ? modelReply.reply.Model : null
             });
+            if (scope is not null)
+            {
+                payload = AddScopeMetadata(payload, scope);
+            }
+
             await AppendLogAsync(session, AgentLogKinds.EffectResult, payload, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -1139,13 +1192,13 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         string input = effect switch
         {
             Effect.McpToolCall tool => tool.arguments,
-            Effect.Put put => System.Text.Json.JsonSerializer.Serialize(new { put.uri, put.content }),
-            Effect.OcrEnqueue ocr => System.Text.Json.JsonSerializer.Serialize(new { ocr.documentId, ocr.pageRange }),
+            Effect.Put put => JsonSerializer.Serialize(new { put.uri, put.content }),
+            Effect.OcrEnqueue ocr => JsonSerializer.Serialize(new { ocr.documentId, ocr.pageRange }),
             Effect.WaitRunEvent wait => wait.runUri,
             Effect.LlmChat => context.History.OfType<HistoryEntry.UserMessage>().LastOrDefault()?.text ?? "",
             _ => ""
         };
-        return System.Text.Json.JsonSerializer.Serialize(new
+        return JsonSerializer.Serialize(new
         {
             effectId = EffectIdOf(effect), kind = EffectKind(effect), state = "running", input,
             name = effect is Effect.McpToolCall namedTool ? namedTool.name : EffectKind(effect)
@@ -1272,6 +1325,8 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
         /// <summary>The append-only instruction head sent to every effect of this session.</summary>
         public string Instructions { get; set; } = string.Empty;
+
+        public string MainActivationId { get; set; } = "main";
 
         public AgentSessionStatus Status { get; set; } = AgentSessionStatus.Running;
         public string? Detail { get; set; }

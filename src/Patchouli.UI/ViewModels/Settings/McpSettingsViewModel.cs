@@ -188,7 +188,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             }
 
             LibraryPreviewText = projection.IsSuccess
-                ? McpCommandService.DefaultToonEncoder(projection.Value)
+                ? McpYamlCodec.Encode(projection.Value)
                 : $"ERROR {projection.ErrorCode}: {projection.ErrorMessage}";
         }
         catch (Exception exception)

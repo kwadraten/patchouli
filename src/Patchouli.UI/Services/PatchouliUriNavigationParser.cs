@@ -1,5 +1,7 @@
-using System.Globalization;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Mcp;
+using Patchouli.Core.Results;
+using Patchouli.Mcp;
 
 namespace Patchouli.UI.Services;
 
@@ -39,221 +41,45 @@ public static class PatchouliUriNavigationParser
         }
 
         int prefixIndex = input.IndexOf(ProtocolPrefix, StringComparison.OrdinalIgnoreCase);
-        if (prefixIndex < 0)
+        string candidate = prefixIndex < 0 ? input.Trim() : ExtractCandidate(input, prefixIndex);
+        if (prefixIndex < 0 && (!McpVfsAddress.TryNormalize(candidate, out string normalized) ||
+                                McpPermissionPolicy.DomainOf(normalized) is not ("items" or "texts" or "translations"
+                                    or "csl-styles")))
         {
             return new PatchouliNavigationParseResult(false, null, null);
         }
 
-        string candidate = ExtractCandidate(input, prefixIndex);
-        if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri? uri) ||
-            !string.Equals(uri.Scheme, "patchouli", StringComparison.OrdinalIgnoreCase))
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(candidate);
+        if (parsed.IsFailure)
         {
-            return Invalid("无法解析 Patchouli URI。");
+            return new PatchouliNavigationParseResult(true, null, parsed.ErrorMessage);
         }
 
-        if (!string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo) || !uri.IsDefaultPort)
+        McpUriParseResult value = parsed.Value;
+        PatchouliNavigationKind? kind = value.Kind switch
         {
-            return Invalid("Patchouli URI 不允许 fragment、用户信息或端口。");
-        }
-
-        string[] segments;
-        try
-        {
-            segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                .Select(Uri.UnescapeDataString)
-                .ToArray();
-        }
-        catch (UriFormatException)
-        {
-            return Invalid("Patchouli URI 路径编码无效。");
-        }
-
-        if (segments.Any(segment =>
-                segment is "." or ".." || segment.Contains('/') || segment.Contains('\\')))
-        {
-            return Invalid("Patchouli URI 包含无效路径段。");
-        }
-
-        return uri.Host.ToLowerInvariant() switch
-        {
-            "items" => ParseItem(uri, segments),
-            "texts" => ParseText(uri, segments),
-            "csl-styles" => ParseCslStyle(uri, segments),
-            _ => Invalid($"不支持的 Patchouli URI 命名空间：{uri.Host}")
+            McpUriKind.Item => PatchouliNavigationKind.Item,
+            McpUriKind.Document => PatchouliNavigationKind.TextDocument,
+            McpUriKind.Page or McpUriKind.Evidence or McpUriKind.TranslationPage => PatchouliNavigationKind.TextPage,
+            McpUriKind.Style => PatchouliNavigationKind.CslStyle,
+            _ => null
         };
+        if (kind is null)
+        {
+            return new PatchouliNavigationParseResult(true, null, "Unsupported navigation resource.");
+        }
+
+        string id = value.ItemId?.ToString() ?? value.DocumentId?.ToString() ?? value.StyleId!;
+        return new PatchouliNavigationParseResult(true, new PatchouliNavigationTarget(kind.Value, value.CanonicalUri,
+            id,
+            value.PageIndex is null ? null : value.PageIndex.Value - 1, value.TreeRevisionId, value.BoxId), null);
     }
 
-    public static string BuildTextPageUri(
-        DocumentInstanceId documentInstanceId,
-        int pageIndex0Based,
-        DocumentTreeRevisionId? revisionId = null,
-        DocumentBoxId? boxId = null)
+    public static string BuildTextPageUri(DocumentInstanceId documentInstanceId, int pageIndex0Based,
+        DocumentTreeRevisionId? revisionId = null, DocumentBoxId? boxId = null)
     {
-        string uri = $"patchouli://texts/{documentInstanceId}/page-{pageIndex0Based}.md";
-        if (revisionId is not null)
-        {
-            uri += $"?rev={revisionId.Value}";
-            if (boxId is not null)
-            {
-                uri += $"&box={boxId.Value}";
-            }
-        }
-        else if (boxId is not null)
-        {
-            uri += $"?box={boxId.Value}";
-        }
-
-        return uri;
-    }
-
-    private static PatchouliNavigationParseResult ParseItem(Uri uri, string[] segments)
-    {
-        if (segments.Length != 1 || !string.IsNullOrEmpty(uri.Query) ||
-            !segments[0].EndsWith(".bib", StringComparison.OrdinalIgnoreCase))
-        {
-            return Invalid("Item URI 必须为 patchouli://items/{item-id}.bib。");
-        }
-
-        string itemId = segments[0][..^4];
-        if (!Guid.TryParse(itemId, out _))
-        {
-            return Invalid("Item URI 中的 item-id 无效。");
-        }
-
-        return Success(PatchouliNavigationKind.Item, $"patchouli://items/{itemId}.bib", itemId);
-    }
-
-    private static PatchouliNavigationParseResult ParseText(Uri uri, string[] segments)
-    {
-        if (segments.Length is < 1 or > 2 || !Guid.TryParse(segments[0], out _))
-        {
-            return Invalid("Text URI 中的 document-instance-id 无效。");
-        }
-
-        string documentInstanceId = segments[0];
-        if (segments.Length == 1)
-        {
-            if (!string.IsNullOrEmpty(uri.Query))
-            {
-                return Invalid("只有 text page URI 可以携带查询参数。");
-            }
-
-            return Success(PatchouliNavigationKind.TextDocument,
-                $"patchouli://texts/{documentInstanceId}/", documentInstanceId);
-        }
-
-        const string pagePrefix = "page-";
-        const string pageSuffix = ".md";
-        string page = segments[1];
-        if (!page.StartsWith(pagePrefix, StringComparison.Ordinal) ||
-            !page.EndsWith(pageSuffix, StringComparison.Ordinal) ||
-            !int.TryParse(page[pagePrefix.Length..^pageSuffix.Length], NumberStyles.None,
-                CultureInfo.InvariantCulture, out int pageIndex))
-        {
-            return Invalid("Text page URI 必须使用 page-{0-based-index}.md。");
-        }
-
-        PatchouliNavigationParseResult query = ParseVersionQuery(uri.Query);
-        if (query.ErrorMessage is not null)
-        {
-            return query;
-        }
-
-        DocumentTreeRevisionId? revisionId = query.Target?.RevisionId;
-        DocumentBoxId? boxId = query.Target?.BoxId;
-        string canonical = BuildTextPageUri(
-            DocumentInstanceId.Parse(documentInstanceId),
-            pageIndex,
-            revisionId,
-            boxId);
-
-        return Success(PatchouliNavigationKind.TextPage, canonical, documentInstanceId, pageIndex, revisionId, boxId);
-    }
-
-    private static PatchouliNavigationParseResult ParseCslStyle(Uri uri, string[] segments)
-    {
-        if (segments.Length != 1 || !string.IsNullOrEmpty(uri.Query) ||
-            !segments[0].EndsWith(".csl", StringComparison.OrdinalIgnoreCase))
-        {
-            return Invalid("CSL URI 必须为 patchouli://csl-styles/{style-id}.csl。");
-        }
-
-        string styleId = segments[0][..^4];
-        if (string.IsNullOrWhiteSpace(styleId))
-        {
-            return Invalid("CSL URI 中的 style-id 不能为空。");
-        }
-
-        return Success(PatchouliNavigationKind.CslStyle,
-            $"patchouli://csl-styles/{Uri.EscapeDataString(styleId)}.csl", styleId);
-    }
-
-    private static PatchouliNavigationParseResult ParseVersionQuery(string query)
-    {
-        if (string.IsNullOrEmpty(query))
-        {
-            return new PatchouliNavigationParseResult(true,
-                new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", ""), null);
-        }
-
-        string value = query[1..];
-        string[] parts = value.Split('&');
-        DocumentTreeRevisionId? revisionId = null;
-        DocumentBoxId? boxId = null;
-
-        foreach (string part in parts)
-        {
-            int equals = part.IndexOf('=');
-            if (equals <= 0 || equals == part.Length - 1)
-            {
-                return Invalid("Text page URI 的查询参数格式无效。");
-            }
-
-            string key = part[..equals];
-            string encoded = part[(equals + 1)..];
-            if (!HasValidPercentEncoding(encoded))
-            {
-                return Invalid("Text page URI 的查询参数 percent-encoding 无效。");
-            }
-
-            string decoded;
-            try
-            {
-                decoded = Uri.UnescapeDataString(encoded);
-            }
-            catch (UriFormatException)
-            {
-                return Invalid("Text page URI 的查询参数 percent-encoding 无效。");
-            }
-
-            if (string.Equals(key, "rev", StringComparison.Ordinal))
-            {
-                if (!Guid.TryParse(decoded, out _))
-                {
-                    return Invalid("Text page URI 的 rev 参数必须是有效的 GUID。");
-                }
-
-                revisionId = DocumentTreeRevisionId.Parse(decoded);
-            }
-            else if (string.Equals(key, "box", StringComparison.Ordinal))
-            {
-                if (!Guid.TryParse(decoded, out _))
-                {
-                    return Invalid("Text page URI 的 box 参数必须是有效的 GUID。");
-                }
-
-                boxId = DocumentBoxId.Parse(decoded);
-            }
-            else
-            {
-                return Invalid($"Text page URI 不支持查询参数：{key}。");
-            }
-        }
-
-        return new PatchouliNavigationParseResult(true,
-            new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", "", RevisionId: revisionId,
-                BoxId: boxId),
-            null);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex0Based);
+        return McpResourceUris.EvidencePageUri(documentInstanceId, pageIndex0Based + 1, revisionId, boxId);
     }
 
     private static string ExtractCandidate(string input, int prefixIndex)
@@ -268,38 +94,5 @@ public static class PatchouliUriNavigationParser
         }
 
         return remainder[..length].ToString();
-    }
-
-    private static bool HasValidPercentEncoding(string value)
-    {
-        for (int index = 0; index < value.Length; index++)
-        {
-            if (value[index] != '%')
-            {
-                continue;
-            }
-
-            if (index + 2 >= value.Length || !Uri.IsHexDigit(value[index + 1]) || !Uri.IsHexDigit(value[index + 2]))
-            {
-                return false;
-            }
-
-            index += 2;
-        }
-
-        return true;
-    }
-
-    private static PatchouliNavigationParseResult Success(PatchouliNavigationKind kind, string canonicalUri,
-        string resourceId, int? pageIndex = null, DocumentTreeRevisionId? revisionId = null,
-        DocumentBoxId? boxId = null)
-    {
-        return new PatchouliNavigationParseResult(true,
-            new PatchouliNavigationTarget(kind, canonicalUri, resourceId, pageIndex, revisionId, boxId), null);
-    }
-
-    private static PatchouliNavigationParseResult Invalid(string message)
-    {
-        return new PatchouliNavigationParseResult(true, null, message);
     }
 }

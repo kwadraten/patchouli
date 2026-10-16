@@ -86,7 +86,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             "patchouli://csl-styles/",
             "patchouli://runs/",
             "patchouli://workflows/",
-            "patchouli://library.toon");
+            "patchouli://library.yml");
         envelope.Entries.Select(Entry).Take(6).Should().OnlyContain(entry => entry.Type == "directory");
         envelope.Entries.Select(Entry).Last().Type.Should().Be("file");
     }
@@ -398,22 +398,81 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Fetch_item_returns_biblatex_complete_projection()
+    public async Task Fetch_item_returns_native_yaml_complete_projection()
     {
         McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
         result.IsSuccess.Should().BeTrue();
         McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
-        entry.ResourceType.Should().Be("item_bib");
+        entry.ResourceType.Should().Be("item_yaml");
         entry.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
         entry.Complete.Should().BeTrue();
         entry.Truncated.Should().BeFalse();
         entry.Error.Should().BeNull();
         entry.ReturnedBytes.Should().Be(Encoding.UTF8.GetByteCount(entry.Content!));
-        entry.Content.Should().Contain("@book{");
-        entry.Content.Should().Contain("Distributed Systems Notes");
+        JsonObject yaml = (JsonObject)McpYamlCodec.Decode(entry.Content!);
+        yaml["profile"]!.GetValue<string>().Should().Be("patchouli-item-1");
+        JsonObject patchouli = yaml["extensions"]!["patchouli"]!.AsObject();
+        patchouli["citation_key"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
+        yaml["csl"]!["title"]!.GetValue<string>().Should().Be("Distributed Systems Notes");
         result.Envelope!.Continuation.Should().BeNull();
         result.Envelope.Message.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Fetch_legacy_item_biblatex_keeps_its_format_and_warns_with_canonical_uri()
+    {
+        string legacyUri = LegacyItemUri(_library.BookA);
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([legacyUri], null, null));
+
+        result.IsSuccess.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.Uri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        entry.ContentType.Should().Be("application/x-bibtex");
+        entry.ResourceType.Should().Be("item_bib");
+        entry.Content.Should().Contain("@book{").And.NotContain("[obsoleted]");
+        result.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0") && warning.Contains(entry.Uri));
+    }
+
+    [Fact]
+    public async Task Put_native_item_yaml_round_trips_csl_type_creators_and_dates()
+    {
+        string uri = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpFetchMeta, McpFetchResult> before = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject root = (JsonObject)McpYamlCodec.Decode(before.Envelope!.Entries.Single().Content!);
+        JsonObject csl = (JsonObject)root["csl"]!;
+        csl["type"] = "article-journal";
+        csl["title"] = "Native YAML title";
+        csl["author"] = new JsonArray(new JsonObject
+        {
+            ["family"] = "Rivera", ["given"] = "Ada", ["non-dropping-particle"] = "de"
+        });
+        csl["issued"] = new JsonObject
+        {
+            ["date-parts"] = new JsonArray(new JsonArray(2023, 4, 5))
+        };
+
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
+            new McpPutRequest(uri, McpYamlCodec.Encode(root)));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+        McpPutResult written = put.Envelope!.Entries.Should().ContainSingle().Subject;
+        written.Uri.Should().Be(uri);
+        written.ResourceType.Should().Be("item_yaml");
+        written.Committed.Should().BeTrue();
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> after = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject saved = (JsonObject)McpYamlCodec.Decode(after.Envelope!.Entries.Single().Content!);
+        JsonObject savedCsl = (JsonObject)saved["csl"]!;
+        savedCsl["type"]!.GetValue<string>().Should().Be("article-journal");
+        savedCsl["title"]!.GetValue<string>().Should().Be("Native YAML title");
+        savedCsl["author"]![0]!["family"]!.GetValue<string>().Should().Be("Rivera");
+        savedCsl["author"]![0]!["non-dropping-particle"]!.GetValue<string>().Should().Be("de");
+        savedCsl["issued"]!["date-parts"]![0]![0]!.GetValue<int>().Should().Be(2023);
+        savedCsl["issued"]!["date-parts"]![0]![1]!.GetValue<int>().Should().Be(4);
     }
 
     [Fact]
@@ -425,8 +484,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         entry.ResourceType.Should().Be("text_document");
         entry.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
         entry.Content.Should().Contain("Distributed Systems Notes");
-        entry.Content.Should().Contain($"/page-1.md");
-        entry.Content.Should().Contain($"/page-2.md");
+        entry.Content.Should().Contain($"/page-1.xml");
+        entry.Content.Should().Contain($"/page-2.xml");
     }
 
     [Fact]
@@ -434,7 +493,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     {
         McpCommandResult<McpFetchMeta, McpFetchResult> first = await _library.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.PageUri(_library.DocumentA, 1)], null, null));
-        first.Envelope!.Entries.Single().Content.Should().Contain("Consensus requires a quorum.");
+        first.Envelope!.Entries.Single().Content.Should().Contain("Consensus requires a quorum.")
+            .And.Contain("<page");
 
         McpCommandResult<McpFetchMeta, McpFetchResult> second = await _library.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.PageUri(_library.DocumentA, 2)], null, null));
@@ -451,8 +511,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.DocumentUri(_library.DocumentA)], "pages:2-2", null));
         McpFetchResult entry = result.Envelope!.Entries.Single();
-        entry.Content.Should().Contain($"/page-2.md");
-        entry.Content.Should().NotContain($"/page-1.md");
+        entry.Content.Should().Contain($"/page-2.xml");
+        entry.Content.Should().NotContain($"/page-1.xml");
     }
 
     [Fact]
@@ -562,8 +622,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     [Fact]
     public async Task Put_replaces_an_item_bib_without_base_revision()
     {
+        string uri = LegacyItemUri(_library.BookA);
         McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await _library.Commands.FetchAsync(
-            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+            new McpFetchRequest([uri], null, null));
         string key = RegexKey(fetched.Envelope!.Entries.Single().Content!);
 
         string updated =
@@ -575,7 +636,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             "}\n";
 
         McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), updated));
+            new McpPutRequest(uri, updated));
         put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
         McpPutResult putEntry = put.Envelope!.Entries.Should().ContainSingle().Subject;
         putEntry.Uri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
@@ -583,15 +644,17 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         putEntry.Committed.Should().BeTrue();
         putEntry.ContentBytes.Should().Be(Encoding.UTF8.GetByteCount(updated));
         put.Envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
+        put.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0") && warning.Contains(putEntry.Uri));
         McpCommandResult<McpFetchMeta, McpFetchResult> refreshed = await _library.Commands.FetchAsync(
-            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+            new McpFetchRequest([uri], null, null));
         refreshed.Envelope!.Entries.Single().Content.Should().Contain("Second Edition");
     }
 
     [Fact]
     public async Task Put_ignores_the_agent_supplied_biblatex_key_and_preserves_the_item_key()
     {
-        string uri = McpResourceUris.ItemUri(_library.BookA);
+        string uri = LegacyItemUri(_library.BookA);
         McpCommandResult<McpFetchMeta, McpFetchResult> before = await _library.Commands.FetchAsync(
             new McpFetchRequest([uri], null, null));
         string expectedKey = RegexKey(before.Envelope!.Entries.Single().Content!);
@@ -607,9 +670,12 @@ public sealed class McpCommandContractTests : IAsyncLifetime
 
         put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
         put.Envelope!.Message!.Error.Should().BeNull();
-        put.Envelope.Message.Warnings.Should().ContainSingle()
-            .Which.Should()
-            .Be("BIBLATEX_ENTRY_KEY_IGNORED: content entry 1 key was ignored; target identity comes from uri.");
+        put.Envelope.Message.Warnings.Should().Contain(
+            "BIBLATEX_ENTRY_KEY_IGNORED: content entry 1 key was ignored; target identity comes from uri.");
+        put.Envelope.Message.Warnings.Should().Contain(warning => warning.Contains("[obsoleted]") &&
+                                                                  warning.Contains("0.4.0") &&
+                                                                  warning.Contains(
+                                                                      McpResourceUris.ItemUri(_library.BookA)));
         McpCommandResult<McpFetchMeta, McpFetchResult> after = await _library.Commands.FetchAsync(
             new McpFetchRequest([uri], null, null));
         string content = after.Envelope!.Entries.Single().Content!;
@@ -621,7 +687,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     public async Task Put_incomplete_unpublished_returns_warning_and_preserves_literal_pages()
     {
         string uri = McpResourceUris.ItemUri(_library.BookA);
-        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(new McpPutRequest(uri,
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(new McpPutRequest(
+            LegacyItemUri(_library.BookA),
             "@unpublished{k,title={Draft},author={Doe, Jane},pages={S1--S9}}"));
         put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
         put.Envelope!.Message!.Warnings.Should().Contain(warning => warning.StartsWith("BIBLATEX_MISSING_FIELDS:"));
@@ -663,18 +730,19 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     [Fact]
     public async Task Put_general_item_round_trips_as_misc_and_allows_explicit_type_refinement()
     {
+        string uri = LegacyItemUri(_library.GeneralItem);
         McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await _library.Commands.FetchAsync(
-            new McpFetchRequest([McpResourceUris.ItemUri(_library.GeneralItem)], null, null));
+            new McpFetchRequest([uri], null, null));
         string key = RegexKey(fetched.Envelope!.Entries.Single().Content!);
 
         McpCommandResult<McpPutMeta, McpPutResult> roundTrip = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.GeneralItem),
+            new McpPutRequest(uri,
                 $"@misc{{{key},\n  title = {{General Note, Updated}}\n}}"));
         roundTrip.IsSuccess.Should().BeTrue($"error: {roundTrip.Error?.Code} {roundTrip.Error?.Detail}");
         (await _library.Api.GetItemMetadataAsync(_library.GeneralItem)).Value.ItemType.Should().Be("general");
 
         McpCommandResult<McpPutMeta, McpPutResult> refinement = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.GeneralItem),
+            new McpPutRequest(uri,
                 $"@book{{{key},\n" +
                 "  author = {Doe, Jane},\n" +
                 "  title = {General Note, Classified},\n" +
@@ -780,15 +848,15 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Fetch_library_toon_includes_identity_tags_and_collections_including_empty()
+    public async Task Fetch_library_yaml_includes_identity_tags_and_collections_including_empty()
     {
         McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(["patchouli://library.toon"], null, null));
+            new McpFetchRequest(["patchouli://library.yml"], null, null));
 
         result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
         McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
         entry.Error.Should().BeNull();
-        entry.ResourceType.Should().Be("library_toon");
+        entry.ResourceType.Should().Be("library_yaml");
         entry.Complete.Should().BeTrue();
         string content = entry.Content!;
         content.Should().Contain("Contract test library");
@@ -796,6 +864,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         content.Should().Contain("Empty List");
         content.Should().Contain("Alpha");
         content.Should().Contain("beta");
+        ((JsonObject)McpYamlCodec.Decode(content))["library_id"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
@@ -843,6 +912,10 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             new McpFetchRequest(["patchouli://library.toon"], null, null));
         projection.IsSuccess.Should().BeTrue();
         string content = projection.Envelope!.Entries.Single().Content!;
+        projection.Envelope.Entries.Single().Uri.Should().Be("patchouli://library.yml");
+        projection.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0") &&
+            warning.Contains("patchouli://library.yml"));
         content.Should().Contain("Contract test library");
         content.Should().NotContain("Reading List");
         content.Should().NotContain("Alpha");
@@ -873,7 +946,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     [Fact]
     public async Task Hidden_tags_strip_biblatex_keywords_and_writes_preserve_existing_tags()
     {
-        string uri = McpResourceUris.ItemUri(_library.BookA);
+        string uri = LegacyItemUri(_library.BookA);
         McpCommandResult<McpFetchMeta, McpFetchResult> visible = await _library.Commands.FetchAsync(
             new McpFetchRequest([uri], null, null));
         visible.Envelope!.Entries.Single().Content!.Should().Contain("Alpha");
@@ -904,6 +977,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             new McpFetchRequest(["patchouli://library.toon"], null, null));
         result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
         string toon = result.Envelope!.Entries.Single().Content!;
+        result.Envelope.Entries.Single().Uri.Should().Be("patchouli://library.yml");
+        result.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0"));
         using JsonDocument document = JsonDocument.Parse(McpToonCodec.DecodeToJson(toon));
         JsonElement root = document.RootElement;
         root.EnumerateObject().Select(property => property.Name)
@@ -920,7 +996,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     public async Task Put_library_toon_is_read_only()
     {
         McpCommandResult<McpPutMeta, McpPutResult> result = await _library.Commands.PutAsync(
-            new McpPutRequest("patchouli://library.toon", "library_id: x"));
+            new McpPutRequest("patchouli://library.yml", "library_id: x"));
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
     }
@@ -929,14 +1005,14 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     public async Task Find_library_file_singleton_long_returns_library_entry_not_item_entry()
     {
         McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
-            new McpFindRequest(null, "patchouli://library.toon", null, Long: true));
+            new McpFindRequest(null, "patchouli://library.yml", null, Long: true));
 
         result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
         object entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
         entry.Should().BeOfType<McpLibraryLongEntry>();
         entry.Should().NotBeOfType<McpItemLongEntry>();
         McpLibraryLongEntry library = (McpLibraryLongEntry)entry;
-        library.Uri.Should().Be("patchouli://library.toon");
+        library.Uri.Should().Be("patchouli://library.yml");
         library.Type.Should().Be("file");
     }
 
@@ -992,6 +1068,11 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     private static string RegexKey(string content)
     {
         return System.Text.RegularExpressions.Regex.Match(content, @"@\w+\{([^,]+),").Groups[1].Value;
+    }
+
+    private static string LegacyItemUri(ItemId itemId)
+    {
+        return $"patchouli://items/{itemId}.bib";
     }
 
     private sealed record TestLibrary(

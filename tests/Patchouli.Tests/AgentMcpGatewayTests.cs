@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Xml.Linq;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
@@ -59,7 +60,7 @@ public sealed class AgentMcpGatewayTests
         IAgentMcpGateway gateway = new McpCommandServiceAgentGateway(fixture.Commands);
 
         AgentToolOutcome outcome = await gateway.CallToolAsync("put",
-            PutArguments(fixture.PageUri, fixture.Translate("第一版")), CancellationToken.None);
+            PutBoxesArguments(fixture, "第一版"), CancellationToken.None);
 
         outcome.Succeeded.Should().BeTrue(outcome.Payload);
         outcome.ErrorCode.Should().BeNull();
@@ -69,25 +70,29 @@ public sealed class AgentMcpGatewayTests
             entry.GetProperty("uri").GetString().Should().Be(fixture.PageUri);
             entry.GetProperty("resource_type").GetString().Should().Be("translation_page");
             entry.GetProperty("committed").GetBoolean().Should().BeTrue();
+            entry.GetProperty("source_revision").GetString().Should().Be(fixture.SourceRevision);
+            entry.GetProperty("translation_version").GetInt32().Should().Be(1);
+            entry.GetProperty("modified_box_ids").EnumerateArray().Select(value => value.GetString())
+                .Should().Equal(fixture.BoxId);
         }
 
         // The write reached the one channel both routes share: the translation service itself now
         // serves the page, and a second tool put replaces it as a whole resource.
         (await fixture.StoredTranslationAsync()).Should().Contain("第一版");
         AgentToolOutcome replaced = await gateway.CallToolAsync("put",
-            PutArguments(fixture.PageUri, fixture.Translate("第二版")), CancellationToken.None);
+            PutBoxesArguments(fixture, "第二版", 1), CancellationToken.None);
         replaced.Succeeded.Should().BeTrue(replaced.Payload);
         (await fixture.StoredTranslationAsync()).Should().Contain("第二版").And.NotContain("第一版");
     }
 
     [Fact]
-    public async Task Put_tool_returns_the_validation_failure_list_in_its_json_payload_and_writes_nothing()
+    public async Task Put_tool_rejects_a_box_that_does_not_belong_to_the_source_page()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
         IAgentMcpGateway gateway = new McpCommandServiceAgentGateway(fixture.Commands);
 
         AgentToolOutcome outcome = await gateway.CallToolAsync("put",
-            PutArguments(fixture.PageUri, fixture.Translate("译文") + "\n\n多余的段落。"), CancellationToken.None);
+            PutBoxesArguments(fixture, "译文", boxId: Guid.NewGuid().ToString()), CancellationToken.None);
 
         outcome.ErrorCode.Should().Be("INVALID_CONTENT");
         outcome.Succeeded.Should().BeFalse();
@@ -95,20 +100,31 @@ public sealed class AgentMcpGatewayTests
         {
             JsonElement entry = payload.RootElement.GetProperty("entries")[0];
             entry.GetProperty("committed").GetBoolean().Should().BeFalse();
-            JsonElement errors = entry.GetProperty("translation_errors");
-            errors.GetArrayLength().Should().BeGreaterThan(0);
-            JsonElement first = errors[0];
-            first.GetProperty("expected").GetString().Should().NotBeNullOrWhiteSpace();
-            first.GetProperty("actual").GetString().Should().NotBeNullOrWhiteSpace();
-            first.GetProperty("block_index").GetInt32().Should().BeGreaterThanOrEqualTo(0);
-
-            // The envelope also carries the sanitized terminal line of the refusal, which is the
-            // fallback detail for a reply that has no mismatch list.
             payload.RootElement.GetProperty("message").GetProperty("error").GetString()
                 .Should().Contain("INVALID_CONTENT");
         }
 
         (await fixture.StoredTranslationAsync()).Should().BeNull("a rejected put must not persist a translation");
+    }
+
+    [Fact]
+    public async Task Legacy_markdown_page_uri_returns_canonical_xml_uri_and_warning()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        IAgentMcpGateway gateway = new McpCommandServiceAgentGateway(fixture.Commands);
+        string legacyUri = fixture.PageUri.Replace(".xml", ".md", StringComparison.Ordinal);
+
+        AgentToolOutcome outcome = await gateway.CallToolAsync("put",
+            PutArguments(legacyUri, fixture.Translate("旧版译文")), CancellationToken.None);
+
+        outcome.Succeeded.Should().BeTrue(outcome.Payload);
+        using JsonDocument payload = JsonDocument.Parse(outcome.Payload);
+        payload.RootElement.GetProperty("entries")[0].GetProperty("uri").GetString().Should().Be(fixture.PageUri);
+        payload.RootElement.GetProperty("message").GetRawText().Should().Contain("[obsoleted]")
+            .And.Contain("0.4.0").And.Contain(fixture.PageUri);
+        string stored = await fixture.StoredTranslationAsync()
+                        ?? throw new InvalidOperationException("The legacy translation was not persisted.");
+        stored.Should().Contain("旧版译文").And.NotContain("[obsoleted]");
     }
 
     [Fact]
@@ -133,6 +149,31 @@ public sealed class AgentMcpGatewayTests
         return JsonSerializer.Serialize(new { uri, content, format = "json" });
     }
 
+    private static string PutBoxesArguments(Fixture fixture, string content, int translationVersion = 0,
+        string? boxId = null)
+    {
+        string replacementBox = new XElement("box",
+                new XAttribute("id", boxId ?? fixture.BoxId),
+                new XAttribute("type", "text"),
+                new XAttribute("sub_type", string.Empty),
+                new XAttribute("base_type", string.Empty),
+                new XAttribute("heading_level", string.Empty),
+                new XAttribute("code_language", string.Empty),
+                new XAttribute("suppressed", "false"),
+                new XAttribute("readonly", "false"),
+                new XAttribute("translated", "true"),
+                new XElement("payload", new XAttribute("format", "markdown"), content))
+            .ToString(SaveOptions.DisableFormatting);
+        return JsonSerializer.Serialize(new
+        {
+            uri = fixture.PageUri,
+            source_revision = fixture.SourceRevision,
+            translation_version = translationVersion,
+            boxes = new[] { new { box_id = boxId ?? fixture.BoxId, content = replacementBox } },
+            format = "json"
+        });
+    }
+
     /// <summary>
     ///     Composes the real command service over one committed source page, so a tool call exercises
     ///     production permissions, validation and the real translation write channel.
@@ -143,7 +184,7 @@ public sealed class AgentMcpGatewayTests
 
         private Fixture(TemporarySqliteDatabase database, McpCommandService commands,
             PageTranslationService translations, DocumentInstanceId documentId, PageId pageId, string pageUri,
-            string source)
+            string source, string sourceRevision, string boxId)
         {
             _database = database;
             Commands = commands;
@@ -152,6 +193,8 @@ public sealed class AgentMcpGatewayTests
             PageId = pageId;
             PageUri = pageUri;
             Source = source;
+            SourceRevision = sourceRevision;
+            BoxId = boxId;
         }
 
         public McpCommandService Commands { get; }
@@ -165,6 +208,10 @@ public sealed class AgentMcpGatewayTests
         public string PageUri { get; }
 
         public string Source { get; }
+
+        public string SourceRevision { get; }
+
+        public string BoxId { get; }
 
         public static async Task<Fixture> CreateAsync()
         {
@@ -184,8 +231,9 @@ public sealed class AgentMcpGatewayTests
 
             MarkdigMarkdownEngine markdown = new();
             DocumentTreeService trees = new(database.ConnectionFactory, clock, markdown);
+            DocumentBoxId boxId = DocumentBoxId.New();
             DocumentTreeRevision revision = await CommitSourcePageAsync(trees, document.DocumentInstanceId,
-                page.PageId);
+                page.PageId, boxId);
             DocumentMarkdownCompiler markdownCompiler = new(trees, markdown);
             CompiledMarkdown source = (await markdownCompiler.CompilePageMarkdownAsync(revision.TreeRevisionId))
                 .Value;
@@ -198,7 +246,7 @@ public sealed class AgentMcpGatewayTests
             McpReadApi read = new(database.ConnectionFactory, new SqliteSearchService(database.ConnectionFactory),
                 markdown: markdown, markdownCompiler: markdownCompiler, pageTranslations: translations);
             McpWriteApi writes = new(items, new BiblatexHelperClient(),
-                new CslStyleStore(database.ConnectionFactory, clock), translations);
+                new CslStyleStore(database.ConnectionFactory, clock), translations, trees);
             BiblatexImportService biblatex = new(new BiblatexHelperClient(), items,
                 new FileAssetService(database.ConnectionFactory, libraries, clock), documents);
             IVersionedEvidenceReader evidence = new VersionedEvidenceReader(database.ConnectionFactory, libraries,
@@ -206,7 +254,8 @@ public sealed class AgentMcpGatewayTests
             McpCommandService commands = new(read, writes, biblatex, items, evidence);
 
             return new Fixture(database, commands, translations, document.DocumentInstanceId, page.PageId,
-                McpResourceUris.TranslationPageUri(document.DocumentInstanceId, 1), source.Markdown);
+                McpResourceUris.TranslationPageUri(document.DocumentInstanceId, 1), source.Markdown,
+                revision.TreeRevisionId.ToString(), boxId.ToString());
         }
 
         /// <summary>The translated Markdown the write channel really stored, or null when it stored none.</summary>
@@ -228,11 +277,11 @@ public sealed class AgentMcpGatewayTests
         }
 
         private static async Task<DocumentTreeRevision> CommitSourcePageAsync(DocumentTreeService trees,
-            DocumentInstanceId documentId, PageId pageId)
+            DocumentInstanceId documentId, PageId pageId, DocumentBoxId boxId)
         {
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(documentId, pageId,
                 [
-                    new DocumentBoxSeed(DocumentBoxId.New(), null, 0, DocumentBoxType.Text, null, null,
+                    new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, null, null,
                         new NormalizedBBox(.1, .1, .8, .05), new TextBoxPayload("Original paragraph"))
                 ],
                 DocumentTreeRevisionSource.Import);

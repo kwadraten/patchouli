@@ -1,6 +1,63 @@
 # F# agent workflow API
 
-The workflow controls the Patchouli agent. Its entry point is a cold `AgentWorkflow` value. See [ADR 0039](adr/0039-typed-functional-agent-harness-workflows.md).
+The workflow controls Patchouli agents through explicit conversation contexts. Its entry point
+is a cold `AgentWorkflow` value. See [ADR 0039](adr/0039-typed-functional-agent-harness-workflows.md)
+and [ADR 0043](adr/0043-explicit-agent-contexts-and-loop-activations.md).
+
+## Workflow declarations and editor configuration
+
+A workflow declares independent module-level `let Parameter<'T>` bindings with SDK constructors.
+The script also exports `info` through `WorkflowInfo`, and binds its model parameter to the root
+with `Workflow.withModel`. Stable parameter keys, display labels, control types, defaults,
+constraints and context bindings come from these declarations, not external JSON metadata.
+See [ADR 0042](adr/0042-statically-declared-workflow-parameters.md).
+
+```fsharp
+open Patchouli.Workflows
+open Patchouli.Workflows.Scripting
+
+let info =
+    WorkflowInfo.create "Research" "Research the selected documents."
+    |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+    |> WorkflowInfo.menu "Tools/Workflows" 100
+
+let model = Parameter.model "model" "执行模型"
+let question = Parameter.text "question" "问题" "Describe the selection"
+let radius = Parameter.integer "radius" "上下文半径" 1 |> Parameter.intRange 0 5
+
+let researcher =
+    Agent.text "research" "Find evidence and cite tool results."
+        (fun (input: WorkflowInput) -> Parameter.get question input)
+    |> Agent.withTools [ AgentTool.Find; AgentTool.Fetch; AgentTool.Cite ]
+
+let run : AgentWorkflow =
+    Agent.run AgentContext.main researcher |> Workflow.define |> Workflow.withModel model
+```
+
+The editor statically extracts declarations without evaluating the script. Literals, static SDK
+records/unions and collections, supported SDK calls/pipelines, and immutable aliases are supported;
+user function calls and runtime-dependent declaration expressions produce source diagnostics.
+SDK symbol identity is checked, so unrelated functions with the same name are not declarations.
+All declared parameters appear in source order. `Parameter.get` returns an ordinary typed value;
+its subsequent use is not restricted by declaration syntax. Model values are a provider/model
+pair; credential material remains in the platform credential store.
+The model control also offers “与聊天使用相同的模型”. Its saved reference uses
+`{"providerId":"$chat","model":"$chat"}`. Host launch resolves every such model parameter
+against the current chat selection before creating the session and freezes the concrete pair
+in resolved values and the run snapshot; resume continues with that recorded model.
+Custom OpenAI-compatible providers support both their configured model and manually entered IDs.
+
+The generated form is displayed only inside the workflow editor. Built-in script locking does
+not prevent editing user configuration. Launch uses saved configuration plus declared context
+bindings and defaults; explicit MCP parameters override only that run. Invalid fields prevent
+session creation. Desktop launch reports the error in the status bar and opens the editor with
+field errors highlighted, while preserving unsaved drafts. Correcting and saving configuration
+does not automatically launch. MCP uses the same Host validation.
+
+Version 6 introduced frozen declaration identity, resolved parameter values and the actual model selection;
+version 8 retains these fields
+alongside script and launch selection. Resume does not consult current defaults. Versions 7 and
+older retain readable history but cannot resume through a compatibility executor.
 
 ```mermaid
 flowchart LR
@@ -16,10 +73,12 @@ flowchart LR
   J --> D
 ```
 
-A workflow is one automated prompt sequence inside a conversation. Ending, stopping or failing
-that sequence does not close the conversation. A new user message restarts the same agent with
-the existing append-only history and completed tool results, rather than replaying the workflow
-from its beginning. Messages queued while automation owns the driver continue after it yields.
+A workflow is one automated control plan inside a Session. Its stages explicitly choose the
+main, bound or anonymous context. Ending, stopping or failing that plan does not close the
+conversation. A new user message continues the main context with the recorded history and
+completed tool results under a new activation, rather than replaying the workflow from its
+beginning. Messages queued while automation owns the driver continue after it yields; worker
+contexts do not implicitly receive those messages.
 
 Provider failures are recorded as structured model diagnostics, with a visible lifecycle diagnosis. Tool
 failures return to the agent for repair and also record their actual error code, full response,
@@ -27,24 +86,35 @@ original arguments and elapsed time. The chat view pairs request/result records 
 preserves expanded rows across refreshes and automatically expands failures. Legacy failed
 snapshots without a terminal log row still expose their diagnostic detail.
 
-Recoverable model decoding and
-provider failures enter the loop as `ModelFailure`, with code, detail and retry classification;
-they are recorded as diagnostic user input rather than assistant answers. Chat and workflows
-share the same bounded repair decision. Exhaustion preserves the diagnostic and yields control;
-workflow replay restores the recorded failure without contacting the provider again.
+Temporary provider, network, rate-limit and damaged provider-response decoding failures enter the
+loop as structured `ModelFailure` events. They consume only the model request retry budget;
+user cancellation and interruption are never automatically retried. Errors remain in the durable
+history and activity journal but model request errors and retry notices are omitted from provider
+input, so retries use the same model-visible request. OCR retains its independent classification.
+
+`Context.Retry` records the maximum extra request attempts and consecutive attempts consumed.
+The settings value `Llm.AgentMaxRetries` defaults to 3, accepts 0–20, and 0 disables automatic
+request retries. Each new request sequence captures current settings before execution; its limit
+stays frozen across retries and recovery. Success resets the count immediately, including replies
+containing native tool calls. Host backoff is cancellable, starts at 2 seconds and doubles with
+20% jitter up to 60 seconds. Provider Retry-After is not exposed by the transport and is not guessed.
+Tool failures, argument/FSI diagnostics, allowlist refusals and typed output validation feed the
+normal model loop without spending request retries. Workflow model/tool budgets still bound those
+corrections. Request retries do not spend additional model-turn slots, including after the final
+slot fails. `AgentBudget.ModelTurns` and `Workflow.bounds` bound normal decision turns, not all
+provider requests: each sequence separately allows `AgentMaxRetries` extra requests. Activity,
+request telemetry and cost accounting still retain every attempted provider request. Replay keys retain retry attempt and policy, restoring both before any live continuation.
+The legacy `toolRetryLimit` launch parameter no longer overrides request retries.
+
+Core snapshots emit `retryPolicyVersion: 2`. Legacy snapshots preserve history, call ledger and
+pending native calls, reset the old shared repair count, and adopt the new default; unknown newer
+policy versions fail closed. Workflow harness protocol 8 rejects automated resume of protocol 7
+and older: history remains readable; start a new automated workflow run. Conversation continuation
+can still use the existing history and completed results, without replaying completed tools.
+
 Native tool instructions include F# argument record types generated from the declared schemas,
 optional-field JSON encoding and native call examples. Tool and assistant-call wire messages
 always include `content`, including empty assistant text.
-
-`Context.Retry` contains the repair limit and consumed attempts. `AgentCore.withRetryLimit`
-injects a limit directly; the recorded launch parameter `toolRetryLimit` sets it for chat or
-workflow sessions (default: two additional repairs). Invalid protocol, argument decoding and
-tool execution failures append their precise reasons to the same model-visible history.
-Stage allowlist refusals also enter this repair path without executing the forbidden tool;
-budget exhaustion still yields immediately because the stage has no remaining execution budget.
-The shared `AgentDriver` requests correction while attempts remain and yields
-when exhausted. A new user message resets the repair count and continues that conversation.
-Workflow replay records failed tool completions distinctly and never executes them again.
 
 Assistant output is a typed `AssistantReply`: text, actual model, finish kind, native tool calls
 and provider metadata. It follows [pi's typed content and tool-call loop](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts).
@@ -56,8 +126,9 @@ Following [DeepSeek Harness's turn lifecycle](https://github.com/deepseek-ai/dee
 a natural final reply with no native calls ends the turn, records `turn/end`, closes host activity
 and persists `Idle`; the conversation can accept a new message. Truncated calls are never
 executed. Interrupted calls are paired with explicit unknown/aborted outcomes before a fresh
-user turn, rather than blindly replayed. Workflow snapshot protocol version 5 adds typed node
-checkpoints and SDK observations to the native reply and exact-call journal; older snapshots
+user turn, rather than blindly replayed. Workflow snapshot protocol version 8 retains typed node checkpoints, SDK observations and the
+frozen declaration identity, parameter values and model selection introduced by version 6.
+Version 8 adds explicit contexts and activation-scoped replay; older snapshots
 require a new automated run. Original conversation history remains readable.
 
 Provider projections reuse LlmTornado's native function interfaces. OpenAI-compatible models
@@ -96,18 +167,17 @@ let reviewer =
 
 let run : AgentWorkflow =
     workflow {
-        step researcher
-        step reviewer
+        step (Agent.run AgentContext.main researcher)
+        step (Agent.run (AgentContext.empty()) reviewer)
     }
     |> Workflow.define
 ```
 
-`Agent.typed name instructions format parse` produces a validated typed output. `parse` receives the immutable stage input and final agent text, returning `Result<'Output,string>`. Parse failure returns its diagnostic to the same agent under `Context.Retry` and the stage budget; exhaustion yields control. For review decisions, return a domain union such as `Accepted of Draft | Revise of Draft` as a successful typed output, then use `Workflow.choose` or immutable state with `Workflow.repeatUntil`.
+`Agent.typed name instructions format parse` produces a validated typed output. `parse` receives the immutable stage input and final agent text, returning `Result<'Output,string>`. Parse failure returns its diagnostic to the same agent under the stage budget without consuming request retries; stage budget exhaustion yields control. For review decisions, return a domain union such as `Accepted of Draft | Revise of Draft` as a successful typed output, then use `Workflow.choose` or immutable state with `Workflow.repeatUntil`.
 
-`Agent.withSharedInstructions formatRules` retains the formatted rules once as a structured
-instruction in the active conversation history. Stage policy instructions are also retained once;
-subsequent stage prompts contain only the formatted task. Missing rules are reinserted, so a
-future context compactor can discard them without a stale initialization flag suppressing recovery.
+`Agent.withSharedInstructions formatRules` supplies input-dependent rules for the current
+activation. Stage policy and SDK declarations belong to that activation's fixed instruction
+head; they do not become permanently active instructions of every later agent.
 The shared host interpreter compacts the entire active prefix at 80% of the configured model
 context capacity, then continues from the saved summary. Between compactions, provider history
 remains append-only for inference caching. Original history stays intact; `AgentTool.History`
@@ -133,10 +203,47 @@ let refine =
                  Attempt = state.Attempt + 1
                  Accepted = reply = "APPROVED" })
     |> Agent.withBudget (AgentBudget.create 3 0)
-    |> Agent.run
+    |> Agent.run AgentContext.main
 
 let reviewLoop = Workflow.repeatUntil 4 (fun state -> state.Accepted) refine
 ```
+
+## Explicit context selection
+
+`Agent.run context agent` is the only agent-to-workflow conversion. A bare
+`step agent` is rejected; use `step (Agent.run context agent)`.
+
+- `AgentContext.main`: the Session's primary conversation, including subsequent user turns.
+- `AgentContext.empty()`: an anonymous descriptor; each node invocation creates an independent
+  context seeded only by its typed input. Resume reuses the original invocation's identity.
+- `AgentContext.bind seed build`: a cold context scope whose callback receives a reusable
+  context reference. Multiple stages in the scope share its history. Scope IDs are assigned
+  by the SDK from recorded control identity; authors do not provide storage IDs.
+
+```fsharp
+let run =
+    AgentContext.bind (AgentContext.empty()) (fun review ->
+        workflow {
+            step (Agent.run AgentContext.main planner)
+            step (Agent.run review reviewer)
+            step (Agent.run review secondReview)
+            step (Agent.run AgentContext.main finalizer)
+        })
+    |> Workflow.define
+    |> Workflow.withModel model
+```
+
+The node input/output types must still connect. Worker outputs reach the primary model only
+when a later main-context stage includes them in its input formatter; worker transcripts do
+not merge automatically. Ordinary F# `let` aliases of `empty()` remain anonymous descriptors.
+A binding outside a bounded loop shares its context across iterations; a binding inside the
+body allocates one context per iteration. References cannot escape their binding scope or
+be serialized as business data. Context construction and binding do not call models or tools.
+
+Each `Agent.run` invocation has an activation with a fixed tool/instruction contract and its
+own request-prefix generations. New activations can change tools while retaining the selected
+context's original history. Context-local history/FSI resources are independent; receipts and
+unknown-write quarantine remain Session-wide. Ending a worker does not delete its evidence.
 
 - `Workflow.map f`: pure transformation; no Task/Async overload.
 - `Workflow.thenDo next previous` or `workflow { step previous; step next }`: types must connect.
@@ -206,6 +313,9 @@ Damaged recovery logs fail closed rather than silently skipping records and re-e
 
 Tools use the existing agent protocol. A stage's allowlist only narrows host permissions. FSI is available automatically in chat and workflow sessions; including `AgentTool.Fsi` allows that stage to use the session-local worker. `WorkflowInput` provides immutable lists and an F# map of recorded launch parameters.
 
-The settings page checks the F# root type without evaluating the script. Replay checks the exact request and structural path. Old scripts and snapshots have no compatibility execution path; rewrite scripts and start new sessions.
+The settings page checks the F# root type without evaluating the script. Replay checks the exact
+request and structural path. Older snapshots have no automated compatibility execution path; start
+a new session. Legacy imperative scripts must be rewritten; harness 6 scripts can start a new
+session unchanged.
 
 Type and bound checks establish control-flow properties assuming pure callbacks terminate. They do not prove model output correct or restrict arbitrary trusted .NET script code.

@@ -5,6 +5,7 @@ using Microsoft.FSharp.Core;
 using Patchouli.Agent;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
 
@@ -23,10 +24,30 @@ public sealed record AgentEffectContext(
     IReadOnlyList<string> ToolDefinitions,
     IReadOnlyList<HistoryEntry> History)
 {
+    /// <summary>Stable history and FSI workspace partition within the owning audit session.</summary>
+    public string ContextId { get; init; } = SessionId;
+
+    /// <summary>Stable agent invocation identity, frozen across request retries and recovery.</summary>
+    public string ActivationId { get; init; } = "main";
+
+    /// <summary>Provider conversation identity for prefix caching, independent of the audit session id.</summary>
+    public string ConversationKey => SessionId + "/context/" + ContextId + "/activation/" + ActivationId;
+
+    /// <summary>Explicit model frozen into this workflow session; null selects the current chat model.</summary>
+    public ModelSelection? ModelSelection { get; init; }
+
+    /// <summary>Launch-parameter key used to persist the workflow model selection.</summary>
+    public const string ModelSelectionParameter = "__workflow.modelSelection";
+
     public bool UsesTextToolProtocol { get; init; }
     public string? SessionDirectory { get; init; }
     public AgentSdkPolicy? SdkPolicy { get; init; }
     public Func<AgentSdkReceipt, Task>? RecordSdk { get; init; }
+    public int ToolResultMaxCharacters { get; init; } = LlmAppSettings.DefaultToolResultMaxCharacters;
+    public IReadOnlyList<HistoryEntry>? ModelHistory { get; init; }
+    public int RequestRetryAttempt { get; init; }
+
+    public int HistoryPageCharacters { get; init; } = 16000;
 }
 
 /// <summary>How one executed effect concluded.</summary>
@@ -87,6 +108,12 @@ public interface IAgentEffectInterpreter
     /// <summary>Executes one effect and reports what to feed back.</summary>
     Task<AgentEffectOutcome> ExecuteAsync(AgentEffectContext context, Effect effect,
         CancellationToken cancellationToken);
+
+    /// <summary>Validates the selected model before a workflow session is persisted.</summary>
+    Task<string?> ValidateModelSelectionAsync(ModelSelection? selection, CancellationToken cancellationToken)
+    {
+        return Task.FromResult<string?>(null);
+    }
 }
 
 /// <summary>
@@ -131,10 +158,13 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private readonly AgentFsiRepl? _fsi;
     private readonly AgentContextCompactor? _compactor;
     private readonly AgentSdkRuntime _sdk;
+    private readonly Func<int>? _historyPageCharacters;
+    private readonly AgentSessionStore? _sessionStore;
 
     /// <summary>Creates the interpreter over the three host surfaces an effect can reach.</summary>
     public AgentEffectInterpreter(IAgentLlmClientProvider llm, IAgentMcpGateway mcp, IAgentHostPrimitives host,
-        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null)
+        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null, Func<int>? historyPageCharacters = null,
+        AgentSessionStore? sessionStore = null)
     {
         ArgumentNullException.ThrowIfNull(llm);
         ArgumentNullException.ThrowIfNull(mcp);
@@ -145,6 +175,8 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         _host = host;
         _fsi = fsi;
         _compactor = compactor;
+        _historyPageCharacters = historyPageCharacters;
+        _sessionStore = sessionStore;
     }
 
     /// <inheritdoc />
@@ -165,25 +197,59 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         };
     }
 
+    /// <summary>Resolves the launch model before a session is created, without making a model request.</summary>
+    public async Task<string?> ValidateModelSelectionAsync(ModelSelection? selection,
+        CancellationToken cancellationToken = default)
+    {
+        Result<ILlmChatClient> result = await _llm.TryGetAsync(selection, cancellationToken).ConfigureAwait(false);
+        return result.IsSuccess ? null : result.ErrorMessage ?? "The selected model could not be resolved.";
+    }
+
     private async Task<AgentEffectOutcome> ChatAsync(AgentEffectContext context, Effect.LlmChat chat,
         CancellationToken cancellationToken)
     {
-        Result<ILlmChatClient> client = await _llm.TryGetAsync(cancellationToken).ConfigureAwait(false);
+        if (context.RequestRetryAttempt > 0)
+        {
+            double seconds = Math.Min(60, 2 * Math.Pow(2, Math.Min(context.RequestRetryAttempt - 1, 5)));
+            seconds = Math.Min(60, seconds * (0.8 + Random.Shared.NextDouble() * 0.4));
+            await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken).ConfigureAwait(false);
+        }
+
+        Result<ILlmChatClient> client = await _llm.TryGetAsync(context.ModelSelection, cancellationToken)
+            .ConfigureAwait(false);
         if (client.IsFailure)
         {
             // The loop stays total: an unresolvable provider is surfaced as a model result so the
             // run can report it through history instead of throwing into the host.
             string unavailable = $"LLM_UNAVAILABLE {client.ErrorCode}: {client.ErrorMessage}";
             return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId, client.ErrorCode!, unavailable,
-                    LlmFailureClassifier.IsRetryable(client.ErrorCode)), unavailable) with
+                    AgentRequestRetry.IsRetryable(client.ErrorCode)), unavailable) with
                 {
                     FailureCode = client.ErrorCode
                 };
         }
 
+        int? maxTokens = client.Value.SupportsMaxTokens ? AgentContextBudget.OutputTokens(client.Value) : null;
+        if (_sessionStore is not null)
+        {
+            AgentActivationEnvelope envelope = AgentActivationEnvelope.Create(context,
+                client.Value.ConfigurationKey, maxTokens);
+            string? divergence = await _sessionStore.EnsureActivationEnvelopeAsync(context.SessionId, envelope,
+                cancellationToken).ConfigureAwait(false);
+            if (divergence is not null)
+            {
+                return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId,
+                        "AGENT_ACTIVATION_DIVERGED", divergence, false), divergence) with
+                    {
+                        FailureCode = "AGENT_ACTIVATION_DIVERGED"
+                    };
+            }
+        }
+
         // An in-flight chat is cancelled promptly; consumed tokens are not returned (ADR 0036).
         Result<LlmChatCompletion> completion = _compactor is null
-            ? await client.Value.CompleteAsync(context.SessionId,
+            ? await client.Value.CompleteAsync(context.ConversationKey + "/prefix/" +
+                                               AgentContextBudget.EnvelopeKey(context, client.Value),
                     new LlmChatRequest(AgentChatHistoryBuilder.Build(context), context.ToolDefinitions),
                     cancellationToken)
                 .ConfigureAwait(false)
@@ -192,8 +258,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         {
             string failure = $"LLM_ERROR {completion.ErrorCode}: {completion.ErrorMessage}";
             return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId, completion.ErrorCode!, failure,
-                    completion.ErrorCode != LlmFailureCodes.Cancelled &&
-                    LlmFailureClassifier.IsRetryable(completion.ErrorCode)), failure) with
+                    AgentRequestRetry.IsRetryable(completion.ErrorCode)), failure) with
                 {
                     FailureCode = completion.ErrorCode
                 };
@@ -214,8 +279,23 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private async Task<AgentEffectOutcome> ToolAsync(AgentEffectContext context, Effect.McpToolCall tool,
         CancellationToken cancellationToken)
     {
+        context = context with
+        {
+            HistoryPageCharacters =
+            Math.Clamp(_historyPageCharacters?.Invoke() ?? context.HistoryPageCharacters, 128, 16000)
+        };
+        if (_compactor is not null)
+        {
+            context = context with
+            {
+                HistoryPageCharacters = await _compactor.HistoryPageBudgetAsync(context, context.HistoryPageCharacters,
+                    cancellationToken).ConfigureAwait(false)
+            };
+        }
+
         AgentToolOutcome outcome;
-        using AgentSdkRuntime.Scope scope = _sdk.Activate(context, "effect/" + tool.effectId.Item, cancellationToken);
+        using AgentSdkRuntime.Scope scope =
+            _sdk.Activate(context, EffectParent(context, tool.effectId.Item), cancellationToken);
         try
         {
             string? decodeError = null;
@@ -308,9 +388,10 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         AgentSdkRuntime.Scope scope, CancellationToken cancellationToken)
     {
         string identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(tool.arguments + "/" + (context.SdkPolicy?.Activation ?? "chat"))));
+            System.Text.Encoding.UTF8.GetBytes(tool.arguments + "/" + (context.SdkPolicy?.Activation ?? "chat") +
+                                               "/" + context.ContextId + "/" + context.ActivationId)));
         string? path = context.SessionDirectory is { } directory
-            ? Path.Combine(directory, "fsi-executions", tool.effectId.Item + ".json")
+            ? FsiExecutionPath(directory, context, tool.effectId.Item)
             : null;
         if (path is not null && File.Exists(path))
         {
@@ -330,7 +411,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             }
 
             IReadOnlyList<AgentSdkReceipt> receipts = await AgentSdkRuntime.ReadReceiptsAsync(context.SessionDirectory!,
-                "effect/" + tool.effectId.Item, cancellationToken).ConfigureAwait(false);
+                EffectParent(context, tool.effectId.Item), cancellationToken).ConfigureAwait(false);
             scope.Restore(receipts);
             if (context.RecordSdk is { } recordSdk)
             {
@@ -355,7 +436,8 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             await SaveFsiAsync(path, new FsiExecution(identity, "Started", null)).ConfigureAwait(false);
         }
 
-        AgentToolOutcome outcome = await _fsi!.ExecuteAsync(context.SessionId, tool.arguments, scope.InvokeAsync,
+        AgentToolOutcome outcome = await _fsi!.ExecuteAsync(context.SessionId, context.ContextId, tool.arguments,
+                scope.InvokeAsync,
                 cancellationToken, AgentSdkBindings.Source(context.SdkPolicy?.Exports ?? []))
             .ConfigureAwait(false);
         outcome = outcome with { Receipts = scope.Receipts };
@@ -374,6 +456,29 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(execution), CancellationToken.None)
             .ConfigureAwait(false);
         File.Move(temporary, path, true);
+    }
+
+    private static string EffectParent(AgentEffectContext context, long effectId)
+    {
+        return context.ActivationId == "main" ? "effect/" + effectId : context.ActivationId + "/effect/" + effectId;
+    }
+
+    private static string FsiExecutionPath(string directory, AgentEffectContext context, long effectId)
+    {
+        string fileName = effectId + ".json";
+        if ((context.ActivationId == "main" && context.ContextId is "main") ||
+            (context.ActivationId == "main" && context.ContextId == context.SessionId))
+        {
+            return Path.Combine(directory, "fsi-executions", fileName);
+        }
+
+        return Path.Combine(directory, "fsi-executions", ContextKey(context), fileName);
+    }
+
+    private static string ContextKey(AgentEffectContext context)
+    {
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(context.ContextId + "\n" + context.ActivationId))).ToLowerInvariant();
     }
 
     private static AgentToolOutcome FromSdk(Patchouli.Agent.Sdk.SdkResult result)
@@ -460,22 +565,36 @@ public static class AgentChatHistoryBuilder
         string instructions = context.Instructions;
         LlmChatHistory history = LlmChatHistory.Create(instructions, context.ToolDefinitions);
         List<LlmChatMessage> messages = [];
-        foreach (HistoryEntry entry in context.History)
+        foreach (HistoryEntry original in context.ModelHistory ?? context.History)
         {
+            if (original is HistoryEntry.ToolResult { name: "model-error" or "agent-retry" })
+            {
+                continue;
+            }
+
+            HistoryEntry entry = context.ModelHistory is null
+                ? AgentToolPayloadFolder.Project(original, context.ToolResultMaxCharacters)
+                : original;
             // Text tool requests have no provider-native tool_call_id. Their results are
             // ordinary user messages so OpenAI-compatible providers accept the next turn.
             messages.Add(entry is HistoryEntry.ToolResult tool
                 ? LlmChatMessage.User("Tool result " + Content(tool.name + ": " + tool.payload))
-                : ToMessage(entry));
+                : ToModelMessage(entry));
         }
 
         return messages.Count == 0 ? history : history.Append(messages);
     }
 
     /// <summary>Maps one core history entry to its chat message.</summary>
-    public static LlmChatMessage ToMessage(HistoryEntry entry)
+    public static LlmChatMessage ToMessage(HistoryEntry entry,
+        int toolResultMaxCharacters = LlmAppSettings.DefaultToolResultMaxCharacters)
     {
         ArgumentNullException.ThrowIfNull(entry);
+        return ToModelMessage(AgentToolPayloadFolder.Project(entry, toolResultMaxCharacters));
+    }
+
+    private static LlmChatMessage ToModelMessage(HistoryEntry entry)
+    {
         return entry switch
         {
             HistoryEntry.Instruction instruction => LlmChatMessage.System(Content(instruction.text)),

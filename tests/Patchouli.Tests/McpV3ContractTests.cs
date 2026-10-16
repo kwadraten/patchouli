@@ -22,22 +22,24 @@ public sealed class McpV3ContractTests
     [Theory]
     [InlineData("patchouli://", McpUriKind.Root)]
     [InlineData("patchouli://items/", McpUriKind.ItemsScope)]
-    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.bib", McpUriKind.Item)]
+    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.yml", McpUriKind.Item)]
     [InlineData("patchouli://texts/", McpUriKind.TextsScope)]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/", McpUriKind.Document)]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md", McpUriKind.Page)]
+    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.xml", McpUriKind.Page)]
     [InlineData(
-        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001",
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?rev=20000000-0000-0000-0000-000000000001",
         McpUriKind.Evidence)]
     [InlineData(
-        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?box=30000000-0000-0000-0000-000000000001",
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?box=30000000-0000-0000-0000-000000000001",
         McpUriKind.Evidence)]
     [InlineData(
-        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001",
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001",
         McpUriKind.Evidence)]
     [InlineData("patchouli://translations/", McpUriKind.TranslationsScope)]
+    [InlineData("translations", McpUriKind.TranslationsScope)]
+    [InlineData("/translations/10000000-0000-0000-0000-000000000001", McpUriKind.TranslationDocument)]
     [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/", McpUriKind.TranslationDocument)]
-    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md",
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.xml",
         McpUriKind.TranslationPage)]
     [InlineData("patchouli://csl-styles/", McpUriKind.StylesScope)]
     [InlineData("patchouli://csl-styles/apa.csl", McpUriKind.Style)]
@@ -50,30 +52,29 @@ public sealed class McpV3ContractTests
     [InlineData("patchouli://documents/")]
     [InlineData("patchouli://documents/10000000-0000-0000-0000-000000000001/")]
     [InlineData(
-        "patchouli://documents/10000000-0000-0000-0000-000000000001/pages/20000000-0000-0000-0000-000000000001.md")]
+        "patchouli://documents/10000000-0000-0000-0000-000000000001/pages/20000000-0000-0000-0000-000000000001.xml")]
     [InlineData("patchouli://styles/")]
     [InlineData("patchouli://styles/apa.csl")]
     [InlineData("patchouli://evidence/")]
     [InlineData("patchouli://evidence/evref:v2:any")]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-0.md")]
+    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-0.xml")]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1")]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?foo=bar")]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?evref=evref:v2:any")]
+    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.xml?foo=bar")]
+    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.xml?evref=evref:v2:any")]
     [InlineData(
-        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?rev=20000000-0000-0000-0000-000000000001&evref=evref:v2:any")]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/pages/20000000-0000-0000-0000-000000000001.md")]
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.xml?rev=20000000-0000-0000-0000-000000000001&evref=evref:v2:any")]
+    [InlineData(
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/pages/20000000-0000-0000-0000-000000000001.xml")]
     [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001")]
-    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.bib/")]
+    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.yml/")]
     [InlineData("patchouli://?evref=x")]
-    [InlineData("patchouli://translations")]
-    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001")]
-    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-0.md")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-0.xml")]
     [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1")]
     [InlineData(
-        "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md?rev=20000000-0000-0000-0000-000000000001")]
-    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md?foo=bar")]
-    [InlineData("patchouli://translations/not-a-guid/page-1.md")]
-    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/pages/1.md")]
+        "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.xml?rev=20000000-0000-0000-0000-000000000001")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.xml?foo=bar")]
+    [InlineData("patchouli://translations/not-a-guid/page-1.xml")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/pages/1.xml")]
     public void Legacy_and_malformed_uris_are_rejected(string uri)
     {
         McpResourceUris.Parse(uri).IsFailure.Should().BeTrue();
@@ -83,9 +84,9 @@ public sealed class McpV3ContractTests
     public void Page_uri_uses_one_based_physical_page_index()
     {
         McpResourceUris.PageUri(DocumentId, 1).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.xml");
         McpResourceUris.PageUri(DocumentId, 12).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-12.md");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-12.xml");
     }
 
     [Fact]
@@ -95,13 +96,13 @@ public sealed class McpV3ContractTests
         DocumentBoxId box = new(Guid.Parse("30000000-0000-0000-0000-000000000001"));
 
         McpResourceUris.EvidencePageUri(DocumentId, 2, rev, box).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.xml?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
         McpResourceUris.EvidencePageUri(DocumentId, 2, rev).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?rev=20000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.xml?rev=20000000-0000-0000-0000-000000000001");
         McpResourceUris.EvidencePageUri(DocumentId, 2, boxId: box).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?box=30000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.xml?box=30000000-0000-0000-0000-000000000001");
         McpResourceUris.EvidencePageUri(DocumentId, 2).Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.xml");
     }
 
     [Fact]
@@ -111,20 +112,20 @@ public sealed class McpV3ContractTests
         DocumentBoxId box = new(Guid.Parse("30000000-0000-0000-0000-000000000001"));
 
         Result<McpUriParseResult> both = McpResourceUris.Parse(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
         both.Value.Kind.Should().Be(McpUriKind.Evidence);
         both.Value.PageIndex.Should().Be(7);
         both.Value.TreeRevisionId.Should().Be(rev);
         both.Value.BoxId.Should().Be(box);
 
         Result<McpUriParseResult> revOnly = McpResourceUris.Parse(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?rev=20000000-0000-0000-0000-000000000001");
         revOnly.Value.Kind.Should().Be(McpUriKind.Evidence);
         revOnly.Value.TreeRevisionId.Should().Be(rev);
         revOnly.Value.BoxId.Should().BeNull();
 
         Result<McpUriParseResult> boxOnly = McpResourceUris.Parse(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?box=30000000-0000-0000-0000-000000000001");
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.xml?box=30000000-0000-0000-0000-000000000001");
         boxOnly.Value.Kind.Should().Be(McpUriKind.Evidence);
         boxOnly.Value.TreeRevisionId.Should().BeNull();
         boxOnly.Value.BoxId.Should().Be(box);
@@ -134,7 +135,7 @@ public sealed class McpV3ContractTests
     public void Item_and_style_uris_use_v3_scopes()
     {
         McpResourceUris.ItemUri(ItemId).Should().Be(
-            "patchouli://items/00000000-0000-0000-0000-000000000001.bib");
+            "patchouli://items/00000000-0000-0000-0000-000000000001.yml");
         McpResourceUris.StyleUri("apa").Should().Be("patchouli://csl-styles/apa.csl");
         McpResourceUris.DocumentUri(DocumentId).Should().Be(
             "patchouli://texts/10000000-0000-0000-0000-000000000001/");
@@ -147,12 +148,12 @@ public sealed class McpV3ContractTests
         McpResourceUris.TranslationDocumentUri(DocumentId).Should().Be(
             "patchouli://translations/10000000-0000-0000-0000-000000000001/");
         McpResourceUris.TranslationPageUri(DocumentId, 1).Should().Be(
-            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md");
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.xml");
         McpResourceUris.TranslationPageUri(DocumentId, 12).Should().Be(
-            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-12.md");
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-12.xml");
 
         Result<McpUriParseResult> parsed = McpResourceUris.Parse(
-            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-7.md");
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-7.xml");
         parsed.Value.Kind.Should().Be(McpUriKind.TranslationPage);
         parsed.Value.DocumentId.Should().Be(DocumentId);
         parsed.Value.PageIndex.Should().Be(7);
@@ -202,7 +203,7 @@ public sealed class McpV3ContractTests
     [InlineData(McpErrorCode.InvalidArgument, "INVALID_ARGUMENT", 2)]
     [InlineData(McpErrorCode.NotFound, "NOT_FOUND", 3)]
     [InlineData(McpErrorCode.PermissionDenied, "PERMISSION_DENIED", 4)]
-    [InlineData(McpErrorCode.Reserved, "RESERVED", 5)]
+    [InlineData(McpErrorCode.RevisionConflict, "REVISION_CONFLICT", 5)]
     [InlineData(McpErrorCode.InvalidContent, "INVALID_CONTENT", 6)]
     [InlineData(McpErrorCode.ResponseTruncated, "RESPONSE_TRUNCATED", 7)]
     [InlineData(McpErrorCode.Unavailable, "UNAVAILABLE", 8)]
@@ -223,7 +224,7 @@ public sealed class McpV3ContractTests
     [Fact]
     public void Find_entry_projection_has_no_legacy_fields()
     {
-        McpFindEntry entry = new("patchouli://items/x.bib", "Title", "file");
+        McpFindEntry entry = new("patchouli://items/x.yml", "Title", "file");
         JsonNode node = JsonSerializer.SerializeToNode(entry)!;
         node.AsObject().Select(pair => pair.Key).Should().Equal("uri", "title", "type");
     }
@@ -231,7 +232,7 @@ public sealed class McpV3ContractTests
     [Fact]
     public void Long_find_variants_omit_inapplicable_fields()
     {
-        McpItemLongEntry entry = new("patchouli://items/x.bib", "Title", "file", "active", "indexed", true);
+        McpItemLongEntry entry = new("patchouli://items/x.yml", "Title", "file", "active", "indexed", true);
         JsonNode node = JsonSerializer.SerializeToNode(entry)!;
         node["item_status"]!.GetValue<string>().Should().Be("active");
         node["primary_document_ocr_index_status"]!.GetValue<string>().Should().Be("indexed");

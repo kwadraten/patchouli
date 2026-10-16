@@ -57,7 +57,7 @@ public sealed class CslItemMapperTests
             .Should().BeAssignableTo<IReadOnlyDictionary<string, object?>>().Subject;
         author["family"].Should().Be("Lovelace");
         author["suffix"].Should().Be("III");
-        author["particles"].Should().Be("van");
+        author["non-dropping-particle"].Should().Be("van");
         mapped.Value.Variables["issued"].Should().NotBeNull();
     }
 

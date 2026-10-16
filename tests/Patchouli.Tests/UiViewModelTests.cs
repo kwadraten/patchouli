@@ -196,12 +196,12 @@ public sealed class UiViewModelTests : IDisposable
         DocumentBoxId boxId = DocumentBoxId.New();
 
         PatchouliNavigationParseResult parsed = PatchouliUriNavigationParser.ParseInput(
-            $"patchouli://texts/{documentId}/page-2.md?rev={revisionId}&box={boxId}");
+            $"patchouli://texts/{documentId}/page-2.xml?rev={revisionId}&box={boxId}");
 
         parsed.IsSuccess.Should().BeTrue(parsed.ErrorMessage);
         parsed.Target!.Kind.Should().Be(PatchouliNavigationKind.TextPage);
         parsed.Target.ResourceId.Should().Be(documentId.ToString());
-        parsed.Target.PageIndex.Should().Be(2);
+        parsed.Target.PageIndex.Should().Be(1);
         parsed.Target.RevisionId.Should().Be(revisionId);
         parsed.Target.BoxId.Should().Be(boxId);
     }
@@ -338,7 +338,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Toolbar_patchouli_uri_opens_item_and_zero_based_text_page()
+    public async Task Toolbar_patchouli_uri_opens_item_and_one_based_text_page()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
@@ -358,14 +358,14 @@ public sealed class UiViewModelTests : IDisposable
                 await vm.Shell.RefreshItemsAsync();
 
                 vm.SearchEvidence.Query =
-                    $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-1.md";
+                    $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-2.xml";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
                 vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
 
                 vm.SearchEvidence.Query =
-                    $"[URI navigation](patchouli://items/{imported.CreatedItemId}.bib)";
+                    $"[URI navigation](patchouli://items/{imported.CreatedItemId}.yml)";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
                 vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
@@ -650,7 +650,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.3.8 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.3.9 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }

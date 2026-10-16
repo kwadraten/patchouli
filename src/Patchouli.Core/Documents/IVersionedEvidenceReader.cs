@@ -5,7 +5,7 @@ namespace Patchouli.Core.Documents;
 
 /// <summary>
 /// Reads evidence text from a versioned page URI.
-/// The URI shape is <c>patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree-revision-id}&amp;box={box-id}</c>.
+/// The URI shape is <c>patchouli://texts/{document-instance-id}/page-{page-index}.xml?rev={tree-revision-id}&amp;box={box-id}</c>.
 /// A URI with <c>rev</c> reads the immutable revision it names; a URI without <c>rev</c>
 /// reads the current HEAD revision. Only committed revisions are externally referenceable.
 /// </summary>

@@ -115,11 +115,12 @@ public sealed class LlmSubscriptionTests
             Message(LlmChatRole.System, "An appended instruction")
         ];
         LlmTransportResult result = await transport.SendAsync(new LlmTransportRequest(resolved.Value, "test-model",
-            messages, AgentNativeTools.Definitions, null, null, true, null, null));
+            messages, AgentNativeTools.Definitions, null, null, true, null, null) { ReasoningEffort = "high" });
         result.IsSuccess.Should().BeTrue(result.ErrorMessage);
         result.Text.Should().Be("translated");
         result.Usage.Should().Be(new LlmUsage(10, 4, 14, 8, null));
         using JsonDocument payload = JsonDocument.Parse(handler.Payload!);
+        payload.RootElement.GetProperty("reasoning").GetProperty("effort").GetString().Should().Be("high");
         payload.RootElement.GetProperty("tools").GetArrayLength().Should()
             .BeGreaterThan(0, "native declarations expose tools without SDK-owned execution");
         payload.RootElement.GetProperty("store").GetBoolean().Should().BeFalse();
@@ -163,7 +164,7 @@ public sealed class LlmSubscriptionTests
                     Model = "test-model"
                 }) with
             {
-                TranslationProviderId = SubscriptionProvider, TranslationModel = "test-model"
+                ChatProviderId = SubscriptionProvider, ChatModel = "test-model"
             };
     }
 

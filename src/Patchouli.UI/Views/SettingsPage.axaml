@@ -541,9 +541,9 @@
                     Text="仅对 MCP/CLI agent 生效，保存在本设备。隐藏后对应筛选返回 PERMISSION_DENIED；隐藏标签同时隐藏 BibLaTeX keyword，写入时保留现有标签。"
                     FontSize="12" TextWrapping="Wrap"
                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <CheckBox Content="暴露标签（patchouli://library.toon 与题录关系）"
+                  <CheckBox Content="暴露标签（patchouli://library.yml 与题录关系）"
                             IsChecked="{Binding ExposeLibraryTags}" />
-                  <CheckBox Content="暴露集合（patchouli://library.toon 与题录关系）"
+                  <CheckBox Content="暴露集合（patchouli://library.yml 与题录关系）"
                             IsChecked="{Binding ExposeLibraryCollections}" />
                   <Button Content="刷新预览" Command="{Binding RefreshLibraryPreviewCommand}"
                           HorizontalAlignment="Left" />
@@ -650,35 +650,48 @@
 
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="翻译默认设置" Classes="CardTitle" />
-                  <TextBlock Text="翻译任务默认使用的 provider 与模型；目标语言留空时回落到 en。"
+                  <TextBlock Text="内置 Agent" Classes="CardTitle" />
+                  <TextBlock Text="推理强度" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <ComboBox Name="AgentReasoningEffortInput" ItemsSource="{Binding AgentReasoningEffortOptions}"
+                            DisplayMemberBinding="{Binding DisplayName}"
+                            SelectedItem="{Binding SelectedAgentReasoningEffort}" MinWidth="220"
+                            HorizontalAlignment="Left" />
+                  <TextBlock Text="用于聊天和工作流的模型请求。默认使用供应商设置；可用强度取决于模型，不支持的值可能导致请求失败。修改自动保存，对后续请求生效。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <TextBlock Text="模型请求自动重试次数" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <NumericUpDown Name="AgentMaxRetriesInput" Value="{Binding AgentMaxRetries}" Minimum="0" Maximum="20"
+                                 Increment="1" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Text="首次请求之外的额外尝试次数，仅适用于临时请求失败；工具纠错不占用次数。0 表示关闭自动重试。" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <TextBlock Text="最大工具结果长度（字符）" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <NumericUpDown Name="ToolResultMaxCharactersInput" Value="{Binding ToolResultMaxCharacters}"
+                                 Minimum="4096" Maximum="1048576" Increment="1024" Width="180"
+                                 HorizontalAlignment="Left" />
+                  <TextBlock
+                    Text="默认 32768 字符。超出上限的结果会折叠为警告和简短预览，完整内容保留在原始历史中，可分页读取。FSI 内部调用的完整结果回执也计入长度。修改会自动保存，对尚未发送的新结果生效；已发送的结果保持原样。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                    TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="聊天模型" Classes="CardTitle" />
+                  <TextBlock Text="普通聊天使用此模型。工作流模型在对应工作流编辑器中配置。"
                              FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                              TextWrapping="Wrap" />
-                  <Grid ColumnDefinitions="Auto,*,Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="8"
-                        RowSpacing="8">
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="默认 Provider" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="1"
-                              ItemsSource="{Binding TranslationProviderOptions}"
+                  <Grid ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8">
+                    <TextBlock Grid.Column="0" Text="Provider" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding ChatProviderOptions}"
                               DisplayMemberBinding="{Binding DisplayName}"
-                              SelectedItem="{Binding SelectedTranslationProvider}"
-                              PlaceholderText="{Binding TranslationProviderPlaceholder}"
+                              SelectedItem="{Binding SelectedChatProvider}"
+                              PlaceholderText="{Binding ChatProviderPlaceholder}"
                               HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Row="0" Grid.Column="2" Text="默认模型" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="3" IsEditable="True"
-                              ItemsSource="{Binding TranslationModelOptions}"
-                              Text="{Binding TranslationModel}" HorizontalAlignment="Stretch" />
-
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="目标语言" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="1" Grid.Column="1" IsEditable="True"
-                              ItemsSource="{Binding TargetLanguageOptions}"
-                              Text="{Binding TargetLanguage}" HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Row="1" Grid.Column="2" Text="窗口半径" VerticalAlignment="Center" />
-                    <NumericUpDown Grid.Row="1" Grid.Column="3" Minimum="0" Maximum="5" Increment="1"
-                                   Value="{Binding TranslationWindowRadius}" HorizontalAlignment="Stretch" />
+                    <TextBlock Grid.Column="2" Text="模型" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="3" IsEditable="True"
+                              ItemsSource="{Binding ChatModelOptions}"
+                              Text="{Binding ChatModel}" HorizontalAlignment="Stretch" />
                   </Grid>
-                  <TextBlock Text="{Binding TranslationWindowRadiusDescription}" FontSize="11"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  <CheckBox Content="回填上一窗口的翻译结果" IsChecked="{Binding BackfillPreviousWindowTranslation}" />
                 </StackPanel>
               </Border>
 

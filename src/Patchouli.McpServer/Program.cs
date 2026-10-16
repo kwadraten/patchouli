@@ -23,7 +23,7 @@ using Patchouli.Host.Mcp;
 
 if (args.Contains("--help"))
 {
-    Console.Error.WriteLine("Patchouli.Net MCP HTTP server: --db <runtime.sqlite> [--port <port>]");
+    Console.Error.WriteLine("Patchouli.NET MCP HTTP server: --db <runtime.sqlite> [--port <port>]");
     Console.Error.WriteLine("Fixture modes: --seed-fixture or --seed-uuid-chain-fixture --recipe <recipe.json>");
     Console.Error.WriteLine("Default port: 4536");
     return;

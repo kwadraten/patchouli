@@ -1,5 +1,10 @@
 # 0038. Chat FSI REPL and VFS permission matrix
 
+2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)
+partitions live FSI workers and temporary workspaces by conversation context within a
+Session. SDK bindings remain activation-scoped; durable receipts and unknown-write
+quarantine remain Session-wide. Worker context history is not implicitly shared.
+
 2026-10-09 amendment: FSI is always available in chat and workflow sessions. The session grant and chat-page toggle are removed; workers remain lazy and isolated. This supersedes the earlier grant policy.
 
 2026-10-08 amendment: the independent worker now receives an ambient typed SDK bridge

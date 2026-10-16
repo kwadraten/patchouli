@@ -15,9 +15,9 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-/// <summary>The 「LLM 与翻译」settings section: the provider form is rendered from the catalog (D3), the
+/// <summary>The 「模型连接与聊天」settings section: the provider form is rendered from the catalog (D3), the
 /// Azure-only fields follow the catalog flags, secrets travel through <see cref="ICredentialStore"/> only
-/// and the translation window radius is clamped to [0, 5] (D5).</summary>
+/// and the chat window radius is clamped to [0, 5] (D5).</summary>
 [Collection("Avalonia")]
 public sealed class LlmSettingsViewModelTests : IDisposable
 {
@@ -115,6 +115,26 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     window.KeyTextInput("replacement-secret");
                     Dispatcher.UIThread.RunJobs();
                     row.ApiKeyInput.Should().Be("replacement-secret", "typing must update the credential draft");
+                    NumericUpDown payloadLimit = page.GetVisualDescendants().OfType<NumericUpDown>()
+                        .Single(input => input.Name == "ToolResultMaxCharactersInput");
+                    NumericUpDown retries = page.GetVisualDescendants().OfType<NumericUpDown>()
+                        .Single(input => input.Name == "AgentMaxRetriesInput");
+                    retries.Value.Should().Be(3);
+                    retries.Value = 0;
+                    Dispatcher.UIThread.RunJobs();
+                    section.AgentMaxRetries.Should().Be(0);
+                    ComboBox effort = page.GetVisualDescendants().OfType<ComboBox>()
+                        .Single(input => input.Name == "AgentReasoningEffortInput");
+                    effort.SelectedItem =
+                        section.AgentReasoningEffortOptions.Single(option => option.ProviderId == "high");
+                    Dispatcher.UIThread.RunJobs();
+                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
+                    section.SelectedAgentReasoningEffort = null;
+                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
+                    payloadLimit.Value.Should().Be(32768);
+                    payloadLimit.Value = 16384;
+                    Dispatcher.UIThread.RunJobs();
+                    section.ToolResultMaxCharacters.Should().Be(16384);
                     using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
                     while (section.IsDirty || section.IsSaving)
                     {
@@ -122,6 +142,12 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     }
 
                     store.SavedSecrets["deepseek"].Should().Be("replacement-secret");
+                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentMaxRetries.Should().Be(0);
+                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentReasoningEffort.Should().Be("high");
+                    (await main.ServicesAsync()).LlmSettings.AgentReasoningEffort.Should().Be("high");
+                    (await main.ServicesAsync()).LlmSettings.AgentMaxRetries.Should().Be(0);
+                    PatchouliAppSettings.Load(_settings.Path).Llm.ToolResultMaxCharacters.Should().Be(16384);
+                    (await main.ServicesAsync()).LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
                     row.HasCredential.Should().BeTrue();
                     key.Text.Should().Be("replacement-secret");
                     key.PlaceholderText.Should().NotContain("•");
@@ -159,6 +185,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             await using MainWindowViewModel reopened = new(settingsPath: _settings.Path);
             reopened.Settings.LlmSettings.UseCredentialStore(store);
             await reopened.Settings.SelectSectionAsync("llm");
+            reopened.Settings.LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
             LlmProviderSettingsRowViewModel savedRow = reopened.Settings.LlmSettings.VisibleProviders
                 .Single(provider => provider.ProviderId == "deepseek");
             savedRow.Model.Should().Be("deepseek-reasoner");
@@ -185,13 +212,13 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             try
             {
                 Dispatcher.UIThread.RunJobs();
-                ComboBox translation = page.GetVisualDescendants().OfType<ComboBox>()
-                    .Single(combo => ReferenceEquals(combo.ItemsSource, section.TranslationProviderOptions));
-                translation.SelectedItem.Should().BeNull();
+                ComboBox chat = page.GetVisualDescendants().OfType<ComboBox>()
+                    .Single(combo => ReferenceEquals(combo.ItemsSource, section.ChatProviderOptions));
+                chat.SelectedItem.Should().BeNull();
 
-                translation.PlaceholderText.Should().Be("OpenAI（未就绪）");
+                chat.PlaceholderText.Should().Be("OpenAI（未就绪）");
 
-                section.TranslationProviderId.Should().Be("openai");
+                section.ChatProviderId.Should().Be("openai");
                 section.OcrProviderId.Should().Be("openai");
                 section.IsDirty.Should().BeFalse();
 
@@ -202,7 +229,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 (await vm.Settings.SaveAllDirtySectionsAsync()).Should().BeTrue();
                 Dispatcher.UIThread.RunJobs();
                 section.LastError.Should().BeNull();
-                translation.SelectedItem.Should().BeSameAs(section.TranslationProviderOptions.Single());
+                chat.SelectedItem.Should().BeSameAs(section.ChatProviderOptions.Single());
 
                 TextBox keyInput = page.GetVisualDescendants().OfType<TextBox>()
                     .Single(input => input.PasswordChar == '•');
@@ -215,9 +242,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 await section.VisibleProviders.Single().RemoveApiKeyCommand.ExecuteAsync(null);
                 Dispatcher.UIThread.RunJobs();
                 keyInput.PlaceholderText.Should().NotContain("•");
-                translation.SelectedItem.Should().BeNull();
+                chat.SelectedItem.Should().BeNull();
 
-                section.TranslationProviderId.Should().Be("openai");
+                section.ChatProviderId.Should().Be("openai");
                 section.OcrProviderId.Should().Be("openai");
                 section.IsDirty.Should().BeFalse("removing a credential already writes the credential store");
                 await vm.Settings.SelectSectionAsync("ocr_model");
@@ -246,10 +273,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         await section.LoadAsync();
         DateTime unchangedTime = new(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         File.SetLastWriteTimeUtc(_settings.Path, unchangedTime);
-        section.SelectedTranslationProvider = null;
+        section.SelectedChatProvider = null;
         section.SelectedOcrProvider = null;
-        section.TranslationWindowRadius = 3;
-        section.TranslationWindowRadius = 1;
         LlmProviderSettingsRowViewModel openAi = section.Providers.Single(row => row.ProviderId == "openai");
         openAi.Model = "  gpt-4o-mini  ";
         openAi.ApiKeyInput = "  ";
@@ -263,6 +288,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             section.AvailableProviderOptions.Single(option => option.ProviderId == "anthropic");
         section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel draft = section.VisibleProviders.Single();
+        draft.ContextWindowTokens.Should().Be(256000);
         draft.Model = "claude-sonnet";
         draft.ApiKeyInput = "cancelled-secret";
         section.IsDirty.Should().BeTrue();
@@ -331,7 +357,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         RecordingCredentialStore store = new();
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
-        section.TranslationProviderId = null!;
+        section.ChatProviderId = null!;
         section.OcrProviderId = null!;
         section.Providers.Single(row => row.ProviderId == "openai").Model = "new-model";
         await section.SaveAsync();
@@ -379,7 +405,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.HasNoProviders.Should().BeTrue();
         section.AvailableProviderOptions.Select(option => option.ProviderId).Should()
             .Equal((IEnumerable<string>)LlmProviderCatalog.ProviderIds);
-        section.TranslationProviderOptions.Should().BeEmpty();
+        section.ChatProviderOptions.Should().BeEmpty();
         section.OcrProviderOptions.Should().BeEmpty();
     }
 
@@ -396,7 +422,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         row.ProviderId.Should().Be("anthropic");
         section.HasPendingProvider.Should().BeTrue();
         section.AddProviderCommand.CanExecute(null).Should().BeFalse();
-        section.TranslationProviderOptions.Should().BeEmpty();
+        section.ChatProviderOptions.Should().BeEmpty();
 
         row.Model = "claude-sonnet";
         await section.SaveAsync();
@@ -413,7 +439,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
 
         section.HasPendingProvider.Should().BeFalse();
         section.AvailableProviderOptions.Should().NotContain(option => option.ProviderId == "anthropic");
-        section.TranslationProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("anthropic");
+        section.ChatProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("anthropic");
         section.OcrProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("anthropic");
         (_, LlmSettingsViewModel reloaded) = CreateSection(store);
         await reloaded.LoadAsync();
@@ -433,13 +459,13 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
         LlmProviderSettingsRowViewModel row = section.VisibleProviders.Should().ContainSingle().Which;
-        section.TranslationProviderOptions.Should().BeEmpty();
+        section.ChatProviderOptions.Should().BeEmpty();
         row.Model = "claude-sonnet";
         await section.SaveAsync();
-        section.TranslationProviderOptions.Should().ContainSingle();
+        section.ChatProviderOptions.Should().ContainSingle();
         await row.RemoveApiKeyCommand.ExecuteAsync(null);
         section.VisibleProviders.Should().ContainSingle().Which.Should().BeSameAs(row);
-        section.TranslationProviderOptions.Should().BeEmpty();
+        section.ChatProviderOptions.Should().BeEmpty();
         section.AvailableProviderOptions.Should().NotContain(option => option.ProviderId == "anthropic");
         await row.RemoveConnectionCommand.ExecuteAsync();
         await section.SaveAsync();
@@ -508,15 +534,15 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         await row.LoginSubscriptionCommand.ExecuteAsync();
         browserOpened.Should().BeTrue();
         row.Model.Should().Be("subscription-model-a");
-        section.TranslationProviderOptions.Select(option => option.ProviderId).Should()
+        section.ChatProviderOptions.Select(option => option.ProviderId).Should()
             .Equal("openai", "openai-subscription");
         section.OcrProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("openai");
         store.SavedSecrets["openai"].Should().Be("api-secret");
-        section.TranslationProviderId = row.ProviderId;
-        section.TranslationModel = row.Model;
+        section.ChatProviderId = row.ProviderId;
+        section.ChatModel = row.Model;
         await section.SaveAsync();
         PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
-        loaded.Llm.TranslationSelection.Should().Be(("openai-subscription", "subscription-model-a"));
+        loaded.Llm.ChatSelection.Should().Be(("openai-subscription", "subscription-model-a"));
         loaded.Llm.FindProvider("openai-subscription")!.AuthenticationMode.Should()
             .Be(LlmAuthenticationModes.Subscription);
         File.ReadAllText(_settings.Path).Should().NotContain("subscription-access").And
@@ -525,10 +551,10 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         service.Models = [new LlmSubscriptionModel("new-upstream-model", "New", true)];
         await row.RefreshSubscriptionModelsCommand.ExecuteAsync();
         row.SubscriptionModels.Should().Equal("new-upstream-model");
-        section.TranslationModel.Should().Be("new-upstream-model");
+        section.ChatModel.Should().Be("new-upstream-model");
         await row.LogoutSubscriptionCommand.ExecuteAsync();
         row.HasCredential.Should().BeFalse();
-        section.TranslationProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("openai");
+        section.ChatProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("openai");
         store.SavedSecrets.Should().ContainKey("openai").And
             .NotContainKey(LlmSubscriptionCatalog.CredentialProviderId(row.ProviderId));
     }
@@ -563,10 +589,10 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         Host.Composition.HostServices services = await vm.ServicesAsync();
         try
         {
-            section.TranslationProviderId = "openai-subscription";
-            section.TranslationModel = "new-live-model";
+            section.ChatProviderId = "openai-subscription";
+            section.ChatModel = "new-live-model";
             await section.SaveAsync();
-            services.LlmSettings.TranslationSelection.Should().Be(("openai-subscription", "new-live-model"));
+            services.LlmSettings.ChatSelection.Should().Be(("openai-subscription", "new-live-model"));
             services.LlmSettings.Should().BeSameAs(vm.AppOptions.Llm);
         }
         finally
@@ -626,11 +652,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         (MainWindowViewModel vm, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
 
-        section.TranslationWindowRadius = 4;
-        section.BackfillPreviousWindowTranslation = false;
-        section.TargetLanguage = "ja";
-        section.TranslationProviderId = "anthropic";
-        section.TranslationModel = "claude-sonnet";
+        section.ChatProviderId = "anthropic";
+        section.ChatModel = "claude-sonnet";
         section.OcrProviderId = "azure-openai";
         section.OcrModel = "gpt-4o";
         LlmProviderSettingsRowViewModel azure =
@@ -647,20 +670,14 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.IsDirty.Should().BeFalse();
 
         // The in-memory settings the rest of the app reads already carry the new values.
-        vm.AppOptions.Llm.TranslationSelection.Should().Be(("anthropic", "claude-sonnet"));
+        vm.AppOptions.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         vm.AppOptions.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
-        vm.AppOptions.Llm.EffectiveTargetLanguage.Should().Be("ja");
-        vm.AppOptions.Llm.EffectiveTranslationWindowRadius.Should().Be(4);
-        vm.AppOptions.Llm.BackfillPreviousWindowTranslation.Should().BeFalse();
         vm.AppOptions.Llm.FindProvider("azure-openai")!.Deployment.Should().Be("gpt-4o-deployment");
 
         // The same values round-trip through the settings file.
         PatchouliAppSettings reloaded = PatchouliAppSettings.Load(_settings.Path);
-        reloaded.Llm.TranslationSelection.Should().Be(("anthropic", "claude-sonnet"));
+        reloaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         reloaded.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
-        reloaded.Llm.EffectiveTargetLanguage.Should().Be("ja");
-        reloaded.Llm.EffectiveTranslationWindowRadius.Should().Be(4);
-        reloaded.Llm.BackfillPreviousWindowTranslation.Should().BeFalse();
         LlmProviderAppSettings reloadedAzure = reloaded.Llm.FindProvider("azure-openai")!;
         reloadedAzure.Subscription.Should().Be("patchouli-resource");
         reloadedAzure.Deployment.Should().Be("gpt-4o-deployment");
@@ -674,22 +691,16 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         RecordingCredentialStore store = new();
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
-        section.TranslationWindowRadius = 2;
-        section.TargetLanguage = "zh-Hans";
-        section.TranslationProviderId = "deepseek";
-        section.TranslationModel = "deepseek-chat";
-        section.BackfillPreviousWindowTranslation = false;
+        section.ChatProviderId = "deepseek";
+        section.ChatModel = "deepseek-chat";
         await section.SaveAsync();
 
         (_, LlmSettingsViewModel reloadedSection) = CreateSection(store);
         await reloadedSection.LoadAsync();
 
         reloadedSection.IsDirty.Should().BeFalse();
-        reloadedSection.TranslationWindowRadius.Should().Be(2);
-        reloadedSection.TargetLanguage.Should().Be("zh-Hans");
-        reloadedSection.TranslationProviderId.Should().Be("deepseek");
-        reloadedSection.TranslationModel.Should().Be("deepseek-chat");
-        reloadedSection.BackfillPreviousWindowTranslation.Should().BeFalse();
+        reloadedSection.ChatProviderId.Should().Be("deepseek");
+        reloadedSection.ChatModel.Should().Be("deepseek-chat");
     }
 
     [Fact]
@@ -757,21 +768,11 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Translation_window_radius_is_clamped_to_the_supported_range()
+    public void Shared_model_settings_have_no_workflow_business_fields()
     {
-        RecordingCredentialStore store = new();
-        (_, LlmSettingsViewModel section) = CreateSection(store);
-
-        section.TranslationWindowRadius.Should().Be(1, "D5 keeps the default window radius at 1");
-
-        section.TranslationWindowRadius = 9;
-        section.TranslationWindowRadius.Should().Be(LlmAppSettings.MaxTranslationWindowRadius);
-
-        section.TranslationWindowRadius = -3;
-        section.TranslationWindowRadius.Should().Be(0);
-
-        section.TranslationWindowRadius = 3;
-        section.TranslationWindowRadius.Should().Be(3);
+        typeof(LlmSettingsViewModel).GetProperties().Select(property => property.Name)
+            .Should().NotContain(new[]
+                { "TranslationWindowRadius", "TargetLanguage", "BackfillPreviousWindowTranslation" });
     }
 
     [Fact]
@@ -781,20 +782,14 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         (MainWindowViewModel vm, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
 
-        section.TranslationProviderId = "groq";
-        section.TranslationWindowRadius = 5;
-        section.BackfillPreviousWindowTranslation = false;
+        section.ChatProviderId = "groq";
         section.IsDirty.Should().BeTrue();
 
         await section.DiscardAsync();
 
         section.IsDirty.Should().BeFalse();
-        section.TranslationProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        section.TranslationWindowRadius.Should().Be(1);
-        section.BackfillPreviousWindowTranslation.Should().BeTrue();
+        section.ChatProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         PatchouliAppSettings reloaded = PatchouliAppSettings.Load(_settings.Path);
-        reloaded.Llm.EffectiveTranslationWindowRadius.Should().Be(1);
-        vm.AppOptions.Llm.EffectiveTranslationWindowRadius.Should().Be(1);
     }
 
     public void Dispose()
@@ -811,7 +806,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         // The page binds exactly this section, registered under the LLM category.
         vm.Settings.SectionEntries.Should()
             .ContainSingle(entry => ReferenceEquals(entry.Content, section))
-            .Which.Title.Should().Be("模型与翻译");
+            .Which.Title.Should().Be("模型连接与聊天");
         section.UseCredentialStore(store);
         return (vm, section);
     }

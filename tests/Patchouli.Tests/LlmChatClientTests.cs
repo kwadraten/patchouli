@@ -417,12 +417,35 @@ public sealed class LlmChatClientTests
         result.ErrorCode.Should().Be(LlmFailureCodes.NetworkTimeout);
     }
 
-    private static LlmChatClient CreateClient(ILlmChatTransport transport)
+    [Fact]
+    public async Task Agent_reasoning_effort_reaches_the_transport_and_changes_configuration_identity()
+    {
+        RecordingTransport transport = new();
+        LlmChatClient client = CreateClient(transport, "high");
+        LlmChatHistory history = LlmChatHistory.Create("instructions").Append([LlmChatMessage.User("hi")]);
+        await client.CompleteAsync("effort", new LlmChatRequest(history));
+        transport.Requests.Single().ReasoningEffort.Should().Be("high");
+        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Single()).ReasoningEffort.Should()
+            .Be(LlmTornado.Code.ChatReasoningEfforts.High);
+        client.ConfigurationKey.Should().NotBe(CreateClient(transport).ConfigurationKey);
+        await client.CompleteAsync("ocr-low", new LlmChatRequest(history,
+            Options: new LlmChatRequestOptions { ReasoningEffort = "low" }));
+        transport.Requests.Last().ReasoningEffort.Should().Be("low");
+        await client.CompleteAsync("ocr-default", new LlmChatRequest(history,
+            Options: new LlmChatRequestOptions { ReasoningEffort = "default" }));
+        transport.Requests.Last().ReasoningEffort.Should().BeEmpty();
+        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
+        await CreateClient(transport).CompleteAsync("default", new LlmChatRequest(history));
+        transport.Requests.Last().ReasoningEffort.Should().BeNull();
+        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
+    }
+
+    private static LlmChatClient CreateClient(ILlmChatTransport transport, string? reasoningEffort = null)
     {
         return new LlmChatClient(
             new LlmProviderRuntimeSettings(OpenAi, "sk-test", "https://api.openai.com/{0}/{1}", "gpt-4o-mini", "", "",
                 ""),
-            transport);
+            transport, reasoningEffort);
     }
 
     private static string Describe(LlmTransportMessage message)

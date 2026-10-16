@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 
@@ -167,7 +168,11 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
     private async Task<AgentToolOutcome> PutToolAsync(McpPutToolArguments request, CancellationToken cancellationToken)
     {
         McpCommandResult<McpPutMeta, McpPutResult> result = await _commands
-            .PutAsync(new McpPutRequest(request.Uri, request.Content), cancellationToken).ConfigureAwait(false);
+            .PutAsync(new McpPutRequest(request.Uri, request.Content, request.PreserveTags,
+                    request.SourceRevision, request.TranslationVersion,
+                    request.Boxes?.Select(box => new McpBoxReplacement(box.BoxId, box.Content)).ToArray()),
+                cancellationToken)
+            .ConfigureAwait(false);
         if (result.Envelope is { } envelope)
         {
             bool committed = result.IsSuccess && envelope.Entries.Count > 0 &&
@@ -220,5 +225,20 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
     /// </summary>
     /// <param name = "Uri">Resource URI to replace as a whole.</param>
     /// <param name = "Content">Whole new content of that resource.</param>
-    private sealed record McpPutToolArguments(string Uri, string Content);
+    private sealed record McpPutToolArguments(
+        [property: JsonPropertyName("uri")] string Uri,
+        [property: JsonPropertyName("content")]
+        string? Content = null,
+        [property: JsonPropertyName("preserve_tags")]
+        bool PreserveTags = false,
+        [property: JsonPropertyName("source_revision")]
+        string? SourceRevision = null,
+        [property: JsonPropertyName("translation_version")]
+        int? TranslationVersion = null,
+        [property: JsonPropertyName("boxes")] IReadOnlyList<McpPutBoxToolArguments>? Boxes = null);
+
+    private sealed record McpPutBoxToolArguments(
+        [property: JsonPropertyName("box_id")] string BoxId,
+        [property: JsonPropertyName("content")]
+        string Content);
 }

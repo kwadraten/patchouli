@@ -12,6 +12,7 @@ jobs:
   test-matrix:
     name: Desktop instance tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -22,4 +23,17 @@ jobs:
         with:
           dotnet-version: "10.0.x"
       - name: Run single instance and control channel tests
-        run: dotnet test tests/Patchouli.Tests/Patchouli.Tests.csproj --filter "FullyQualifiedName~DesktopInstanceCoordinator|FullyQualifiedName~DesktopInstanceActivation"
+        run: >-
+          dotnet test tests/Patchouli.Tests/Patchouli.Tests.csproj
+          --filter "FullyQualifiedName~DesktopInstanceCoordinator|FullyQualifiedName~DesktopInstanceActivation"
+          --logger "trx;LogFileName=desktop-instance.trx"
+          --results-directory .tmp/tests/desktop-instance
+      - name: Upload desktop instance test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-instance-tests-${{ matrix.os }}
+          path: .tmp/tests/desktop-instance/*.trx
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

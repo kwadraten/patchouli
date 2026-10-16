@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds Linux packages for Patchouli.Net: deb, rpm, AppImage, Flatpak.
+# Builds Linux packages for Patchouli.NET: deb, rpm, AppImage, Flatpak.
 #
 # Usage: scripts/package-linux.sh [deb] [rpm] [appimage] [flatpak]
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.3.8, must match Changelog.md)
+#   VERSION       Application version (default: 0.3.10, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
@@ -21,8 +21,10 @@ set -euo pipefail
 # /tmp is often a tiny tmpfs in containers; keep all temp work on disk.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export TMPDIR="$root/.tmp"
+# A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
+mkdir -p "$TMPDIR"
 
-version="${VERSION:-0.3.8}"
+version="${VERSION:-0.3.10}"
 runtime="${RUNTIME:-linux-x64}"
 skip_publish="${SKIP_PUBLISH:-0}"
 publish_ui="$root/.tmp/publish/$runtime"
@@ -213,8 +215,8 @@ EOF
     mv "$root/.tmp/squashfs-root" "$appimagetool_extracted"
   fi
   (cd "$root/.tmp" && ARCH=x86_64 "$appimagetool_extracted/AppRun" "$appdir" \
-    "$out/Patchouli.Net-${version}-linux-x64.AppImage")
-  echo "AppImage: $out/Patchouli.Net-${version}-linux-x64.AppImage"
+    "$out/Patchouli.NET-${version}-linux-x64.AppImage")
+  echo "AppImage: $out/Patchouli.NET-${version}-linux-x64.AppImage"
 }
 
 build_flatpak() {

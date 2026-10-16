@@ -161,7 +161,7 @@ public sealed class HostServices
             new CachedPageTranslationCompiler(
                 new PageTranslationCompiler(ConnectionFactory, DocumentTrees, Markdown), pageTranslationCache),
             pageTranslationCache,
-            Clock);
+            Clock, LibraryRevisions);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings);
         ModelPathValidator = new OcrModelPathValidator();
@@ -235,7 +235,7 @@ public sealed class HostServices
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache, PageTranslations);
-        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations);
+        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees);
         CliPath = new CliPathService();
         // The built-in agent acts through exactly the same MCP command surface as every other MCP
         // client: identical validation, permissions, atomic write set and error vocabulary. Its OCR
@@ -264,11 +264,21 @@ public sealed class HostServices
         AgentEffectInterpreter agentInterpreter = new(
             new LlmProviderAgentClientProvider(() => LlmSettings, Credentials),
             new McpCommandServiceAgentGateway(McpCommands),
-            agentHostPrimitives, agentFsi, new AgentContextCompactor(agentStore));
+            agentHostPrimitives, agentFsi,
+            new AgentContextCompactor(agentStore, () => LlmSettings.ToolResultMaxCharacters),
+            () =>
+            {
+                LlmAppSettings settings = LlmSettings;
+                int capacity = settings.FindProvider(settings.ChatSelection.ProviderId)?.ContextWindowTokens ??
+                               LlmProviderAppSettings.DefaultContextWindowTokens;
+                return Math.Clamp(capacity / 16, 128, 16000);
+            },
+            agentStore);
         AgentSessions = new AgentSessionService(
             agentStore,
             agentInterpreter,
-            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces);
+            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces,
+            maxRequestRetries: () => LlmSettings.AgentMaxRetries);
         HostWorkflows = new WorkflowSessionRunner(
             WorkflowStore.ForLibrary(runtimeDatabasePath),
             AgentSessions,
@@ -546,6 +556,7 @@ public sealed class HostServices
         {
             startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+            await services.HostWorkflows.Configuration.MigrateLegacyAsync(CancellationToken.None);
 
             Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
             if (ftsCache.IsFailure)

@@ -12,7 +12,7 @@
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
         WindowStartupLocation="CenterScreen"
-        Title="Patchouli.Net" Icon="/Assets/AppIcon.ico" Background="{DynamicResource SurfaceBrush}">
+        Title="Patchouli.NET" Icon="/Assets/AppIcon.ico" Background="{DynamicResource SurfaceBrush}">
 
   <Window.DataTemplates>
     <DataTemplate DataType="{x:Type local:LibraryShellViewModel}">

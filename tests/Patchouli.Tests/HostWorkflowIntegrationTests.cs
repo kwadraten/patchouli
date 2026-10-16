@@ -39,8 +39,8 @@ public sealed class HostWorkflowIntegrationTests
         harness.Llm.Requests[2].History.Messages.Last().Role.Should().Be(LlmChatRole.Tool);
         AgentSessionLaunchParameters launch =
             (await harness.SessionStore.TryReadLaunchAsync("host-test", CancellationToken.None))!;
-        launch.Parameters["targetLanguage"].Should().Be("ja");
-        launch.Parameters["windowRadius"].Should().Be("2");
+        launch.Parameters.Should().NotContainKey("targetLanguage");
+        launch.Parameters.Should().NotContainKey("windowRadius");
         FileWorkflowRunSink sink = new(harness.SessionStore.SessionsRoot);
         (await sink.ReadStepsAsync("host-test", CancellationToken.None)).Should().HaveCount(5);
         (await sink.ReadSnapshotAsync("host-test", CancellationToken.None))!.Value.ApiVersion.Should()
@@ -79,19 +79,19 @@ public sealed class HostWorkflowIntegrationTests
     }
 
     [Fact]
-    public async Task Replay_preserves_multi_document_selection_and_languages()
+    public async Task Replay_preserves_multi_document_selection_and_page_range()
     {
         const string script = """
                               open Patchouli.Workflows.Scripting
                               let worker = Agent.text "selection" "Describe the selection."
-                                              (fun (x: WorkflowInput) -> sprintf "%A %A %s" x.Documents x.Languages x.PageRange)
-                              let run = Agent.run worker |> Workflow.define
+                                              (fun (x: WorkflowInput) -> sprintf "%A %s" x.Documents x.PageRange)
+                              let run = Agent.run AgentContext.main worker |> Workflow.define
                               """;
         await using Harness harness = new();
-        await harness.SaveWorkflowAsync(script);
+        await harness.SaveWorkflowAsync(script, WorkflowSelectionScope.All);
         harness.Llm.Answers.Enqueue("selection described");
         WorkflowSessionResult first = await harness.Runner.StartAsync(new WorkflowSessionRequest(WorkflowId,
-            new Dictionary<string, string>(), new WorkflowSelection(["doc-1", "doc-2"], "3-5", "ja", ["en", "ja"]),
+            new Dictionary<string, string>(), new WorkflowSelection(["doc-1", "doc-2"], "3-5", ""),
             "multi-selection"));
         first.Outcome.Status.Should().Be(WorkflowRunStatus.Finished, first.Outcome.Detail);
         WorkflowSessionResult replay = await harness.Runner.ResumeAsync("multi-selection");
@@ -154,8 +154,12 @@ public sealed class HostWorkflowIntegrationTests
             .Accepted.Should().BeTrue();
         await harness.Sessions.WakeChatAsync("failed-provider");
         harness.Mcp.Calls.Select(call => call.Name).Should().Equal("fetch", "put");
-        harness.Llm.Requests[1].History.Messages.Should().HaveCount(3);
-        harness.Llm.Requests.Select(request => request.History.Instructions).Distinct().Should().ContainSingle();
+        harness.Llm.Requests[1].History.Messages.Should().HaveCount(2);
+        harness.Llm.Requests[0].History.Instructions.Should().Contain("AGENT STAGE: worker");
+        harness.Llm.Requests[1].History.Instructions.Should().NotContain("AGENT STAGE: worker");
+        harness.Llm.Requests.Select(request => request.History.Instructions).Distinct().Should()
+            .HaveCountGreaterThan(1,
+                "a later chat activation must receive its own contract, not the workflow stage rules");
         harness.Sessions.TryGetSnapshot("failed-provider")!.Status.Should().Be(AgentSessionStatus.Idle);
     }
 
@@ -173,12 +177,8 @@ public sealed class HostWorkflowIntegrationTests
             new Dictionary<string, string>(), WorkflowSelections.empty, "model-repair"));
         result.Outcome.Status.Should().Be(WorkflowRunStatus.Finished, result.Outcome.Detail);
         result.Outcome.Steps.Count(step => step.Kind == "LlmChat.ModelFailure").Should().Be(2);
-        harness.Llm.Requests[1].History.Messages.Should().Contain(message => message.Role == LlmChatRole.User &&
-                                                                             message.Parts
-                                                                                 .OfType<LlmMessagePart.LlmTextPart>()
-                                                                                 .Any(part =>
-                                                                                     part.Text.Contains(
-                                                                                         "JSON decoding failed")));
+        harness.Llm.Requests[1].History.Messages.Should().BeEquivalentTo(harness.Llm.Requests[0].History.Messages,
+            options => options.WithStrictOrdering());
         harness.Llm.Requests.Should().HaveCount(5);
         WorkflowSessionResult replay = await harness.Runner.ResumeAsync("model-repair");
         replay.Outcome.Status.Should().Be(WorkflowRunStatus.Finished);
@@ -230,20 +230,6 @@ public sealed class HostWorkflowIntegrationTests
     }
 
     [Fact]
-    public void Launch_parameters_override_settings_and_blank_values_use_settings_defaults()
-    {
-        LlmAppSettings settings = LlmAppSettings.Default() with
-        {
-            TargetLanguage = "ja", TranslationWindowRadius = 3, BackfillPreviousWindowTranslation = false
-        };
-        IReadOnlyDictionary<string, string> merged = WorkflowSessionRunner.MergeParameters(settings,
-            new Dictionary<string, string> { ["targetLanguage"] = "zh", ["windowRadius"] = " " });
-        merged["targetLanguage"].Should().Be("zh");
-        merged["windowRadius"].Should().Be("3");
-        merged["backfillPreviousWindowTranslation"].Should().Be("false");
-    }
-
-    [Fact]
     public async Task Adapter_refuses_missing_completion_events_and_unarmed_deferred_effects()
     {
         WorkflowEffectHostAdapter missing = new(new IncompleteInterpreter(false), _ => "instructions");
@@ -282,10 +268,7 @@ public sealed class HostWorkflowIntegrationTests
             SessionStore = AgentSessionStore.ForLibrary(libraryPath);
             AgentEffectInterpreter interpreter = new(new Provider(Llm), Mcp, new HostPrimitives());
             Sessions = new AgentSessionService(SessionStore, interpreter);
-            Runner = new WorkflowSessionRunner(Store, Sessions, interpreter, () => LlmAppSettings.Default() with
-            {
-                TargetLanguage = "ja", TranslationWindowRadius = 2
-            });
+            Runner = new WorkflowSessionRunner(Store, Sessions, interpreter, LlmAppSettings.Default);
         }
 
         public WorkflowStore Store { get; }
@@ -295,11 +278,37 @@ public sealed class HostWorkflowIntegrationTests
         public Model Llm { get; } = new();
         public Gateway Mcp { get; } = new();
 
-        public async Task SaveWorkflowAsync(string script)
+        public async Task SaveWorkflowAsync(string script,
+            WorkflowSelectionScope scope = WorkflowSelectionScope.Nothing)
         {
             await Store.SaveAsync(WorkflowDefinitions.create(WorkflowId, "Host test", "", "run"),
                 CancellationToken.None);
-            await Store.SaveScriptAsync(WorkflowId, script, CancellationToken.None);
+            const string declaration = """
+                                       open Patchouli.Workflows
+                                       open Patchouli.Workflows.Scripting
+                                       let info =
+                                           WorkflowInfo.create "Host test" ""
+                                           |> WorkflowInfo.selectionScope WorkflowSelectionScope.Nothing
+                                       let model = Parameter.model "model" "执行模型"
+                                       let documentId = Parameter.text "documentId" "文档" ""
+                                       """;
+            bool hasEntry = script.Contains("let run", StringComparison.Ordinal);
+            string configured =
+                declaration.Replace("WorkflowSelectionScope.Nothing", "WorkflowSelectionScope." + scope,
+                    StringComparison.Ordinal) + "\n" +
+                script.Replace("let run", "let pipeline", StringComparison.Ordinal) +
+                (hasEntry ? "\nlet run : AgentWorkflow = pipeline |> Workflow.withModel model\n" : "");
+            await Store.SaveScriptAsync(WorkflowId, configured, CancellationToken.None);
+            if (hasEntry)
+            {
+                WorkflowConfigurationSnapshot configuration =
+                    await Runner.Configuration.ReadAsync(WorkflowId, configured, "run", CancellationToken.None);
+                await Runner.Configuration.SaveAsync(WorkflowId, configuration.DeclarationFingerprint,
+                    new Dictionary<string, string>
+                    {
+                        ["model"] = ModelSelectionCodec.Encode(new ModelSelection("openai", "test-model"))
+                    }, CancellationToken.None);
+            }
         }
 
         public async ValueTask DisposeAsync()

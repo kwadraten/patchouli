@@ -1,16 +1,20 @@
 <div align=center>
 
-  <h1>Patchouli.Net</h1>
+  <h1>Patchouli.NET</h1>
 
   <img src="/logo/icon.png" width=200></img>
 
   <p>实验性的桌面端个人文献管理器，面向大型 PDF 文献库的题录管理、数字化、持续校正、有效召回与可复现证据引用，并可与 AI Agent 协同工作。</p>
 
+  <p>
+    <a href="https://deepwiki.com/kwadraten/patchouli"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+  </p>
+
 </div>
 
 ## 下载与更新日志
 
-当前版本：**0.3.8**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
+当前版本：**0.3.10**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
@@ -31,7 +35,9 @@
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP / CLI支持：基于虚拟文件系统和结构化工具的 MCP和CLI，支持 `find`、`fetch`、`cite`、`put` 和 `send`，可按资源域与动作配置权限。
+- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持 box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
+- [x] 旧接口迁移：兼容解析旧 BibLaTeX、Markdown 和 TOON 地址，返回新地址与 0.4.0 弃用提示；支持省略 `patchouli://` 的虚拟文件系统寻址。
+- [x] CSL 数据往返：保留日期范围与自定义字段类型，兼容旧日期存储，统一题录展示与引用渲染的标识符选择。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
 - [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
@@ -39,8 +45,8 @@
 - [x] 完善题录系统：实装标签系统（增删改、合并、置顶与筛选），提供回收站、重复题录检测、题录合并与永久清除
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL古典籍OCR-Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
 - [x] 多模态 LLM OCR：复用模型提供程序配置，支持文档与区域识别。
-- [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、上下文压缩、历史检索和会话内 F# REPL。
-- [x] F# 工作流：脚本编辑、运行检查点、菜单启动，以及工作流与会话的快照同步。
+- [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、可配置推理强度、上下文压缩、历史检索和会话内 F# REPL。
+- [x] F# 工作流：脚本编辑、运行检查点、菜单启动、独立的聊天模型与推理强度设置，以及工作流与会话的快照同步。
 
 ## 开发指南
 
@@ -102,4 +108,4 @@ dotnet test Patchouli.sln
 
 本项目基于 GPLv3 开源，软件依原样提供，作者不对其适用性、可靠性和准确性提供任何保证。
 
-帕秋莉·诺蕾姬（Patchouli Knowledge）是上海爱丽丝幻乐团原创系列作品 `东方 Project` 的登场人物。根据 [东方 Project 使用规定案](https://thbwiki.cc/%E4%B8%9C%E6%96%B9Project%E4%BD%BF%E7%94%A8%E8%A7%84%E5%AE%9A%E6%A1%88)，本项目的正式中文名称为 `广藿香.Net`。本项目名称捏他自该角色“不动的大图书馆”（The Unmoving Great Library）的称号，也对应本项目保持用户 PDF 源文件不动（Unmove）的设计。
+帕秋莉·诺蕾姬（Patchouli Knowledge）是上海爱丽丝幻乐团原创系列作品 `东方 Project` 的登场人物。根据 [东方 Project 使用规定案](https://thbwiki.cc/%E4%B8%9C%E6%96%B9Project%E4%BD%BF%E7%94%A8%E8%A7%84%E5%AE%9A%E6%A1%88)，本项目的正式中文名称为 `广藿香.NET`。本项目名称捏他自该角色“不动的大图书馆”（The Unmoving Great Library）的称号，也对应本项目保持用户 PDF 源文件不动（Unmove）的设计。

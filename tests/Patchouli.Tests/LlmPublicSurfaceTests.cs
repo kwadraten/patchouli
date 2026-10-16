@@ -103,7 +103,7 @@ public sealed class LlmPublicSurfaceTests
         copy.Model.Should().Be("gpt-4o");
         provider.Model.Should().BeEmpty();
         LlmProviderAppSettings.FromCatalog(LlmProviderCatalog.Find("cohere")!).DisplayName.Should().Be("Cohere");
-        LlmAppSettings.SuggestedTargetLanguages.Should().Contain(LlmAppSettings.FallbackTargetLanguage);
+        LlmAppSettings.Default().ChatSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
     }
 
     [Fact]

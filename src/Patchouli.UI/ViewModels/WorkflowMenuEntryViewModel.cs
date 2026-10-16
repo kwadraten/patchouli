@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Host.Workflows;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.Workflows;
@@ -23,6 +24,10 @@ public interface IWorkflowMenuEntryHost
 
     /// <summary>Shows the chat tab; the launch opens it immediately after starting the session.</summary>
     Task OpenChatTabAsync(string? sessionId = null);
+
+    /// <summary>Opens the workflow editor at the fields rejected by launch validation.</summary>
+    Task HandleWorkflowValidationAsync(string workflowId, WorkflowLaunchSelection selection,
+        IReadOnlyList<WorkflowValidationIssue> issues);
 
     /// <summary>The host activity tracker commands are constructed under, or null.</summary>
     IHostActivityTracker? ActivityTracker { get; }
@@ -76,18 +81,20 @@ public sealed class WorkflowMenuEntryViewModel
 
     private async Task LaunchAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_selection.DocumentId))
-        {
-            _host.Report("请先选择一个题录，再让内置 agent 执行工作流。");
-            await _host.OpenChatTabAsync();
-            return;
-        }
-
         string? sessionId = null;
         try
         {
             sessionId = await _menu.StartAsync(WorkflowId, _selection, cancellationToken);
             _host.Report($"已启动工作流会话：{sessionId}。");
+        }
+        catch (WorkflowConfigurationValidationException exception)
+        {
+            string message = exception.Issues.Count == 0
+                ? "工作流输入无效，请检查配置。"
+                : string.Join("；", exception.Issues.Select(issue => issue.Message));
+            _host.ReportError($"工作流启动校验失败：{message}");
+            await _host.HandleWorkflowValidationAsync(WorkflowId, _selection, exception.Issues);
+            return;
         }
         catch (Exception exception)
         {

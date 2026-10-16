@@ -1,7 +1,9 @@
 using Patchouli.Agent;
 using Patchouli.Core.Results;
 using Patchouli.Host.Agent;
+using Patchouli.Llm;
 using Patchouli.Workflows;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Workflows;
 
@@ -14,7 +16,7 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
     private readonly IAgentEffectInterpreter _interpreter;
     private readonly Func<string, string> _instructionsForSession;
     private readonly IAgentHostPrimitives? _hostPrimitives;
-    private readonly Func<string, Effect, AgentEffectOutcome, double, Task>? _recordOutcome;
+    private readonly Func<string, WorkflowEffectScope, Effect, AgentEffectOutcome, double, Task>? _recordOutcome;
     private readonly Func<string, string>? _sessionDirectory;
     private readonly Func<string, AgentSdkReceipt, Task>? _recordSdk;
 
@@ -30,7 +32,7 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
     public WorkflowEffectHostAdapter(IAgentEffectInterpreter interpreter,
         Func<string, string> instructionsForSession,
         IAgentHostPrimitives? hostPrimitives = null,
-        Func<string, Effect, AgentEffectOutcome, double, Task>? recordOutcome = null,
+        Func<string, WorkflowEffectScope, Effect, AgentEffectOutcome, double, Task>? recordOutcome = null,
         Func<string, string>? sessionDirectory = null, Func<string, AgentSdkReceipt, Task>? recordSdk = null)
     {
         ArgumentNullException.ThrowIfNull(interpreter);
@@ -59,11 +61,20 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
                    allowed.Contains(document.RootElement.GetProperty("function").GetProperty("name").GetString()!);
         }).Concat(scope.Exports.Select(tool => tool.NativeDefinition)).ToArray();
         AgentEffectContext context = new(sessionId,
-            _instructionsForSession(sessionId) + "\n" + AgentNativeTools.Instructions,
+            _instructionsForSession(sessionId) + "\n" + scope.Instructions + "\n" +
+            AgentNativeTools.InstructionsFor(definitions),
             definitions,
             AgentChatHistoryBuilder.ToHistoryList(scope.Context.History))
         {
+            // Workflow checkpoints keep their logical "main" id; Host's main partition is the
+            // owning session id, matching ordinary chat and keeping its FSI/compaction state shared.
+            ContextId = scope.IsMain ? sessionId : scope.ContextId,
+            ActivationId = scope.ActivationId,
+            ModelSelection = string.IsNullOrWhiteSpace(scope.ModelSelection)
+                ? null
+                : ModelSelectionCodec.Decode(scope.ModelSelection),
             SessionDirectory = _sessionDirectory?.Invoke(sessionId),
+            RequestRetryAttempt = scope.Context.Retry.Attempts,
             RecordSdk = _recordSdk is { } recordSdk ? receipt => recordSdk(sessionId, receipt) : null,
             SdkPolicy = new AgentSdkPolicy(allowed,
                 scope.PrimitiveLimit is { } limit ? limit.Value : null, scope.Exports, scope.Activation)
@@ -81,7 +92,7 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
                 AgentSessionStatus status = error is OperationCanceledException
                     ? AgentSessionStatus.Cancelled
                     : AgentSessionStatus.Failed;
-                await record(sessionId, effect, AgentEffectOutcome.Terminal(status, error.ToString()) with
+                await record(sessionId, scope, effect, AgentEffectOutcome.Terminal(status, error.ToString()) with
                     {
                         FailureCode = error is OperationCanceledException ? "CANCELLED" : error.GetType().Name
                     },
@@ -93,7 +104,7 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
 
         if (_recordOutcome is { } recorder)
         {
-            await recorder(sessionId, effect, outcome,
+            await recorder(sessionId, scope, effect, outcome,
                     System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds)
                 .ConfigureAwait(false);
         }

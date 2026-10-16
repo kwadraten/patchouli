@@ -1,4 +1,7 @@
 using Patchouli.Agent;
+using Patchouli.Workflows;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Patchouli.Host.Agent;
 
@@ -7,28 +10,75 @@ public sealed partial class AgentSessionService
     private readonly HashSet<Task> _harnessDrivers = [];
 
     /// <summary>Publishes a harness boundary to the same journal and observable session as chat.</summary>
-    public async Task CheckpointHarnessAsync(string sessionId, Context context, Effect effect,
+    public async Task CheckpointHarnessAsync(string sessionId, WorkflowEffectScope scope, Effect effect,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(scope);
+        Context context = scope.Context;
         AgentSession session = await RequireAsync(sessionId, cancellationToken).ConfigureAwait(false);
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (HistoryEntry.UserMessage message in context.History.Skip(session.Context.History.Length)
-                         .OfType<HistoryEntry.UserMessage>())
+            int historyCursor = scope.IsMain
+                ? Math.Min(session.Context.History.Length, context.History.Length)
+                : await HarnessHistoryCursorAsync(sessionId, scope.ContextId, cancellationToken).ConfigureAwait(false);
+            int historyIndex = 0;
+            foreach (HistoryEntry entry in context.History)
             {
-                Event goal = Event.NewUserMessage("harness-stage-" + context.EffectSeq, message.text);
-                await AppendLogAsync(session, AgentLogKinds.Event, AgentSessionCodec.ToJson(goal), cancellationToken)
+                if (historyIndex >= historyCursor && entry is HistoryEntry.UserMessage message)
+                {
+                    Event goal = Event.NewUserMessage(
+                        "harness:" + scope.ActivationId + ":" + historyIndex, message.text);
+                    await AppendLogAsync(session, AgentLogKinds.Event,
+                            AddScopeMetadata(AgentSessionCodec.ToJson(goal), scope, historyIndex), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                historyIndex++;
+            }
+
+            if (scope.IsMain)
+            {
+                await AppendRetryFeedbackAsync(session, session.Context, context, cancellationToken)
+                    .ConfigureAwait(false);
+                session.Context = context;
+            }
+
+            if (effect is Effect.LlmChat && context.Retry.Attempts > 0)
+            {
+                session.Detail = $"模型请求重试 {context.Retry.Attempts}/{context.Retry.Limit}，等待后重试";
+                await AppendLogAsync(session, AgentLogKinds.Event,
+                        AddScopeMetadata(AgentSessionCodec.ToJson(Event.NewScriptProgress(session.Detail)), scope),
+                        cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            await AppendRetryFeedbackAsync(session, session.Context, context, cancellationToken).ConfigureAwait(false);
-            session.Context = context;
-            await AppendLogAsync(session, AgentLogKinds.EffectIssued, EffectPayload(effect, context), cancellationToken)
+            string issued = AddScopeMetadata(EffectPayload(effect, context), scope);
+            JsonObject issuedPayload = JsonNode.Parse(issued)!.AsObject();
+            issuedPayload["historyLength"] = context.History.Length;
+            await AppendLogAsync(session, AgentLogKinds.EffectIssued, issuedPayload.ToJsonString(), cancellationToken)
                 .ConfigureAwait(false);
-            session.RefreshStatusFromCore();
-            session.Detail = "agent harness: " + effect.GetType().Name;
-            await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            if (scope.IsMain)
+            {
+                session.RefreshStatusFromCore();
+            }
+
+            if (effect is not Effect.LlmChat || context.Retry.Attempts == 0)
+            {
+                session.Detail = "agent harness: " + effect.GetType().Name;
+            }
+
+            if (scope.IsMain)
+            {
+                await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                // The workflow executor's checkpoints own this worker context. Persist only the
+                // observable session state so a worker can never replace the platform transcript.
+                await PersistStateAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+
             Report(session);
         }
         finally
@@ -38,18 +88,28 @@ public sealed partial class AgentSessionService
     }
 
     /// <summary>Records a completed result without scheduling a second independent agent loop.</summary>
-    public async Task RecordHarnessResultAsync(string sessionId, Effect effect, Event result,
+    public async Task RecordHarnessResultAsync(string sessionId, WorkflowEffectScope scope, Effect effect, Event result,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         AgentSession session = await RequireAsync(sessionId, cancellationToken).ConfigureAwait(false);
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            Context next = AgentCoreModule.observeEffectResult(session.Context, effect, result);
-            await AppendLogAsync(session, AgentLogKinds.Event, AgentSessionCodec.ToJson(result), cancellationToken)
+            await AppendLogAsync(session, AgentLogKinds.Event,
+                    AddScopeMetadata(AgentSessionCodec.ToJson(result), scope),
+                    cancellationToken)
                 .ConfigureAwait(false);
-            session.Context = next;
-            await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            if (scope.IsMain)
+            {
+                session.Context = AgentCoreModule.observeEffectResult(session.Context, effect, result);
+                await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PersistStateAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+
             Report(session);
         }
         finally
@@ -58,12 +118,51 @@ public sealed partial class AgentSessionService
         }
     }
 
-    public async Task RecordHarnessOutcomeAsync(string sessionId, Effect effect, AgentEffectOutcome outcome,
-        double elapsedMs)
+    public async Task RecordHarnessOutcomeAsync(string sessionId, WorkflowEffectScope scope, Effect effect,
+        AgentEffectOutcome outcome, double elapsedMs)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         AgentSession session = await RequireAsync(sessionId, CancellationToken.None).ConfigureAwait(false);
-        await AppendEffectResultAsync(session, effect, outcome, CancellationToken.None, elapsedMs)
+        await AppendEffectResultAsync(session, effect, outcome, CancellationToken.None, elapsedMs, scope)
             .ConfigureAwait(false);
+    }
+
+    private async Task<int> HarnessHistoryCursorAsync(string sessionId, string contextId,
+        CancellationToken cancellationToken)
+    {
+        int cursor = 0;
+        foreach (AgentSessionLogEntry entry in await _store.ReadLogAsync(sessionId, cancellationToken)
+                     .ConfigureAwait(false))
+        {
+            if (entry.Kind != AgentLogKinds.EffectIssued)
+            {
+                continue;
+            }
+
+            using JsonDocument document = JsonDocument.Parse(entry.Payload);
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("contextId", out JsonElement context) &&
+                context.GetString() == contextId && root.TryGetProperty("historyLength", out JsonElement length) &&
+                length.TryGetInt32(out int recordedLength))
+            {
+                cursor = Math.Max(cursor, recordedLength);
+            }
+        }
+
+        return cursor;
+    }
+
+    private static string AddScopeMetadata(string payload, WorkflowEffectScope scope, int? historyIndex = null)
+    {
+        JsonObject json = JsonNode.Parse(payload)?.AsObject() ?? new JsonObject();
+        json["contextId"] = scope.ContextId;
+        json["activationId"] = scope.ActivationId;
+        if (historyIndex is { } index)
+        {
+            json["historyIndex"] = index;
+        }
+
+        return json.ToJsonString();
     }
 
     private async Task AppendRetryFeedbackAsync(AgentSession session, Context previous, Context next,

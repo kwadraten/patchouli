@@ -1,5 +1,6 @@
 namespace Patchouli.Workflows.Scripting
 
+open System
 open Patchouli.Agent.Sdk
 
 /// Closed tool vocabulary. A stage's allowlist can only narrow host permissions.
@@ -41,10 +42,11 @@ type ControlShape =
     | Sequence of ControlShape * ControlShape
     | Branch of ControlShape * ControlShape
     | BoundedLoop of limit: int * body: ControlShape
+    | ContextScope of body: ControlShape
     | AwaitEvent
 
 type internal HarnessCommand =
-    | RunAgent of path: string * policy: AgentPolicy * shared: string * prompt: string * exports: ExportedTool[] * validate: (SdkObservation[] -> string -> Result<unit, string>)
+    | RunAgent of path: string * context: AgentContextSelection * policy: AgentPolicy * shared: string * prompt: string * exports: ExportedTool[] * validate: (SdkObservation[] -> string -> Result<unit, string>)
     | AwaitEvent of path: string * runUri: string
     | LoadNode of path: string * inputSchema: string * outputSchema: string * input: string
     | SaveNode of path: string * output: string
@@ -54,12 +56,22 @@ type internal HarnessCommand =
 type internal HarnessProgram<'a> =
     | Return of 'a
     | Request of HarnessCommand * (string -> HarnessProgram<'a>)
+    | ContextScope of path: string * token: obj * body: HarnessProgram<obj | null> * continueWith: ((obj | null) -> HarnessProgram<'a>)
     | Abort of string
 
 module internal Program =
+    let rec map transform = function
+        | Return value -> Return(transform value)
+        | Request(command, continueWith) -> Request(command, continueWith >> map transform)
+        | ContextScope(path, token, body, continueWith) ->
+            ContextScope(path, token, body, fun value -> continueWith value |> map transform)
+        | Abort reason -> Abort reason
+
     let rec bind next = function
         | Return value -> next value
         | Request(command, continueWith) -> Request(command, continueWith >> bind next)
+        | ContextScope(path, token, body, continueWith) ->
+            ContextScope(path, token, body, fun value -> continueWith value |> bind next)
         | Abort reason -> Abort reason
 
 /// A cold, typed agent control plan, not a Task or a host RPC facade.
@@ -90,6 +102,11 @@ type ChatAgent<'input, 'output> internal
     member internal _.Exports = exports
     member internal _.Evidence = evidence
 
+/// Selects the conversation history used by an explicit agent node.
+[<Sealed>]
+type AgentContext internal (selection: AgentContextSelection) =
+    member internal _.Selection = selection
+
 [<RequireQualifiedAccess>]
 module Agent =
     let verified name instructions format parse =
@@ -114,7 +131,7 @@ module Agent =
         ChatAgent({ agent.Policy with RequiredTools = tools |> List.map AgentTool.name |> Set.ofList },
                   agent.Format, agent.Parse, agent.SharedInstructions, agent.Exports, agent.Evidence)
 
-    /// Shared rules are retained once in active conversation history; subsequent requests carry only their task.
+    /// Rules are applied when an activation is established; later requests carry only their task.
     let withSharedInstructions instructions (agent: ChatAgent<'i, 'o>) =
         ChatAgent(agent.Policy, agent.Format, agent.Parse, instructions, agent.Exports, agent.Evidence)
 
@@ -126,7 +143,8 @@ module Agent =
     let withEvidence validate (agent: ChatAgent<'i, 'o>) =
         ChatAgent(agent.Policy, agent.Format, agent.Parse, agent.SharedInstructions, agent.Exports, validate)
 
-    let run (agent: ChatAgent<'i, 'o>) : Workflow<'i, 'o> =
+    let run (context: AgentContext) (agent: ChatAgent<'i, 'o>) : Workflow<'i, 'o> =
+        if Object.ReferenceEquals(context, null) then nullArg "context"
         if not (Set.isSubset agent.Policy.RequiredTools agent.Policy.Tools) then
             invalidArg "agent" "Required tools must belong to the stage allowlist."
         Workflow(ControlShape.AgentStage(agent.Policy.Name, agent.Policy.Budget, agent.Policy.Tools, agent.Policy.RequiredTools),
@@ -139,7 +157,7 @@ module Agent =
                 let policy = { agent.Policy with Tools = Set.union agent.Policy.Tools (Set.ofArray names) }
                 let validate operations text =
                     agent.Evidence input operations |> Result.bind (fun () -> agent.Parse input operations text |> Result.map ignore)
-                Request(RunAgent(path, policy, agent.SharedInstructions input, agent.Format input, exports, validate), fun response ->
+                Request(RunAgent(path, context.Selection, policy, agent.SharedInstructions input, agent.Format input, exports, validate), fun response ->
                     use json = System.Text.Json.JsonDocument.Parse response
                     let text = match json.RootElement.GetProperty("answer").GetString() with null -> "" | value -> value
                     let operations = (ValueCodec.create<SdkObservation list>()).Decode(json.RootElement.GetProperty("operations").GetRawText()) |> List.toArray
@@ -154,12 +172,22 @@ type WorkflowBounds =
 
 /// A root plan has a fixed launch-input contract. Output erasure happens only here, after type checking.
 [<Sealed>]
-type AgentWorkflow internal (shape: ControlShape, build: WorkflowInput -> HarnessProgram<unit>) =
+type AgentWorkflow internal (shape: ControlShape, build: WorkflowInput -> HarnessProgram<unit>, sessionModelKey: string option) =
     member _.Shape = shape
+    /// Stable key of the parameter that selects this session's model, when declared.
+    member _.SessionModelKey = defaultArg sessionModelKey ""
     member internal _.Build input = build input
 
 [<RequireQualifiedAccess>]
 module Workflow =
+    /// Binds one declared model parameter to the complete session. It does not add stage-level switching.
+    let withModel (parameter: Parameter<ModelSelection>) (flow: AgentWorkflow) : AgentWorkflow =
+        if Object.ReferenceEquals(parameter, null) then nullArg "parameter"
+        if Object.ReferenceEquals(flow, null) then nullArg "flow"
+        if parameter.Descriptor.Type <> WorkflowParameterValueType.Model then
+            invalidArg "parameter" "Workflow.withModel requires a model-selection parameter."
+        AgentWorkflow(flow.Shape, flow.Build, Some parameter.Descriptor.Key)
+
     /// Private smart-constructor types require an explicit codec that revalidates decoded values.
     let withCodecs input output (flow: Workflow<'i, 'o>) =
         Workflow(flow.Shape, flow.BuildBody, inputCodec = input, outputCodec = output)
@@ -202,7 +230,8 @@ module Workflow =
                 | Error reason -> Abort $"WORKFLOW_EVENT_INVALID: {reason}"))
 
     let define (flow: Workflow<WorkflowInput, 'o>) =
-        AgentWorkflow(flow.Shape, fun input -> flow.Build "root" input |> Program.bind (fun _ -> Return()))
+        let build input = flow.Build "root" input |> Program.bind (fun _ -> Return())
+        AgentWorkflow(flow.Shape, build, None)
 
     /// Structural upper bounds, independent of model output. Assumes pure author-supplied functions terminate.
     let rec bounds = function
@@ -222,13 +251,35 @@ module Workflow =
             let x = bounds body
             { ModelTurns = Checked.(*) (int64 limit) x.ModelTurns
               ToolCalls = Checked.(*) (int64 limit) x.ToolCalls; EventWaits = Checked.(*) (int64 limit) x.EventWaits }
+        | ControlShape.ContextScope body -> bounds body
+
+[<RequireQualifiedAccess>]
+module AgentContext =
+    /// The platform-owned primary context for the workflow session.
+    let main = AgentContext AgentContextSelection.Main
+
+    /// Creates a selector for an anonymous context, fresh for each agent-node invocation.
+    let empty () = AgentContext AgentContextSelection.Anonymous
+
+    /// Creates a reusable context scope whose lifetime is one dynamic evaluation of the callback workflow.
+    let bind (seed: AgentContext) (build: AgentContext -> Workflow<'i, 'o>) : Workflow<'i, 'o> =
+        if Object.ReferenceEquals(seed, null) then nullArg "seed"
+        if Object.ReferenceEquals(build, null) then nullArg "build"
+        match seed.Selection with
+        | AgentContextSelection.Anonymous ->
+            let token = obj ()
+            let bound = AgentContext(AgentContextSelection.Bound token)
+            let body = build bound
+            Workflow(ControlShape.ContextScope body.Shape, fun path input ->
+                let scopePath = path + "/context"
+                let bodyProgram = body.Build (scopePath + "/body") input |> Program.map box
+                ContextScope(scopePath, token, bodyProgram, fun value -> Return(unbox<'o> value)))
+        | _ -> invalidArg "seed" "AgentContext.bind requires AgentContext.empty()."
 
 type WorkflowBuilder() =
     member _.Yield(()) = Workflow.identity
     [<CustomOperation("step")>]
     member _.Step(previous: Workflow<'i, 'a>, next: Workflow<'a, 'o>) = Workflow.thenDo next previous
-    [<CustomOperation("step")>]
-    member _.Step(previous: Workflow<'i, 'a>, agent: ChatAgent<'a, 'o>) = Workflow.thenDo (Agent.run agent) previous
     member _.Run(flow: Workflow<'i, 'o>) = flow
 
 [<AutoOpen>]

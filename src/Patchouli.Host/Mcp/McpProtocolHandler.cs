@@ -205,24 +205,158 @@ public sealed class McpProtocolHandler
             return $"Unknown tool '{name}'.";
         }
 
-        Dictionary<string, Agent.ToolValueType> fields = tool.Properties.ToDictionary(
-            pair => pair.Key, pair => ArgumentType(pair.Value), StringComparer.Ordinal);
-        Agent.ToolArgumentSchema schema = new(fields, new HashSet<string>(tool.Required, StringComparer.Ordinal));
+        Dictionary<string, ToolValueType> fields = tool.Properties
+            .Where(pair => pair.Value.Type != "object" && pair.Value.Items?.Type != "object")
+            .ToDictionary(
+                pair => pair.Key, pair => ArgumentType(pair.Value), StringComparer.Ordinal);
+        HashSet<string> required = tool.Required.Where(key => tool.Properties[key].Type != "object" &&
+                                                              tool.Properties[key].Items?.Type != "object")
+            .ToHashSet(StringComparer.Ordinal);
+        ToolArgumentSchema schema = new(fields, required);
+        JsonObject scalarArguments = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (JsonProperty property in arguments.EnumerateObject())
+        {
+            if (!seen.Add(property.Name))
+            {
+                return $"Duplicate field '{property.Name}'.";
+            }
+
+            if (fields.ContainsKey(property.Name))
+            {
+                scalarArguments[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+            }
+        }
+
         FSharpResult<Unit, ToolProtocolError> decoded =
-            Agent.ToolProtocolModule.validateArguments(schema, arguments.GetRawText());
-        return decoded.IsError ? Agent.ToolProtocolModule.describe(decoded.ErrorValue) : null;
+            ToolProtocolModule.validateArguments(schema, scalarArguments.ToJsonString());
+        if (decoded.IsError)
+        {
+            return ToolProtocolModule.describe(decoded.ErrorValue);
+        }
+
+        return ValidatePublishedArguments(arguments, tool.Properties, tool.Required, name);
     }
 
-    private static Agent.ToolValueType ArgumentType(ToolSchemaProperty schema)
+    private static ToolValueType ArgumentType(ToolSchemaProperty schema)
     {
         return schema.Type switch
         {
-            "string" => Agent.ToolValueType.Text,
-            "integer" => Agent.ToolValueType.Integer,
-            "boolean" => Agent.ToolValueType.Boolean,
-            "array" when schema.Items is { } item => Agent.ToolValueType.NewArray(ArgumentType(item)),
+            "string" => ToolValueType.Text,
+            "integer" => ToolValueType.Integer,
+            "boolean" => ToolValueType.Boolean,
+            "array" when schema.Items is { Type: not "object" } item =>
+                ToolValueType.NewArray(ArgumentType(item)),
             _ => throw new InvalidOperationException($"Unsupported published tool type '{schema.Type}'.")
         };
+    }
+
+    private static string? ValidatePublishedArguments(JsonElement value,
+        IReadOnlyDictionary<string, ToolSchemaProperty> properties, IReadOnlyList<string> required, string path)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return $"{path} arguments must be an object.";
+        }
+
+        foreach (string key in required)
+        {
+            if (!value.TryGetProperty(key, out _))
+            {
+                return $"{path}.{key} is required.";
+            }
+        }
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (!seen.Add(property.Name))
+            {
+                return $"Duplicate field '{property.Name}' in {path}.";
+            }
+
+            if (!properties.TryGetValue(property.Name, out ToolSchemaProperty? schema))
+            {
+                return $"Unknown field '{property.Name}' in {path}.";
+            }
+
+            bool requirePutText = (path == "patchouli.put" && property.Name is "uri" or "content") ||
+                                  (path.StartsWith("patchouli.put.boxes[", StringComparison.Ordinal) &&
+                                   property.Name is "box_id" or "content");
+            if (requirePutText && property.Value.ValueKind == JsonValueKind.String &&
+                string.IsNullOrWhiteSpace(property.Value.GetString()))
+            {
+                return $"{path}.{property.Name} is required.";
+            }
+
+            string? error = ValidateValue(property.Value, schema, path + "." + property.Name);
+            if (error is not null)
+            {
+                return error;
+            }
+        }
+
+        if (path == "patchouli.put")
+        {
+            bool hasContent = value.TryGetProperty("content", out _);
+            bool hasBoxes = value.TryGetProperty("boxes", out JsonElement boxes) &&
+                            boxes.ValueKind == JsonValueKind.Array && boxes.GetArrayLength() > 0;
+            if (hasContent == hasBoxes)
+            {
+                return "patchouli.put requires exactly one of content or a non-empty boxes array.";
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ValidateValue(JsonElement value, ToolSchemaProperty schema, string path)
+    {
+        bool valid = schema.Type switch
+        {
+            "string" => value.ValueKind == JsonValueKind.String,
+            "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
+            "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
+            "array" => value.ValueKind == JsonValueKind.Array,
+            "object" => value.ValueKind == JsonValueKind.Object,
+            _ => false
+        };
+        if (!valid)
+        {
+            return $"{path} must be {schema.Type}.";
+        }
+
+        if (schema.Type == "array")
+        {
+            if (schema.MaxItems is { } max && value.GetArrayLength() > max)
+            {
+                return $"{path} must contain at most {max} items.";
+            }
+
+            if (schema.MinItems is { } min && value.GetArrayLength() < min)
+            {
+                return $"{path} must contain at least {min} items.";
+            }
+
+            for (int index = 0; index < value.GetArrayLength(); index++)
+            {
+                string? error = ValidateValue(value[index], schema.Items!, $"{path}[{index}]");
+                if (error is not null)
+                {
+                    return error;
+                }
+            }
+        }
+        else if (schema.Type == "object")
+        {
+            string? error = ValidatePublishedArguments(value, schema.Properties!, schema.Required!, path);
+            if (error is not null)
+            {
+                return error;
+            }
+        }
+
+        return null;
     }
 
     public static IReadOnlyList<string> AgentToolDefinitions()
@@ -270,9 +404,9 @@ public sealed class McpProtocolHandler
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uris"] = ToolSchemaProperty.Array(
-                        "Resource URIs: library.toon, items/<id>.bib, texts/<document-id>/, texts/<document-id>/page-<index>.md, " +
-                        "texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>], " +
-                        "translations/<document-id>/, translations/<document-id>/page-<index>.md or csl-styles/<id>.csl.",
+                        "Resource URIs: library.yml, items/<id>.yml, texts/<document-id>/, texts/<document-id>/page-<index>.xml, " +
+                        "texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>], " +
+                        "translations/<document-id>/, translations/<document-id>/page-<index>.xml or csl-styles/<id>.csl.",
                         ToolSchemaProperty.String("Resource URI.")),
                     ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
                     ["limit_bytes"] = ToolSchemaProperty.Integer(
@@ -281,14 +415,32 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.put",
-                "Replace one existing writable item bibliography, CSL style, or page translation resource atomically.",
-                ["uri", "content"],
+                "Replace one existing writable item bibliography, CSL style, source page XML, or translation page atomically.",
+                ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uri"] = ToolSchemaProperty.String(
-                        "Writable resource URI: items/<id>.bib, csl-styles/<id>.csl, or " +
-                        "translations/<document-id>/page-<index>.md."),
-                    ["content"] = ToolSchemaProperty.String("Complete replacement content."),
+                        "Writable resource URI: items/<id>.yml, csl-styles/<id>.csl, " +
+                        "texts/<document-id>/page-<index>.xml, or translations/<document-id>/page-<index>.xml. " +
+                        "Legacy .bib/.md addresses remain accepted with a deprecation warning."),
+                    ["content"] =
+                        ToolSchemaProperty.String("Complete replacement content; provide this or boxes, not both."),
+                    ["source_revision"] =
+                        ToolSchemaProperty.String(
+                            "Current source revision required for source XML or translation XML writes."),
+                    ["translation_version"] =
+                        ToolSchemaProperty.Integer("Current translation version required for translation XML writes."),
+                    ["boxes"] = ToolSchemaProperty.Array(
+                        "Replace selected boxes with complete <box> XML elements; preserve structural attributes and change only translated state and payload. Provide this or content, not both. Maximum 100 boxes.",
+                        ToolSchemaProperty.Object("One box replacement.",
+                            new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                            {
+                                ["box_id"] = ToolSchemaProperty.String("Stable box id."),
+                                ["content"] = ToolSchemaProperty.String(
+                                    "Complete <box> XML element with a matching id and replacement payload.")
+                            }, ["box_id", "content"]), 1, 100),
+                    ["preserve_tags"] =
+                        ToolSchemaProperty.Boolean("Preserve existing tags when replacing an item bibliography."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 },
                 false),
@@ -426,13 +578,35 @@ public sealed class McpProtocolHandler
 
     private async Task<object> PutAsync(JsonElement arguments, CancellationToken ct)
     {
+        if (ValidateToolArguments("patchouli.put", arguments) is { } validationError)
+        {
+            throw new McpArgumentException(validationError);
+        }
+
         RejectUnknownArguments(arguments, PutArgumentKeys);
         string uri = RequiredString(arguments, "uri");
-        string content = RequiredString(arguments, "content");
+        string? content = OptionalString(arguments, "content");
+        IReadOnlyList<McpBoxReplacement>? boxes = null;
+        if (arguments.TryGetProperty("boxes", out JsonElement boxValues))
+        {
+            boxes = boxValues.EnumerateArray().Select(box => new McpBoxReplacement(
+                RequiredString(box, "box_id"), RequiredString(box, "content"))).ToArray();
+        }
+
+        bool preserveTags = OptionalBoolean(arguments, "preserve_tags");
+        string? sourceRevision = OptionalString(arguments, "source_revision");
+        int? translationVersion = arguments.TryGetProperty("translation_version", out JsonElement versionValue)
+            ? ParseInteger(versionValue, "translation_version")
+            : null;
+        if (content is null == (boxes is null || boxes.Count == 0))
+        {
+            throw new McpArgumentException("provide exactly one of content or a non-empty boxes array.");
+        }
+
         string format = ResponseFormat(arguments);
 
         McpCommandResult<McpPutMeta, McpPutResult> result = await _commands.PutAsync(
-            new McpPutRequest(uri, content), ct);
+            new McpPutRequest(uri, content, preserveTags, sourceRevision, translationVersion, boxes), ct);
         return await ToToolResponseAsync("put", result, format, ct);
     }
 
@@ -539,7 +713,10 @@ public sealed class McpProtocolHandler
         ["query", "in", "where", "literal", "limit", "cursor", "detail", "format"];
 
     private static readonly string[] FetchArgumentKeys = ["uris", "range", "limit_bytes", "format"];
-    private static readonly string[] PutArgumentKeys = ["uri", "content", "format"];
+
+    private static readonly string[] PutArgumentKeys =
+        ["uri", "content", "preserve_tags", "source_revision", "translation_version", "boxes", "format"];
+
     private static readonly string[] CiteArgumentKeys = ["refs", "style", "locale", "bibliography", "html", "format"];
 
     private static readonly string[] SendArgumentKeys =
@@ -776,6 +953,16 @@ public sealed class McpProtocolHandler
             parsed < minimum || parsed > maximum)
         {
             throw new McpArgumentException($"{name} must be between {minimum} and {maximum}.");
+        }
+
+        return parsed;
+    }
+
+    private static int ParseInteger(JsonElement value, string name)
+    {
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int parsed))
+        {
+            throw new McpArgumentException($"{name} must be an integer.");
         }
 
         return parsed;
@@ -1060,13 +1247,48 @@ public sealed class McpProtocolHandler
         }
     }
 
-    private sealed record ToolSchemaProperty(string Type, string Description, ToolSchemaProperty? Items = null)
+    private sealed record ToolSchemaProperty(
+        string Type,
+        string Description,
+        ToolSchemaProperty? Items = null,
+        IReadOnlyDictionary<string, ToolSchemaProperty>? Properties = null,
+        string[]? Required = null,
+        int? MinItems = null,
+        int? MaxItems = null)
     {
         public object ToWire()
         {
-            return Items is null
-                ? new { type = Type, description = Description }
-                : new { type = Type, description = Description, items = Items.ToWire() };
+            if (Type == "object")
+            {
+                return new
+                {
+                    type = Type, description = Description, additionalProperties = false,
+                    properties = Properties!.ToDictionary(pair => pair.Key, pair => pair.Value.ToWire(),
+                        StringComparer.Ordinal),
+                    required = Required!
+                };
+            }
+
+            if (Type == "array")
+            {
+                Dictionary<string, object> array = new(StringComparer.Ordinal)
+                {
+                    ["type"] = Type, ["description"] = Description, ["items"] = Items!.ToWire()
+                };
+                if (MinItems is { } min)
+                {
+                    array["minItems"] = min;
+                }
+
+                if (MaxItems is { } max)
+                {
+                    array["maxItems"] = max;
+                }
+
+                return array;
+            }
+
+            return new { type = Type, description = Description };
         }
 
         public static ToolSchemaProperty String(string description)
@@ -1087,6 +1309,18 @@ public sealed class McpProtocolHandler
         public static ToolSchemaProperty Array(string description, ToolSchemaProperty items)
         {
             return new ToolSchemaProperty("array", description, items);
+        }
+
+        public static ToolSchemaProperty Array(string description, ToolSchemaProperty items, int? minItems,
+            int? maxItems)
+        {
+            return new ToolSchemaProperty("array", description, items, MinItems: minItems, MaxItems: maxItems);
+        }
+
+        public static ToolSchemaProperty Object(string description,
+            IReadOnlyDictionary<string, ToolSchemaProperty> properties, string[] required)
+        {
+            return new ToolSchemaProperty("object", description, Properties: properties, Required: required);
         }
     }
 }

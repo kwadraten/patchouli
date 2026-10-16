@@ -94,6 +94,7 @@ public sealed class LlmTornadoSubscriptionTransport(
                 : string.Concat(promptMessage.Parts.OfType<LlmMessagePart.LlmTextPart>().Select(part => part.Text));
             CodexOAuthTurnOptions turnOptions = new()
             {
+                ReasoningEffort = request.ReasoningEffort,
                 Tools = request.ToolDefinitions.Select(definition =>
                     Newtonsoft.Json.JsonConvert.DeserializeObject<LlmTornado.Common.Tool>(definition)!).ToArray()
             };
@@ -134,6 +135,8 @@ public sealed class LlmTornadoSubscriptionTransport(
                 429 => LlmFailureCodes.RateLimited,
                 404 => LlmFailureCodes.ModelNotFound,
                 >= 500 => LlmFailureCodes.TemporaryProviderError,
+                _ when LlmFailureMapper.IsContextLengthExceeded(exception.Message) =>
+                    LlmFailureCodes.ContextLengthExceeded,
                 _ when exception.Message.Contains("authentication", StringComparison.OrdinalIgnoreCase) =>
                     LlmFailureCodes.AuthFailed,
                 _ when exception.Message.Contains("model", StringComparison.OrdinalIgnoreCase) => LlmFailureCodes

@@ -827,6 +827,29 @@ public sealed class AgentChatTabViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Equal_local_effect_ids_in_different_activations_keep_separate_activity_rows()
+    {
+        StubSessionService service = new();
+        service.Sessions.Add(Snapshot("run", AgentSessionStatus.Running));
+        service.Log.Add(Entry(1, AgentLogKinds.EffectIssued,
+            """{"effectId":1,"activationId":"planning","contextId":"main","kind":"McpToolCall","name":"fetch","state":"running"}"""));
+        service.Log.Add(Entry(2, AgentLogKinds.EffectIssued,
+            """{"effectId":1,"activationId":"review","contextId":"worker","kind":"McpToolCall","name":"fetch","state":"running"}"""));
+        using AgentChatTabViewModel chat = CreateChat(service);
+        await chat.ActivateAsync();
+        chat.Messages.Should().HaveCount(2);
+        service.Log.Add(Entry(3, AgentLogKinds.EffectResult,
+            """{"effectId":1,"activationId":"review","contextId":"worker","state":"completed","output":"review result"}"""));
+        await chat.RefreshAsync();
+        chat.Messages.Single(row => row.ActivationId == "planning").IsRunning.Should().BeTrue();
+        AgentChatMessageViewModel reviewed = chat.Messages.Single(row => row.ActivationId == "review");
+        reviewed.IsRunning.Should().BeFalse();
+        reviewed.Output.Should().Be("review result");
+        reviewed.ContextId.Should().Be("worker");
+        chat.Messages.Should().HaveCount(2);
+    }
+
+    [Fact]
     public async Task Historical_failure_snapshot_is_visible_even_without_a_status_log_entry()
     {
         StubSessionService service = new();

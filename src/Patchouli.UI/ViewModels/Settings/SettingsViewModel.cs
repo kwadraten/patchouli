@@ -102,7 +102,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("local_files", "模型与临时文件", LocalFileManagement),
             new SettingsSectionEntryViewModel("import", "导入规则", ImportSettings),
             new SettingsSectionEntryViewModel("ocr", "OCR 引擎", OcrProviderSettings),
-            new SettingsSectionEntryViewModel("llm", "模型与翻译", LlmSettings),
+            new SettingsSectionEntryViewModel("llm", "模型连接与聊天", LlmSettings),
             new SettingsSectionEntryViewModel("workflows", "工作流", WorkflowSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),

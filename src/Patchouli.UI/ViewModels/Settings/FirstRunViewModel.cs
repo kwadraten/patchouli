@@ -216,7 +216,7 @@ public sealed partial class FirstRunViewModel : ViewModelBase
             }
             catch (Exception ex)
             {
-                State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli.Net 数据库格式。", null, null, null,
+                State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli.NET 数据库格式。", null, null, null,
                     null, null, $"验证失败：{ex.Message}", false);
                 return;
             }

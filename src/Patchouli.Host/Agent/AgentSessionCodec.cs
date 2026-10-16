@@ -23,7 +23,8 @@ public sealed record AgentSessionStateDocument(
     AgentSessionSnapshot Snapshot,
     IReadOnlyList<AgentInboxMessage> PendingInbox,
     IReadOnlyList<Event> PendingEvents,
-    string? Instructions = null);
+    string? Instructions = null,
+    string? MainActivationId = null);
 
 /// <summary>
 ///     Explicit JSON codec for the persisted session material. Every F# union and record is written
@@ -298,6 +299,7 @@ public static class AgentSessionCodec
             ["detail"] = snapshot.Detail,
             ["updatedAt"] = snapshot.UpdatedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
             ["instructions"] = document.Instructions,
+            ["mainActivationId"] = document.MainActivationId,
             ["pendingInbox"] = inbox,
             ["pendingEvents"] = events
         };
@@ -329,7 +331,8 @@ public static class AgentSessionCodec
             events.Count,
             OptionalText(obj, "detail"),
             DateTimeOffset.Parse(Text(obj, "updatedAt"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
-        return new AgentSessionStateDocument(snapshot, inbox, events, OptionalText(obj, "instructions"));
+        return new AgentSessionStateDocument(snapshot, inbox, events, OptionalText(obj, "instructions"),
+            OptionalText(obj, "mainActivationId"));
     }
 
     /// <summary>Parses a durable host status written by the session state document.</summary>

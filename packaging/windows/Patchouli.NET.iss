@@ -5,17 +5,17 @@
   #define OutputDir "..\..\.tmp\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.8"
+  #define AppVersion "0.3.10"
 #endif
 #ifndef AppId
   #define AppId "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
 #endif
 #ifndef OutputBaseFilename
-  #define OutputBaseFilename "Patchouli.Net-" + AppVersion + "-win-x64-setup"
+  #define OutputBaseFilename "Patchouli.NET-" + AppVersion + "-win-x64-setup"
 #endif
 
-#define AppName "Patchouli.Net"
-#define AppPublisher "Patchouli.Net"
+#define AppName "Patchouli.NET"
+#define AppPublisher "Patchouli.NET"
 #define AppExeName "Patchouli.UI.exe"
 
 [Setup]

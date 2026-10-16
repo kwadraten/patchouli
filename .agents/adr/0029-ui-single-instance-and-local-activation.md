@@ -42,6 +42,25 @@ This decision governs UI application process single-instance election only. It d
 
 On Unix platforms (Linux and macOS), `PipeOptions.CurrentUserOnly` relies on filesystem permissions and standard Unix domain sockets / FIFOs, which can be affected by process umask configurations. Because the control pipe only accepts parameterless `activate_ui` requests, executes no arbitrary commands, and transfers no sensitive arguments or tokens, this trade-off is accepted for now.
 
+## Headless lifecycle regression (2026-10-14)
+
+GitHub run [38571691325](https://github.com/kwadraten/patchouli/actions/runs/38571691325)
+failed on Windows while the Linux and macOS jobs passed. The exception was in
+`HeadlessUnitTestSession.Dispose`, after the window activation assertions. Avalonia
+12.0.5 and 12.1.2 publish the session from a worker before its captured Task is necessarily
+assigned, so disposal can dereference a null Task. Completing the queue before the worker
+exits introduces a separate shutdown race. The repeated immediate-disposal regression
+reproduces failures with 12.1.2, including synchronous and asynchronous disposal.
+
+Commit `82b1516` introduced these headless activation tests with Avalonia 12.0.5;
+`c802de6` upgraded to 12.1.2, which retained the races. The later Linux-packaging merge
+did not alter either the test lifecycle or the Avalonia version. The repair upgrades
+the aligned Avalonia packages to 12.1.3, the first patch containing upstream
+[fix #22222](https://github.com/AvaloniaUI/Avalonia/pull/22222). The production single-instance
+protocol is unchanged. The Windows/Linux/macOS CI matrix now also exercises immediate
+session disposal and retains TRX evidence; Unix tests keep their short pipe names to
+stay within the Unix domain socket path limits.
+
 ## Consequences
 
 - The desktop UI guarantees at most one running instance per operating-system user across terminal sessions (`CurrentUserOnly = true`, `CurrentSessionOnly = false`). Different OS users are independently elected by the user-scoped mutex.

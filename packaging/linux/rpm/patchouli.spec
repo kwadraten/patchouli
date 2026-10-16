@@ -47,8 +47,11 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 /usr/share/applications/io.github.kwadraten.patchouli.desktop
 /usr/share/icons/hicolor/*/apps/io.github.kwadraten.patchouli.png
 /usr/share/metainfo/io.github.kwadraten.patchouli.metainfo.xml
-%license LICENSE
+%license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Wed Oct 14 2026 kwadraten <schild0van0man@duck.com> - 0.3.10-1
+- Update Patchouli.NET branding and release packaging
+
 * Fri Oct 09 2026 kwadraten <schild0van0man@duck.com> - 0.3.8-1
 - Linux packaging: rpm, deb, AppImage, Flatpak

@@ -63,13 +63,28 @@ type WorkflowEffectOutcome =
 /// <param name="Context">The core context after every effect dispatched so far in this run.</param>
 [<Sealed>]
 type WorkflowEffectScope(context: Context, allowedTools: string[] option, primitiveLimit: int option,
-                         exports: ExportedTool[], activation: string) =
+                         exports: ExportedTool[], activation: string, contextId: string,
+                         activationId: string, instructions: string, isMain: bool, modelSelection: string) =
+    new(context: Context, allowedTools: string[] option, primitiveLimit: int option,
+        exports: ExportedTool[], activation: string) =
+        WorkflowEffectScope(context, allowedTools, primitiveLimit, exports, activation,
+                            "main", activation, "", true, "")
     new(context: Context) = WorkflowEffectScope(context, None, None, [||], "chat")
     member _.Context = context
     member _.AllowedTools = allowedTools
     member _.PrimitiveLimit = primitiveLimit
     member _.Exports = exports
     member _.Activation = activation
+    /// Stable conversation identity, shared by nodes that intentionally share one context.
+    member _.ContextId = contextId
+    /// Stable identity for this node activation; effect ordinals are scoped beneath it.
+    member _.ActivationId = activationId
+    /// Frozen activation instructions, combined by the host with its fixed protocol instructions.
+    member _.Instructions = instructions
+    /// True only for the platform-owned primary conversation.
+    member _.IsMain = isMain
+    /// Frozen provider/model JSON selected when the workflow was launched.
+    member _.ModelSelection = modelSelection
 
 /// <summary>
 ///     The host surface one workflow run needs: execute the effects the script API issues and return
@@ -78,6 +93,10 @@ type WorkflowEffectScope(context: Context, allowedTools: string[] option, primit
 ///     <c>AgentEffectInterpreter</c> / <c>AgentSessionService</c> shape, so the executor never
 ///     depends on the session service itself and stays unit-testable with a stub.
 /// </summary>
+/// Supplies the current policy before a new request sequence; replay restores its recorded value.
+type IWorkflowRetryPolicyHost =
+    abstract MaxRequestRetries: int
+
 type IWorkflowEffectHost =
     /// <summary>
     ///     Executes one effect of one session under the run state the executor has reached by then
@@ -88,6 +107,12 @@ type IWorkflowEffectHost =
     abstract ExecuteEffectAsync:
         sessionId: string * scope: WorkflowEffectScope * effect: Effect * cancellationToken: CancellationToken ->
             Task<WorkflowEffectOutcome>
+
+/// Optional cleanup for non-main context resources such as a live FSI worker.
+/// Durable transcript and operation state remain in the workflow checkpoint.
+type IWorkflowContextLifecycleHost =
+    abstract ReleaseContextAsync:
+        sessionId: string * contextId: string * cancellationToken: CancellationToken -> Task
 
 /// The host supplies the exact generated SDK declarations; the driver journals them in history.
 type IWorkflowSdkHost =
@@ -301,12 +326,31 @@ module WorkflowRunRequests =
         if Object.ReferenceEquals(definition, null) then
             nullArg "definition"
 
+        let frozenParameters = nonNull parameters emptyParameters
         { SessionId = sessionId
-          Snapshot = WorkflowSnapshots.capture definition scriptText ScriptApiVersion.Current launchedAt
+          Snapshot = WorkflowSnapshots.captureConfigured definition scriptText ScriptApiVersion.Current launchedAt
+                         "" frozenParameters ""
           Context = AgentCore.initial
           RecordedSteps = [||]
           Selection = selection
-          Parameters = nonNull parameters emptyParameters }
+          Parameters = frozenParameters }
+
+    /// Creates a new run with the declaration identity and resolved values frozen into its script snapshot.
+    let createWithConfiguration (sessionId: string) (definition: WorkflowDefinition) (scriptText: string)
+                                (selection: WorkflowSelection) (parameters: IReadOnlyDictionary<string, string>)
+                                (declarationFingerprint: string) (parameterValues: IReadOnlyDictionary<string, string>)
+                                (modelSelection: string) (launchedAt: DateTimeOffset) : WorkflowRunRequest =
+        if Object.ReferenceEquals(definition, null) then
+            nullArg "definition"
+
+        let frozenParameters = nonNull parameterValues emptyParameters
+        { SessionId = sessionId
+          Snapshot = WorkflowSnapshots.captureConfigured definition scriptText ScriptApiVersion.Current launchedAt
+                         declarationFingerprint frozenParameters modelSelection
+          Context = AgentCore.initial
+          RecordedSteps = [||]
+          Selection = selection
+          Parameters = nonNull parameters frozenParameters }
 
     /// <summary>
     ///     Resumes one session from its stored snapshot, its recovered core context and its recorded

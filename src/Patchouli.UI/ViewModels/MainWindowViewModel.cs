@@ -934,8 +934,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     string epochs = exception.SchemaVersions.Count == 0
                         ? "未知"
                         : string.Join("、", exception.SchemaVersions.Order());
-                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.8 支持的数据库 schema epoch（{epochs}）。" +
-                                "0.3.8 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.9 支持的数据库 schema epoch（{epochs}）。" +
+                                "0.3.9 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                     return;
                 }
 
@@ -2867,9 +2867,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     }
 
     /// <summary>The reading-toolbar entries, captured against the document the reading view shows.</summary>
-    public Task RefreshReadingWorkflowMenuAsync(string documentId, string pageRange = "")
+    public Task RefreshReadingWorkflowMenuAsync(string documentId, string pageRange = "", string textSelection = "")
     {
-        return LoadWorkflowMenuAsync(ReadingWorkflowMenuEntries, new WorkflowLaunchSelection(documentId, pageRange));
+        return LoadWorkflowMenuAsync(ReadingWorkflowMenuEntries,
+            new WorkflowLaunchSelection(documentId, pageRange) { TextSelection = textSelection });
     }
 
     private async Task LoadWorkflowMenuAsync(ObservableCollection<WorkflowMenuEntryViewModel> target,
@@ -2932,10 +2933,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// <summary>The Library selection a menu launch carries: the selected row's main document.</summary>
     public WorkflowLaunchSelection CurrentLibrarySelection()
     {
-        LibraryItemViewModel? item = Shell.SelectedItem;
-        return item is null || string.IsNullOrWhiteSpace(item.DocumentInstanceId)
+        IReadOnlyList<string> documentIds = Shell.SelectedItems
+            .Select(static item => item.DocumentInstanceId)
+            .OfType<string>()
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (documentIds.Count == 0 && Shell.SelectedItem is { } selected &&
+            !string.IsNullOrWhiteSpace(selected.DocumentInstanceId))
+        {
+            documentIds = [selected.DocumentInstanceId];
+        }
+
+        return documentIds.Count == 0
             ? WorkflowLaunchSelection.None
-            : new WorkflowLaunchSelection(item.DocumentInstanceId);
+            : new WorkflowLaunchSelection(documentIds[0]) { DocumentIds = documentIds };
     }
 
     void IWorkflowMenuEntryHost.Report(string message)

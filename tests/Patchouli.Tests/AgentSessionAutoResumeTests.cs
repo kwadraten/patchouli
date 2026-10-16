@@ -255,7 +255,34 @@ public sealed class AgentSessionAutoResumeTests
                 "run", [], WorkflowSelectionScope.DocumentsAndPages, false,
                 new WorkflowMenuPlacement(WorkflowDefinitions.DefaultMenuPath, 50, true), false);
             (await Store.SaveAsync(definition, CancellationToken.None)).IsApplied.Should().BeTrue();
-            (await Store.SaveScriptAsync(WorkflowId, script, CancellationToken.None)).IsApplied.Should().BeTrue();
+            const string declaration = """
+                                       open Patchouli.Workflows
+                                       open Patchouli.Workflows.Scripting
+                                       let info =
+                                           WorkflowInfo.create "Auto-resume workflow" "Auto-resume test workflow"
+                                           |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+                                       let model = Parameter.model "model" "执行模型"
+                                       let documentId =
+                                           Parameter.text "documentId" "文档" ""
+                                           |> Parameter.bindContext "documentId"
+                                       """;
+            bool hasEntry = script.Contains("let run", StringComparison.Ordinal);
+            string configured = declaration + "\n" +
+                                script.Replace("let run", "let pipeline", StringComparison.Ordinal) +
+                                (hasEntry ? "\nlet run : AgentWorkflow = pipeline |> Workflow.withModel model\n" : "");
+            (await Store.SaveScriptAsync(WorkflowId, configured, CancellationToken.None)).IsApplied.Should().BeTrue();
+            if (hasEntry)
+            {
+                WorkflowConfigurationSnapshot configuration =
+                    await Runner.Configuration.ReadAsync(WorkflowId, configured, "run", CancellationToken.None);
+                WorkflowConfigurationSaveResult saved = await Runner.Configuration.SaveAsync(WorkflowId,
+                    configuration.DeclarationFingerprint,
+                    new Dictionary<string, string>
+                    {
+                        ["model"] = ModelSelectionCodec.Encode(new ModelSelection("openai", "test-model"))
+                    }, CancellationToken.None);
+                saved.Saved.Should().BeTrue();
+            }
         }
 
         public async ValueTask DisposeAsync()

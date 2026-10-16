@@ -40,6 +40,14 @@ public interface IWorkflowMenuService
 /// <param name="PageRange">The page range text, empty for a whole document.</param>
 public sealed record WorkflowLaunchSelection(string DocumentId, string PageRange = "")
 {
+    /// <summary>Every document selected in the Library, retained alongside the legacy primary id.</summary>
+    public IReadOnlyList<string> DocumentIds { get; init; } = string.IsNullOrWhiteSpace(DocumentId)
+        ? Array.Empty<string>()
+        : [DocumentId];
+
+    /// <summary>Text selected in the reading view, empty when the UI cannot provide one.</summary>
+    public string TextSelection { get; init; } = "";
+
     /// <summary>A selection that carries no document (the launch reports the missing selection).</summary>
     public static WorkflowLaunchSelection None { get; } = new(string.Empty);
 }
@@ -140,7 +148,7 @@ public sealed class WorkflowMenuService : IWorkflowMenuService, IWorkflowSession
 
         WorkflowSessionRunner runner = await ResolveRunnerAsync(cancellationToken).ConfigureAwait(false);
         IReadOnlyList<WorkflowDefinition> loaded =
-            await runner.Store.ListDefinitionsAsync(cancellationToken).ConfigureAwait(false);
+            await runner.Configuration.DiscoverDefinitionsAsync(cancellationToken).ConfigureAwait(false);
         return MenuEntries(loaded);
     }
 
@@ -150,7 +158,7 @@ public sealed class WorkflowMenuService : IWorkflowMenuService, IWorkflowSession
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
         ArgumentNullException.ThrowIfNull(selection);
         WorkflowSessionRunner runner = await ResolveRunnerAsync(cancellationToken).ConfigureAwait(false);
-        WorkflowSessionRequest request = new(workflowId, LaunchParameters(selection), SelectionOf(selection));
+        WorkflowSessionRequest request = CreateLaunchRequest(workflowId, selection);
         WorkflowSessionResult result = await runner.StartAsync(request, cancellationToken).ConfigureAwait(false);
         return result.Session.SessionId;
     }
@@ -233,22 +241,12 @@ public sealed class WorkflowMenuService : IWorkflowMenuService, IWorkflowSession
             .ToArray();
     }
 
-    /// <summary>The launch parameters a selection contributes (empty values are simply omitted).</summary>
-    public static IReadOnlyDictionary<string, string> LaunchParameters(WorkflowLaunchSelection selection)
+    /// <summary>Builds a launch with runtime context kept separate from user-supplied parameters.</summary>
+    internal static WorkflowSessionRequest CreateLaunchRequest(string workflowId, WorkflowLaunchSelection selection)
     {
         ArgumentNullException.ThrowIfNull(selection);
-        Dictionary<string, string> parameters = new(StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(selection.DocumentId))
-        {
-            parameters[WorkflowSessionRunner.DocumentIdParameter] = selection.DocumentId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(selection.PageRange))
-        {
-            parameters[WorkflowSessionRunner.PageRangeParameter] = selection.PageRange;
-        }
-
-        return parameters;
+        return new WorkflowSessionRequest(workflowId,
+            new Dictionary<string, string>(StringComparer.Ordinal), SelectionOf(selection));
     }
 
     /// <summary>The session id of a host activity item, or null when the item is not an agent session.</summary>
@@ -263,10 +261,9 @@ public sealed class WorkflowMenuService : IWorkflowMenuService, IWorkflowSession
     private static WorkflowSelection SelectionOf(WorkflowLaunchSelection selection)
     {
         return new WorkflowSelection(
-            string.IsNullOrWhiteSpace(selection.DocumentId) ? [] : [selection.DocumentId],
+            selection.DocumentIds.ToArray(),
             selection.PageRange,
-            string.Empty,
-            []);
+            selection.TextSelection);
     }
 
     private static WorkflowSessionNotification Describe(string sessionId, AgentSessionSnapshot? status)

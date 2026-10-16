@@ -132,7 +132,18 @@ public sealed record McpWorkflowParameter(
     [property: JsonPropertyName("description")]
     string Description,
     [property: JsonPropertyName("default_value")]
-    string DefaultValue);
+    string DefaultValue,
+    [property: JsonPropertyName("label")] string Label = "",
+    [property: JsonPropertyName("has_default")]
+    bool HasDefault = false,
+    [property: JsonPropertyName("choices")]
+    IReadOnlyList<string>? Choices = null,
+    [property: JsonPropertyName("minimum")]
+    decimal? Minimum = null,
+    [property: JsonPropertyName("maximum")]
+    decimal? Maximum = null,
+    [property: JsonPropertyName("context_binding")]
+    string? ContextBinding = null);
 
 /// <summary>The full read-only workflow projection returned by <c>fetch patchouli://workflows/{id}</c>.</summary>
 public sealed record McpWorkflowDetail(

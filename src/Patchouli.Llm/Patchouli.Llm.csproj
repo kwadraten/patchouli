@@ -5,4 +5,9 @@
   <ItemGroup>
     <PackageReference Include="LlmTornado" />
   </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 </Project>

@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
@@ -91,7 +92,7 @@ public sealed class McpTranslationContractTests
     }
 
     [Fact]
-    public async Task Fetch_translation_returns_compiled_markdown_with_status_metadata()
+    public async Task Fetch_translation_returns_page_xml_with_status_metadata()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
         await fixture.PutTranslatedFirstPageAsync();
@@ -102,7 +103,10 @@ public sealed class McpTranslationContractTests
         result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
         McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
         entry.ResourceType.Should().Be("translation_page");
-        entry.Content.Should().Contain("译文 Alpha").And.Contain("译文 Beta");
+        XElement xml = XElement.Parse(entry.Content!);
+        xml.Descendants("payload").Select(payload => payload.Value).Should()
+            .Contain("译文 Alpha").And.Contain("译文 Beta");
+        entry.ContentType.Should().Be("application/xml");
         entry.Translation.Should().NotBeNull();
         entry.Translation!.TranslatedBoxCount.Should().Be(2);
         entry.Translation.TotalBoxCount.Should().Be(2);
@@ -111,35 +115,43 @@ public sealed class McpTranslationContractTests
     }
 
     [Fact]
-    public async Task Fetch_untranslated_page_is_not_found_and_points_at_the_source_text()
+    public async Task Fetch_untranslated_xml_falls_back_to_source_but_legacy_markdown_is_not_found()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
 
         McpCommandResult<McpFetchMeta, McpFetchResult> result = await fixture.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.TranslationPageUri(fixture.DocumentId, 2)], null, null));
 
-        result.IsSuccess.Should().BeFalse();
+        result.IsSuccess.Should().BeTrue();
         McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
-        entry.Error.Should().NotBeNull();
-        entry.Error.Should().Contain("NOT_FOUND");
-        entry.Error.Should().Contain($"patchouli://texts/{fixture.DocumentId}/page-2.md");
-        entry.Translation.Should().BeNull();
+        entry.Error.Should().BeNull();
+        XElement xml = XElement.Parse(entry.Content!);
+        xml.Attribute("translation_version")!.Value.Should().Be("0");
+        xml.Descendants("payload").Select(payload => payload.Value).Should().Contain("Gamma text");
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> legacy = await fixture.Commands.FetchAsync(
+            new McpFetchRequest([LegacyTranslationUri(fixture.DocumentId, 2)], null, null));
+        legacy.IsSuccess.Should().BeFalse();
+        legacy.Envelope!.Entries.Single().Error.Should().Contain("NOT_FOUND");
     }
 
     [Fact]
     public async Task Put_translation_replaces_the_whole_page_and_reports_committed()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
-        string uri = McpResourceUris.TranslationPageUri(fixture.DocumentId, 1);
+        string uri = LegacyTranslationUri(fixture.DocumentId, 1);
 
         McpCommandResult<McpPutMeta, McpPutResult> first = await fixture.Commands.PutAsync(
             new McpPutRequest(uri, fixture.TranslateFirstPage("第一版")));
 
         first.IsSuccess.Should().BeTrue($"error: {first.Error?.Code} {first.Error?.Detail}");
         McpPutResult put = first.Envelope!.Entries.Should().ContainSingle().Subject;
+        put.Uri.Should().Be(McpResourceUris.TranslationPageUri(fixture.DocumentId, 1));
         put.Committed.Should().BeTrue();
         put.ResourceType.Should().Be("translation_page");
         put.TranslationErrors.Should().BeNull();
+        first.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0") && warning.Contains(put.Uri));
 
         McpCommandResult<McpPutMeta, McpPutResult> second = await fixture.Commands.PutAsync(
             new McpPutRequest(uri, fixture.TranslateFirstPage("第二版")));
@@ -147,7 +159,11 @@ public sealed class McpTranslationContractTests
 
         McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await fixture.Commands.FetchAsync(
             new McpFetchRequest([uri], null, null));
-        fetched.Envelope!.Entries.Single().Content.Should().Contain("第二版").And.NotContain("第一版");
+        McpFetchResult fetchedEntry = fetched.Envelope!.Entries.Single();
+        fetchedEntry.Uri.Should().Be(McpResourceUris.TranslationPageUri(fixture.DocumentId, 1));
+        fetchedEntry.Content.Should().Contain("第二版").And.NotContain("第一版");
+        fetched.Envelope.Message!.Warnings.Should().ContainSingle(warning =>
+            warning.Contains("[obsoleted]") && warning.Contains("0.4.0") && warning.Contains(fetchedEntry.Uri));
     }
 
     [Fact]
@@ -155,10 +171,11 @@ public sealed class McpTranslationContractTests
     {
         await using Fixture fixture = await Fixture.CreateAsync();
         string uri = McpResourceUris.TranslationPageUri(fixture.DocumentId, 1);
+        string legacyUri = LegacyTranslationUri(fixture.DocumentId, 1);
         string mismatched = fixture.TranslateFirstPage("译文") + "\n\n多余的段落。";
 
         McpCommandResult<McpPutMeta, McpPutResult> result = await fixture.Commands.PutAsync(
-            new McpPutRequest(uri, mismatched));
+            new McpPutRequest(legacyUri, mismatched));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.InvalidContent);
@@ -168,7 +185,8 @@ public sealed class McpTranslationContractTests
         entry.TranslationErrors!.Should().Contain(error => error.Expected == "end of markdown");
         McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await fixture.Commands.FetchAsync(
             new McpFetchRequest([uri], null, null));
-        fetched.IsSuccess.Should().BeFalse("a rejected put must not persist any translation rows");
+        fetched.IsSuccess.Should().BeTrue("untranslated XML falls back to the source view");
+        fetched.Envelope!.Entries.Single().Content.Should().Contain("Alpha text").And.NotContain("译文");
     }
 
     [Fact]
@@ -183,6 +201,12 @@ public sealed class McpTranslationContractTests
         McpCommandResult<McpPutMeta, McpPutResult> scope = await fixture.Commands.PutAsync(
             new McpPutRequest(McpResourceUris.TranslationsScopeUri(), "x"));
         scope.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+    }
+
+    private static string LegacyTranslationUri(DocumentInstanceId documentId, int pageIndex)
+    {
+        return McpResourceUris.TranslationPageUri(documentId, pageIndex)
+            .Replace(".xml", ".md", StringComparison.Ordinal);
     }
 
     private sealed class Fixture : IAsyncDisposable

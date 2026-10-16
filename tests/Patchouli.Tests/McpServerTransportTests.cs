@@ -56,7 +56,7 @@ public sealed class McpServerTransportTests
     public void Sanitizer_preserves_versioned_patchouli_resource_uris()
     {
         string value =
-            "patchouli://texts/doc/page-1.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001";
+            "patchouli://texts/doc/page-1.xml?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001";
         McpOutputSanitizer.Sanitize(value).Should().Be(value);
     }
 
@@ -186,9 +186,12 @@ public sealed class McpServerTransportTests
         JsonElement putProps = put.GetProperty("inputSchema").GetProperty("properties");
         putProps.TryGetProperty("uri", out _).Should().BeTrue();
         putProps.TryGetProperty("content", out _).Should().BeTrue();
+        putProps.TryGetProperty("boxes", out _).Should().BeTrue();
+        putProps.TryGetProperty("source_revision", out _).Should().BeTrue();
+        putProps.TryGetProperty("translation_version", out _).Should().BeTrue();
         putProps.TryGetProperty("base", out _).Should().BeFalse();
         put.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
-            .Should().Equal("uri", "content");
+            .Should().Equal("uri");
         put.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean().Should().BeFalse();
 
         JsonElement cite = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.cite");
@@ -236,7 +239,7 @@ public sealed class McpServerTransportTests
         entries.Select(e => e.GetProperty("uri").GetString())
             .Should().Equal("patchouli://items/", "patchouli://texts/", "patchouli://translations/",
                 "patchouli://csl-styles/", "patchouli://runs/", "patchouli://workflows/",
-                "patchouli://library.toon");
+                "patchouli://library.yml");
         entries.Take(6).Should().OnlyContain(e => e.GetProperty("type").GetString() == "directory");
         entries[6].GetProperty("type").GetString().Should().Be("file");
         envelope.RootElement.GetProperty("continuation").ValueKind.Should().Be(JsonValueKind.Null);
@@ -324,11 +327,11 @@ public sealed class McpServerTransportTests
         ToolErrorName(findRegex).Should().Be("INVALID_ARGUMENT");
 
         string fetchRevision = await h.HandleAsync(
-            ToolCall("patchouli.fetch", """{"uris":["patchouli://items/abc.bib"],"revision":"item:x"}"""));
+            ToolCall("patchouli.fetch", """{"uris":["patchouli://items/abc.yml"],"revision":"item:x"}"""));
         ToolErrorCode(fetchRevision).Should().Be(2);
 
         string putBase = await h.HandleAsync(
-            ToolCall("patchouli.put", """{"uri":"patchouli://items/abc.bib","content":"x","base":"item:x"}"""));
+            ToolCall("patchouli.put", """{"uri":"patchouli://items/abc.yml","content":"x","base":"item:x"}"""));
         ToolErrorCode(putBase).Should().Be(2);
     }
 
@@ -342,7 +345,7 @@ public sealed class McpServerTransportTests
         ToolErrorCode(wrongInteger).Should().Be(2);
 
         string scalarUris = await h.HandleAsync(
-            ToolCall("patchouli.fetch", """{"uris":"patchouli://items/x.bib"}"""));
+            ToolCall("patchouli.fetch", """{"uris":"patchouli://items/x.yml"}"""));
         ToolErrorCode(scalarUris).Should().Be(2);
 
         string wrongFormat = await h.HandleAsync(ToolCall("patchouli.find", """{"format":"yaml"}"""));
@@ -553,7 +556,7 @@ public sealed class McpServerTransportTests
             using HttpClient http = new();
             string largeQuery = new('a', 400);
             string request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
-                             $"\"name\":\"patchouli.put\",\"arguments\":{{\"uri\":\"patchouli://items/abc.bib\"," +
+                             $"\"name\":\"patchouli.put\",\"arguments\":{{\"uri\":\"patchouli://items/abc.yml\"," +
                              $"\"content\":\"{largeQuery}\"}}}}";
             HttpResponseMessage overLimit = await http.PostAsync(server.Endpoint,
                 new StringContent(request, System.Text.Encoding.UTF8, "application/json"));

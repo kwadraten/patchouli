@@ -56,6 +56,44 @@ public sealed class AgentFsiReplTests
     }
 
     [Fact]
+    public async Task Same_session_contexts_have_isolated_bindings_and_each_context_survives_activations()
+    {
+        string sessionsRoot = Path.Combine(Path.GetTempPath(),
+            "patchouli-fsi-context-sessions-" + Guid.NewGuid().ToString("N"));
+        AgentSessionStore sessions = new(sessionsRoot);
+        AgentSessionLaunchParameters launch = AgentSessionLaunchParameters.Create(
+            AgentSessionService.ChatWorkflowUri, new Dictionary<string, string>());
+        await sessions.CreateSessionAsync(launch, CancellationToken.None);
+        AgentWorkspaceStore workspaces = new(sessions);
+        await using AgentFsiRepl repl = new(workspaces);
+        try
+        {
+            (await Run(repl, launch.SessionId, "context-a", "let answer = 41")).Succeeded.Should().BeTrue();
+            AgentToolOutcome otherContext = await Run(repl, launch.SessionId, "context-b", "answer");
+            otherContext.Succeeded.Should().BeFalse();
+            otherContext.ErrorCode.Should().Be("FSI_EVALUATION_FAILED");
+
+            (await Run(repl, launch.SessionId, "context-b", "let answer = 7")).Succeeded.Should().BeTrue();
+            AgentToolOutcome continuedA =
+                await Run(repl, launch.SessionId, "context-a", "printfn \"a=%d\" (answer + 1)");
+            AgentToolOutcome continuedB = await Run(repl, launch.SessionId, "context-b", "printfn \"b=%d\" answer");
+            continuedA.Succeeded.Should().BeTrue(continuedA.Payload);
+            continuedA.Payload.Should().Contain("a=42").And.NotContain("b=7");
+            continuedB.Succeeded.Should().BeTrue(continuedB.Payload);
+            continuedB.Payload.Should().Contain("b=7").And.NotContain("a=42");
+        }
+        finally
+        {
+            await repl.ForgetAsync(launch.SessionId);
+            workspaces.Delete(launch.SessionId);
+            if (Directory.Exists(sessionsRoot))
+            {
+                Directory.Delete(sessionsRoot, true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Repl_executes_dotnet_io_and_recovers_after_compile_failure()
     {
         await using AgentFsiRepl repl = new();
@@ -88,5 +126,11 @@ public sealed class AgentFsiReplTests
     private static Task<AgentToolOutcome> Run(AgentFsiRepl repl, string sessionId, string code)
     {
         return repl.ExecuteAsync(sessionId, JsonSerializer.Serialize(new { code }), CancellationToken.None);
+    }
+
+    private static Task<AgentToolOutcome> Run(AgentFsiRepl repl, string sessionId, string contextId, string code)
+    {
+        return repl.ExecuteAsync(sessionId, contextId, JsonSerializer.Serialize(new { code }), null,
+            CancellationToken.None);
     }
 }

@@ -1,5 +1,27 @@
 # 更新日志
 
+## 0.3.10
+
+发布：2026-10-14 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.10) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.9...0.3.10)
+
+- 产品名称统一为 Patchouli.NET，同步界面、文档、程序集元数据及各平台安装包名称。
+- Agent 工作流新增显式上下文选择，主上下文保持连续，独立 worker 隔离历史与 FSI 状态；每次执行使用独立 activation，允许阶段切换工具与指令而不破坏确定性重放。
+- 工作流协议升级到 `/8`：旧脚本需显式选择上下文，旧自动化快照需新建会话，原始历史仍可读取。
+- 新增 Linux deb、rpm、AppImage、Flatpak 打包，GitHub Release 同时发布 Windows、macOS 和四种 Linux 安装包。
+- 改进 Linux CLI 的宿主查找与 CSL 样式标识校验，统一三个平台的打包默认版本。
+- Avalonia 升级至 12.1.3，修复单实例激活测试使用的 headless 会话启动与释放竞态，并保留 Windows、Linux、macOS CI 测试日志。
+- LLMTornado 升级至 3.8.74，修正 Anthropic 工具结果缓存标记的序列化。
+
+## 0.3.9
+
+发布：2026-10-11 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.9) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.8...0.3.9)
+
+- Agent 工具调用、FSI 和工作流输出纠错不再消耗请求重试额度；临时模型请求失败使用可取消的指数退避，成功响应立即重置计数。
+- 模型设置新增自动重试次数，默认 3 次，可调整为 0–20 次；0 表示关闭自动重试。
+- 工作流编辑器根据 F# 参数声明生成独立配置表单，启动前统一校验，并保存参数与模型选择；无效配置会定位到对应字段并保留草稿。
+- 改进 Agent 上下文预算、工具结果折叠和历史分页检索，保留原始记录与稳定的模型输入，增强恢复和重放的一致性。
+- 工作流重试与重放协议升级：旧会话历史保留，自动运行需从现有脚本新建会话，无需重写脚本。
+
 ## 0.3.8
 
 发布：2026-10-09 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.8) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.7...0.3.8)

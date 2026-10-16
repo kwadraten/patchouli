@@ -53,6 +53,8 @@ type WorkflowStore(root: string) =
 
     /// <summary>Subdirectory of the workflows root that holds the <c>.fsx</c> script files.</summary>
     static let scriptsDirectoryName = "scripts"
+    static let configurationDirectoryName = "configuration"
+    static let legacyBackupDirectoryName = "legacy-backups"
 
     static let writeAtomicAsync (path: string) (content: string) (cancellationToken: CancellationToken) : Task =
         task {
@@ -109,6 +111,16 @@ type WorkflowStore(root: string) =
     member _.ResolveScriptPath(workflowId: string) : string =
         WorkflowStore.RequireId workflowId
         Path.Combine(resolvedRoot, scriptsDirectoryName, workflowId + ".fsx")
+
+    /// <summary>The durable values file for one workflow's statically declared parameters.</summary>
+    member _.ResolveConfigurationPath(workflowId: string) : string =
+        WorkflowStore.RequireId workflowId
+        Path.Combine(resolvedRoot, configurationDirectoryName, workflowId + ".json")
+
+    /// <summary>The preserved pre-migration definition document for one workflow, when needed.</summary>
+    member _.ResolveLegacyBackupPath(workflowId: string) : string =
+        WorkflowStore.RequireId workflowId
+        Path.Combine(resolvedRoot, legacyBackupDirectoryName, workflowId + ".json")
 
     /// <summary>Workflow ids with a stored definition, in ordinal order; empty when the root is missing.</summary>
     member _.ListIdsAsync(cancellationToken: CancellationToken) : Task<IReadOnlyList<string>> =
@@ -211,6 +223,9 @@ type WorkflowStore(root: string) =
                     let script = this.ResolveScriptPath workflowId
                     if File.Exists script then
                         File.Delete script
+                    let configuration = this.ResolveConfigurationPath workflowId
+                    if File.Exists configuration then
+                        File.Delete configuration
                     return Applied
         }
 

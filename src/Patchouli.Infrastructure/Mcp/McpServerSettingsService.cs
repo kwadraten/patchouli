@@ -229,7 +229,8 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ExposeLibraryTags = exposeLibraryTags,
             ExposeLibraryCollections = exposeLibraryCollections,
             DomainPermissions = mcp.TryGetProperty("DomainPermissions", out JsonElement permissions)
-                ? JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? []
+                ? NormalizePermissions(
+                    JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? [])
                 : []
         };
     }
@@ -294,13 +295,22 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         }
     }
 
+    private static McpDomainPermission[] NormalizePermissions(IEnumerable<McpDomainPermission> permissions)
+    {
+        return permissions.Select(value =>
+                value with { Domain = value.Domain == "library.toon" ? "library.yml" : value.Domain })
+            .GroupBy(value => (value.Domain, value.Verb))
+            .Select(group =>
+                new McpDomainPermission(group.Key.Domain, group.Key.Verb, group.All(value => value.Enabled))).ToArray();
+    }
+
     private static McpServerSettings Freeze(McpServerSettings settings)
     {
         return settings with
         {
             BindAddress = settings.BindAddress.Trim(),
             AllowedOrigins = settings.AllowedOrigins.ToArray(),
-            DomainPermissions = settings.DomainPermissions.Select(item => item with { }).ToArray(),
+            DomainPermissions = NormalizePermissions(settings.DomainPermissions),
             ToolOverrides = settings.ToolOverrides
                 .Select(item => item with { })
                 .ToArray()

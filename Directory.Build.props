@@ -5,11 +5,11 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
-    <Version>0.3.8</Version>
-    <AssemblyVersion>0.3.8.0</AssemblyVersion>
-    <FileVersion>0.3.8.0</FileVersion>
-    <Product>Patchouli.Net</Product>
-    <Title>Patchouli.Net</Title>
-    <AssemblyTitle>Patchouli.Net</AssemblyTitle>
+    <Version>0.3.10</Version>
+    <AssemblyVersion>0.3.10.0</AssemblyVersion>
+    <FileVersion>0.3.10.0</FileVersion>
+    <Product>Patchouli.NET</Product>
+    <Title>Patchouli.NET</Title>
+    <AssemblyTitle>Patchouli.NET</AssemblyTitle>
   </PropertyGroup>
 </Project>

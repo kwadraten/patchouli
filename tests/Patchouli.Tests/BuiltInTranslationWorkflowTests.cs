@@ -25,23 +25,32 @@ public sealed class BuiltInTranslationWorkflowTests
     {
         string script = BuiltInWorkflowScripts.tryGetText(WorkflowIds.FullTextTranslation)!.Value;
         HarnessStubHost host = new(
-            """{"tool":"find","arguments":{"in":"patchouli://documents/doc-1","query":"pages","limit":10}}""",
-            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-3.md"]}}""",
+            """{"tool":"find","arguments":{"in":"patchouli://texts/doc-1/","query":"pages","limit":10}}""",
+            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-3.xml","patchouli://translations/doc-1/page-3.xml"]}}""",
             """[{"document":"doc-1","pages":[3]}]""",
-            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-3.md"]}}""",
-            """{"tool":"commitTranslation","arguments":{"content":"translated"}}""",
+            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-3.xml","patchouli://translations/doc-1/page-3.xml"]}}""",
+            """{"tool":"commitTranslation","arguments":{"source_revision":"rev-3","translation_version":0,"boxes":[{"box_id":"box-3","content":"translated"}]}}""",
             "Page 3 committed.", "Page 3 committed; no failures.");
         WorkflowRunRequest request = WorkflowRunRequests.create("translation-test",
             BuiltInWorkflows.fullTextTranslation,
-            script, new WorkflowSelection(["doc-1"], "3", "zh-CN", ["en", "zh-CN"]),
-            new Dictionary<string, string> { ["windowRadius"] = "2", ["backfillPreviousWindowTranslation"] = "false" },
+            script, new WorkflowSelection(["doc-1"], "3", ""),
+            new Dictionary<string, string>
+            {
+                ["targetLanguage"] = "zh-CN", ["windowRadius"] = "2", ["backfillPreviousWindowTranslation"] = "false"
+            },
             DateTimeOffset.UtcNow);
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         host.Tools.Should().Equal("find", "fetch", "fetch", "put");
-        string rules = host.Scopes[0].Context.History.OfType<HistoryEntry.Instruction>().First().text;
+        string rules = host.Scopes[0].Instructions;
         rules.Should().Contain("doc-1").And.Contain("zh-CN").And.Contain("Window radius: 2")
-            .And.Contain("backfill previous window translation: false");
+            .And.Contain("backfill previous window translation: false")
+            .And.Contain("missing translation view has version 0")
+            .And.Contain("including existing translations")
+            .And.Contain("payload format")
+            .And.Contain("complete <box> XML element")
+            .And.Contain("every structural attribute preserved")
+            .And.Contain("do not send a reconstructed page or Markdown document");
         result.Context.History.OfType<HistoryEntry.UserMessage>().Select(message => message.text)
             .Should().Contain("Translate document doc-1, page 3.");
     }
@@ -62,32 +71,58 @@ public sealed class BuiltInTranslationWorkflowTests
     }
 
     [Fact]
-    public async Task Every_page_is_driven_by_a_short_prompt_and_shared_rules_are_retained_once_on_replay()
+    public void Translation_receipt_matching_accepts_legacy_request_uri_and_canonical_response_uri()
+    {
+        string script = BuiltInWorkflowScripts.tryGetText(WorkflowIds.FullTextTranslation)!.Value;
+        using ScriptHostSession session = ScriptHostSession.Create();
+        session.EvaluateScript(script, "translation.fsx").Succeeded.Should().BeTrue();
+        session.EvaluateScript("""
+                               let legacyOperation =
+                                   { Name = "put"
+                                     Arguments = "{\"uri\":\"patchouli://translations/doc-1/page-1.md\",\"content\":\"legacy\"}"
+                                     Payload = "{\"entries\":[{\"uri\":\"patchouli://translations/doc-1/page-1.xml\",\"committed\":true}]}"
+                                     Succeeded = true
+                                     OperationId = "legacy-op"
+                                     ErrorCode = "" }
+                               let matchedLegacy =
+                                   match outcomeFor { document = "doc-1"; page = 1 } [| legacyOperation |] with
+                                   | Ok(Committed operationId) -> operationId = "legacy-op"
+                                   | _ -> false
+                               """, "legacy-receipt.fsx").Succeeded.Should().BeTrue();
+
+        session.EvaluateExpression("matchedLegacy", "legacy-receipt.fsx").Value.Should().Be(true);
+    }
+
+    [Fact]
+    public async Task Every_page_uses_a_short_prompt_and_activation_rules_do_not_leak_into_history()
     {
         string script = BuiltInWorkflowScripts.tryGetText(WorkflowIds.FullTextTranslation)!.Value;
         HarnessStubHost host = new(
             """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/"]}}""",
             """[{"document":"doc-1","pages":[2,1]}]""",
-            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-1.md"]}}""",
-            """{"tool":"commitTranslation","arguments":{"content":"one"}}""",
+            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-1.xml","patchouli://translations/doc-1/page-1.xml"]}}""",
+            """{"tool":"commitTranslation","arguments":{"source_revision":"rev-1","translation_version":0,"boxes":[{"box_id":"box-1","content":"one"}]}}""",
             "Page 1 committed.",
-            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-2.md"]}}""",
-            """{"tool":"commitTranslation","arguments":{"content":"two"}}""",
+            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-2.xml","patchouli://translations/doc-1/page-2.xml"]}}""",
+            """{"tool":"commitTranslation","arguments":{"source_revision":"rev-2","translation_version":0,"boxes":[{"box_id":"box-2","content":"two"}]}}""",
             "Page 2 committed.", "Pages 1 and 2 committed.");
         WorkflowRunRequest request = WorkflowScriptExecutorTests.Request(script,
-            new WorkflowSelection(["doc-1"], "1-2", "zh-CN", []));
+            new WorkflowSelection(["doc-1"], "1-2", ""));
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         result.Context.History.OfType<HistoryEntry.UserMessage>()
             .Where(message => message.text.StartsWith("Translate document"))
             .Select(message => message.text).Should()
             .Equal("Translate document doc-1, page 1.", "Translate document doc-1, page 2.");
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"))
-            .Should().Be(1);
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("AGENT STAGE: translate-page"))
-            .Should().Be(1);
+        result.Context.History.OfType<HistoryEntry.Instruction>().Should()
+            .NotContain(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES") ||
+                                 entry.text.Contains("AGENT STAGE: translate-page"));
+        host.Scopes.Should().OnlyContain(scope => scope.Instructions.Contains("FULL-TEXT TRANSLATION RULES"));
+        host.Scopes.Should().OnlyContain(scope => scope.Instructions.Contains("page XML") &&
+                                                  scope.Instructions.Contains("source_revision") &&
+                                                  scope.Instructions.Contains("translation_version"));
+        host.Scopes.GroupBy(scope => scope.ActivationId).Should()
+            .OnlyContain(group => group.Select(scope => scope.Instructions).Distinct().Count() == 1);
         HarnessStubHost replayHost = new();
         WorkflowRunOutcome replay = await new WorkflowExecutor(replayHost).RunAsync(
             WorkflowScriptExecutorTests.Resume(request, result), CancellationToken.None);
@@ -117,17 +152,16 @@ public sealed class BuiltInTranslationWorkflowTests
         HarnessStubHost host = new(
             """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/"]}}""",
             "not JSON", """[{"document":"doc-1","pages":[1]}]""",
-            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-1.md"]}}""",
-            """{"tool":"commitTranslation","arguments":{"content":"one"}}""",
+            """{"tool":"fetch","arguments":{"uris":["patchouli://texts/doc-1/page-1.xml","patchouli://translations/doc-1/page-1.xml"]}}""",
+            """{"tool":"commitTranslation","arguments":{"source_revision":"rev-1","translation_version":0,"boxes":[{"box_id":"box-1","content":"one"}]}}""",
             "Page 1 committed.", "Page 1 committed.");
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(
-            WorkflowScriptExecutorTests.Request(script, new WorkflowSelection(["doc-1"], "1", "zh-CN", [])),
+            WorkflowScriptExecutorTests.Request(script, new WorkflowSelection(["doc-1"], "1", "")),
             CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         result.Context.History.OfType<HistoryEntry.ToolResult>().Should()
             .Contain(entry => entry.payload.Contains("Invalid page-plan JSON"));
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"))
-            .Should().Be(1);
+        result.Context.History.OfType<HistoryEntry.Instruction>().Should()
+            .NotContain(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"));
     }
 }

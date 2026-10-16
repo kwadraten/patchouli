@@ -28,11 +28,11 @@
   <TrayIcon.Icons>
     <TrayIcons>
       <TrayIcon Icon="/Assets/AppIcon.ico"
-                ToolTipText="Patchouli.Net"
+                ToolTipText="Patchouli.NET"
                 Clicked="OnTrayIconClicked">
         <TrayIcon.Menu>
           <NativeMenu>
-            <NativeMenuItem Header="打开 Patchouli.Net" Click="OnOpenFromTrayClick" />
+            <NativeMenuItem Header="打开 Patchouli.NET" Click="OnOpenFromTrayClick" />
             <NativeMenuItemSeparator />
             <NativeMenuItem Header="退出" Click="OnExitFromTrayClick" />
           </NativeMenu>

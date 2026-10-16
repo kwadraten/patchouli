@@ -56,15 +56,18 @@ public sealed class CliCommandMappingTests
         act.Should().Throw<CliUsageException>();
     }
 
-    [Fact]
-    public void Fetch_maps_uris_range_and_limit_bytes()
+    [Theory]
+    [InlineData("patchouli://items/abc.yml", "lines:1-5")]
+    [InlineData("texts/doc/page-1.xml", "boxes:1-5")]
+    [InlineData("patchouli://texts/doc/page-1.md", "pages:1-5")]
+    public void Fetch_maps_uris_range_and_limit_bytes(string uri, string range)
     {
         CliToolCall call = CliArguments.BuildToolCall("fetch",
-            ["patchouli://items/abc.bib", "--range", "lines:1-5", "--limit-bytes", "128"], false);
+            [uri, "--range", range, "--limit-bytes", "128"], false);
         call.Tool.Should().Be(CliArguments.Fetch);
         call.Arguments["uris"].Should().BeAssignableTo<string[]>()
-            .Which.Should().Equal("patchouli://items/abc.bib");
-        call.Arguments["range"].Should().Be("lines:1-5");
+            .Which.Should().Equal(uri);
+        call.Arguments["range"].Should().Be(range);
         call.Arguments["limit_bytes"].Should().Be(128);
         call.Arguments.Should().NotContainKey("revision");
     }
@@ -80,19 +83,28 @@ public sealed class CliCommandMappingTests
     public void Fetch_rejects_revision_as_unknown_option()
     {
         Action act = () => CliArguments.BuildToolCall("fetch",
-            ["patchouli://items/abc.bib", "--revision", "item:x"], false);
+            ["patchouli://items/abc.yml", "--revision", "item:x"], false);
         act.Should().Throw<CliUsageException>();
     }
 
     [Fact]
     public void Put_maps_uri_and_stdin_source()
     {
-        CliToolCall call = CliArguments.BuildToolCall("put", ["patchouli://items/abc.bib", "--stdin"], false);
+        CliToolCall call = CliArguments.BuildToolCall("put", ["patchouli://items/abc.yml", "--stdin"], false);
         call.Tool.Should().Be(CliArguments.Put);
-        call.Arguments["uri"].Should().Be("patchouli://items/abc.bib");
+        call.Arguments["uri"].Should().Be("patchouli://items/abc.yml");
         call.Arguments.Should().NotContainKey("base");
         call.PutStdin.Should().BeTrue();
         call.PutSourcePath.Should().BeNull();
+    }
+
+    [Fact]
+    public void Put_passes_an_explicit_legacy_uri_through_for_server_warning_and_normalization()
+    {
+        const string legacy = "patchouli://items/abc.bib";
+        CliToolCall call = CliArguments.BuildToolCall("put", [legacy, "--stdin"], false);
+
+        call.Arguments["uri"].Should().Be(legacy);
     }
 
     [Fact]
@@ -108,14 +120,14 @@ public sealed class CliCommandMappingTests
     public void Put_rejects_base_as_unknown_option()
     {
         Action act = () => CliArguments.BuildToolCall("put",
-            ["patchouli://items/abc.bib", "--stdin", "--base", "item:x"], false);
+            ["patchouli://items/abc.yml", "--stdin", "--base", "item:x"], false);
         act.Should().Throw<CliUsageException>();
     }
 
     [Fact]
     public void Put_requires_a_content_source()
     {
-        Action act = () => CliArguments.BuildToolCall("put", ["patchouli://items/abc.bib"], false);
+        Action act = () => CliArguments.BuildToolCall("put", ["patchouli://items/abc.yml"], false);
         act.Should().Throw<CliUsageException>();
     }
 
@@ -123,17 +135,17 @@ public sealed class CliCommandMappingTests
     public void Put_rejects_both_from_and_stdin()
     {
         Action act = () => CliArguments.BuildToolCall("put",
-            ["patchouli://items/abc.bib", "--from", "x.bib", "--stdin"], false);
+            ["patchouli://items/abc.yml", "--from", "x.bib", "--stdin"], false);
         act.Should().Throw<CliUsageException>();
     }
 
     [Fact]
     public void Put_with_content_injects_inline_content()
     {
-        CliToolCall call = CliArguments.BuildToolCall("put", ["patchouli://items/abc.bib", "--stdin"], false);
+        CliToolCall call = CliArguments.BuildToolCall("put", ["patchouli://items/abc.yml", "--stdin"], false);
         CliToolCall withContent = CliArguments.WithContent(call, "@book{a,\n title = {x}\n}");
         withContent.Arguments["content"].Should().Be("@book{a,\n title = {x}\n}");
-        withContent.Arguments["uri"].Should().Be("patchouli://items/abc.bib");
+        withContent.Arguments["uri"].Should().Be("patchouli://items/abc.yml");
         withContent.PutStdin.Should().BeFalse();
     }
 
@@ -142,11 +154,11 @@ public sealed class CliCommandMappingTests
     {
         CliToolCall call = CliArguments.BuildToolCall("cite",
         [
-            "patchouli://items/abc.bib", "--style", "patchouli://csl-styles/apa.csl",
+            "patchouli://items/abc.yml", "--style", "patchouli://csl-styles/apa.csl",
             "--locale", "en-US", "--bibliography", "--html"
         ], false);
         call.Tool.Should().Be(CliArguments.Cite);
-        call.Arguments["refs"].Should().BeAssignableTo<string[]>().Which.Should().Equal("patchouli://items/abc.bib");
+        call.Arguments["refs"].Should().BeAssignableTo<string[]>().Which.Should().Equal("patchouli://items/abc.yml");
         call.Arguments["style"].Should().Be("patchouli://csl-styles/apa.csl");
         call.Arguments["locale"].Should().Be("en-US");
         call.Arguments["bibliography"].Should().Be(true);
@@ -165,11 +177,11 @@ public sealed class CliCommandMappingTests
     {
         CliToolCall find = CliArguments.BuildToolCall("find", ["x"], true);
         find.Arguments["format"].Should().Be("json");
-        CliToolCall fetch = CliArguments.BuildToolCall("fetch", ["patchouli://items/abc.bib"], true);
+        CliToolCall fetch = CliArguments.BuildToolCall("fetch", ["patchouli://items/abc.yml"], true);
         fetch.Arguments["format"].Should().Be("json");
-        CliToolCall put = CliArguments.BuildToolCall("put", ["patchouli://items/abc.bib", "--stdin"], true);
+        CliToolCall put = CliArguments.BuildToolCall("put", ["patchouli://items/abc.yml", "--stdin"], true);
         put.Arguments["format"].Should().Be("json");
-        CliToolCall cite = CliArguments.BuildToolCall("cite", ["patchouli://items/abc.bib"], true);
+        CliToolCall cite = CliArguments.BuildToolCall("cite", ["patchouli://items/abc.yml"], true);
         cite.Arguments["format"].Should().Be("json");
     }
 
