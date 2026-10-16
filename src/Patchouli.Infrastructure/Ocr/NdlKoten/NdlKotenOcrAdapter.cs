@@ -19,7 +19,7 @@ public sealed class NdlKotenOcrAdapter : IRealOcrAdapter
 
     public string EngineId => OcrEngineIds.NdlKoten;
 
-    public string DisplayName => "NDL Koten OCR Lite";
+    public string DisplayName => "NDL古典籍OCR-Lite";
 
     public string Kind => OcrAdapterKind.LocalLibrary;
 
@@ -54,7 +54,7 @@ public sealed class NdlKotenOcrAdapter : IRealOcrAdapter
         {
             return Task.FromResult(Result.Failure(
                 AppErrorCodes.ValidationFailed,
-                "The NDL Koten OCR Lite preset must specify a model directory."));
+                "The NDL古典籍OCR-Lite preset must specify a model directory."));
         }
 
         return Task.FromResult(Result.Success());
@@ -68,14 +68,14 @@ public sealed class NdlKotenOcrAdapter : IRealOcrAdapter
         {
             return Task.FromResult(Result.Failure(
                 AppErrorCodes.UnsupportedOperation,
-                $"Input kind '{input.InputKind}' is not supported by NDL Koten OCR Lite."));
+                $"Input kind '{input.InputKind}' is not supported by NDL古典籍OCR-Lite."));
         }
 
         if (string.IsNullOrWhiteSpace(input.ImagePath) || !File.Exists(input.ImagePath))
         {
             return Task.FromResult(Result.Failure(
                 AppErrorCodes.NotFound,
-                "A rendered page image is required for NDL Koten OCR Lite."));
+                "A rendered page image is required for NDL古典籍OCR-Lite."));
         }
 
         return Task.FromResult(Result.Success());
@@ -88,7 +88,7 @@ public sealed class NdlKotenOcrAdapter : IRealOcrAdapter
         {
             return Task.FromResult(Result<OcrEnginePageResult>.Failure(
                 AppErrorCodes.InvalidState,
-                "NDL Koten OCR Lite model directory is not configured."));
+                "NDL古典籍OCR-Lite model directory is not configured."));
         }
 
         if (string.IsNullOrWhiteSpace(input.ImagePath) || !File.Exists(input.ImagePath))
@@ -103,7 +103,7 @@ public sealed class NdlKotenOcrAdapter : IRealOcrAdapter
         {
             return Task.FromResult(Result<OcrEnginePageResult>.Failure(
                 AppErrorCodes.InvalidState,
-                "NDL Koten OCR Lite model files are missing. Download them in Settings > Local Files."));
+                "NDL古典籍OCR-Lite model files are missing. Download them in Settings > Local Files."));
         }
 
         cancellationToken.ThrowIfCancellationRequested();

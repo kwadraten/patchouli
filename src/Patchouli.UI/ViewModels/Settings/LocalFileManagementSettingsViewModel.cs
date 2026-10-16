@@ -62,7 +62,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
             Locations.Add(new ManagedLocationViewModel(
                 this,
-                "NDL Koten 模型文件",
+                "NDL古典籍OCR-Lite 模型文件",
                 storage.NdlKotenModelsDirectory,
                 true,
                 true,
@@ -89,7 +89,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
                 true));
             Locations.Add(new ManagedLocationViewModel(
                 this,
-                "NDL Koten 工作临时文件",
+                "NDL古典籍OCR-Lite 工作临时文件",
                 storage.NdlKotenWorkDirectory,
                 false,
                 true));
@@ -161,7 +161,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
                 LayoutModelDownloadService.Yolo.ExpectedBytes),
             ModelDownloadKind.PpDocLayoutV3 => ("下载 PP-DocLayoutV3 版面模型",
                 LayoutModelDownloadService.Paddle.ExpectedBytes),
-            ModelDownloadKind.NdlKoten => ("下载 NDL Koten 模型",
+            ModelDownloadKind.NdlKoten => ("下载 NDL古典籍OCR-Lite 模型",
                 NdlKotenModelFiles.Files.Sum(static file => file.ExpectedBytes)),
             ModelDownloadKind.NdlLite => ("下载 NDLOCR-Lite 模型",
                 NdlLiteModelFiles.Files.Sum(static file => file.ExpectedBytes)),

@@ -137,7 +137,7 @@ public sealed class OcrPresetDefaults(
         }
 
         Result<OcrPreset> created = await _presets.CreatePresetAsync(
-            "NDL Koten OCR Lite",
+            "NDL古典籍OCR-Lite",
             "Local classical Japanese OCR preset",
             OcrEngineIds.NdlKoten,
             OcrModelIds.NdlKotenDefault,
