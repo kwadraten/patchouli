@@ -70,7 +70,12 @@ public sealed class McpReadApi : IMcpReadApi
         {
             return Result<string>.Success(McpItemYamlCodec.Encode(item.Value, includeTags));
         }
-        catch (Exception exception) when (exception is JsonException or FormatException)
+        catch (JsonException exception)
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                $"Invalid stored item metadata: {exception.Message}");
+        }
+        catch (FormatException exception)
         {
             return Result<string>.Failure(AppErrorCodes.ValidationFailed,
                 $"Invalid stored item metadata: {exception.Message}");

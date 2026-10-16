@@ -184,7 +184,15 @@ public sealed class McpWriteApi : IMcpWriteApi
 
             return Result<McpPutResponse>.Success(TranslationResponse(request, result.Value));
         }
-        catch (Exception exception) when (exception is XmlException or FormatException or OverflowException)
+        catch (XmlException)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.ValidationFailed, "Invalid page XML or version.");
+        }
+        catch (FormatException)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.ValidationFailed, "Invalid page XML or version.");
+        }
+        catch (OverflowException)
         {
             return Result<McpPutResponse>.Failure(AppErrorCodes.ValidationFailed, "Invalid page XML or version.");
         }
