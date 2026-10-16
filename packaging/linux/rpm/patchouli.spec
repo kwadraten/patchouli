@@ -50,6 +50,9 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Fri Oct 16 2026 kwadraten <schild0van0man@duck.com> - 0.3.11-1
+- Add YAML/XML MCP editing and managed multimodal OCR layouts
+
 * Wed Oct 14 2026 kwadraten <schild0van0man@duck.com> - 0.3.10-1
 - Update Patchouli.NET branding and release packaging
 

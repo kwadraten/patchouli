@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.3.11
+
+发布：2026-10-16 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.11) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.10...0.3.11)
+
+- MCP 改用 YAML 文献与书库元数据、XML 页面边界框树，支持按 box 原子局部写入；CLI 同步支持新格式与细粒度编辑。
+- 保留旧 bib、Markdown、TOON 的兼容解析，统一输出新资源链接，并支持省略 patchouli 协议前缀的 VFS 寻址；旧接口将在 0.4.0 弃用。
+- 修复 CSL 日期及带类型元数据在 YAML 往返转换中的丢失，保留文献的精确类型与年份信息。
+- 在线多模态 OCR 默认使用本地版面识别，可选择 PP-DocLayoutV3、DocLayout-YOLO 或直接识别整页；版面模型在本地文件页统一下载、校验与管理。
+- 用户框选区域直接识别；已有边界框的识别仅生成文本，避免重复生成坐标。支持由大语言模型确定区域阅读顺序，并发识别后保持顺序。
+- 多模态 OCR 新增独立推理强度与并发数设置，推理强度通过 LLMTornado 通用接口传递；聊天与工作流也支持配置推理强度。
+- 修复多模态 OCR 默认预设与队列路由，将 NDL Koten OCR Lite 显示名称统一为 NDL古典籍OCR-Lite，并改善无界面测试的线程隔离与运行时序。
+
 ## 0.3.10
 
 发布：2026-10-14 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.10) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.9...0.3.10)
