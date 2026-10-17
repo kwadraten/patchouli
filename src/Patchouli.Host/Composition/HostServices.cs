@@ -314,6 +314,19 @@ public sealed class HostServices
             hostLifetime: LifetimeToken,
             pageInfoReader: pdfMetadata,
             maxFailedPageRatio: settings.Import.MaxFailedPageRatio);
+        // Issue #11: shared local file import core (MCP add, CLI, drag-drop). The behavior
+        // settings are device-local; the recovery store lives in the runtime database.
+        FileHandlingBehaviorSettings =
+            new FileHandlingBehaviorSettingsService(settingsPath, Clock);
+        CslLocalInstall = new CslLocalFileInstallService(CslStore);
+        FileImport = new FileImportService(
+            PdfImport,
+            CslLocalInstall,
+            FileHandlingBehaviorSettings,
+            FileResolution,
+            new FileFingerprintService(),
+            new FileImportRecoveryStore(ConnectionFactory),
+            Clock);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
@@ -412,6 +425,9 @@ public sealed class HostServices
     public PdfDiscoveryService PdfDiscovery { get; }
     public IMinerUResultImporter MinerUImporter { get; }
     public PdfImportWorkflow PdfImport { get; }
+    public IFileHandlingBehaviorSettingsService FileHandlingBehaviorSettings { get; }
+    public ICslLocalFileInstallService CslLocalInstall { get; }
+    public IFileImportService FileImport { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
 

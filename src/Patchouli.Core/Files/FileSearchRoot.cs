@@ -101,7 +101,10 @@ public sealed record FileSearchRoot(
     string? AuthorizationKind = null,
     byte[]? AuthorizationPayload = null,
     int? AuthorizationPayloadVersion = null,
-    DateTimeOffset? AuthorizationUpdatedAt = null);
+    DateTimeOffset? AuthorizationUpdatedAt = null,
+    // Issue #11: stable user-defined order. The first root in this order is the move
+    // target of the move-to-first-search-root file handling behavior.
+    int SortOrder = 0);
 
 public sealed record SelectedFileSearchRoot(
     string DisplayPath,
