@@ -19,7 +19,7 @@ try
         out string? mcpToken, out string? databasePath, out IReadOnlyList<string> rest);
     if (rest.Count == 0)
     {
-        Console.Error.WriteLine("patchouli-cli: a command is required (find, fetch, put, cite, send).");
+        Console.Error.WriteLine("patchouli-cli: a command is required (find, fetch, put, cite, send, add, view).");
         PrintUsage();
         return CliExitCode.InvalidArgument;
     }
@@ -59,6 +59,11 @@ try
     using (client)
     {
         CliToolResponse response = await client.CallToolAsync(call.Tool, call.Arguments);
+        if (string.Equals(command, "view", StringComparison.Ordinal))
+        {
+            return await HandleViewResponseAsync(call, response);
+        }
+
         Console.Write(response.Text);
         if (response.Text.Length == 0 || !response.Text.EndsWith("\n", StringComparison.Ordinal))
         {
@@ -95,6 +100,121 @@ catch (OperationCanceledException)
     Console.Error.WriteLine(
         $"patchouli-cli: the host did not respond before the deadline. {CliUnavailableException.Guidance}");
     return CliExitCode.Unavailable;
+}
+
+/// <summary>
+/// Issue #11: handles a <c>view</c> tool response. The CLI calls the same MCP tool,
+/// decodes the image content block and saves the PNG. The image is fully received and
+/// validated before anything is written; the write goes through a temp file in the
+/// target directory plus a final move (no half images). Existing files are never
+/// overwritten without --overwrite. Any image write failure exits non-zero.
+/// stdout prints the host's TOON/JSON metadata plus the CLI-generated absolute
+/// output_path (a client-side path, not a host cache path).
+/// </summary>
+static async Task<int> HandleViewResponseAsync(CliToolCall call, CliToolResponse response)
+{
+    if (response.IsError || string.IsNullOrWhiteSpace(response.ImageBase64))
+    {
+        PrintText(response.Text);
+        if (!response.IsError)
+        {
+            Console.Error.WriteLine("patchouli-cli: the host returned no image for view.");
+            return CliExitCode.Internal;
+        }
+
+        return response.ExitCode;
+    }
+
+    byte[] png;
+    try
+    {
+        png = Convert.FromBase64String(response.ImageBase64);
+    }
+    catch (FormatException)
+    {
+        Console.Error.WriteLine("patchouli-cli: the host returned a malformed image for view.");
+        return CliExitCode.Internal;
+    }
+
+    if (!IsPng(png))
+    {
+        Console.Error.WriteLine("patchouli-cli: the host returned a non-PNG image for view.");
+        return CliExitCode.Internal;
+    }
+
+    string outputPath;
+    try
+    {
+        outputPath = Path.GetFullPath(call.ViewOutputPath!);
+    }
+    catch (Exception exception) when (exception is ArgumentException or NotSupportedException or
+                                          IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"patchouli-cli: the --output path is not valid: {call.ViewOutputPath}");
+        return CliExitCode.InvalidArgument;
+    }
+
+    if (File.Exists(outputPath) && !call.ViewOverwrite)
+    {
+        Console.Error.WriteLine(
+            $"patchouli-cli: '{outputPath}' already exists; pass --overwrite to replace it.");
+        return CliExitCode.InvalidArgument;
+    }
+
+    string? directory = Path.GetDirectoryName(outputPath);
+    try
+    {
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        string temp = Path.Combine(directory ?? ".",
+            $".{Path.GetFileName(outputPath)}.tmp-{Guid.NewGuid():N}");
+        try
+        {
+            await File.WriteAllBytesAsync(temp, png);
+            File.Move(temp, outputPath, call.ViewOverwrite);
+        }
+        finally
+        {
+            if (File.Exists(temp))
+            {
+                try
+                {
+                    File.Delete(temp);
+                }
+                catch (IOException)
+                {
+                }
+            }
+        }
+    }
+    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"patchouli-cli: could not write the image: {exception.Message}");
+        return CliExitCode.Internal;
+    }
+
+    PrintText(response.Text);
+    Console.WriteLine($"output_path: {outputPath}");
+    return CliExitCode.Ok;
+}
+
+static void PrintText(string text)
+{
+    Console.Write(text);
+    if (text.Length == 0 || !text.EndsWith("\n", StringComparison.Ordinal))
+    {
+        Console.WriteLine();
+    }
+}
+
+static bool IsPng(byte[] bytes)
+{
+    return bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E &&
+           bytes[3] == 0x47 && bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A &&
+           bytes[7] == 0x0A;
 }
 
 static void ParseGlobalArguments(
@@ -159,7 +279,7 @@ static void ParseGlobalArguments(
 static void PrintUsage()
 {
     Console.Error.WriteLine(
-        "patchouli-cli [--json] [--db <runtime.sqlite>] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite|send> [arguments]");
+        "patchouli-cli [--json] [--db <runtime.sqlite>] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite|send|add|view> [arguments]");
     Console.Error.WriteLine(
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine(
@@ -185,6 +305,12 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "    Writable: patchouli://items/<id>.yml, patchouli://csl-styles/<id>.csl, or page XML under texts/ and translations/.");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
+    Console.Error.WriteLine("  add <path> [--kind pdf|csl]");
+    Console.Error.WriteLine(
+        "    Imports a host-local file (relative paths are resolved to absolute); URLs are rejected.");
+    Console.Error.WriteLine("  view <uri> --output <image.png> [--overwrite] [--context page|region] [--max-edge <n>]");
+    Console.Error.WriteLine(
+        "    Saves the source image PNG and prints the host metadata plus the client-side output_path.");
     Console.Error.WriteLine("  send <start|message|cancel|resume> [OPTIONS]");
     Console.Error.WriteLine(
         "    start --workflow <uri> [--param NAME=VALUE]...; message --session <uri> --message-id <id> [--text <text>]; cancel|resume --session <uri>");
