@@ -3,6 +3,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.Mcp;
+using YamlDotNet.Core;
 
 namespace Patchouli.Infrastructure.Mcp;
 
@@ -193,6 +194,10 @@ public static class DocumentPageMapYamlCodec
         catch (FormatException ex)
         {
             return Failure(ex.Message);
+        }
+        catch (YamlException ex)
+        {
+            return Failure($"Invalid map YAML syntax: {ex.Message}");
         }
     }
 
