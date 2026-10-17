@@ -583,6 +583,7 @@
                           <MenuItem Header="页面内容" Command="{Binding ShowContentTabCommand}" />
                           <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
+                          <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
                         </MenuFlyout>
                       </Button.Flyout>
                       <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
@@ -679,6 +680,45 @@
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
                     </StackPanel>
+                  </StackPanel>
+                </ScrollViewer>
+                <!-- Tab: chapters (chapter structure + printed page numbers from the page map) -->
+                <ScrollViewer IsVisible="{Binding IsChaptersTabActive}" Margin="16,8">
+                  <StackPanel>
+                    <TextBlock Text="{Binding ChapterMapStatusText}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding !HasChapterMap}" />
+                    <TextBlock Text="{Binding ChapterMapStatusText}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding HasChapterMap}" />
+                    <ItemsControl ItemsSource="{Binding ChapterNodes}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="vm:ChapterTreeNodeViewModel">
+                          <Grid ColumnDefinitions="Auto,*" IsVisible="{Binding IsVisible}"
+                                Margin="{Binding Indent}">
+                            <ToggleButton Content="{Binding ExpanderGlyph}"
+                                          IsChecked="{Binding IsExpanded, Mode=TwoWay}"
+                                          IsVisible="{Binding HasChildren}"
+                                          Background="Transparent" BorderThickness="0" Padding="4,2"
+                                          VerticalAlignment="Top"
+                                          ToolTip.Tip="展开/折叠子章节" />
+                            <Button Grid.Column="1" Command="{Binding NavigateCommand}"
+                                    Background="Transparent" BorderThickness="0" Padding="6,4"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                              <StackPanel>
+                                <TextBlock Text="{Binding Title}" FontSize="13" TextWrapping="Wrap"
+                                           FontWeight="{Binding TitleFontWeight}" />
+                                <TextBlock Text="{Binding PositionText}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                <TextBlock Text="{Binding DiagnosticText}" FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                           IsVisible="{Binding HasDiagnostics}" />
+                              </StackPanel>
+                            </Button>
+                          </Grid>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                   </StackPanel>
                 </ScrollViewer>
               </Grid>
