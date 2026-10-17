@@ -249,9 +249,11 @@ public sealed class PageImageViewService : IPageImageViewService
         }
 
         byte[] png;
+        int outWidth;
+        int outHeight;
         try
         {
-            png = CropLeaseToPng(lease, rect);
+            (png, outWidth, outHeight) = CropLeaseToPng(lease, rect, request.MaxEdge);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.page-image-view", "crop"))
@@ -274,15 +276,33 @@ public sealed class PageImageViewService : IPageImageViewService
             canonicalUri,
             region.ViewType,
             "image/png",
-            rect.Width,
-            rect.Height,
+            outWidth,
+            outHeight,
             cropRange,
             0,
             usedRevision.ToString(),
             png));
     }
 
-    private static byte[] CropLeaseToPng(PdfPagePixelBufferLease lease, RegionPixelRect rect)
+    /// <summary>
+    /// P2-7: computes the output dimensions after enforcing max_edge. Exposed for testing.
+    /// </summary>
+    public static (int Width, int Height) ComputeOutputSize(int width, int height, int maxEdge)
+    {
+        int longest = Math.Max(width, height);
+        if (longest <= maxEdge || maxEdge <= 0)
+        {
+            return (width, height);
+        }
+
+        double scale = (double)maxEdge / longest;
+        return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
+    }
+
+    private static (byte[] Png, int Width, int Height) CropLeaseToPng(
+        PdfPagePixelBufferLease lease,
+        RegionPixelRect rect,
+        int maxEdge)
     {
         using SKBitmap source = new(lease.WidthPixels, lease.HeightPixels, SKColorType.Bgra8888, SKAlphaType.Premul);
         source.SetPixels(lease.PixelAddress);
@@ -295,9 +315,39 @@ public sealed class PageImageViewService : IPageImageViewService
             canvas.Flush();
         }
 
-        using SKImage image = SKImage.FromBitmap(crop);
-        using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
-        return data.ToArray();
+        // P2-7: max_edge is a hard cap on the output's longest edge. The render DPI
+        // has a 72 floor, so a small max_edge on a large page would otherwise exceed it.
+        (int scaledWidth, int scaledHeight) = ComputeOutputSize(crop.Width, crop.Height, maxEdge);
+        SKBitmap final = crop;
+        if (scaledWidth != crop.Width || scaledHeight != crop.Height)
+        {
+            SKBitmap scaled = new(scaledWidth, scaledHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+            using (SKCanvas canvas = new(scaled))
+            using (SKPaint paint = new() { FilterQuality = SKFilterQuality.High })
+            {
+                canvas.DrawBitmap(crop,
+                    SKRect.Create(0, 0, crop.Width, crop.Height),
+                    SKRect.Create(0, 0, scaledWidth, scaledHeight),
+                    paint);
+                canvas.Flush();
+            }
+
+            final = scaled;
+        }
+
+        try
+        {
+            using SKImage image = SKImage.FromBitmap(final);
+            using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
+            return (data.ToArray(), final.Width, final.Height);
+        }
+        finally
+        {
+            if (!ReferenceEquals(final, crop))
+            {
+                final.Dispose();
+            }
+        }
     }
 
     private static NormalizedBBox PixelRectToNormalized(RegionPixelRect rect, int imageWidth, int imageHeight)

@@ -610,7 +610,7 @@ public static class AgentChatHistoryBuilder
             // base64 text.
             messages.Add(entry is HistoryEntry.ToolResult tool
                 ? ToToolResultMessage(context, tool)
-                : ToModelMessage(entry));
+                : ToModelMessage(entry, context));
         }
 
         return messages.Count == 0 ? history : history.Append(messages);
@@ -654,6 +654,45 @@ public static class AgentChatHistoryBuilder
         return new LlmChatMessage(LlmChatRole.User, parts);
     }
 
+    /// <summary>
+    /// P1-3: maps a native tool result to its chat message. The LlmToolResultPart is
+    /// always present to maintain provider-required tool-call/result ordering. If the
+    /// payload carries session media image references (the view tool), LlmImageParts
+    /// are appended so the images become real vision input — not just text.
+    /// </summary>
+    private static LlmChatMessage ToNativeToolResultMessage(
+        AgentEffectContext context,
+        HistoryEntry.NativeToolResult result)
+    {
+        List<LlmMessagePart> parts =
+        [
+            new LlmMessagePart.LlmToolResultPart(result.callId, result.name, result.payload, result.isError)
+        ];
+
+        if (context.ResolveSessionImage is not null &&
+            AgentToolImagePayload.TryUnwrap(result.payload, out string _,
+                out IReadOnlyList<AgentSessionImageRef> images))
+        {
+            foreach (AgentSessionImageRef image in images)
+            {
+                AgentSessionImageData? data = context.ResolveSessionImage(image.MediaId);
+                if (data is null)
+                {
+                    parts.Add(new LlmMessagePart.LlmTextPart(
+                        $"[image {image.MediaId} ({image.ResourceUri}, revision {image.Revision}) is unavailable: session media missing]"));
+                    continue;
+                }
+
+                parts.Add(new LlmMessagePart.LlmImagePart(
+                    "data:" + data.Ref.MimeType + ";base64," + Convert.ToBase64String(data.PngBytes),
+                    data.Ref.MimeType,
+                    "auto"));
+            }
+        }
+
+        return new LlmChatMessage(LlmChatRole.Tool, parts);
+    }
+
     /// <summary>Maps one core history entry to its chat message.</summary>
     public static LlmChatMessage ToMessage(HistoryEntry entry,
         int toolResultMaxCharacters = LlmAppSettings.DefaultToolResultMaxCharacters)
@@ -662,7 +701,7 @@ public static class AgentChatHistoryBuilder
         return ToModelMessage(AgentToolPayloadFolder.Project(entry, toolResultMaxCharacters));
     }
 
-    private static LlmChatMessage ToModelMessage(HistoryEntry entry)
+    private static LlmChatMessage ToModelMessage(HistoryEntry entry, AgentEffectContext? context = null)
     {
         return entry switch
         {
@@ -675,8 +714,10 @@ public static class AgentChatHistoryBuilder
                     .Concat(assistant.reply.ToolCalls.Select(call =>
                         new LlmMessagePart.LlmToolCallPart(call.Id, call.Name, call.Arguments, call.Metadata)))
                     .ToArray()),
-            HistoryEntry.NativeToolResult result => new LlmChatMessage(LlmChatRole.Tool,
-                [new LlmMessagePart.LlmToolResultPart(result.callId, result.name, result.payload, result.isError)]),
+            HistoryEntry.NativeToolResult result => context is not null
+                ? ToNativeToolResultMessage(context, result)
+                : new LlmChatMessage(LlmChatRole.Tool,
+                    [new LlmMessagePart.LlmToolResultPart(result.callId, result.name, result.payload, result.isError)]),
             HistoryEntry.ToolResult result =>
                 LlmChatMessage.Tool(Content(result.name + ": " + result.payload)),
             _ => throw new NotSupportedException($"Unsupported history entry '{entry.Tag}'.")

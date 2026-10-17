@@ -37,9 +37,10 @@ public static class MoveTargetNamer
         ArgumentNullException.ThrowIfNull(probeTarget);
 
         string sourceDirectory = Path.GetDirectoryName(sourceFullPath) ?? string.Empty;
-        if (PathEquals(sourceDirectory, rootFullPath))
+        if (IsInsideOrEquals(sourceDirectory, rootFullPath))
         {
-            // Already inside the target root: keep position, never re-move.
+            // Already inside the target root (including subdirectories): keep position,
+            // never re-move or flatten into the root directory.
             return new MoveTargetPlan(sourceFullPath, false);
         }
 
@@ -75,6 +76,25 @@ public static class MoveTargetNamer
         return OperatingSystem.IsWindows()
             ? string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase)
             : string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// P2-6: true if <paramref name="candidate"/> is the root itself or inside it.
+    /// Uses a trailing separator boundary so "/data/root2" does not match "/data/root".
+    /// </summary>
+    private static bool IsInsideOrEquals(string candidate, string root)
+    {
+        string normalizedCandidate = Normalize(candidate);
+        string normalizedRoot = Normalize(root);
+        if (PathEquals(normalizedCandidate, normalizedRoot))
+        {
+            return true;
+        }
+
+        string prefix = normalizedRoot + Path.DirectorySeparatorChar;
+        return OperatingSystem.IsWindows()
+            ? normalizedCandidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            : normalizedCandidate.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     private static string Normalize(string path)

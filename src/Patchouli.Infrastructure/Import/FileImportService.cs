@@ -101,9 +101,23 @@ public sealed class FileImportService : IFileImportService
 
         // CSL follows style-install rules (read + install); it is never moved to file
         // search roots.
-        Result<FileImportResult> ingested = kind == LocalImportKind.Pdf
-            ? await ImportPdfCoreAsync(importPath, wasMoved, cancellationToken)
-            : await InstallCslCoreAsync(importPath, cancellationToken);
+        Result<FileImportResult> ingested;
+        try
+        {
+            ingested = kind == LocalImportKind.Pdf
+                ? await ImportPdfCoreAsync(request.Trigger, importPath, wasMoved, cancellationToken)
+                : await InstallCslCoreAsync(importPath, cancellationToken);
+        }
+        catch (OperationCanceledException) when (wasMoved)
+        {
+            // P1-4: the file was already moved but the import was cancelled (e.g. during
+            // fingerprint computation). Restore with a non-cancelled token so cleanup is
+            // not itself cancelled, and record the outcome durably.
+            await RestoreAfterCancelAsync(file.FullPath, importPath, request.Trigger, kind,
+                CancellationToken.None);
+            throw;
+        }
+
         if (ingested.IsFailure && wasMoved)
         {
             return await RecoverAfterFailedImportAsync(file.FullPath, importPath, request.Trigger, kind,
@@ -111,6 +125,34 @@ public sealed class FileImportService : IFileImportService
         }
 
         return ingested;
+    }
+
+    /// <summary>
+    /// P1-4: restores a moved file after the import was cancelled. Uses a non-cancelled
+    /// token for cleanup; records whether the restore succeeded so no file is silently lost.
+    /// </summary>
+    private async Task RestoreAfterCancelAsync(
+        string originalPath,
+        string movedPath,
+        FileImportTrigger trigger,
+        LocalImportKind kind,
+        CancellationToken cleanupToken)
+    {
+        Result restore = await MoveFileAsync(movedPath, originalPath, cleanupToken);
+        if (restore.IsSuccess)
+        {
+            await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, originalPath,
+                FileImportRecoveryStatuses.ImportFailedRestored,
+                "Import was cancelled after the file was moved; the file was restored to its original position.",
+                cleanupToken);
+            return;
+        }
+
+        await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, null,
+            FileImportRecoveryStatuses.ImportFailedRestoreFailed,
+            "Import was cancelled after the file was moved; restoring the file to its original " +
+            $"position failed: {restore.ErrorMessage}. The file was kept at its moved location.",
+            cleanupToken);
     }
 
     private sealed record ValidatedImportFile(string FullPath, string FileName, byte[] LeadingBytes);
@@ -317,6 +359,18 @@ public sealed class FileImportService : IFileImportService
                 return Result<MoveOutcome>.Success(new MoveOutcome(planned.TargetPath, true));
             }
 
+            if (move.ErrorCode == FileImportErrorCodes.MovePartialFailure)
+            {
+                // Cross-volume copy succeeded but source deletion failed. The target
+                // exists because WE created it — not a concurrent conflict. Do not
+                // retry; record the partial failure durably.
+                await RecordRecoveryAsync(trigger, LocalImportKind.Pdf, file.FullPath, planned.TargetPath, null,
+                    FileImportRecoveryStatuses.MoveFailed,
+                    $"Move to the first file search root partially failed: {move.ErrorMessage}",
+                    cancellationToken);
+                return Result<MoveOutcome>.Failure(move.ErrorCode!, move.ErrorMessage!);
+            }
+
             if (move.ErrorCode == FileImportErrorCodes.MoveFailed && File.Exists(planned.TargetPath))
             {
                 // A concurrent import won the planned name; replan deterministically.
@@ -459,8 +513,11 @@ public sealed class FileImportService : IFileImportService
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 // The copy is complete and verified; the source could not be removed.
-                // Never claim success, never lose track of either copy.
-                return Result.Failure(FileImportErrorCodes.MoveFailed,
+                // Never claim success, never lose track of either copy. This is a
+                // partial failure, NOT a concurrent naming conflict — the target was
+                // created by this move, so the caller must not retry as if someone
+                // else won the name.
+                return Result.Failure(FileImportErrorCodes.MovePartialFailure,
                     "The file was copied to the search root but the source could not be removed; " +
                     "the file now exists at both locations.");
             }
@@ -492,6 +549,7 @@ public sealed class FileImportService : IFileImportService
     }
 
     private async Task<Result<FileImportResult>> ImportPdfCoreAsync(
+        FileImportTrigger trigger,
         string path,
         bool wasMoved,
         CancellationToken cancellationToken)
@@ -502,7 +560,7 @@ public sealed class FileImportService : IFileImportService
         {
             if (!wasMoved)
             {
-                await RecordRecoveryAsync(trigger, kind, path, null, path,
+                await RecordRecoveryAsync(trigger, LocalImportKind.Pdf, path, null, path,
                     FileImportRecoveryStatuses.ImportFailedNoMove,
                     $"Import failed ({FileImportErrorCodes.ImportFailed}); the file was not moved and remains at its original position.",
                     cancellationToken);

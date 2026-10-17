@@ -92,6 +92,7 @@ public static class FileImportErrorCodes
     public const string NoSearchRoot = "no_file_search_root";
     public const string SearchRootUnavailable = "search_root_unavailable";
     public const string MoveFailed = "file_move_failed";
+    public const string MovePartialFailure = "file_move_partial_failure";
     public const string ImportFailed = "import_failed";
     public const string RecoveryNeeded = "import_recovery_needed";
     public const string RecoveryFailed = "import_recovery_failed";
