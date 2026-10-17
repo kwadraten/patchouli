@@ -561,6 +561,17 @@ public sealed class RuntimeHostLease : IAsyncDisposable
     public long? ProcessStartTimeProcTicks { get; }
     public string? BootId { get; }
 
+    internal void ValidateOwnership(string databasePath)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        string canonicalPath = RuntimeHostCoordinator.CanonicalizeDatabasePath(databasePath);
+        if (!string.Equals(DatabasePath, canonicalPath,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The runtime-host lease belongs to a different database.");
+        }
+    }
+
     public async Task<RuntimeHostDiscoveryRecord> PublishAsync(
         string libraryId,
         string endpoint,

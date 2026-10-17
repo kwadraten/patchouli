@@ -1236,7 +1236,22 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         return RunPageEditOcrAsync(false);
     }
 
-    private async Task RunPageEditOcrAsync(bool requireLogicalPages)
+    private HostServices? _editServices;
+    private HostServices? _documentServices;
+    private CancellationTokenSource _workspaceCancellation = new();
+    private Task? _pageEditOcrTask;
+
+    private Task RunPageEditOcrAsync(bool requireLogicalPages)
+    {
+        if (_pageEditOcrTask is { IsCompleted: false })
+        {
+            return _pageEditOcrTask;
+        }
+
+        return _pageEditOcrTask = RunPageEditOcrCoreAsync(requireLogicalPages);
+    }
+
+    private async Task RunPageEditOcrCoreAsync(bool requireLogicalPages)
     {
         if (!IsEditMode || EditSessionId is not { } sessionId || _draftRevisionId is null || _currentPageId is null)
         {
@@ -1260,9 +1275,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             new ModalOperationOptions("本页 OCR", "正在识别当前页面草稿...", true),
             async context => await Dispatcher.UIThread.InvokeAsync(async () =>
             {
-                HostServices services = await _main.ServicesAsync();
+                HostServices services = _editServices ?? await _main.ServicesAsync();
+                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    context.CancellationToken, _workspaceCancellation.Token);
                 Result<PhysicalPageOcrResult> result = await services.LogicalPageOcr.RunPageEditAsync(
-                    presetId.Value, sessionId, context.CancellationToken);
+                    presetId.Value, sessionId, linked.Token);
                 if (result.IsFailure)
                 {
                     Status = $"本页 OCR 失败：{result.ErrorMessage}";
@@ -1841,9 +1858,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public void Clear()
     {
         _prefetchSubject.OnNext(default);
-        ReleaseDocumentSessionAsync().Observe(nameof(PdfWorkspaceViewModel), nameof(ReleaseDocumentSessionAsync));
         ExitBookReading();
-        PageEditSessionId? sessionId = EditSessionId;
         Image?.Dispose();
         Image = null;
         PageIndex = 0;
@@ -1871,6 +1886,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _currentRevisionId = null;
         _draftRevisionId = null;
         EditSessionId = null;
+        _editServices = null;
         _loadedBoxes = [];
         _collapsedBoxIds.Clear();
         ClearSplit();
@@ -1878,11 +1894,40 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ClearLocalOcrCandidate();
         ClearSourceValidation();
         Status = "选择题录后可预览 PDF。";
-        if (sessionId is not null)
+    }
+
+    public async Task<bool> ClearAsync()
+    {
+        await StopAsync();
+        if (!await DiscardDraftAsync())
         {
-            DiscardClearedDraftAsync(sessionId.Value)
-                .Observe(nameof(PdfWorkspaceViewModel), nameof(DiscardClearedDraftAsync));
+            _workspaceCancellation.Dispose();
+            _workspaceCancellation = new CancellationTokenSource();
+            return false;
         }
+
+        Clear();
+        return true;
+    }
+
+    // Shutdown leaves manual drafts for the next exclusive Host's startup recovery.
+    public async Task StopAsync()
+    {
+        _workspaceCancellation.Cancel();
+        _prefetchSubject.OnNext(default);
+        ExitBookReading();
+        if (_pageEditOcrTask is not null)
+        {
+            try
+            {
+                await _pageEditOcrTask;
+            }
+            catch (OperationCanceledException) when (_workspaceCancellation.IsCancellationRequested)
+            {
+            }
+        }
+
+        await ReleaseDocumentSessionAsync();
     }
 
     protected override void Dispose(bool disposing)
@@ -1892,6 +1937,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             Clear();
             _prefetchSubject.Dispose();
             _bookReadingSubject.Dispose();
+            _workspaceCancellation.Cancel();
+            _workspaceCancellation.Dispose();
             _bookReadingInitialWindowPending = false;
         }
 
@@ -2012,6 +2059,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             HostServices services = await _main.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+            _documentServices = services;
             FileAssetId? fileAssetId = await ResolveFileAssetIdAsync(services, documentInstanceId);
             if (fileAssetId is null)
             {
@@ -2244,19 +2292,31 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             new PixelSize(raster.WidthPixels, raster.HeightPixels), new Vector(96, 96), raster.Stride);
     }
 
-    private async Task DiscardClearedDraftAsync(PageEditSessionId sessionId)
+    private async Task<bool> DiscardDraftAsync()
     {
+        if (EditSessionId is not { } sessionId)
+        {
+            return true;
+        }
+
         try
         {
-            Result discarded = await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(sessionId);
+            HostServices services = _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
+            Result discarded = await services.DocumentTrees.DiscardPageEditAsync(sessionId);
             if (discarded.IsFailure)
             {
+                Status = $"放弃页面草稿失败：{discarded.ErrorMessage}";
                 _main.ReportError($"放弃页面草稿失败：{discarded.ErrorMessage}");
+                return false;
             }
+
+            return true;
         }
         catch (Exception ex)
         {
             _main.ReportError($"放弃页面草稿失败：{ex.Message}");
+            Status = $"放弃页面草稿失败：{ex.Message}";
+            return false;
         }
     }
 
@@ -2269,8 +2329,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            await (await _main.ServicesAsync()).PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(Item.DocumentInstanceId));
+            if (_documentServices is { } services)
+            {
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(Item.DocumentInstanceId));
+            }
         }
         catch (Exception ex)
         {
@@ -2724,6 +2787,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         Result<PageEditSession> session = await services.DocumentTrees.BeginPageEditAsync(docId, _currentPageId.Value);
         if (session.IsSuccess)
         {
+            _editServices = services;
             EditSessionId = session.Value.SessionId;
             _draftRevisionId = session.Value.DraftRevisionId;
             IsEditMode = true;
@@ -2744,13 +2808,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        HostServices services = await _main.ServicesAsync();
+        HostServices services = _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
         Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(EditSessionId.Value);
         if (res.IsSuccess)
         {
             IsEditMode = false;
             _draftRevisionId = null;
             EditSessionId = null;
+            _editServices = null;
             ClearPendingBox();
             ClearSplit();
             ClearLocalOcrCandidate();
@@ -2764,20 +2829,15 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task CancelEditModeAsync()
     {
-        if (EditSessionId is not null)
+        if (!await DiscardDraftAsync())
         {
-            Result discarded =
-                await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(EditSessionId.Value);
-            if (discarded.IsFailure)
-            {
-                Status = $"放弃草稿失败：{discarded.ErrorMessage}";
-                return;
-            }
+            return;
         }
 
         IsEditMode = false;
         _draftRevisionId = null;
         EditSessionId = null;
+        _editServices = null;
         ClearPendingBox();
         ClearSplit();
         ClearLocalOcrCandidate();

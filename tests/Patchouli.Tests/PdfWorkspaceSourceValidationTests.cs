@@ -1,4 +1,6 @@
 using Avalonia;
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -29,6 +31,121 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class PdfWorkspaceSourceValidationTests : IDisposable
 {
+    [Theory]
+    [InlineData("save")]
+    [InlineData("discard")]
+    [InlineData("switch")]
+    [InlineData("shutdown")]
+    public async Task Editing_lifecycle_releases_only_the_expected_sessions(string action)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            using MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-lifecycle"));
+            await OpenImportedItemAsync(main, CreatePdfPath());
+            HostServices services = await main.ServicesAsync();
+            LibraryItemViewModel item = main.Shell.Items.Single();
+            await main.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)main.ActiveTab!.Content;
+            await workspace.EnterEditModeCommand.ExecuteAsync();
+            PageEditSession edit = (await services.DocumentTrees.GetPageEditAsync(workspace.EditSessionId!.Value))
+                .Value;
+            switch (action)
+            {
+                case "save":
+                    await workspace.SaveAndExitCommand.ExecuteAsync();
+                    break;
+                case "discard":
+                    await workspace.CancelEditModeCommand.ExecuteAsync();
+                    break;
+                case "switch":
+                    await main.BeginLibrarySwitchAsync();
+                    main.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.PdfWorkspace);
+                    break;
+                case "shutdown":
+                    PdfWorkspaceViewModel second = new(main, item);
+                    WorkspaceTabViewModel secondTab = main.Workspace.OpenOrActivate(WorkspaceTabKind.PdfWorkspace,
+                        "second-page", "Second page", "FolderOpen", true, () => second);
+                    secondTab.Content.Should().BeSameAs(second);
+                    await second.LoadAsync();
+                    await second.NextPageCommand.ExecuteAsync();
+                    await second.EnterEditModeCommand.ExecuteAsync();
+                    PageEditSessionId secondEdit = second.EditSessionId!.Value;
+                    await main.ShutdownAsync();
+                    (await services.DocumentTrees.GetPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+                    (await services.DocumentTrees.GetPageEditAsync(secondEdit)).IsSuccess.Should().BeTrue();
+                    return 0;
+            }
+
+            // These assertions deliberately run without startup recovery.
+            (await services.DocumentTrees.GetPageEditAsync(edit.SessionId)).IsFailure.Should().BeTrue();
+            (await services.DocumentTrees.BeginPageEditAsync(edit.DocumentInstanceId, edit.PageId)).IsSuccess.Should()
+                .BeTrue();
+            await main.ShutdownAsync();
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Closing_editing_tab_waits_for_discard_and_keeps_session_on_failure(bool fail)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            using MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-close"));
+            await OpenImportedItemAsync(main, CreatePdfPath());
+            HostServices services = await main.ServicesAsync();
+            await main.ShowReadingAsync(main.Shell.Items.Single());
+            WorkspaceTabViewModel tab = main.ActiveTab!;
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)tab.Content;
+            await workspace.EnterEditModeCommand.ExecuteAsync();
+            PageEditSession edit = (await services.DocumentTrees.GetPageEditAsync(workspace.EditSessionId!.Value))
+                .Value;
+            if (fail)
+            {
+                await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
+                await connection.OpenAsync();
+                await connection.ExecuteAsync("""
+                                              create trigger fail_close before delete on document_tree_revisions
+                                              when old.status = 'working'
+                                              begin select raise(abort, 'injected failure'); end;
+                                              """);
+            }
+
+            Task<bool> closing;
+            using (await services.ConnectionFactory.EnterWriteAsync())
+            {
+                closing = main.Workspace.CloseAsync(tab.TabId);
+                closing.IsCompleted.Should().BeFalse("closing must await the database write lease");
+                main.Layout.Tabs.Should().Contain(tab);
+                workspace.EditSessionId.Should().Be(edit.SessionId);
+            }
+
+            bool closed = await closing;
+            closed.Should().Be(!fail);
+            if (fail)
+            {
+                main.Layout.Tabs.Should().Contain(tab);
+                workspace.EditSessionId.Should().Be(edit.SessionId);
+                workspace.IsEditMode.Should().BeTrue();
+                (await services.DocumentTrees.GetPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+                await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
+                await connection.OpenAsync();
+                await connection.ExecuteAsync("drop trigger fail_close;");
+                (await main.Workspace.CloseAsync(tab.TabId)).Should().BeTrue();
+            }
+
+            // Check before any new Host starts, so recovery cannot hide a faulty close.
+            (await services.DocumentTrees.GetPageEditAsync(edit.SessionId)).IsFailure.Should().BeTrue();
+            (await services.DocumentTrees.BeginPageEditAsync(edit.DocumentInstanceId, edit.PageId)).IsSuccess.Should()
+                .BeTrue();
+            await main.ShutdownAsync();
+            return 0;
+        }, CancellationToken.None);
+    }
+
     private readonly TemporaryAppSettingsFile _settings = new();
 
     public void Dispose()

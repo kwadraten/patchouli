@@ -51,6 +51,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
 using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Workflows;
 using Patchouli.UI;
 using Patchouli.Workflows;
@@ -527,10 +528,12 @@ public sealed class HostServices
     public static async Task<HostServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
         string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
-        IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null)
+        IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null,
+        RuntimeHostLease? runtimeHostLease = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
+        runtimeHostLease?.ValidateOwnership(path);
         settingsPath ??= PatchouliAppSettings.ResolvePath();
         settings ??= PatchouliAppSettings.Load(settingsPath);
         startupProgress?.Report(StartupStage.ValidatingPaths);
@@ -556,6 +559,19 @@ public sealed class HostServices
         {
             startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+            if (runtimeHostLease is not null)
+            {
+                try
+                {
+                    await PageEditSessionRecovery.RecoverAsync(services.ConnectionFactory, runtimeHostLease, path);
+                }
+                catch
+                {
+                    await services.ShutdownAsync();
+                    throw;
+                }
+            }
+
             await services.HostWorkflows.Configuration.MigrateLegacyAsync(CancellationToken.None);
 
             Result ftsCache = await services.SearchIndex.EnsureCacheAsync();

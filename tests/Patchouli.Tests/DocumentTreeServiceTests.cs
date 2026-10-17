@@ -9,11 +9,82 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Host.Lifecycle;
+using Patchouli.Host.Composition;
+using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
 public sealed class DocumentTreeServiceTests
 {
+    [Theory]
+    [InlineData(RuntimeHostKind.Desktop)]
+    [InlineData(RuntimeHostKind.Headless)]
+    public async Task New_owned_host_recovers_manual_drafts_and_preserves_other_revisions(RuntimeHostKind kind)
+    {
+        await using Context context = await Context.CreateAsync();
+        using TemporaryAppSettingsFile settings = new();
+        string path = context.DatabaseConnectionFactory.DatabasePath;
+        DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(
+            context.DatabaseConnectionFactory, context.Clock, context.DocumentId, context.PageId, "committed");
+        PageEditSession saved = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        (await context.Trees.CommitPageEditAsync(saved.SessionId)).IsSuccess.Should().BeTrue();
+        PageEditSession draft = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentTreeRevision ocr = (await context.Trees.BeginWorkingRevisionAsync(context.DocumentId, context.PageId,
+            [], DocumentTreeRevisionSource.Import)).Value;
+
+        // Shutdown and unowned service construction do not discard manual drafts.
+        HostServices unowned = await HostServices.CreateAsync(path, settingsPath: settings.Path);
+        await unowned.ShutdownAsync();
+        (await context.Trees.GetPageEditAsync(draft.SessionId)).IsSuccess.Should().BeTrue();
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(path, kind)!;
+        HostServices owned = await HostServices.CreateAsync(path, settingsPath: settings.Path, runtimeHostLease: lease);
+        try
+        {
+            (await owned.DocumentTrees.GetPageEditAsync(draft.SessionId)).IsFailure.Should().BeTrue();
+            (await owned.DocumentTrees.ListBoxesAsync(draft.DraftRevisionId)).IsFailure.Should().BeTrue();
+            (await owned.DocumentTrees.ListBoxesAsync(committed.TreeRevisionId)).Value.Should().ContainSingle();
+            (await owned.DocumentTrees.ListBoxesAsync(ocr.TreeRevisionId)).IsSuccess.Should().BeTrue();
+            (await owned.DocumentTrees.GetCurrentRevisionAsync(context.DocumentId, context.PageId)).Value
+                .TreeRevisionId.Should().Be(saved.DraftRevisionId);
+            (await owned.DocumentTrees.BeginPageEditAsync(context.DocumentId, context.PageId)).IsSuccess.Should()
+                .BeTrue();
+        }
+        finally
+        {
+            await owned.ShutdownAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Startup_recovery_requires_a_live_lease_for_the_same_database_and_rolls_back_on_failure()
+    {
+        await using Context context = await Context.CreateAsync();
+        string path = context.DatabaseConnectionFactory.DatabasePath;
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        await context.Editor.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(null, null,
+            DocumentBoxType.Text, null, null, new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("draft")));
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(path, RuntimeHostKind.Desktop)!;
+        Task wrongDatabase = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory,
+            lease, path + ".other");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => wrongDatabase);
+
+        await using SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+                                      create trigger fail_draft_delete before delete on document_tree_revisions
+                                      when old.status = 'working'
+                                      begin select raise(abort, 'injected failure'); end;
+                                      """);
+        Task failing = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory, lease, path);
+        await Assert.ThrowsAsync<SqliteException>(() => failing);
+        (await context.Trees.GetPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should().ContainSingle();
+        await lease.DisposeAsync();
+        Task disposed = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory, lease, path);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => disposed);
+    }
+
     [Fact]
     public async Task Invalid_page_ocr_replacement_rolls_back_the_draft()
     {
