@@ -16,6 +16,7 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
+using Patchouli.Core.View;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
@@ -327,6 +328,8 @@ public sealed class HostServices
             new FileFingerprintService(),
             new FileImportRecoveryStore(ConnectionFactory),
             Clock);
+        // Issue #11: source-image reading for the view tool and the built-in agent chain.
+        PageImageView = new PageImageViewService(Pages, DocumentTrees, PageRenders);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
@@ -428,6 +431,7 @@ public sealed class HostServices
     public IFileHandlingBehaviorSettingsService FileHandlingBehaviorSettings { get; }
     public ICslLocalFileInstallService CslLocalInstall { get; }
     public IFileImportService FileImport { get; }
+    public IPageImageViewService PageImageView { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
 
