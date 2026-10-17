@@ -219,7 +219,7 @@ public static class AgentSessionMediaStore
 /// Issue #11: the payload envelope for a tool result that carries session media images.
 /// The recorded event payload stays a plain string (no F# union changes): when a tool
 /// returns images, the interpreter wraps the original payload as
-/// <c>{"result": &lt;original&gt;, "images": [{media_id, mime_type, ...}]}</c>.
+/// <c>{"result": &lt;original&gt;, "patchouli:media-images": [{media_id, mime_type, ...}]}</c>.
 /// The model adapter unwraps it, keeps the original text, and appends one
 /// <c>LlmImagePart</c> data-URI part per image — the image bytes travel to the provider as
 /// real vision input, never as a path or base64 text. Media ids survive context
@@ -229,7 +229,7 @@ public static class AgentSessionMediaStore
 public static class AgentToolImagePayload
 {
     private const string ResultProperty = "result";
-    private const string ImagesProperty = "images";
+    private const string ImagesProperty = "patchouli:media-images";
 
     /// <summary>Wraps the original payload with its stored image references.</summary>
     public static string Wrap(string payload, IReadOnlyList<AgentSessionImageRef> images)
