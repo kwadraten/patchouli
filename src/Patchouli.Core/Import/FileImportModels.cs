@@ -1,3 +1,5 @@
+using Patchouli.Core.Results;
+
 namespace Patchouli.Core.Import;
 
 /// <summary>
@@ -29,10 +31,14 @@ public enum LocalImportKind
 /// <param name="LocalPath">Absolute or relative host-local file path. URLs are rejected.</param>
 /// <param name="Kind">Explicit kind ("pdf" or "csl"); null lets the service content-sniff.</param>
 /// <param name="Trigger">Which action entry picked the file handling behavior.</param>
+/// <param name="AuthorizeKindAsync">Optional kind-specific authorization gate. When set it runs
+/// after kind resolution (which needs only read-only validation) and before any file move or
+/// ingestion, so callers cannot reach mutations without the kind's permission.</param>
 public sealed record FileImportRequest(
     string LocalPath,
     string? Kind,
-    FileImportTrigger Trigger);
+    FileImportTrigger Trigger,
+    Func<LocalImportKind, Task<Result>>? AuthorizeKindAsync = null);
 
 /// <summary>One non-fatal import note surfaced through unified result reporting.</summary>
 public sealed record FileImportIssue(string Code, string Message);

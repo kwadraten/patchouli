@@ -12,7 +12,21 @@ namespace Patchouli.Host.Agent;
 public sealed record AgentToolOutcome(bool Succeeded, string Payload, string? ErrorCode = null)
 {
     public IReadOnlyList<AgentSdkReceipt> Receipts { get; init; } = [];
+
+    /// <summary>
+    /// Issue #11: images returned by the tool (the <c>view</c> tool). The model adapter
+    /// layer must pass these to the provider as vision input — never degrade to a path
+    /// or base64 text. Empty for text-only tools.
+    /// </summary>
+    public IReadOnlyList<AgentImageResult> Images { get; init; } = [];
 }
+
+/// <summary>Issue #11: one image returned by a tool call, with its metadata.</summary>
+/// <param name="MetadataJson">The JSON text metadata envelope (canonical URI pinned to the
+/// actually-used revision, view type, MIME, actual width/height, crop range, image_index).</param>
+/// <param name="Base64Data">Raw base64 PNG bytes (no data-URL prefix).</param>
+/// <param name="MimeType">Always image/png in v1.</param>
+public sealed record AgentImageResult(string MetadataJson, string Base64Data, string MimeType);
 
 /// <summary>The outcome of one atomic whole-resource <c>put</c>.</summary>
 /// <param name = "Committed">True when the commit succeeded; false means it rolled back.</param>
@@ -89,6 +103,10 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
                 "cite" => FromCite(await _commands.CiteAsync(Deserialize<McpCiteRequest>(payload), cancellationToken)
                     .ConfigureAwait(false)),
                 "put" => await PutToolAsync(Deserialize<McpPutToolArguments>(payload), cancellationToken)
+                    .ConfigureAwait(false),
+                "add" => await AddToolAsync(Deserialize<McpAddToolArguments>(payload), cancellationToken)
+                    .ConfigureAwait(false),
+                "view" => await ViewToolAsync(Deserialize<McpViewToolArguments>(payload), cancellationToken)
                     .ConfigureAwait(false),
                 "send" => await SendToolAsync(document.RootElement, cancellationToken).ConfigureAwait(false),
                 _ => new AgentToolOutcome(false, $"Unsupported MCP tool '{name}'.", "TOOL_NOT_SUPPORTED")
@@ -203,6 +221,52 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
         return Render(result);
     }
 
+    private static AgentToolOutcome FromAdd(McpCommandResult<McpAddMeta, McpAddResult> result)
+    {
+        return Render(result);
+    }
+
+    private async Task<AgentToolOutcome> AddToolAsync(McpAddToolArguments request,
+        CancellationToken cancellationToken)
+    {
+        return FromAdd(await _commands.AddAsync(new McpAddRequest(request.Path, request.Kind), cancellationToken)
+            .ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Issue #11: routes the agent-facing <c>view</c> tool through the shared view command.
+    /// The text payload carries the metadata envelope; the PNG bytes travel in
+    /// <see cref="AgentToolOutcome.Images"/> so the model adapter can pass them as real
+    /// vision input instead of a path or base64 text.
+    /// </summary>
+    private async Task<AgentToolOutcome> ViewToolAsync(McpViewToolArguments request,
+        CancellationToken cancellationToken)
+    {
+        McpViewCommandResult result = await _commands
+            .ViewAsync(new McpViewRequest(request.Uri, request.Context, request.MaxEdge), cancellationToken)
+            .ConfigureAwait(false);
+        McpCommandResult<McpViewMeta, McpViewImageMetadata> command = result.Result;
+        if (command.Envelope is null)
+        {
+            string detail = command.Error?.ToTerminalLine() ?? "The view request failed.";
+            return new AgentToolOutcome(false, detail, command.Error?.Name);
+        }
+
+        string text = McpCommandService.RenderText(command.Envelope, "json");
+        if (!command.IsSuccess || result.PngBytes is null)
+        {
+            return new AgentToolOutcome(false, text, command.Error?.Name);
+        }
+
+        return new AgentToolOutcome(true, text)
+        {
+            Images =
+            [
+                new AgentImageResult(text, Convert.ToBase64String(result.PngBytes), "image/png")
+            ]
+        };
+    }
+
     private static AgentToolOutcome Render<TMeta, TEntry>(McpCommandResult<TMeta, TEntry> result)
     {
         if (result.Envelope is null)
@@ -241,4 +305,15 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
         [property: JsonPropertyName("box_id")] string BoxId,
         [property: JsonPropertyName("content")]
         string Content);
+
+    /// <summary>Arguments of the agent-facing MCP <c>add</c> tool.</summary>
+    private sealed record McpAddToolArguments(
+        [property: JsonPropertyName("path")] string Path,
+        [property: JsonPropertyName("kind")] string? Kind = null);
+
+    /// <summary>Arguments of the agent-facing MCP <c>view</c> tool.</summary>
+    private sealed record McpViewToolArguments(
+        [property: JsonPropertyName("uri")] string Uri,
+        [property: JsonPropertyName("context")] string? Context = null,
+        [property: JsonPropertyName("max_edge")] int? MaxEdge = null);
 }

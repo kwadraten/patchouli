@@ -74,6 +74,17 @@ public sealed class FileImportService : IFileImportService
             return Result<FileImportResult>.Failure(behaviorResult.ErrorCode!, behaviorResult.ErrorMessage!);
         }
 
+        // Authorization + config checks complete before any file move or ingestion. Path
+        // validation and content sniffing above are read-only; mutations start below.
+        if (request.AuthorizeKindAsync is not null)
+        {
+            Result authorized = await request.AuthorizeKindAsync(kind);
+            if (authorized.IsFailure)
+            {
+                return Result<FileImportResult>.Failure(authorized.ErrorCode!, authorized.ErrorMessage!);
+            }
+        }
+
         string importPath = file.FullPath;
         bool wasMoved = false;
         if (kind == LocalImportKind.Pdf && behaviorResult.Value == FileHandlingBehavior.MoveToFirstSearchRoot)
