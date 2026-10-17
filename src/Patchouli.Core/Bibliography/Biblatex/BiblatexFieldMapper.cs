@@ -106,7 +106,7 @@ public static class BiblatexFieldMapper
         string? number = MapNumber(entry, itemType);
         string? issue = MapIssue(entry, itemType);
         string? note = MapNote(entry);
-        string? language = FirstNonEmpty(Field(entry, "language"), Field(entry, "langid"));
+        string? language = ItemLanguage.Normalize(FirstNonEmpty(Field(entry, "language"), Field(entry, "langid")));
 
         return Result<BiblatexMappedItem>.Success(new BiblatexMappedItem(
             itemType,

@@ -95,6 +95,14 @@ _Avoid_: Book, PDF, file, attachment
 **ItemMetadata**:
 The persistent, editable bibliographic projection of an Item, produced through human, agent, document-derived, or identifier-derived description for retrieval, sorting, citation, deduplication, and browsing (ADR `0026`). It is derived epistemically from evidence but is not mechanically rebuildable: deleting it loses user knowledge such as normalized creators, CitationKeys, and Tags.
 _Avoid_: Rebuildable cache, derived data, materialized view, metadata assertion
+**Item language**:
+The optional source-language metadata for an Item. Recognized language names and ISO 639-2 aliases normalize to ISO 639-1; valid region/script subtags are preserved in normalized BCP 47 form. Empty language is null and unknown values remain available as entered. CSL rendering may choose a different output locale on a render copy, but does not rewrite the source-language metadata.
+_Avoid_: Output locale, translated language
+
+**CSL language locale mapping**:
+A device-local fallback preference from an Item's primary language to a CSL output locale. Matching bibliography locale selectors and their reachable macros take precedence. If no source-language branch matches, configured mappings are tried; default rules map `ja` and `ko` to `zh-CN`. Unmapped languages and unavailable mapping targets use the style's default layout, rather than forcing English or a special Chinese fallback. The saved/requested locale controls the root default for unqualified CSL terms and layouts. Rendering keeps the selected items in one processor invocation so whole-list ordering and citation behavior remain coherent.
+
+_Avoid_: Persisted item-language rewrite, per-item independent render
 
 **Tag**:
 A user-editable label attached to an Item for organization and filtering. Tags originate from the `keyword` field in metadata sources (e.g. CSL JSON, BibTeX), but are an extension that allows arbitrary user editing — they are not tied to the original metadata keyword after import. The Item model stores tags as a JSON string array in `tags_json`; `keyword` is NOT stored independently. When importing literature metadata, the `keyword` field should be ingested into tags rather than kept as a separate field.
