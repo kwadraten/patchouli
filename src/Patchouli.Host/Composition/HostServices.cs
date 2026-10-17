@@ -136,7 +136,8 @@ public sealed class HostServices
             settings.FileScanning.ExclusionPatterns);
         AppSettingsDeviceRootBindingStore rootBindings = new(settingsPath);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
-            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings);
+            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings,
+            revisions: LibraryRevisions);
         BiblatexHelper = new BiblatexHelperClient();
         BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents, activityTracker,
             LifetimeToken);

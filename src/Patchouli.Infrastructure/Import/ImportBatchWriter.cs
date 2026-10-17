@@ -303,36 +303,41 @@ public sealed class ImportBatchWriter
         SqliteConnection connection, DbTransaction transaction, FileImportOwner owner,
         FileAsset fileAsset, string normalizedPath, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        await connection.ExecuteAsync(new CommandDefinition(
-            """
-            update file_assets
-            set size_bytes = @SizeBytes, mtime_utc = @MtimeUtc, quick_hash = @QuickHash,
-                status = @Status, updated_at = @Now
-            where file_asset_id = @FileAssetId;
-            """,
-            new
-            {
-                owner.FileAssetId, fileAsset.SizeBytes,
-                MtimeUtc = fileAsset.MtimeUtc?.ToUniversalTime().ToString("O"),
-                fileAsset.QuickHash, Status = FileAssetStatus.Available, Now = FormatUtc(now)
-            }, transaction, cancellationToken: cancellationToken));
         FileAssetId fileAssetId = FileAssetId.Parse(owner.FileAssetId);
-        await FileAssetService.UpsertKnownLocationAsync(connection, transaction,
-            fileAssetId, normalizedPath, FileAssetStatus.Available, now);
-        if (_revisions is null)
+        bool changed = await VerifiedFileLocationWriter.RecordAsync(connection, transaction, fileAssetId,
+            new FileFingerprint(normalizedPath, Path.GetFileName(normalizedPath), fileAsset.SizeBytes,
+                fileAsset.MtimeUtc!.Value, fileAsset.QuickHash!, fileAsset.FullBlake3),
+            now, new FileFingerprintService(), cancellationToken);
+        if (!changed || _revisions is null)
         {
             return Result<LibraryChangeSet?>.Success(null);
         }
 
+        FileImpact[] impacts = (await connection.QueryAsync<FileImpact>(new CommandDefinition(
+                """
+                select d.item_id as ItemId, d.document_instance_id as DocumentInstanceId from document_instances d
+                where d.file_asset_id = @Id or exists (
+                    select 1 from known_file_locations k where k.file_asset_id = d.file_asset_id and k.path = @Path);
+                """,
+                new { Id = owner.FileAssetId, Path = normalizedPath }, transaction,
+                cancellationToken: cancellationToken)))
+            .ToArray();
         Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
             connection, transaction, LibraryChangeSet.Empty with
             {
-                ItemIds = [ItemId.Parse(owner.ItemId)],
-                DocumentInstanceIds = [DocumentInstanceId.Parse(owner.DocumentInstanceId)]
+                ItemIds = impacts.Select(impact => ItemId.Parse(impact.ItemId)).Distinct().ToArray(),
+                DocumentInstanceIds = impacts.Select(impact => DocumentInstanceId.Parse(impact.DocumentInstanceId))
+                    .ToArray()
             }, cancellationToken);
         return revision.IsSuccess
             ? Result<LibraryChangeSet?>.Success(revision.Value)
             : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private sealed class FileImpact
+    {
+        public string ItemId { get; init; } = "";
+        public string DocumentInstanceId { get; init; } = "";
     }
 
     private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(
@@ -346,13 +351,22 @@ public sealed class ImportBatchWriter
             return Result<LibraryChangeSet?>.Success(null);
         }
 
+        FileImpact[] impacts = (await connection.QueryAsync<FileImpact>(new CommandDefinition(
+            """
+            select d.item_id as ItemId, d.document_instance_id as DocumentInstanceId from document_instances d
+            where exists (select 1 from known_file_locations k
+                where k.file_asset_id = d.file_asset_id and k.path = @Path);
+            """, new { Path = batch.NormalizedFilePath }, transaction,
+            cancellationToken: cancellationToken))).ToArray();
         Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
             connection,
             transaction,
             LibraryChangeSet.Empty with
             {
-                ItemIds = [batch.Item.ItemId],
-                DocumentInstanceIds = [batch.DocumentInstance.DocumentInstanceId],
+                ItemIds = impacts.Select(impact => ItemId.Parse(impact.ItemId)).Append(batch.Item.ItemId).Distinct()
+                    .ToArray(),
+                DocumentInstanceIds = impacts.Select(impact => DocumentInstanceId.Parse(impact.DocumentInstanceId))
+                    .Append(batch.DocumentInstance.DocumentInstanceId).Distinct().ToArray(),
                 PageIds = batch.Pages.Select(page => page.PageId).ToArray()
             },
             cancellationToken);

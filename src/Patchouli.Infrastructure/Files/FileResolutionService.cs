@@ -22,6 +22,7 @@ public sealed class FileResolutionService : IFileResolutionService
     private readonly IBlockingOperationService? _blockingOperations;
     private readonly IFileSearchRootAccess _rootAccess;
     private readonly IDeviceRootBindingStore? _rootBindings;
+    private readonly ILibraryRevisionService? _revisions;
 
     public FileResolutionService(
         SqliteConnectionFactory connectionFactory,
@@ -30,7 +31,8 @@ public sealed class FileResolutionService : IFileResolutionService
         IFileFingerprintService? fingerprintService = null,
         IBlockingOperationService? blockingOperations = null,
         IFileSearchRootAccess? rootAccess = null,
-        IDeviceRootBindingStore? rootBindings = null)
+        IDeviceRootBindingStore? rootBindings = null,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
@@ -39,6 +41,7 @@ public sealed class FileResolutionService : IFileResolutionService
         _blockingOperations = blockingOperations;
         _rootAccess = rootAccess ?? new FileSearchRootAccess();
         _rootBindings = rootBindings;
+        _revisions = revisions;
     }
 
     public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
@@ -695,15 +698,6 @@ public sealed class FileResolutionService : IFileResolutionService
                 return SuccessResolution(asset.FileAssetId, FileAssetStatus.Available, original.Path, [original]);
             }
 
-            if (original?.Status == FileAssetStatus.Changed)
-            {
-                return ChangedResolution(
-                    fileAssetId,
-                    asset.OriginalPath,
-                    [original],
-                    "Original path exists, but size or quick_hash changed.");
-            }
-
             KnownLocationRow[] knownLocations = (await connection.QueryAsync<KnownLocationRow>(
                 """
                 select location_id as LocationId, file_asset_id as FileAssetId, path as Path,
@@ -732,24 +726,8 @@ public sealed class FileResolutionService : IFileResolutionService
                 knownCandidates.Add(candidate);
                 if (candidate.Status == FileAssetStatus.Available)
                 {
-                    return Result<FileResolutionResult>.Success(new FileResolutionResult(
-                        fileAssetId,
-                        FileAssetStatus.MovedCandidate,
-                        candidate.Path,
-                        [candidate],
-                        FileResolutionConfidence.Exact,
-                        FileResolutionRequiredAction.None,
-                        "File was found at a known location that differs from original_path."));
+                    return await AcceptVerifiedLocationsAsync(asset, [candidate], cancellationToken);
                 }
-            }
-
-            if (knownCandidates.Any(candidate => candidate.Status == FileAssetStatus.Changed))
-            {
-                return ChangedResolution(
-                    fileAssetId,
-                    asset.OriginalPath,
-                    knownCandidates,
-                    "Known location exists, but size or quick_hash changed.");
             }
 
             Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
@@ -799,37 +777,17 @@ public sealed class FileResolutionService : IFileResolutionService
 
             List<FileResolutionCandidate> scannedCandidates =
                 await ScanSearchRootsAsync(asset, resolvedRoots.Where(root => root.IsAvailable), cancellationToken);
-            if (scannedCandidates.Count == 1)
+            if (scannedCandidates.Count > 0)
             {
-                return Result<FileResolutionResult>.Success(new FileResolutionResult(
-                    fileAssetId,
-                    FileAssetStatus.MovedCandidate,
-                    scannedCandidates[0].Path,
-                    scannedCandidates,
-                    FileResolutionConfidence.Exact,
-                    FileResolutionRequiredAction.None,
-                    "File was found under a search root."));
+                return await AcceptVerifiedLocationsAsync(asset, scannedCandidates, cancellationToken);
             }
 
-            if (scannedCandidates.Count > 1)
+            if (original?.Status == FileAssetStatus.Changed ||
+                knownCandidates.Any(candidate => candidate.Status == FileAssetStatus.Changed))
             {
-                return Result<FileResolutionResult>.Success(new FileResolutionResult(
-                    fileAssetId,
-                    FileAssetStatus.Conflict,
-                    null,
-                    scannedCandidates,
-                    FileResolutionConfidence.High,
-                    FileResolutionRequiredAction.ChooseCandidate,
-                    "Multiple matching candidates were found.")
-                {
-                    Conflicts =
-                    [
-                        ConflictDescriptorMapper.FileRelocationMultipleCandidates(
-                            fileAssetId,
-                            asset.OriginalPath,
-                            scannedCandidates)
-                    ]
-                });
+                return ChangedResolution(fileAssetId, asset.OriginalPath,
+                    original is null ? knownCandidates : [original, .. knownCandidates],
+                    "Existing locations do not match the source fingerprint.");
             }
 
             return Result<FileResolutionResult>.Success(new FileResolutionResult(
@@ -852,12 +810,72 @@ public sealed class FileResolutionService : IFileResolutionService
         }
     }
 
+    private async Task<Result<FileResolutionResult>> AcceptVerifiedLocationsAsync(
+        FileAssetRow asset, IReadOnlyList<FileResolutionCandidate> candidates, CancellationToken cancellationToken)
+    {
+        FileAssetId id = FileAssetId.Parse(asset.FileAssetId);
+        using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+        bool changed = false;
+        foreach (FileResolutionCandidate candidate in candidates)
+        {
+            changed |= await VerifiedFileLocationWriter.RecordAsync(connection, transaction, id,
+                new FileFingerprint(candidate.Path, Path.GetFileName(candidate.Path), candidate.SizeBytes,
+                    candidate.MtimeUtc!.Value, candidate.QuickHash!, candidate.FullBlake3),
+                _clock.UtcNow, _fingerprintService, cancellationToken);
+        }
+
+        LibraryChangeSet? committed = null;
+        if (changed && _revisions is not null)
+        {
+            FileLocationImpact[] impacts = (await connection.QueryAsync<FileLocationImpact>(new CommandDefinition(
+                """
+                select d.item_id as ItemId, d.document_instance_id as DocumentInstanceId
+                from document_instances d where d.file_asset_id = @Id or exists (
+                    select 1 from known_file_locations current_location
+                    join known_file_locations affected_location on affected_location.path = current_location.path
+                    where current_location.file_asset_id = @Id
+                      and affected_location.file_asset_id = d.file_asset_id);
+                """, new { Id = asset.FileAssetId }, transaction,
+                cancellationToken: cancellationToken))).ToArray();
+            Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
+                connection, transaction, LibraryChangeSet.Empty with
+                {
+                    ItemIds = impacts.Select(impact => ItemId.Parse(impact.ItemId)).Distinct().ToArray(),
+                    DocumentInstanceIds = impacts.Select(impact => DocumentInstanceId.Parse(impact.DocumentInstanceId))
+                        .ToArray()
+                }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                return Result<FileResolutionResult>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            committed = revision.Value;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        if (committed is not null)
+        {
+            _revisions!.PublishCommitted(committed);
+        }
+
+        return SuccessResolution(asset.FileAssetId, FileAssetStatus.Available, candidates[0].Path, candidates);
+    }
+
+    private sealed class FileLocationImpact
+    {
+        public string ItemId { get; init; } = "";
+        public string DocumentInstanceId { get; init; } = "";
+    }
+
     public Task<Result<FileAsset>> ConfirmMovedCandidateAsync(
         FileAssetId fileAssetId,
         string selectedPath,
         CancellationToken cancellationToken = default)
     {
-        return ConfirmFileAsync(fileAssetId, selectedPath, false, false, cancellationToken);
+        return ConfirmFileAsync(fileAssetId, selectedPath, true, false, cancellationToken);
     }
 
     public Task<Result<FileAsset>> RebindSourceAsync(
@@ -1579,8 +1597,7 @@ public sealed class FileResolutionService : IFileResolutionService
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     FileInfo fileInfo = new(path);
-                    if (!string.Equals(fileInfo.Name, asset.FileName, StringComparison.OrdinalIgnoreCase) ||
-                        fileInfo.Length != asset.SizeBytes)
+                    if (fileInfo.Length != asset.SizeBytes)
                     {
                         continue;
                     }
@@ -1620,9 +1637,12 @@ public sealed class FileResolutionService : IFileResolutionService
             return null;
         }
 
-        bool quickHashMatches = string.Equals(fingerprint.Value.QuickHash, asset.QuickHash, StringComparison.Ordinal);
         bool sizeMatches = fingerprint.Value.SizeBytes == asset.SizeBytes;
-        string status = sizeMatches && quickHashMatches ? FileAssetStatus.Available : FileAssetStatus.Changed;
+        bool fullHashMatches = !string.IsNullOrWhiteSpace(asset.FullBlake3) &&
+                               string.Equals(fingerprint.Value.FullBlake3, asset.FullBlake3, StringComparison.Ordinal);
+        string status = sizeMatches && fullHashMatches
+            ? FileAssetStatus.Available
+            : FileAssetStatus.Changed;
         string confidence = status == FileAssetStatus.Available
             ? FileResolutionConfidence.Exact
             : FileResolutionConfidence.Low;

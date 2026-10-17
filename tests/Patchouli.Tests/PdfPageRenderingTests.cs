@@ -47,6 +47,45 @@ public sealed class PdfPageRenderingTests
         c.Renderer.CallCount.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rendering_accepts_a_verified_renamed_location(bool preview)
+    {
+        await using Context c = await Context.CreateAsync();
+        string renamed = Path.Combine(c.RootDirectory, "renamed.pdf");
+        File.Move(c.PdfPath, renamed);
+        await using (SqliteConnection connection = c.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
+                values (@LocationId, @AssetId, @Path, @Now, 'available');
+                """, new
+                {
+                    LocationId = Guid.NewGuid().ToString(), AssetId = c.AssetId.ToString(),
+                    Path = renamed, Now = DateTimeOffset.UtcNow.ToString("O")
+                });
+        }
+
+        if (preview)
+        {
+            Result<PdfPagePixelBufferLease> result = await c.RenderService.RenderPreviewAsync(
+                new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                    Purpose: PageRenderPurpose.Preview));
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            using PdfPagePixelBufferLease lease = result.Value;
+            lease.BgraBytes.Length.Should().Be(16);
+        }
+        else
+        {
+            (await c.RenderAsync()).Value.Status.Should().Be(PageRenderStatus.Rendered);
+        }
+
+        c.Materializer.Paths.Should().Contain(renamed);
+    }
+
     [Fact]
     public async Task RenderPage_missing_source_returns_source_missing()
     {
