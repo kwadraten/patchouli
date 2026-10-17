@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.View;
@@ -100,7 +101,7 @@ public sealed class PageImageViewMathTests
     public void PageImageViewRequest_validate_bounds(int pageIndex, int maxEdge, bool expectedOk)
     {
         var request = new PageImageViewRequest(
-            new Patchouli.Core.Ids.DocumentInstanceId("doc-1"), pageIndex, null, null,
+            DocumentInstanceId.New(), pageIndex, null, null,
             false, PageImageViewContext.Page, maxEdge);
 
         Result result = request.Validate();
@@ -118,8 +119,8 @@ public sealed class PageImageViewMathTests
 
     private static Page FakePage(double? width, double? height) =>
         new(
-            new Patchouli.Core.Ids.PageId("page-1"),
-            new Patchouli.Core.Ids.DocumentInstanceId("doc-1"),
+            PageId.New(),
+            DocumentInstanceId.New(),
             0, "1", width, height,
             0, "pdfium", width, height, "v1", null,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);

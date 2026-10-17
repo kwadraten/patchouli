@@ -66,9 +66,9 @@ Source box writes create new committed revisions and document commits, reject ac
 and honor the `texts.put` permission. Historical revision addresses remain read-only.
 
 
-本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品基线见 [CONTEXT](CONTEXT.md)，任务进度通过 [GitHub Issues](issue-tracker.md) 维护。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。内置 agent 会话平台、`runs/`/`workflows/` 与 `send` 决策见 [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md)。
+本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品基线见 [CONTEXT](CONTEXT.md)，任务进度通过 [GitHub Issues](issue-tracker.md) 维护。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。内置 agent 会话平台、`runs/`/`workflows/` 与 `send` 决策见 [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md)，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 [ADR 0045](adr/0045-mcp-add-view-boundaries.md)。
 
-实现状态（2026-10-05）：结构化五动词（`find`/`fetch`/`put`/`cite`/`send`）、`runs/`/`workflows/` 资源根、CLI HTTP 客户端、TOON/JSON、有限写入，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（`send` 与两根的决策见 ADR `0036`）。回归义务继续约束后续改动。
+实现状态（2026-10-17）：七动词（`find`/`fetch`/`add`/`view`/`put`/`cite`/`send`）、`runs/`/`workflows/` 资源根、CLI HTTP 客户端、TOON/JSON、有限写入、本地文件导入、源图像读取，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（`send` 与两根的决策见 ADR `0036`，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 ADR `0045`）。回归义务继续约束后续改动。
 
 **定位**：`patchouli-cli` — access an academic literature library powered by Patchouli.NET
 
@@ -469,12 +469,44 @@ BEHAVIOUR
 
 `send` 的每个指令都是显式写操作，`put` 与 `send` 可被用户工具开关关闭；关闭后 MCP 回到只读（D1）。
 
-## 8 MCP 映射与共享契约
+## 8 `add`（本地文件导入）
+
+`add` 将宿主机上的本地文件导入文库，返回新建或复用的资源 URI。请求：`{"path": "D:/papers/paper.pdf", "kind": "pdf"}`。
+
+- 只接受本地路径，不接受 URL：模型先用自己的能力下载，再把宿主机可访问的本地路径传给 `add`。v1 没有 URL、上传引用、base64、内联 XML 第二导入通道。
+- `kind` 可省略（按内容嗅探）；显式给出时必须与实际内容一致（检查文件内容，不只看扩展名）。
+- 校验：路径存在、是常规文件、可读、格式受支持（v1 为 PDF 与 CSL）；目录与不受支持的格式被拒绝；云占位/不可用文件显式失败；永不报告虚假成功。
+- **路径输入例外**：`add` 是 MCP 接受本地路径的唯一显式例外（旧约束"MCP 不接受本地路径"自此更新）；输出绝不暴露宿主源路径、缓存路径或未脱敏异常。调用方不能经本地路径参数绕过权限：只有受支持的资源会被导入。
+- 授权与配置检查在触碰/移动文件之前完成。PDF 检查 `items.add` + `texts.add`，CSL 检查 `csl-styles.add`；MCP 调用方不能按请求覆盖文件处理行为。
+- PDF 导入复用宿主导入核心：默认保留在原位置，计算 BLAKE3 后登记 FileAsset；也可按"文件处理行为"设置移动到第一个文件搜索根（先移动、后计算 BLAKE3 并登记；无搜索根、首根不可写/不可用则显式失败，绝不悄悄换用其他目录或回退为原地）。成功返回 `patchouli://items/{item-id}.yml` 与 `patchouli://texts/{document-instance-id}/`，以及新建/复用结果、页数、导入问题、当前正文/索引状态。导入成功 ≠ OCR/索引完成；v1 不隐式启动 OCR。
+- CSL 安装：解析本地 XML 的 style ID、标题、依赖；新 ID 安装、同 ID 同内容复用、同 ID 不同内容冲突（后续经 `put` 更新）；不改变默认引用样式；缺失父样式时报告依赖与可渲染状态，不悄悄下载父样式。
+- `add` 与 `view` 有各自独立的工具开关与域权限；已有 `put` 授权不会自动扩展为 `add`/`view`。
+
+CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路径后调用同一 MCP 工具；没有第二套导入逻辑。
+
+## 9 `view`（源图像读取）
+
+`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048}`（`max_edge` 默认 2048）。
+
+- 目标：一页 URI 返回整页源图像；box/证据 URI 返回带小边距的 bbox 裁剪；翻译页/box 返回对应源文档图像；目录 URI 必须指定页面。一次调用一个目标、一张图；v1 不接受任意坐标输入。
+- 图像来自原始 PDF，不从 OCR 文本重渲染，不做桌面导航，不触发 OCR，不修改正文。
+- 未指定 revision 时锁定为本次调用实际使用的 revision；历史 box 使用其自身 revision 的 bbox；源缺失/变化、目标缺失、坐标过期一律显式失败，绝不悄悄替换为最新 revision、其他页面或未校验来源。
+- **几何例外**：裁剪范围使用页面归一化坐标（可复现）；这是 `view` 对"不暴露几何"旧约束的显式例外（见 ADR `0045`）。
+- 成功返回混合 content：content[0] 为文本（现有 TOON/JSON 信封 + 图像元数据：锁定实际 revision 的 canonical URI、`view` 类型、MIME、实际宽高、实际裁剪范围、`image_index` 固定 0），content[1] 为 MCP 原生 ImageContent（`{"type":"image","data":"<raw base64>","mimeType":"image/png"}`；base64 不在 TOON/JSON 文本字段内、无 data-URL 前缀；`format=json` 只影响文本块）。v1 PNG，像素/编码字节/总响应大小设上限，超限显式失败，不返回截断图像。
+- 失败用统一错误信封 + `isError` 语义，绝不伪造成功的图像条目。
+- `view` 检查目标域权限；翻译源图像同时检查源文本域。
+- 内置 agent 链：工具结果经会话媒体区（`<session>/media/`，按 media id 引用）进入模型历史，转为 `LlmImagePart` data-URI 真实视觉输入；无视觉能力的模型显式报 capability-unavailable，不伪造对照。推荐对照流程：`fetch`（文本+版本）→ `view`（同 revision/box 源图像）→ `put`（带原 `source_revision`）；版本变化走正常 revision 冲突。
+
+CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
+
+## 10 MCP 映射与共享契约
 
 ```text
 CLI                                             MCP
 patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
+patchouli-cli add <PATH> [--kind pdf|csl]       patchouli.add { path, kind }
+patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge? }
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
 patchouli-cli put <URI> --boxes-from <PATH>|--boxes-stdin
                                                 patchouli.put { uri, source_revision, translation_version?, boxes }
@@ -482,7 +514,7 @@ patchouli-cli cite                              patchouli.cite
 patchouli-cli send <VERB> [OPTIONS]             patchouli.send { instruction, ... }
 ```
 
-CLI 是本地 MCP HTTP 端点的客户端，五个 CLI 动词分别映射为五个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 `content`，或读取 JSON batch 后发送版本字段与 `boxes`；MCP 从不接受或暴露本地路径。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
+CLI 是本地 MCP HTTP 端点的客户端，七个 CLI 动词分别映射为七个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 `content`，或读取 JSON batch 后发送版本字段与 `boxes`；`add` 是 MCP 接受本地路径的唯一显式例外（`{"path", "kind"}`，只接受宿主机本地路径、不接受 URL），其他工具既不接受也不暴露本地路径。所有工具的输出都绝不暴露宿主源路径、缓存路径或未脱敏异常。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
 
 共享响应外壳：CLI 的 JSON、MCP `format=json` 与默认 TOON 使用**同一**逻辑 schema；TOON 仅是该对象的确定性编码，不能省略、提升或重命名字段。干净成功的 JSON 例如：
 
@@ -591,9 +623,9 @@ Exit / error codes：
 
 推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs`、`/workflows` 与 `/library.yml` → 先 fetch `patchouli://library.yml` 获取库身份、可选标签与集合目录 → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.yml`/`.xml`/`.csl` 执行 `put`；legacy `.bib` 仅用于显式兼容请求，并返回 obsoleted warning。全文搜索返回的 `?rev=&box=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。要驱动 agent 时先 `fetch` `patchouli://workflows/{workflow-id}` 获取参数定义，再 `send start`，随后经 `patchouli://runs/agent/{session-id}/status` 与 `/events` 观察进度。
 
-**数据边界**：`runs/`、`workflows/` 与 `send` 的所有响应都遵守 text-only 边界——不返回图像、本地路径、file URL、密钥或原始 secret；诊断 detail 由宿主白名单模板生成并脱敏。`put` 与 `send` 可被用户工具开关关闭，关闭后 MCP 回到只读（D1）；此时 `put`/`send` 返回 `PERMISSION_DENIED`，`find`/`fetch`/`cite` 不受影响。
+**数据边界**：`runs/`、`workflows/` 与 `send` 的所有响应都遵守 text-only 边界——不返回图像、本地路径、file URL、密钥或原始 secret；诊断 detail 由宿主白名单模板生成并脱敏。`view` 是图像输出的显式例外（MCP 原生 ImageContent，见第 9 节），`add` 是本地路径输入的显式例外（见第 8 节）；两者输出仍不暴露宿主源路径、缓存路径或未脱敏异常。`put` 与 `send` 可被用户工具开关关闭；`add`/`view` 另有各自独立的工具开关，关闭后对应工具返回 `PERMISSION_DENIED`。已有 `put` 授权不会自动扩展为 `add`/`view`。
 
-## 9 Agent 可用性与关系解析
+## 11 Agent 可用性与关系解析
 
 - `citable=true` 必须与 `cite.refs` 实际接受的 URI 类型一致。Item、Document、Page 和 Evidence 可以是 citable；CSL style 仅可作为 `cite.style` 使用，绝不是 citable，因此 StyleLongEntry 不包含 `citable`。`runs/` 的 run status/event URI 与 `workflows/` 的 workflow URI 是运行时/配置投影，永远不是 citable。`writable` 与 `citable` 是两个独立维度。可引用资格由单一确定性规则计算；协议不返回 `citation_target`，宿主在 `cite` 内部解析到所属 Item。
 - Document、Page 和 Evidence 的详细 `find`/`fetch` 结果应返回 `item_uri` 或等价的 `parent_uri`。这是关系元数据，不构成自动 link following。
@@ -606,7 +638,7 @@ Exit / error codes：
 - `general` 的 `@misc` cite fallback 与无默认 style 时的 deterministic style fallback 已同步记录到 ADR `0023`/`0024`；后续实现变更必须同时维护本契约、ADR 与运行时契约，避免三者分叉。
 - `runs/` 是易失运行时资源，`send` 是会话/工作流指令动词；二者都不推进 `meta.library_revision`，也不发出资源变更通知。会话事件以单调序号增量读取，token 用量、进度与消息均承载于事件序号而非 Library revision（D11）。
 
-## 10 超时与取消
+## 12 超时与取消
 
 宿主必须实施较宽松的服务端 deadline：`find`、`fetch`、`cite` 默认最多 60 秒，`put`（含完整内容校验）默认最多 120 秒，`send` 默认最多 30 秒（仅覆盖指令受理与确认，不覆盖会话后续运行）；部署可配置更严格的上限，但不得让客户端无限等待。deadline 到期返回 `DEADLINE_EXCEEDED`，不把因超时而中断的资源伪装为 `RESPONSE_TRUNCATED` partial 成功。
 
@@ -644,7 +676,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、versioned evidence URI 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
 | V3-AC26 | `runs/` 是 VFS 首个易失运行时资源：不进任何快照、不可 `put`、不属 canonical 资源，不推进 `meta.library_revision`、不发资源变更通知；OCR 运行与 agent 会话运行各自投影 status/events，不强行统一为一个通用 run 模型；`workflows/` 是只读元数据树，不可 `put` 或经 MCP 修改 |
 | V3-AC27 | `patchouli://runs/agent/{session-id}/events` 的事件按宿主分配的单调递增序号排列并支持 `?after={sequence}` 增量读取，响应给出 `last_sequence` 与 `next_after`；`send` 响应区分已接收/已处理，`message` 携带 `message_id` 去重，重复 `message_id` 不重复追加并带 `DUPLICATE_MESSAGE_ID` warning；`message` 在下一次工具调用/效应执行前的 Event 边界按序追加进会话、不打断在途调用 |
-| V3-AC28 | `runs/`、`workflows/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1） |
+| V3-AC28 | `runs/`、`workflows/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1）。`view` 是图像输出的显式例外、`add` 是本地路径输入的显式例外（见第 8、9 节），两者输出仍不暴露宿主路径；`add`/`view` 有独立工具开关，已有 `put` 授权不自动扩展 |
 
 ## Workflow configuration contract
 
