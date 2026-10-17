@@ -292,12 +292,26 @@ public static class DocumentPageMapYamlCodec
 
     private static JsonObject? OptionalObject(JsonObject obj, string key)
     {
-        return obj[key] as JsonObject;
+        JsonNode? node = obj[key];
+        if (node is null)
+        {
+            return null;
+        }
+
+        return node as JsonObject
+            ?? throw new FormatException($"'{key}' must be a mapping.");
     }
 
     private static JsonArray? OptionalArray(JsonObject obj, string key)
     {
-        return obj[key] as JsonArray;
+        JsonNode? node = obj[key];
+        if (node is null)
+        {
+            return null;
+        }
+
+        return node as JsonArray
+            ?? throw new FormatException($"'{key}' must be a list.");
     }
 
     private static int GetInt(JsonObject obj, string key)

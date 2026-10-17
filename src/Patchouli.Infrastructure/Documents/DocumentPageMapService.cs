@@ -79,6 +79,16 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
                 return Result<ResolvedDocumentPageMap?>.Failure(AppErrorCodes.DatabaseError,
                     $"The stored page map for document '{documentInstanceId}' is corrupt: {ex.Message}");
             }
+            catch (System.Text.Json.JsonException ex)
+            {
+                return Result<ResolvedDocumentPageMap?>.Failure(AppErrorCodes.DatabaseError,
+                    $"The stored page map for document '{documentInstanceId}' is corrupt: {ex.Message}");
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Result<ResolvedDocumentPageMap?>.Failure(AppErrorCodes.DatabaseError,
+                    $"The stored page map for document '{documentInstanceId}' is corrupt: {ex.Message}");
+            }
 
             List<CurrentLogicalPageState> currentLogicalPages =
                 await LoadCurrentLogicalPagesAsync(documentInstanceId, cancellationToken);
@@ -427,11 +437,20 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
     {
         List<string> errors = [];
 
-        void CheckBox(int pdfPage, DocumentBoxId boxId, string where)
+        void CheckBox(int pdfPage, DocumentBoxId boxId, string where, bool allowRelocation)
         {
             if (!boxes.TryGetValue((pdfPage, boxId), out DocumentBox? box))
             {
                 // Labels may reference a box whose physical page is recorded under its actual page.
+                // Reading-order entries must match exactly; a mismatch is a write-time error.
+                if (!allowRelocation)
+                {
+                    errors.Add(
+                        $"{where}: logical page {boxId} is not on PDF page {pdfPage} in the current " +
+                        "committed revisions.");
+                    return;
+                }
+
                 DocumentBox? relocated = boxes
                     .Where(pair => pair.Key.BoxId == boxId)
                     .Select(pair => (DocumentBox?)pair.Value)
@@ -457,7 +476,8 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
             foreach (LogicalPageReadingEntry entry in rule.ReadingOrder)
             {
                 CheckBox(entry.PdfPage, entry.BoxId,
-                    $"logical_page rule [{rule.StartPdfPage}, {rule.EndPdfPage}]");
+                    $"logical_page rule [{rule.StartPdfPage}, {rule.EndPdfPage}]",
+                    allowRelocation: false);
             }
         }
 
@@ -465,7 +485,8 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
         {
             if (pageLabel.Target.LogicalPage.HasValue)
             {
-                CheckBox(pageLabel.Target.PdfPage ?? 0, pageLabel.Target.LogicalPage.Value, "page_labels");
+                CheckBox(pageLabel.Target.PdfPage ?? 0, pageLabel.Target.LogicalPage.Value, "page_labels",
+                    allowRelocation: true);
             }
         }
 

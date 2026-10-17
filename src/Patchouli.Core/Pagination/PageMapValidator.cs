@@ -30,6 +30,7 @@ public static class PageMapValidator
         ValidatePhysicalRules(map, errors);
         ValidateLogicalRules(map, errors);
         ValidateNoMixedRules(map, errors);
+        ValidateNoSameKindOverlap(map, errors);
         ValidateLabelOverrides(map, errors);
         ValidateChapters(map, errors);
 
@@ -162,6 +163,39 @@ public static class PageMapValidator
                         $"Physical pages [{overlapStart}, {overlapEnd}] are covered by both a physical_page " +
                         "rule and a logical_page rule; split the ranges so each physical page has exactly " +
                         "one rule kind."));
+                }
+            }
+        }
+    }
+
+    private static void ValidateNoSameKindOverlap(DocumentPageMap map, List<PageMapValidationError> errors)
+    {
+        for (int i = 0; i < map.PhysicalRules.Count; i++)
+        {
+            for (int j = i + 1; j < map.PhysicalRules.Count; j++)
+            {
+                int overlapStart = Math.Max(map.PhysicalRules[i].StartPdfPage, map.PhysicalRules[j].StartPdfPage);
+                int overlapEnd = Math.Min(map.PhysicalRules[i].EndPdfPage, map.PhysicalRules[j].EndPdfPage);
+                if (overlapStart <= overlapEnd)
+                {
+                    errors.Add(new PageMapValidationError("overlapping_rules",
+                        $"Physical pages [{overlapStart}, {overlapEnd}] are covered by two physical_page " +
+                        "rules; ranges of the same kind must not overlap."));
+                }
+            }
+        }
+
+        for (int i = 0; i < map.LogicalRules.Count; i++)
+        {
+            for (int j = i + 1; j < map.LogicalRules.Count; j++)
+            {
+                int overlapStart = Math.Max(map.LogicalRules[i].StartPdfPage, map.LogicalRules[j].StartPdfPage);
+                int overlapEnd = Math.Min(map.LogicalRules[i].EndPdfPage, map.LogicalRules[j].EndPdfPage);
+                if (overlapStart <= overlapEnd)
+                {
+                    errors.Add(new PageMapValidationError("overlapping_rules",
+                        $"Physical pages [{overlapStart}, {overlapEnd}] are covered by two logical_page " +
+                        "rules; ranges of the same kind must not overlap."));
                 }
             }
         }

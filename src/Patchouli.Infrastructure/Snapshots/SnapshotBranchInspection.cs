@@ -1240,7 +1240,10 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 physical_rules = physicalRules,
                 logical_rules = logicalRules,
                 page_labels = labels,
-                top_level_chapters = chapters
+                top_level_chapters = chapters,
+                content_sha256 = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(definitionJson)))
             });
         }
         catch (JsonException)
