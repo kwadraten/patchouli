@@ -500,6 +500,14 @@ public sealed class FileImportService : IFileImportService
             await _pdfImport.ImportPdfAsync(new PdfImportRequest(path, null, null, null), cancellationToken);
         if (!imported.Success)
         {
+            if (!wasMoved)
+            {
+                await RecordRecoveryAsync(trigger, kind, path, null, path,
+                    FileImportRecoveryStatuses.ImportFailedNoMove,
+                    $"Import failed ({FileImportErrorCodes.ImportFailed}); the file was not moved and remains at its original position.",
+                    cancellationToken);
+            }
+
             return Result<FileImportResult>.Failure(FileImportErrorCodes.ImportFailed,
                 imported.ErrorMessage ?? "PDF import failed.");
         }

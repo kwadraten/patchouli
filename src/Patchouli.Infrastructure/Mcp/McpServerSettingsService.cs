@@ -221,7 +221,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
                 ? parsedUpdatedAt.ToUniversalTime()
                 : _clock.UtcNow.ToUniversalTime();
-        return new McpServerSettings(port, bindAddress, cors, origins,
+        McpServerSettings settings = new McpServerSettings(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
         {
@@ -233,6 +233,31 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                     JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? [])
                 : []
         };
+        return MigrateAddViewDefaults(settings);
+    }
+
+    /// <summary>
+    /// Issue #11 §11: old settings files predate patchouli.add/patchouli.view. The permission
+    /// model is deny-list based (missing entry = allowed), so without an explicit migration
+    /// old settings would implicitly grant the new tools — auto-expanding existing put grants.
+    /// The migration writes explicit disabled entries; users opt in via the settings UI.
+    /// </summary>
+    private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
+    {
+        string[] newTools = ["patchouli.add", "patchouli.view"];
+        List<McpToolOverride> overrides = settings.ToolOverrides.ToList();
+        bool changed = false;
+        foreach (string tool in newTools)
+        {
+            if (overrides.All(value => value.ToolName != tool))
+            {
+                overrides.Add(new McpToolOverride(tool, false,
+                    "Added by migration: explicitly enable to use this tool."));
+                changed = true;
+            }
+        }
+
+        return changed ? settings with { ToolOverrides = overrides } : settings;
     }
 
     private async Task WriteAsync(McpServerSettings settings, CancellationToken cancellationToken)

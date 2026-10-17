@@ -723,6 +723,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         "patchouli.find",
         "patchouli.fetch",
         "patchouli.put",
+        "patchouli.add",
+        "patchouli.view",
         "patchouli.cite",
         "patchouli.send"
     ];
