@@ -41,6 +41,7 @@ internal static class AgentContextBudget
         return 16 + message.Parts.Sum(part => part switch
         {
             LlmMessagePart.LlmTextPart text => EstimateText(text.Text),
+            LlmMessagePart.LlmImagePart image => EstimateImage(image),
             LlmMessagePart.LlmToolResultPart result => 8 + EstimateText(result.Name) +
                                                        EstimateText(result.CallId) + EstimateText(result.Content),
             LlmMessagePart.LlmToolCallPart call => 8 + EstimateText(call.Name) + EstimateText(call.Id) +
@@ -48,6 +49,23 @@ internal static class AgentContextBudget
             LlmMessagePart.LlmAssistantMetadataPart metadata => EstimateText(metadata.Metadata),
             _ => throw new NotSupportedException("The built-in text agent cannot price this content part.")
         });
+    }
+
+    /// <summary>
+    /// Issue #11: rough vision-token price for an image part. Providers bill images by
+    /// tiles/pixels, not by base64 characters, so pricing the data URI as text would
+    /// over-count by orders of magnitude and trigger spurious compaction. This uses a
+    /// fixed per-image base plus a size-proportional term on the decoded byte size.
+    /// </summary>
+    public static long EstimateImage(LlmMessagePart.LlmImagePart image)
+    {
+        long bytes = 0;
+        string data = image.DataUriOrUrl;
+        int comma = data.IndexOf(',');
+        string base64 = comma >= 0 ? data[(comma + 1)..] : data;
+        // Decoded bytes ≈ 3/4 of base64 length; no allocation, just an estimate.
+        bytes = base64.Length * 3 / 4;
+        return 200 + bytes / 750;
     }
 
     public static long EstimateText(string text)
