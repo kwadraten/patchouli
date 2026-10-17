@@ -22,7 +22,7 @@ public static class BiblatexExportMapper
         Set(fields, "volume", item.Volume);
         Set(fields, "version", item.Version);
         Set(fields, "pages", item.Pages);
-        Set(fields, "note", item.Note);
+        Set(fields, "note", EncodeNoteLineBreaks(item.Note));
         Set(fields, "abstract", item.Abstract);
         Set(fields, "series", item.CollectionTitle);
         Set(fields, "chapter", item.ChapterNumber);
@@ -417,5 +417,12 @@ public static class BiblatexExportMapper
         }
 
         fields[key] = value.Trim();
+    }
+
+    private static string? EncodeNoteLineBreaks(string? value)
+    {
+        return value?.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace("\n", "\\newline{}", StringComparison.Ordinal);
     }
 }

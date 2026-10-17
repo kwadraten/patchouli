@@ -403,7 +403,7 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         AddIfPresent(other.Fields, "章节号", metadata.ChapterNumber);
         AddIfPresent(other.Fields, "版本号", metadata.Version);
         AddIfPresent(other.Fields, "引文键", metadata.CitationKey);
-        AddIfPresent(other.Fields, "备注", metadata.Note, true);
+        AddIfPresent(other.Fields, "附注", metadata.Note, true);
         AddIfPresent(other.Fields, "摘要", metadata.Abstract, true);
         if (other.Fields.Count > 0)
         {

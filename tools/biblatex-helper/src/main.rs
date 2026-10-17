@@ -448,9 +448,22 @@ fn is_id_start(c: char) -> bool {
 fn write_bibliography(entries: &[WriteEntryDto]) -> Response {
     let mut parts = Vec::with_capacity(entries.len());
     for entry in entries {
+        let note_with_explicit_line_breaks = entry
+            .fields
+            .get("note")
+            .filter(|note| note.contains("\\newline{}"));
         match build_entry(entry) {
-            Ok(built) => {
-                let mut text = built.to_biblatex_string();
+            Ok(mut built) => {
+                let mut text = if let Some(note) = note_with_explicit_line_breaks {
+                    built.fields.remove("note");
+                    let mut text = built.to_biblatex_string();
+                    let note_value = serialize_note_line_breaks(note);
+                    let insert_at = text.len() - 1;
+                    text.insert_str(insert_at, &format!("note = {{{note_value}}},\n"));
+                    text
+                } else {
+                    built.to_biblatex_string()
+                };
                 // The upstream writer downgrades extension types to misc.
                 if let EntryType::Unknown(name) = &built.entry_type {
                     if let Some(header_end) = text.find('{') {
@@ -744,6 +757,26 @@ fn chunks_from_text(value: &str) -> Vec<Spanned<Chunk>> {
     vec![Spanned::detached(Chunk::Normal(value.to_string()))]
 }
 
+fn serialize_note_line_breaks(value: &str) -> String {
+    const LINE_BREAK: &str = "\\newline{}";
+
+    let mut serialized = String::new();
+    let mut remaining = value;
+    while let Some(index) = remaining.find(LINE_BREAK) {
+        serialized.push_str(&serialize_note_text(&remaining[..index]));
+        serialized.push_str(LINE_BREAK);
+        remaining = &remaining[index + LINE_BREAK.len()..];
+    }
+
+    serialized.push_str(&serialize_note_text(remaining));
+    serialized
+}
+
+fn serialize_note_text(value: &str) -> String {
+    let serialized = chunks_from_text(value).as_slice().to_biblatex_string(false);
+    serialized[1..serialized.len() - 1].to_string()
+}
+
 fn empty_to_none(value: String) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -897,6 +930,44 @@ mod tests {
                 kind
             );
         }
+    }
+
+    #[test]
+    fn explicit_note_line_break_survives_write_and_parse() {
+        let written = write_bibliography(&[WriteEntryDto {
+            key: "k".into(),
+            entry_type: "book".into(),
+            fields: BTreeMap::from([
+                ("title".into(), "T".into()),
+                (
+                    "note".into(),
+                    r"literal \ path {brace} first\newline{}second".into(),
+                ),
+            ]),
+            persons: BTreeMap::new(),
+            keywords: Vec::new(),
+        }]);
+        let text = written.text.unwrap();
+        assert!(text.contains(r"\newline{}"), "{text}");
+        assert!(text.contains(r"literal \\ path"), "{text}");
+        assert!(text.contains(r"\{brace\}"), "{text}");
+
+        let parsed = parse_bibliography(&text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        assert_eq!(
+            parsed.entries.unwrap()[0].fields["note"],
+            r"literal \ path {brace} first\newline{}second"
+        );
+    }
+
+    #[test]
+    fn physical_note_line_break_keeps_biblatex_whitespace_semantics() {
+        let parsed = parse_bibliography(
+            r"@book{k,title={T},note={first
+second}}",
+        );
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        assert_eq!(parsed.entries.unwrap()[0].fields["note"], "first second");
     }
 
     #[test]
