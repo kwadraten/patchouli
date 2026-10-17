@@ -298,6 +298,33 @@ public static class ConflictDescriptorMapper
         return "正常";
     }
 
+    /// <summary>
+    /// Both the local library and the incoming branch define a different chapter/pagination
+    /// map for the same document instance. The conflict is blocking: the import must not
+    /// silently last-writer-win the map.
+    /// </summary>
+    public static ConflictDescriptor DocumentPageMapConflict(
+        DocumentInstanceId documentInstanceId,
+        string localSummaryJson,
+        string incomingSummaryJson)
+    {
+        return new ConflictDescriptor(
+            ConflictCode.DocumentPageMapConflict,
+            ConflictDomain.SnapshotSync,
+            ConflictSeverity.Blocking,
+            "document_page_map",
+            documentInstanceId.ToString(),
+            "本地与传入分支为同一文档定义了不同的章节/页码映射（map）。",
+            localSummaryJson,
+            incomingSummaryJson,
+            [
+                new ConflictAction("keep_local", "保留本地映射",
+                    "保留本地章节/页码映射；不导入传入分支的映射。"),
+                new ConflictAction("use_incoming", "采用传入映射",
+                    "用传入分支的章节/页码映射替换本地映射。")
+            ]);
+    }
+
     private static string Serialize(object value)
     {
         return JsonSerializer.Serialize(value);

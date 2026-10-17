@@ -96,6 +96,18 @@ public interface IMcpReadApi
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the <c>map.yml</c> YAML projection of a document's chapter/pagination map.
+    /// Documents without a stored map get the discoverable, first-put-able empty-map
+    /// projection. Plain fetch triggers no OCR or AI work.
+    /// </summary>
+    Task<Result<string>> GetDocumentMapYamlAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<string>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Page-map projection unavailable."));
+    }
+
+    /// <summary>
     /// Resolves the item that owns a document instance. Used by the cite command to support
     /// document, page, and evidence references.
     /// </summary>

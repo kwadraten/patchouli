@@ -405,7 +405,7 @@ public sealed class McpProtocolHandler
                 {
                     ["uris"] = ToolSchemaProperty.Array(
                         "Resource URIs: library.yml, items/<id>.yml, texts/<document-id>/, texts/<document-id>/page-<index>.xml, " +
-                        "texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>], " +
+                        "texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>], texts/<document-id>/map.yml, " +
                         "translations/<document-id>/, translations/<document-id>/page-<index>.xml or csl-styles/<id>.csl.",
                         ToolSchemaProperty.String("Resource URI.")),
                     ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
@@ -415,12 +415,12 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.put",
-                "Replace one existing writable item bibliography, CSL style, source page XML, or translation page atomically.",
+                "Replace one existing writable item bibliography, CSL style, document page map, source page XML, or translation page atomically.",
                 ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uri"] = ToolSchemaProperty.String(
-                        "Writable resource URI: items/<id>.yml, csl-styles/<id>.csl, " +
+                        "Writable resource URI: items/<id>.yml, csl-styles/<id>.csl, texts/<document-id>/map.yml, " +
                         "texts/<document-id>/page-<index>.xml, or translations/<document-id>/page-<index>.xml. " +
                         "Legacy .bib/.md addresses remain accepted with a deprecation warning."),
                     ["content"] =

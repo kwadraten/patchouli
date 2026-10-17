@@ -13,6 +13,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
+using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
@@ -231,11 +232,14 @@ public sealed class HostServices
             activityTracker: activityTracker);
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine, () => LlmSettings.OcrSelection.ProviderId);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
+        DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
+            LibraryRevisions);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
-            CompiledMarkdownCache, PageTranslations);
-        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees);
+            CompiledMarkdownCache, PageTranslations, DocumentPageMaps);
+        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
+            DocumentPageMaps);
         CliPath = new CliPathService();
         // The built-in agent acts through exactly the same MCP command surface as every other MCP
         // client: identical validation, permissions, atomic write set and error vocabulary. Its OCR
@@ -390,6 +394,7 @@ public sealed class HostServices
     public IOcrRunCoordinator Ocr { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
+    public IDocumentPageMapService DocumentPageMaps { get; }
     public ISearchUnitBuilder SearchUnits { get; }
     public ISearchIndexRebuilder SearchIndex { get; }
     public ISearchService Search { get; }

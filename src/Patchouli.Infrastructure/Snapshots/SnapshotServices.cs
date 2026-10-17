@@ -36,6 +36,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         "pages",
         "document_tree_revisions",
         "document_boxes",
+        "document_page_maps",
         "ocr_presets",
         "ocr_preset_versions",
         "ocr_runs",
@@ -70,7 +71,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             "item_dates", "file_assets",
             "file_search_root_definitions", "known_file_locations", "document_instances"
         ],
-        ["pages", "document_tree_revisions", "document_boxes", "document_commits", "document_commit_pages"],
+        ["pages", "document_tree_revisions", "document_boxes", "document_commits", "document_commit_pages",
+            "document_page_maps"],
         ["ocr_presets", "ocr_preset_versions", "ocr_runs", "ocr_page_results", "ocr_candidate_adoptions"],
         ["search_units", "search_index_status"],
         ["search_profiles", "search_rewrite_rules", "search_settings", "library_setting_records"]
@@ -1425,6 +1427,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
         "pages",
         "document_tree_revisions",
         "document_boxes",
+        "document_page_maps",
         "ocr_presets",
         "ocr_preset_versions",
         "ocr_runs",
