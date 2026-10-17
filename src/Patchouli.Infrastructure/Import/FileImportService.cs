@@ -146,6 +146,12 @@ public sealed class FileImportService : IFileImportService
         }
 
         string fileName = Path.GetFileName(fullPath);
+        if (Directory.Exists(fullPath))
+        {
+            return Result<ValidatedImportFile>.Failure(FileImportErrorCodes.NotRegularFile,
+                "Directories cannot be imported; pass a single file path.");
+        }
+
         if (!File.Exists(fullPath))
         {
             return Result<ValidatedImportFile>.Failure(FileImportErrorCodes.PathNotFound,
@@ -161,12 +167,6 @@ public sealed class FileImportService : IFileImportService
         {
             return Result<ValidatedImportFile>.Failure(FileImportErrorCodes.UnreadableFile,
                 $"Local file '{fileName}' could not be accessed.");
-        }
-
-        if ((attributes & FileAttributes.Directory) != 0)
-        {
-            return Result<ValidatedImportFile>.Failure(FileImportErrorCodes.NotRegularFile,
-                "Directories cannot be imported; pass a single file path.");
         }
 
         byte[] leading;
