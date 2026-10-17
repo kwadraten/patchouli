@@ -102,6 +102,7 @@ _Avoid_: Output locale, translated language
 **CSL language locale mapping**:
 A device-local fallback preference from an Item's primary language to a CSL output locale. Matching bibliography locale selectors and their reachable macros take precedence. If no source-language branch matches, configured mappings are tried; default rules map `ja` and `ko` to `zh-CN`. Unmapped languages and unavailable mapping targets use the style's default layout, rather than forcing English or a special Chinese fallback. The saved/requested locale controls the root default for unqualified CSL terms and layouts. Rendering keeps the selected items in one processor invocation so whole-list ordering and citation behavior remain coherent.
 
+Desktop CSL management lives in Settings → 引用与题录, with 题录本地化, 已安装样式, and 在线样式 subpages. The default-localization picker defaults to 使用样式默认 (a null locale override); explicit existing locales remain selectable. Localization and language mappings auto-save together without changing the default style. Installed-style actions and online catalog operations share one manager, and legacy style-management entry points and CSL resource links open the installed-styles settings subpage. Removing or disabling the default style clears that preference while retaining localization settings.
 _Avoid_: Persisted item-language rewrite, per-item independent render
 
 **Tag**:

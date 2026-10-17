@@ -13,6 +13,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Csl;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -66,6 +67,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         WorkflowSettings = new WorkflowSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
+        CslLocalizationSettings = new CslLocalizationSettingsViewModel(main);
+        CslStyleManager = new CslStyleManagerViewModel(main);
+        CslOnlineStyles = new CslOnlineStylesSettingsViewModel(CslStyleManager);
+        Register(CslLocalizationSettings);
+        Register(CslStyleManager);
+        Register(CslOnlineStyles);
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
         ImportSettings = new ImportSettingsViewModel(main);
@@ -74,7 +81,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
             LlmSettings, WorkflowSettings, MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement,
-            ImportSettings
+            ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles
         ];
 
         _sections = sections;
@@ -106,6 +113,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("workflows", "工作流", WorkflowSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),
+            new SettingsSectionEntryViewModel("csl_localization", "题录本地化", CslLocalizationSettings),
+            new SettingsSectionEntryViewModel("csl_installed", "已安装样式", CslStyleManager),
+            new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings)
         ];
@@ -119,10 +129,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return SectionEntries.Single(entry => entry.Id == id);
         }
 
-        SettingsSectionGroupViewModel library = new(false, Entry("library"), Entry("local_files"));
-        SettingsSectionGroupViewModel recognition = new(false, Entry("import"), Entry("ocr"),
+        SettingsSectionGroupViewModel library = new(Entry("library"), Entry("local_files"));
+        SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr"),
             new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR 模型", new LlmOcrDefaultsViewModel(LlmSettings)));
-        SettingsSectionGroupViewModel ai = new(true, Entry("llm"), Entry("workflows"), Entry("mcp"));
+        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("workflows"), Entry("mcp"));
+        SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
+            Entry("csl_online"));
         Categories =
         [
             new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
@@ -131,6 +143,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("AI集成", "Sparkles", ai),
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
+            new NavCategoryViewModel("引用与题录", "Quote", citations),
             new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
@@ -180,6 +193,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public WorkflowSettingsViewModel WorkflowSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
+    public CslLocalizationSettingsViewModel CslLocalizationSettings { get; }
+    public CslStyleManagerViewModel CslStyleManager { get; }
+    public CslOnlineStylesSettingsViewModel CslOnlineStyles { get; }
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
     public ImportSettingsViewModel ImportSettings { get; }
@@ -189,8 +205,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     [ObservableProperty] public partial NavCategoryViewModel ActiveCategory { get; set; } = null!;
 
+    [ExcludeFromDerivedGeneration]
+    public SettingsSectionGroupViewModel? ActiveTabbedGroup =>
+        ActiveCategory?.Content as SettingsSectionGroupViewModel;
+
+    [ExcludeFromDerivedGeneration] public bool HasSectionTabs => ActiveTabbedGroup is not null;
+
     partial void OnActiveCategoryChanged(NavCategoryViewModel value)
     {
+        Raise(nameof(ActiveTabbedGroup));
+        Raise(nameof(HasSectionTabs));
         // Drafts stay in memory while the debounced auto-save drains them; switching sections
         // never blocks and never discards.
         StartActiveSectionLoad();
@@ -530,11 +554,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     {
         if (ActiveCategory?.Content is SettingsSectionGroupViewModel group)
         {
-            IEnumerable<object> contents = group.UseTabs
-                ? [group.ActiveEntry.Content]
-                : group.Entries.Select(entry => entry.Content);
-            return contents.Select(content => content is LlmOcrDefaultsViewModel ocr ? ocr.Settings : content)
-                .OfType<ISettingsSection>().Distinct();
+            return group.ActiveEntry.Content switch
+            {
+                LlmOcrDefaultsViewModel ocr => [ocr.Settings],
+                ISettingsSection selectedSection => [selectedSection],
+                _ => []
+            };
         }
 
         return ActiveCategory?.Content is ISettingsSection section ? [section] : [];

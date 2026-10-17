@@ -1499,17 +1499,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         if (changeSet.StyleIds.Count > 0)
         {
-            foreach (CslStyleManagerViewModel manager in OpenTabs.Select(tab => tab.Content)
-                         .OfType<CslStyleManagerViewModel>())
+            if (_settingsViewModel is { } settings)
             {
-                await manager.RefreshInstalledStylesAsync();
+                await settings.CslStyleManager.RefreshIfLoadedAsync();
             }
 
-            foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
-                         .OfType<ItemEditorViewModel>())
-            {
-                await editor.RefreshStylePreviewAsync();
-            }
+            await RefreshCslPreviewsAsync();
         }
 
         if (gen != LibraryGeneration)
@@ -2763,14 +2758,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             : title[..(maxLength - suffix.Length)] + suffix;
     }
 
-    private async Task OpenCslStyleManagerAsync()
+    internal async Task RefreshCslPreviewsAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.CslStyleManager, "CslStyleManager", "CSL 样式", "Quote", true,
-            () => new CslStyleManagerViewModel(this));
-        if (ActiveTab?.Content is CslStyleManagerViewModel csl)
+        foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
+                     .OfType<ItemEditorViewModel>().ToArray())
         {
-            await csl.InitializeAsync();
+            await editor.RefreshStylePreviewAsync();
         }
+    }
+
+    private Task OpenCslStyleManagerAsync()
+    {
+        return OpenSettingsAsync("csl_installed");
     }
 
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)

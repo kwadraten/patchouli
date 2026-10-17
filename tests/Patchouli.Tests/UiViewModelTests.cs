@@ -41,6 +41,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Csl;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
@@ -410,11 +411,20 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_uses_seven_groups_and_keeps_csl_about_outside()
+    public void Settings_page_groups_csl_styles_with_localization_and_keeps_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "同步与快照");
+            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "引用与题录", "同步与快照");
+        vm.Settings.Categories.Select(category => category.Content)
+            .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
+            .Where(content => content is AboutViewModel)
+            .Should()
+            .BeEmpty("About remains a workspace tab");
+        vm.Settings.SectionEntries.Single(entry => entry.Id == "csl_installed").Content
+            .Should().BeSameAs(vm.Settings.CslStyleManager);
+        vm.OpenCslStyleManagerCommand.Should().NotBeNull();
+        vm.ShowAboutCommand.Should().NotBeNull();
         vm.Settings.SectionEntries.Select(entry => entry.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
@@ -422,7 +432,7 @@ public sealed class UiViewModelTests : IDisposable
         // 「本地文件」and「工作流」own their commands instead of the shared settings draft pipeline:
         // workflow edits are committed and compile-checked one at a time.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "workflows"))
+            .Where(entry => entry.Id is not ("local_files" or "workflows" or "csl_installed" or "csl_online"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
