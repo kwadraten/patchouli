@@ -156,7 +156,6 @@ public sealed class AgentMcpGatewayTests
                 new XAttribute("id", boxId ?? fixture.BoxId),
                 new XAttribute("type", "text"),
                 new XAttribute("sub_type", string.Empty),
-                new XAttribute("base_type", string.Empty),
                 new XAttribute("heading_level", string.Empty),
                 new XAttribute("code_language", string.Empty),
                 new XAttribute("suppressed", "false"),
@@ -281,8 +280,8 @@ public sealed class AgentMcpGatewayTests
         {
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(documentId, pageId,
                 [
-                    new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .05), new TextBoxPayload("Original paragraph"))
+                    new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .05),
+                        new TextBoxPayload("Original paragraph"))
                 ],
                 DocumentTreeRevisionSource.Import);
             Result<DocumentTreeRevision> committed =

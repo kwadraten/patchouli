@@ -138,7 +138,7 @@ public static class PerformanceFixture
         {
             double top = 0.04 + 0.9 * boxIndex / Math.Max(1, boxesPerPage);
             seeds[boxIndex] = new DocumentBoxSeed(
-                null, null, boxIndex, DocumentBoxType.Text, null, null,
+                null, null, boxIndex, DocumentBoxType.Text, null,
                 new NormalizedBBox(0.04, top, 0.92, Math.Max(0.004, 0.88 / boxesPerPage)),
                 new TextBoxPayload($"perf text item {itemIndex:0000} page {pageIndex:00} box {boxIndex:00}"),
                 null);

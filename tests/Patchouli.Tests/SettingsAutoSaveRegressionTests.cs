@@ -63,7 +63,7 @@ public sealed class SettingsAutoSaveRegressionTests
 
     [Theory]
     [InlineData("csl-styles", "cite", false)]
-    [InlineData("texts", "put", false)]
+    [InlineData("texts", "put", true)]
     [InlineData("translations", "send", false)]
     [InlineData("runs", "send", true)]
     [InlineData("items", "cite", true)]

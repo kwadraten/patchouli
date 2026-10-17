@@ -181,7 +181,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     siblingIndex == siblings.Length - 1 ? null : siblings[siblingIndex + 1].BoxId,
                     seed.BoxType,
                     seed.SubType,
-                    seed.BaseType,
                     seed.BBox,
                     seed.Payload,
                     seed.HeadingLevel,
@@ -251,11 +250,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     """
                     insert into document_boxes (
                         tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
-                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                        next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
                         confidence, suppressed, continues_from_box_id)
                     select @WorkingRevisionId, box_id, document_instance_id, page_id, parent_box_id,
-                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                        next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
                         confidence, suppressed, continues_from_box_id
                     from document_boxes where tree_revision_id = @CurrentRevisionId;
@@ -689,8 +688,9 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         details: BoxContentDetails(boxId, "A typed payload is required."));
                 }
 
-                string effectiveType = EffectivePayloadType(box.BoxType, box.BaseType);
-                if (!HasExpectedPayloadType(effectiveType, payload))
+                string effectiveType = box.BoxType;
+                if (!(box.SubType == DocumentBoxType.Algorithm && payload is AlgorithmBoxPayload) &&
+                    !HasExpectedPayloadType(effectiveType, payload))
                 {
                     string message = $"Box '{boxId}' requires a {PayloadName(effectiveType)} payload.";
                     return Result<DocumentTreeRevision>.Failure(AppErrorCodes.ValidationFailed, message,
@@ -699,6 +699,10 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
                 DocumentBoxPayload replacement = (box.Payload, payload) switch
                 {
+                    (EquationBoxPayload original, EquationBoxPayload edited) => edited with
+                    {
+                        HasImage = original.HasImage
+                    },
                     (TableBoxPayload original, TableBoxPayload edited) => edited with { Html = original.Html },
                     (MediaBoxPayload original, MediaBoxPayload edited) => edited with { AssetId = original.AssetId },
                     _ => payload
@@ -711,7 +715,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         BoxContentDetails(boxId, payloadValidation.ErrorMessage!));
                 }
 
-                boxesById[boxId] = box with { Payload = replacement };
+                boxesById[boxId] = box with { Payload = replacement with { Annotations = box.Payload?.Annotations } };
             }
 
             DocumentTreeRevision working = NewRevision(
@@ -791,29 +795,13 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return new BoxContentFailureDetails([new BoxContentError(boxId.ToString(), message)]);
     }
 
-    private static string EffectivePayloadType(string boxType, string? baseType)
-    {
-        if (DocumentBoxType.IsKnown(boxType))
-        {
-            return boxType;
-        }
-
-        return baseType switch
-        {
-            "image" => DocumentBoxType.Image,
-            "table" => DocumentBoxType.Table,
-            "code" => DocumentBoxType.Code,
-            _ => DocumentBoxType.Text
-        };
-    }
-
     private static bool HasExpectedPayloadType(string boxType, DocumentBoxPayload payload)
     {
         return boxType switch
         {
             DocumentBoxType.Equation => payload is EquationBoxPayload,
             DocumentBoxType.Code or DocumentBoxType.Algorithm => payload is CodeBoxPayload,
-            DocumentBoxType.List => payload is ListBoxPayload,
+            DocumentBoxType.List or DocumentBoxType.Index => payload is ListBoxPayload,
             DocumentBoxType.Table => payload is TableBoxPayload,
             DocumentBoxType.Image or DocumentBoxType.Chart => payload is MediaBoxPayload,
             _ => payload is TextBoxPayload
@@ -964,7 +952,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 next.Value,
                 command.BoxType.Trim(),
                 NullIfWhiteSpace(command.SubType),
-                NullIfWhiteSpace(command.BaseType),
                 command.BBox,
                 command.Payload,
                 command.HeadingLevel,
@@ -1000,7 +987,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 next.Value,
                 DocumentBoxType.LogicalPage,
                 null,
-                null,
                 bbox,
                 null,
                 null,
@@ -1030,15 +1016,15 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             DocumentBox updated = boxes[index] with
             {
                 BoxType = boxType,
-                Payload = command.Payload,
+                Payload = command.Payload with { Annotations = boxes[index].Payload?.Annotations },
                 HeadingLevel = boxType == DocumentBoxType.Title
                     ? command.HeadingLevel ?? boxes[index].HeadingLevel ?? 1
                     : null,
                 CodeLanguage = boxType is DocumentBoxType.Code or DocumentBoxType.Algorithm
                     ? NullIfWhiteSpace(command.CodeLanguage)
                     : null,
-                SubType = NullIfWhiteSpace(command.SubType),
-                BaseType = NullIfWhiteSpace(command.BaseType)
+                SubType = NullIfWhiteSpace(command.SubType) ??
+                          (boxType == boxes[index].BoxType ? boxes[index].SubType : null)
             };
             boxes[index] = updated;
             return Mutation<DocumentBox>.Success(updated);
@@ -1196,7 +1182,10 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             {
                 BoxId = DocumentBoxId.New(),
                 BBox = Union(selected.Select(box => box.BBox)),
-                Payload = command.Payload,
+                Payload = command.Payload with
+                {
+                    Annotations = selected.SelectMany(box => box.Payload?.Annotations ?? []).ToArray()
+                },
                 NextSiblingBoxId = last.NextSiblingBoxId,
                 Confidence = selected.All(box => box.Confidence is not null)
                     ? selected.Average(box => box.Confidence!.Value)
@@ -1217,7 +1206,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return payload switch
         {
             TextBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
-            EquationBoxPayload value => !string.IsNullOrWhiteSpace(value.Latex),
+            EquationBoxPayload value => !string.IsNullOrWhiteSpace(value.Latex) || value.HasImage,
+            AlgorithmBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             ListBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             TableBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             CodeBoxPayload value => !string.IsNullOrWhiteSpace(value.Code),
@@ -1780,7 +1770,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             values.Append("(@p").Append(i).Append("_TreeRevisionId,@p").Append(i).Append("_BoxId,@p").Append(i)
                 .Append("_DocumentInstanceId,@p").Append(i).Append("_PageId,@p").Append(i).Append("_ParentBoxId,@p")
                 .Append(i).Append("_NextSiblingBoxId,@p").Append(i).Append("_BoxType,@p").Append(i)
-                .Append("_SubType,@p").Append(i).Append("_BaseType,@p").Append(i).Append("_BBoxX,@p").Append(i)
+                .Append("_SubType,@p").Append(i).Append("_BBoxX,@p").Append(i)
                 .Append("_BBoxY,@p").Append(i).Append("_BBoxWidth,@p").Append(i).Append("_BBoxHeight,@p").Append(i)
                 .Append("_PayloadJson,@p").Append(i).Append("_HeadingLevel,@p").Append(i).Append("_CodeLanguage,@p")
                 .Append(i).Append("_Confidence,@p").Append(i).Append("_Suppressed,@p").Append(i)
@@ -1794,7 +1784,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             parameters[prefix + "NextSiblingBoxId"] = box.NextSiblingBoxId?.ToString();
             parameters[prefix + "BoxType"] = box.BoxType;
             parameters[prefix + "SubType"] = box.SubType;
-            parameters[prefix + "BaseType"] = box.BaseType;
             parameters[prefix + "BBoxX"] = box.BBox.X;
             parameters[prefix + "BBoxY"] = box.BBox.Y;
             parameters[prefix + "BBoxWidth"] = box.BBox.Width;
@@ -1810,7 +1799,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return connection.ExecuteAsync(
             "insert into document_boxes (" +
             "tree_revision_id, box_id, document_instance_id, page_id, parent_box_id, next_sibling_box_id, " +
-            "box_type, sub_type, base_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json, " +
+            "box_type, sub_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json, " +
             "heading_level, code_language, confidence, suppressed, continues_from_box_id) values " + values,
             parameters,
             transaction);
@@ -1826,11 +1815,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             """
             insert into document_boxes (
                 tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
-                next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
                 confidence, suppressed, continues_from_box_id)
             select @TargetRevisionId, box_id, document_instance_id, page_id, parent_box_id,
-                next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
                 confidence, suppressed, continues_from_box_id
             from document_boxes where tree_revision_id = @SourceRevisionId;
@@ -1966,7 +1955,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             next_sibling_box_id as NextSiblingBoxId,
             box_type as BoxType,
             sub_type as SubType,
-            base_type as BaseType,
             bbox_x as BBoxX,
             bbox_y as BBoxY,
             bbox_width as BBoxWidth,
@@ -2155,7 +2143,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         public string? NextSiblingBoxId { get; set; }
         public string BoxType { get; set; } = string.Empty;
         public string? SubType { get; set; }
-        public string? BaseType { get; set; }
         public double BBoxX { get; set; }
         public double BBoxY { get; set; }
         public double BBoxWidth { get; set; }
@@ -2178,9 +2165,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId),
                 BoxType,
                 SubType,
-                BaseType,
                 new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
-                DocumentBoxPayloadSerializer.Deserialize(BoxType, BaseType, PayloadJson),
+                DocumentBoxPayloadSerializer.Deserialize(BoxType, SubType, PayloadJson),
                 HeadingLevel,
                 CodeLanguage,
                 Confidence,

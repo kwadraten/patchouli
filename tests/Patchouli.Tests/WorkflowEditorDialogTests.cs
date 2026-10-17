@@ -23,7 +23,7 @@ public sealed class WorkflowEditorDialogTests
     [Fact]
     public async Task Model_picker_displays_only_model_names_and_preserves_typed_selection()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -165,7 +165,7 @@ public sealed class WorkflowEditorDialogTests
     [Fact]
     public async Task List_edit_action_opens_the_selected_workflow_in_a_read_only_modal()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -185,7 +185,7 @@ public sealed class WorkflowEditorDialogTests
     [Fact]
     public async Task Save_and_close_keeps_the_dialog_open_when_the_script_does_not_compile()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             using TemporaryAppSettingsFile settings = new();

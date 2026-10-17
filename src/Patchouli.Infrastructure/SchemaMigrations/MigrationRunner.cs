@@ -63,7 +63,15 @@ public sealed class MigrationRunner
             try
             {
                 progress?.Report(new MigrationProgress(file.Id, file.Name, i + 1, pending.Count));
-                await connection.ExecuteAsync(sql, transaction: transaction);
+                if (file.Id == "048")
+                {
+                    await DocumentBoxTypeMigration.ApplyAsync(connection, transaction, sql);
+                }
+                else
+                {
+                    await connection.ExecuteAsync(sql, transaction: transaction);
+                }
+
                 await connection.ExecuteAsync(
                     """
                     insert into schema_migrations (id, name, applied_at)

@@ -98,12 +98,17 @@ internal static class DocumentMarkdownRenderer
 
     public static string? CompileBoxFragment(DocumentBox box, bool includeComplexTableHtml)
     {
-        return box.Payload switch
+        string? fragment = box.Payload switch
         {
+            TextBoxPayload text when box.BoxType == DocumentBoxType.LegacyEquationInterline =>
+                string.IsNullOrWhiteSpace(text.Markdown) ? "[Equation]" : text.Markdown,
             TextBoxPayload text when box.BoxType == DocumentBoxType.Title =>
                 $"{new string('#', box.HeadingLevel ?? 1)} {text.Markdown.Trim()}",
             TextBoxPayload text => text.Markdown,
-            EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
+            EquationBoxPayload equation => string.IsNullOrWhiteSpace(equation.Latex)
+                ? "[Equation image]"
+                : $"$$\n{equation.Latex.Trim()}\n$$",
             ListBoxPayload list => list.Markdown,
             TableBoxPayload table => includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
                                      !string.IsNullOrWhiteSpace(table.Html)
@@ -114,6 +119,13 @@ internal static class DocumentMarkdownRenderer
             null when box.BoxType == DocumentBoxType.LogicalPage => null,
             _ => null
         };
+        if (box.Payload?.Annotations is { Count: > 0 } annotations)
+        {
+            return string.Join("\n\n", new[] { fragment }.Concat(annotations.Select(annotation => annotation.Markdown))
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+        }
+
+        return fragment;
     }
 
     public static string CompileCode(string code, string? language)

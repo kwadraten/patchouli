@@ -226,8 +226,8 @@ public sealed class ItemMergeServiceTests
             document.DocumentInstanceId,
             page.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("merge sample"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("merge sample"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await trees.CommitWorkingRevisionAsync(working.TreeRevisionId);

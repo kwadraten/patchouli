@@ -182,7 +182,6 @@ public sealed class OverlapProjectionServiceTests
             null,
             DocumentBoxType.Text,
             null,
-            null,
             bbox,
             new TextBoxPayload("text"),
             null,

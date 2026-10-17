@@ -340,7 +340,7 @@ public static class PerformanceRunner
         {
             double top = 0.04 + 0.9 * boxIndex / boxes;
             seeds[boxIndex] = new DocumentBoxSeed(
-                null, null, boxIndex, DocumentBoxType.Text, null, null,
+                null, null, boxIndex, DocumentBoxType.Text, null,
                 new Core.Layout.NormalizedBBox(0.04, top, 0.92, 0.88 / boxes),
                 new TextBoxPayload($"perf ocr adoption sample {iteration} box {boxIndex:00}"),
                 null);

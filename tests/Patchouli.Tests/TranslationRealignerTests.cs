@@ -151,7 +151,7 @@ public sealed class TranslationRealignerTests
 
     private static DocumentBoxSeed TextBox(DocumentBoxId boxId, int order, string text)
     {
-        return new DocumentBoxSeed(boxId, null, order, DocumentBoxType.Text, null, null,
+        return new DocumentBoxSeed(boxId, null, order, DocumentBoxType.Text, null,
             new NormalizedBBox(.1, .1 + order * .1, .8, .05), new TextBoxPayload(text));
     }
 

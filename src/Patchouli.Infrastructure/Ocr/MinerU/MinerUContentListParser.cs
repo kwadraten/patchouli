@@ -25,7 +25,10 @@ internal sealed record MinerUContentBlock(
     IReadOnlyList<MinerUTableCell>? TableCells = null,
     [property: JsonPropertyName("cells")] IReadOnlyList<MinerUTableCell>? Cells = null,
     [property: JsonPropertyName("level")] int? HeadingLevel = null,
-    string? TableHtml = null);
+    string? TableHtml = null,
+    string? SubType = null,
+    string? CodeLanguage = null,
+    IReadOnlyList<Patchouli.Core.Documents.DocumentAnnotation>? Annotations = null);
 
 internal sealed record MinerUTableCell(
     [property: JsonPropertyName("row_index")]
@@ -174,12 +177,24 @@ internal sealed class MinerUContentListParser
             GetString(item, "type") ?? "text",
             GetBbox(item),
             text,
-            GetString(item, "latex") ?? GetString(item, "equation"),
+            GetString(item, "latex") ?? GetString(item, "equation")
+            ?? GetNestedString(item, "content", "math_content"),
             GetDouble(item, "confidence"),
             tableCells,
             null,
-            GetInt(item, "level") ?? GetInt(item, "heading_level"),
-            tableHtml));
+            GetInt(item, "level") ?? GetInt(item, "heading_level") ?? GetInt(item, "text_level") ??
+            (item.TryGetProperty("content", out JsonElement headingContent) &&
+             headingContent.ValueKind == JsonValueKind.Object
+                ? GetInt(headingContent, "level")
+                : null),
+            tableHtml,
+            GetString(item, "sub_type") ??
+            (GetNestedString(item, "content", "list_type") == "reference_list" ? "ref_text" : null),
+            GetString(item, "code_language") ?? GetNestedString(item, "content", "code_language"),
+            item.TryGetProperty("annotations", out JsonElement annotations)
+                ? JsonSerializer.Deserialize<Patchouli.Core.Documents.DocumentAnnotation[]>(annotations.GetRawText(),
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                : null));
     }
 
     private static string? GetText(JsonElement item)
@@ -188,6 +203,7 @@ internal sealed class MinerUContentListParser
                ?? GetString(item, "table_body")
                ?? GetString(item, "table")
                ?? GetString(item, "caption")
+               ?? GetString(item, "code_body")
                ?? GetContentText(item);
     }
 
@@ -319,14 +335,16 @@ internal sealed class MinerUContentListParser
 
     private static int? GetInt(JsonElement item, string propertyName)
     {
-        return item.TryGetProperty(propertyName, out JsonElement value) && value.TryGetInt32(out int number)
+        return item.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.Number &&
+               value.TryGetInt32(out int number)
             ? number
             : null;
     }
 
     private static double? GetDouble(JsonElement item, string propertyName)
     {
-        return item.TryGetProperty(propertyName, out JsonElement value) && value.TryGetDouble(out double number)
+        return item.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.Number &&
+               value.TryGetDouble(out double number)
             ? number
             : null;
     }

@@ -271,10 +271,10 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             DocumentBox parent = (await services.DocumentTreeEditor.InsertLogicalPageAsync(
                 edit, null, new NormalizedBBox(0, 0, 1, 1))).Value;
             DocumentBox first = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
-                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null, null,
+                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null,
                     new NormalizedBBox(.1, .1, .2, .2), new TextBoxPayload("First")))).Value;
             DocumentBox second = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
-                new InsertLeafCommand(parent.BoxId, first.BoxId, DocumentBoxType.Text, null, null,
+                new InsertLeafCommand(parent.BoxId, first.BoxId, DocumentBoxType.Text, null,
                     new NormalizedBBox(.5, .1, .2, .2), new TextBoxPayload("Second")))).Value;
             await workspace.RefreshBoxesAsync();
 
@@ -324,7 +324,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             workspace.BoundingBoxes.Should().ContainSingle().Which.BoxId.Should().Be(parent.BoxId);
 
             DocumentBox child = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
-                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null, null,
+                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null,
                     new NormalizedBBox(.1, .1, .2, .2), new TextBoxPayload("Child")))).Value;
             await workspace.RefreshBoxesAsync();
             workspace.SelectBox(workspace.BoundingBoxes.Single(box => box.BoxId == parent.BoxId), false);

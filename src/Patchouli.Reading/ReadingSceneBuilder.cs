@@ -44,9 +44,9 @@ public static class ReadingSceneBuilder
     //   table flattens to space-separated cells), so the source slice is required for a real grid.
     //   A [Table] placeholder (a complex table GFM cannot represent) falls back to the box's stored
     //   HTML table, so such a table still renders as a grid instead of the literal placeholder.
-    // - Media: MediaLabel is "图像" for image and "图表" for chart; Text is the block text; Image is
+    // - Images: MediaLabel is "图像" for image, "图表" for chart and "公式" for equation; Image is
     //   the box's normalized BBox region keyed by imageKey, for drawing a sub-rect of the page
-    //   bitmap. Non-media blocks always carry a null Image even if their payload is a media payload.
+    //   bitmap. Blocks other than media/equations carry a null Image even if their payload is a media payload.
     // - CodeLanguage: the box's CodeLanguage when present.
     // - Inlines: block.Inlines passed through (except tables, which render from Table).
     public static ReadingScene Build(
@@ -70,6 +70,7 @@ public static class ReadingSceneBuilder
 
         List<ReadingBlock> blocks = new(model.Blocks.Count);
         HashSet<DocumentBoxId> payloadTablesBuilt = [];
+        HashSet<DocumentBoxId> annotatedBodiesBuilt = [];
         for (int index = 0; index < model.Blocks.Count; index++)
         {
             MarkdownBlock block = model.Blocks[index];
@@ -77,8 +78,11 @@ public static class ReadingSceneBuilder
             DocumentBox? box = boxId is { } id && boxesById.TryGetValue(id, out DocumentBox? resolved)
                 ? resolved
                 : null;
-            string kind = KindFor(box, block.Kind);
+            string kind = box?.Payload?.Annotations is { Count: > 0 } && !annotatedBodiesBuilt.Add(box.BoxId)
+                ? block.Kind
+                : KindFor(box, block.Kind);
             bool isTable = kind == "table";
+            bool hasImage = kind is "media" or "equation";
             ReadingTable? table = isTable
                 ? ParseTableBlock(block, box, boxId, markdownSource, payloadTablesBuilt)
                 : null;
@@ -89,9 +93,9 @@ public static class ReadingSceneBuilder
                 block.Text,
                 isTable ? null : block.Inlines,
                 table,
-                kind == "media" ? MediaLabelFor(box) : null,
+                hasImage ? MediaLabelFor(box) : null,
                 box?.CodeLanguage,
-                kind == "media" ? MediaImageFor(box, imageKey) : null,
+                hasImage ? MediaImageFor(box, imageKey) : null,
                 pageIndex));
         }
 
@@ -118,6 +122,11 @@ public static class ReadingSceneBuilder
     // the reading view does not know keeps the markdown block's own kind.
     private static string KindFor(DocumentBox? box, string fallback)
     {
+        if (box?.Payload is AlgorithmBoxPayload)
+        {
+            return fallback;
+        }
+
         return box?.BoxType switch
         {
             DocumentBoxType.Text or DocumentBoxType.RefText => "paragraph",
@@ -125,7 +134,7 @@ public static class ReadingSceneBuilder
             DocumentBoxType.Image or DocumentBoxType.Chart => "media",
             DocumentBoxType.List => "list",
             DocumentBoxType.Code or DocumentBoxType.Algorithm => "code",
-            DocumentBoxType.Equation => "equation",
+            DocumentBoxType.Equation or DocumentBoxType.LegacyEquationInterline => "equation",
             DocumentBoxType.Table => "table",
             DocumentBoxType.ImageCaption or DocumentBoxType.ImageFootnote or
                 DocumentBoxType.TableCaption or DocumentBoxType.TableFootnote or
@@ -140,7 +149,12 @@ public static class ReadingSceneBuilder
 
     private static string MediaLabelFor(DocumentBox? box)
     {
-        return box?.BoxType == DocumentBoxType.Chart ? "图表" : "图像";
+        return box?.BoxType switch
+        {
+            DocumentBoxType.Chart => "图表",
+            DocumentBoxType.Equation or DocumentBoxType.LegacyEquationInterline => "公式",
+            _ => "图像"
+        };
     }
 
     // The media region travels the box's normalized BBox (not its asset id) so the view can draw

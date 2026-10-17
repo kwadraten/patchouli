@@ -264,6 +264,45 @@ public sealed class LibraryRevisionMonitorTests
         }
     }
 
+    [Fact]
+    public async Task Disposal_drains_an_in_flight_local_refresh_and_rejects_later_commits()
+    {
+        await using TestContext context = await CreateContextAsync();
+        TransientFailOnceTagService tags = new(context.Tags);
+        LibraryItemCache cache = new(context.Query, tags);
+        await cache.EnsureLoadedAsync();
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        tags.RunOnNextListTagsCall(async cancellationToken =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+        });
+        LibraryRevisionMonitor monitor = new(context.Revisions, cache);
+        try
+        {
+            (await context.Items.CreateItemAsync("book", "Before shutdown")).IsSuccess.Should().BeTrue();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Task disposing = monitor.DisposeAsync().AsTask();
+            disposing.IsCompleted.Should().BeFalse("the blocked local refresh still owns its resources");
+            monitor.DisposeAsync().AsTask().Should().BeSameAs(disposing);
+            release.TrySetResult();
+            await disposing.WaitAsync(TimeSpan.FromSeconds(10));
+
+            (await context.Items.CreateItemAsync("book", "After shutdown")).IsSuccess.Should().BeTrue();
+            cache.QueryByTags(null).Select(row => row.Title).Should().Equal("Before shutdown");
+            context.Database.ConnectionFactory.ClearPools();
+            using FileStream exclusive = File.Open(context.Database.ConnectionFactory.DatabasePath,
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await monitor.DisposeAsync();
+        }
+    }
+
     private static async Task<TestContext> CreateContextAsync()
     {
         TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

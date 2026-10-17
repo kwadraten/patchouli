@@ -51,7 +51,6 @@ create table if not exists document_boxes (
     next_sibling_box_id text null,
     box_type text not null,
     sub_type text null,
-    base_type text null,
     bbox_x real not null,
     bbox_y real not null,
     bbox_width real not null,
@@ -70,7 +69,6 @@ create table if not exists document_boxes (
     foreign key (tree_revision_id, next_sibling_box_id)
         references document_boxes(tree_revision_id, box_id) deferrable initially deferred,
     check (length(trim(box_type)) > 0),
-    check (base_type is null or base_type in ('text', 'image', 'table', 'code', 'unknown')),
     check (bbox_x >= 0 and bbox_x <= 1 and bbox_y >= 0 and bbox_y <= 1),
     check (bbox_width > 0 and bbox_width <= 1 and bbox_height > 0 and bbox_height <= 1),
     check (bbox_x + bbox_width <= 1 and bbox_y + bbox_height <= 1),

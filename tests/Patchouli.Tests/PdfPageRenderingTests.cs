@@ -323,8 +323,8 @@ public sealed class PdfPageRenderingTests
         DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
             c.DocumentInstanceId, c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("rendered evidence"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("rendered evidence"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
@@ -418,8 +418,8 @@ public sealed class PdfPageRenderingTests
         DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
             c.DocumentInstanceId, c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("edited box"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("edited box"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
@@ -493,7 +493,8 @@ public sealed class PdfPageRenderingTests
                 "044_project_document_box_file_asset_refs.sql",
                 "045_project_item_tags.sql",
                 "046_track_local_maintenance.sql",
-                "047_index_file_import_content_hash.sql");
+                "047_index_file_import_content_hash.sql",
+                "048_normalize_document_box_types.sql");
     }
 
     private sealed class Context : IAsyncDisposable

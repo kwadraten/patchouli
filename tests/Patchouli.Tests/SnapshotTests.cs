@@ -325,8 +325,7 @@ public sealed class SnapshotTests
             c.DocumentInstanceId,
             c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, null,
-                    new NormalizedBBox(.1, .1, .5, .5),
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, new NormalizedBBox(.1, .1, .5, .5),
                     new MediaBoxPayload(referencedAssetId.ToString(), "snapshot reference"))
             ],
             DocumentTreeRevisionSource.ManualEdit)).Value;
@@ -365,8 +364,8 @@ public sealed class SnapshotTests
             c.DocumentInstanceId,
             c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("working draft"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("working draft"))
             ],
             DocumentTreeRevisionSource.ManualEdit)).Value;
 
@@ -400,8 +399,8 @@ public sealed class SnapshotTests
             c.DocumentInstanceId,
             c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("in-place commit sample"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("in-place commit sample"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         DocumentBoxId boxId = (await trees.ListBoxesAsync(working.TreeRevisionId)).Value.Single().BoxId;
@@ -1154,8 +1153,8 @@ public sealed class SnapshotTests
                 doc.Value.DocumentInstanceId,
                 page.Value.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("snapshot text"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("snapshot text"))
                 ],
                 DocumentTreeRevisionSource.Import)).Value;
             DocumentTreeRevision revision =

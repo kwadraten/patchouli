@@ -155,22 +155,22 @@ public sealed class TranslationStructureValidatorTests
         DocumentBoxId logicalFirst = DocumentBoxId.New();
         DocumentBoxId logicalSecond = DocumentBoxId.New();
         DocumentTreeRevision revision = await context.CommitAsync(
-            new DocumentBoxSeed(logicalFirst, null, 0, DocumentBoxType.LogicalPage, null, null,
+            new DocumentBoxSeed(logicalFirst, null, 0, DocumentBoxType.LogicalPage, null,
                 new NormalizedBBox(0, 0, 1, .5), null),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 0, DocumentBoxType.Title, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 0, DocumentBoxType.Title, null,
                 new NormalizedBBox(.1, .05, .8, .05), new TextBoxPayload("Original title"), 1),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 1, DocumentBoxType.Text, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 1, DocumentBoxType.Text, null,
                 new NormalizedBBox(.1, .15, .8, .05), new TextBoxPayload("Original paragraph")),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 2, DocumentBoxType.Equation, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 2, DocumentBoxType.Equation, null,
                 new NormalizedBBox(.1, .25, .8, .05), new EquationBoxPayload("E = mc^2")),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 3, DocumentBoxType.Code, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalFirst, 3, DocumentBoxType.Code, null,
                 new NormalizedBBox(.1, .35, .8, .05), new CodeBoxPayload("int x = 1;"), CodeLanguage: "csharp"),
-            new DocumentBoxSeed(logicalSecond, null, 1, DocumentBoxType.LogicalPage, null, null,
+            new DocumentBoxSeed(logicalSecond, null, 1, DocumentBoxType.LogicalPage, null,
                 new NormalizedBBox(0, .5, 1, .5), null),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalSecond, 0, DocumentBoxType.Table, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalSecond, 0, DocumentBoxType.Table, null,
                 new NormalizedBBox(.1, .55, .8, .1),
                 new TableBoxPayload("| a | b |\n| --- | --- |\n| 1 | 2 |")),
-            new DocumentBoxSeed(DocumentBoxId.New(), logicalSecond, 1, DocumentBoxType.Text, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logicalSecond, 1, DocumentBoxType.Text, null,
                 new NormalizedBBox(.1, .75, .8, .05), new TextBoxPayload("Second paragraph")));
         CompiledMarkdown compiled = await context.CompileSourceAsync(revision.TreeRevisionId);
         return (revision, compiled.Markdown);

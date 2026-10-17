@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO.Compression;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Reactive.Concurrency;
 using System.Text;
 using Avalonia;
 using Avalonia.Headless;
@@ -153,8 +154,14 @@ public sealed class UiViewModelTests : IDisposable
     private MainWindowViewModel CreateMainWindow(IClipboardService? clipboard = null, IAppLogger? logger = null,
         bool autoStartMcpServer = false, int mcpPort = 4536)
     {
+        // Pure VM assertions are synchronous. Preserve the dispatcher only for real window tests;
+        // xUnit's synchronization context is not an application UI scheduler.
+        IScheduler uiScheduler = Application.Current is not null && Dispatcher.UIThread.CheckAccess() &&
+                                 SynchronizationContext.Current is { } context
+            ? new SynchronizationContextScheduler(context)
+            : ImmediateScheduler.Instance;
         return new MainWindowViewModel(clipboard, logger, autoStartMcpServer: autoStartMcpServer, mcpPort: mcpPort,
-            settingsPath: _settings.Path);
+            settingsPath: _settings.Path, uiScheduler: uiScheduler);
     }
 
     private MainWindow CreateMainWindowShell(IClipboardService? clipboard = null, bool autoStartMcpServer = false,
@@ -3260,7 +3267,7 @@ public sealed class UiViewModelTests : IDisposable
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await using MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             HostServices services = await vm.ServicesAsync();
@@ -4124,7 +4131,7 @@ public sealed class UiViewModelTests : IDisposable
                 boxes =
                 [
                     new DocumentBox(_currentRevision.TreeRevisionId, LogicalPageBoxId, _documentInstanceId, _pageId,
-                        null, null, DocumentBoxType.LogicalPage, null, null, new NormalizedBBox(0, 0, 1, 1), null,
+                        null, null, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 1, 1), null,
                         null, null, null, false)
                 ];
             }
@@ -4133,7 +4140,7 @@ public sealed class UiViewModelTests : IDisposable
                 boxes =
                 [
                     new DocumentBox(RegionRevisionId, DocumentBoxId.New(), _documentInstanceId, _pageId,
-                        LogicalPageBoxId, null, DocumentBoxType.Text, null, null, new NormalizedBBox(.1, .2, .3, .4),
+                        LogicalPageBoxId, null, DocumentBoxType.Text, null, new NormalizedBBox(.1, .2, .3, .4),
                         new TextBoxPayload("queued region text"), null, null, null, false)
                 ];
             }

@@ -462,7 +462,6 @@ public sealed class ImportBatchWriter
             null,
             DocumentBoxType.LogicalPage,
             null,
-            null,
             new NormalizedBBox(0, 0, 1, 1),
             new TextBoxPayload($"Import failed for this page: {placeholder.Reason}"),
             null,
@@ -474,12 +473,12 @@ public sealed class ImportBatchWriter
             """
             insert into document_boxes (
                 tree_revision_id, box_id, document_instance_id, page_id, parent_box_id, next_sibling_box_id,
-                box_type, sub_type, base_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json,
+                box_type, sub_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json,
                 heading_level, code_language, confidence, suppressed, continues_from_box_id
             )
             values (
                 @TreeRevisionId, @BoxId, @DocumentInstanceId, @PageId, @ParentBoxId, @NextSiblingBoxId,
-                @BoxType, @SubType, @BaseType, @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @PayloadJson,
+                @BoxType, @SubType, @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @PayloadJson,
                 @HeadingLevel, @CodeLanguage, @Confidence, @Suppressed, @ContinuesFromBoxId
             );
             """,
@@ -493,7 +492,6 @@ public sealed class ImportBatchWriter
                 NextSiblingBoxId = box.NextSiblingBoxId?.ToString(),
                 box.BoxType,
                 box.SubType,
-                box.BaseType,
                 BBoxX = box.BBox.X,
                 BBoxY = box.BBox.Y,
                 BBoxWidth = box.BBox.Width,

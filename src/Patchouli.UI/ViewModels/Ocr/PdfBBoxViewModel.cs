@@ -187,7 +187,8 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
         Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateLeafAsync(
             sessionId.Value,
-            new UpdateLeafCommand(BoxId, BoxType, PayloadForText(Text), HeadingLevel, CodeLanguage));
+            new UpdateLeafCommand(BoxId, BoxType, PayloadForText(Text), HeadingLevel, CodeLanguage,
+                Payload is AlgorithmBoxPayload ? DocumentBoxType.Algorithm : null));
         if (result.IsFailure)
         {
             Workspace.Status = $"更新文本失败: {result.ErrorMessage}";
@@ -204,9 +205,11 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     {
         return BoxType switch
         {
+            DocumentBoxType.Code when Payload is AlgorithmBoxPayload => new AlgorithmBoxPayload(text ?? string.Empty),
             DocumentBoxType.Code => new CodeBoxPayload(text ?? string.Empty),
-            DocumentBoxType.Equation => new EquationBoxPayload(text ?? string.Empty),
-            DocumentBoxType.List => new ListBoxPayload(text ?? string.Empty),
+            DocumentBoxType.Equation => new EquationBoxPayload(text ?? string.Empty,
+                Payload is EquationBoxPayload { HasImage: true }),
+            DocumentBoxType.List or DocumentBoxType.Index => new ListBoxPayload(text ?? string.Empty),
             DocumentBoxType.Table => new TableBoxPayload(
                 text ?? string.Empty,
                 string.Equals(text?.Trim(), "[Table]", StringComparison.Ordinal) ? _tableHtml : null),
@@ -312,6 +315,7 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             TextBoxPayload value => value.Markdown,
             ListBoxPayload value => value.Markdown,
             TableBoxPayload value => value.Markdown,
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
             EquationBoxPayload value => value.Latex,
             CodeBoxPayload value => value.Code,
             MediaBoxPayload value => value.Description,

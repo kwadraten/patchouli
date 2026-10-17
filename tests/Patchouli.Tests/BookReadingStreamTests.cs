@@ -252,7 +252,6 @@ public sealed class BookReadingStreamTests
                     null,
                     DocumentBoxType.Text,
                     null,
-                    null,
                     new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
                     new TextBoxPayload("识别出的正文"))))
             .IsSuccess.Should().BeTrue();

@@ -1197,8 +1197,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             Result<DocumentTreeRevision> working = await tree.BeginWorkingRevisionAsync(
                 documentId, page.Value.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload(text), null)
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload(text), null)
                 ],
                 DocumentTreeRevisionSource.Import);
             Require(working);

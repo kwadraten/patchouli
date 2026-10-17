@@ -144,7 +144,6 @@ internal static class Boxes
                 i,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(x, y, 0.02, 0.02),
                 new TextBoxPayload($"line{i} unique"));
         }

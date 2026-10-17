@@ -903,7 +903,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             result = await editor.DrawAndInsertLeafAsync(
                 EditSessionId.Value,
-                new InsertLeafCommand(null, after, NewBoxType, null, null, PendingBBox.Value,
+                new InsertLeafCommand(null, after, NewBoxType, null, PendingBBox.Value,
                     CreatePayload(NewBoxType, NewBoxText),
                     NewBoxType == DocumentBoxType.Title ? NewHeadingLevel : null,
                     NewBoxType == DocumentBoxType.Code && !string.IsNullOrWhiteSpace(NewCodeLanguage)
@@ -994,7 +994,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 null,
                 null,
                 candidate.Value.BoxType,
-                null,
                 null,
                 candidate.Value.BBox,
                 candidate.Value.Payload,
@@ -1108,7 +1107,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 null,
                 null,
                 candidate.Value.BoxType,
-                null,
                 null,
                 candidate.Value.BBox,
                 candidate.Value.Payload,
@@ -1815,6 +1813,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             TextBoxPayload value => value.Markdown,
             ListBoxPayload value => value.Markdown,
             TableBoxPayload value => value.Markdown,
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
             EquationBoxPayload value => value.Latex,
             CodeBoxPayload value => value.Code,
             MediaBoxPayload value => value.Description,

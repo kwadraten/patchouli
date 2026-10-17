@@ -78,6 +78,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             UnexpectedExceptions.Sink.Report(exception, boundary, operation);
 
     private HostServices? _services;
+    private readonly object _shutdownGate = new();
+    private Task? _shutdownTask;
     private ILibraryRevisionService? _observedLibraryRevisions;
     private McpServerHost? _mcpHost;
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
@@ -1953,7 +1955,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await ShutdownAsync();
     }
 
-    public async Task ShutdownAsync()
+    public Task ShutdownAsync()
+    {
+        lock (_shutdownGate)
+        {
+            return _shutdownTask ??= ShutdownCoreAsync();
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
     {
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())

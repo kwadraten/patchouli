@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
@@ -40,13 +40,13 @@ public sealed class BoxTreeReadSurfaceTests
         const string complexTableHtml = "<table><tr><td rowspan=\"2\">Merged</td></tr></table>";
         DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(document.DocumentInstanceId, page.PageId,
         [
-            new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("canonical searchable phrase")),
-            new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, null,
-                new NormalizedBBox(.1, .01, .8, .05), new TextBoxPayload("suppressed running head"),
+            new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                new TextBoxPayload("canonical searchable phrase")),
+            new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, new NormalizedBBox(.1, .01, .8, .05),
+                new TextBoxPayload("suppressed running head"),
                 Suppressed: true),
-            new DocumentBoxSeed(null, null, 2, DocumentBoxType.Table, null, null,
-                new NormalizedBBox(.1, .3, .8, .2), new TableBoxPayload("[Table]", complexTableHtml))
+            new DocumentBoxSeed(null, null, 2, DocumentBoxType.Table, null, new NormalizedBBox(.1, .3, .8, .2),
+                new TableBoxPayload("[Table]", complexTableHtml))
         ], DocumentTreeRevisionSource.Import)).Value;
         DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
 
@@ -117,8 +117,8 @@ public sealed class BoxTreeReadSurfaceTests
             targetDocument.DocumentInstanceId,
             targetPage.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Header, null, null,
-                    new NormalizedBBox(.1, .02, .8, .05), new TextBoxPayload("suppressed only"), Suppressed: true)
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Header, null, new NormalizedBBox(.1, .02, .8, .05),
+                    new TextBoxPayload("suppressed only"), Suppressed: true)
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await trees.CommitWorkingRevisionAsync(targetRevision.TreeRevisionId);
@@ -132,8 +132,8 @@ public sealed class BoxTreeReadSurfaceTests
                 unrelatedDocument.DocumentInstanceId,
                 page.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload($"unrelated page {index}"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload($"unrelated page {index}"))
                 ],
                 DocumentTreeRevisionSource.Import)).Value;
             (await trees.CommitWorkingRevisionAsync(revision.TreeRevisionId)).IsSuccess.Should().BeTrue();

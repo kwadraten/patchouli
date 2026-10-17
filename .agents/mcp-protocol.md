@@ -42,11 +42,11 @@ replacement preserves input order, including entries sharing a creation timestam
 The CSL `call-number` field maps to the internal `call_number` identifier scheme; the older
 hyphenated scheme spelling is accepted and normalized on write.
 
-Page XML uses profile `patchouli-page-1`. The page identifies its document, one-based page,
+Page XML uses profile `patchouli-page-2`. The page identifies its document, one-based page,
 source revision, translation version, and completeness. Boxes retain stable IDs and source
 structure; payloads wrap existing Markdown, LaTeX, code, or descriptions. Suppressed nodes,
-including page footnotes, are included. Geometry, local paths, media asset locations, and
-secrets are not exposed. XML processing disables DTDs and external entities.
+including page footnotes, are included. Only image-formula page-region geometry is exposed; local paths, media asset locations,
+and secrets are not exposed. XML processing disables DTDs and external entities.
 
 New XML translation replacements are validated by box identity rather than Markdown position.
 `translated` distinguishes a stored translation from source fallback. A page without translations
@@ -306,7 +306,7 @@ RANGES
 CANONICAL REPRESENTATIONS
   item URI             CSL/application YAML profile `patchouli-item-1`
   text document URI    Document outline, owning item link, and page links
-  text page URI        Page XML profile `patchouli-page-1`, box metadata and payloads
+  text page URI        Page XML profile `patchouli-page-2`, box metadata and payloads
   text page ?rev=&box= URI  Versioned evidence text, source mapping, and owning item link
   translation document URI  Page list with per-page translation status
   translation page URI  Page XML, translated markers, payloads and version metadata
@@ -658,3 +658,20 @@ retains frozen values/model selection and records explicit context and loop-acti
 older histories remain readable but cannot resume automated execution with the new executor.
 Session events include context and activation identity for effects without introducing separate
 MCP Run resources for workers. See [workflow-api](workflow-api.md), ADR 0042 and ADR 0043.
+
+
+## Canonical box types and image formulas
+
+Box XML no longer has a `base_type` attribute. `sub_type` has type-scoped semantics:
+`code` supports `code` / `algorithm`, lists support `text` / `ref_text`, and image/chart
+subtypes describe their visual category. Other box types have no subtype. Algorithm
+payloads use `format="markdown"`; literal code uses `format="code"`.
+
+An equation always has `payload format="latex"`, which may be empty when its source
+has an image. Its immutable `image kind="page-region"` sibling identifies `page_id`
+and normalized `x`, `y`, `width`, `height` in the application's page coordinate system.
+This is a region descriptor, not an image file endpoint or inline binary data. It
+must be preserved exactly in a source/translation box replacement. Native readers
+render that region from their existing page bitmap. Typed `annotation` siblings carry
+caption/footnote Markdown and are also preserved exactly during payload writes.
+No image paths or OCR producer identity are exposed or added to canonical storage.

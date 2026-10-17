@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Markdig;
 using Markdig.Extensions.Tables;
@@ -74,13 +75,15 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
         return boxType switch
         {
             DocumentBoxType.Equation => payload is EquationBoxPayload equation &&
-                                        !string.IsNullOrWhiteSpace(equation.Latex)
+                                        (!string.IsNullOrWhiteSpace(equation.Latex) || equation.HasImage)
                 ? Result.Success()
-                : Invalid("Equation boxes require non-empty LaTeX source."),
+                : Invalid("Equation boxes require LaTeX or a page image region."),
+            DocumentBoxType.Code when payload is AlgorithmBoxPayload algorithm => RejectDangerousHtml(
+                algorithm.Markdown),
             DocumentBoxType.Code or DocumentBoxType.Algorithm => payload is CodeBoxPayload
                 ? Result.Success()
                 : Invalid("Code boxes require raw code payload."),
-            DocumentBoxType.List => payload is ListBoxPayload list
+            DocumentBoxType.List or DocumentBoxType.Index => payload is ListBoxPayload list
                 ? ValidateSingleBlock<ListBlock>(list.Markdown, "a single GFM list")
                 : Invalid("List boxes require Markdown list payload."),
             DocumentBoxType.Table => payload is TableBoxPayload table
@@ -128,7 +131,7 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
         }
     }
 
-    private static Result ValidateTablePlaceholder(TableBoxPayload table)
+    private Result ValidateTablePlaceholder(TableBoxPayload table)
     {
         if (string.IsNullOrWhiteSpace(table.Html))
         {
@@ -148,19 +151,85 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
             : Invalid("Table placeholder HTML must contain one table element.");
     }
 
-    private static Result RejectDangerousHtml(string markdown)
+    // OCR text may quote HTML-looking placeholders (for example Option "<option>").
+    // Store them as literal Markdown without changing code spans, code blocks or typed code/LaTeX.
+    internal string EscapeDangerousHtmlLiterals(string markdown)
+    {
+        if (!ContainsDangerousHtmlName(markdown))
+        {
+            return markdown;
+        }
+
+        string source = EscapeRunawayOrderedLists(markdown);
+        int[] starts = FindDangerousHtml(source).Select(tag => tag.Start).Distinct().OrderDescending().ToArray();
+        if (starts.Length == 0)
+        {
+            return markdown;
+        }
+
+        // Parsing escapes runaway list markers; map its spans back to the original OCR
+        // so this normalization persists only the HTML escaping, not that parser workaround.
+        int[] insertedEscapes = RunawayOrderedListPattern.Matches(markdown)
+            .Select((match, index) => match.Index + index).ToArray();
+        StringBuilder escaped = new(markdown);
+        foreach (int start in starts)
+        {
+            int originalStart = start - insertedEscapes.Count(position => position < start);
+            escaped.Remove(originalStart, 1).Insert(originalStart, "&lt;");
+        }
+
+        return escaped.ToString();
+    }
+
+    private Result RejectDangerousHtml(string markdown)
     {
         string source = markdown ?? string.Empty;
-        foreach (Match match in HtmlTagNamePattern.Matches(source))
+        if (!ContainsDangerousHtmlName(source))
         {
-            string name = match.Groups["name"].Value;
-            if (DangerousHtmlTags.Contains(name))
+            return Result.Success();
+        }
+
+        try
+        {
+            foreach ((int _, string name) in FindDangerousHtml(EscapeRunawayOrderedLists(source)))
             {
                 return Invalid($"Dangerous HTML tag <{name.ToLowerInvariant()}> is not allowed in document Markdown.");
             }
         }
+        catch (ArgumentException exception) when (IsMarkdownDepthLimit(exception))
+        {
+            return Invalid(exception.Message);
+        }
 
         return Result.Success();
+    }
+
+    private static bool ContainsDangerousHtmlName(string markdown)
+    {
+        return HtmlTagNamePattern.Matches(markdown)
+            .Any(match => DangerousHtmlTags.Contains(match.Groups["name"].Value));
+    }
+
+    private IEnumerable<(int Start, string Name)> FindDangerousHtml(string source)
+    {
+        MarkdownDocument document = Markdown.Parse(source, _validationPipeline);
+        foreach (MarkdownObject node in document.Descendants())
+        {
+            if (node is not (HtmlInline or HtmlBlock))
+            {
+                continue;
+            }
+
+            string html = source.Substring(node.Span.Start, node.Span.Length);
+            foreach (Match match in HtmlTagNamePattern.Matches(html))
+            {
+                string name = match.Groups["name"].Value;
+                if (DangerousHtmlTags.Contains(name))
+                {
+                    yield return (node.Span.Start + match.Index, name);
+                }
+            }
+        }
     }
 
     private static bool IsMarkdownDepthLimit(ArgumentException exception)
@@ -213,6 +282,7 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
             nodes.Add(current switch
             {
                 LiteralInline literal => new MarkdownInlineModel("text", literal.Content.ToString()),
+                HtmlEntityInline entity => new MarkdownInlineModel("text", entity.Transcoded.ToString()),
                 CodeInline code => new MarkdownInlineModel("code", code.Content.ToString()),
                 LineBreakInline => new MarkdownInlineModel("line_break", "\n"),
                 EmphasisInline { DelimiterChar: '^' } superscript => new MarkdownInlineModel(

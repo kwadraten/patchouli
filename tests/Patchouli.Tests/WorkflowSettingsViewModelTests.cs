@@ -60,7 +60,7 @@ public sealed class WorkflowSettingsViewModelTests
 
     private async Task RunOnDispatcherAsync(Func<Task> test)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch(async () =>
         {
             _root = Path.Combine(Path.GetTempPath(), "patchouli-workflow-settings-" + Guid.NewGuid().ToString("N"));

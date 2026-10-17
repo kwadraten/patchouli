@@ -142,8 +142,8 @@ public sealed class McpReadApiConnectionModeTests
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
                 document.Value.DocumentInstanceId, page.Value.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("canonical searchable phrase"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("canonical searchable phrase"))
                 ],
                 DocumentTreeRevisionSource.Import);
             if (working.IsFailure)

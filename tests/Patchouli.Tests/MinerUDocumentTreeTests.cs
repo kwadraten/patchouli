@@ -14,11 +14,350 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr.MinerU;
+using Patchouli.Reading;
+using Dapper;
+using Microsoft.Data.Sqlite;
+using System.Text.Json;
 
 namespace Patchouli.Tests;
 
 public sealed class MinerUDocumentTreeTests
 {
+    [Fact]
+    public async Task Middle_json_imports_typed_content_image_formulas_and_subtypes_without_provider_metadata()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("middle_json.json", """
+                                                   {"schema":"docvortex.middle","schema_version":"2.0",
+                                                    "metadata":{"file_suffix":"pdf","producer":{"name":"DO_NOT_PERSIST","version":"4.0.12"}},
+                                                    "extensions":{"mineru":{"tier":"flash","parse_mode":"txt"}},"is_full_document":false,
+                                                    "pages":[{"page_idx":1,"blocks":[
+                                                      {"type":"paragraph_title","level":2,"index":0,"bbox":[0.1,0.1,0.9,0.2],
+                                                       "content":[{"type":"text","content":"Formula"}]},
+                                                      {"type":"code","sub_type":"algorithm","index":1,"bbox":[0.1,0.3,0.9,0.4],"content":[
+                                                        {"type":"algorithm_body","content":[{"type":"text","content":"Choose "},{"type":"equation_inline","content":"x_i"}]}]},
+                                                      {"type":"equation","index":2,"bbox":[0.279,0.513,0.717,0.549],"content":"","image_path":"images/equation.png"},
+                                                      {"type":"list","sub_type":"ref_text","index":3,"bbox":[0.1,0.6,0.9,0.7],"content":[
+                                                        {"type":"ref_text","content":[{"type":"text","content":"Reference"}]}]},
+                                                      {"type":"aside_text","index":4,"bbox":[0.01,0.1,0.05,0.9],
+                                                       "content":[{"type":"text","content":"Margin"}]}
+                                                    ]}]}
+                                                   """);
+        try
+        {
+            Result<MinerUImportResult> imported = await new MinerUResultImporter(context.Database.ConnectionFactory,
+                context.Clock, new OcrDocumentTreeImporter(context.Trees)).ImportResultZipAsync(
+                new MinerUImportRequest(zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+            imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+            DocumentTreeRevisionId revision =
+                DocumentTreeRevisionId.Parse(imported.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(revision)).Value;
+            boxes.Select(box => box.BoxType).Should().Equal("title", "code", "equation", "list", "aside_text");
+            boxes[0].HeadingLevel.Should().Be(2);
+            boxes[1].SubType.Should().Be("algorithm");
+            boxes[1].Payload.Should().BeOfType<AlgorithmBoxPayload>().Which.Markdown.Should().Be("Choose $x_i$");
+            boxes[2].Payload.Should().Be(new EquationBoxPayload("", true));
+            boxes[2].BBox.Should().Be(new NormalizedBBox(.279, .513, .438, .036));
+            boxes[3].SubType.Should().Be("ref_text");
+            boxes[4].Suppressed.Should().BeTrue();
+            (await context.Trees.CommitWorkingRevisionAsync(revision)).IsSuccess.Should().BeTrue();
+
+            CompiledMarkdown compiled = (await new DocumentMarkdownCompiler(context.Trees, new MarkdigMarkdownEngine())
+                .CompilePageMarkdownAsync(revision)).Value;
+            ReadingScene scene = ReadingSceneBuilder.Build(compiled.Document!, compiled.SourceMap, boxes, "page:1",
+                markdownSource: compiled.Markdown);
+            scene.Blocks.Should().Contain(block => block.Kind == "equation" && block.Image != null);
+            string xml = PageXmlCodec.EncodePage(context.DocumentId, 2, revision, boxes);
+            xml.Should().Contain("profile=\"patchouli-page-2\"").And.Contain("<image kind=\"page-region\"").And
+                .NotContain("base_type").And
+                .NotContain("DO_NOT_PERSIST");
+            System.Xml.Linq.XElement equation = System.Xml.Linq.XDocument.Parse(xml).Descendants("box")
+                .Single(element => (string?)element.Attribute("type") == "equation");
+            PageXmlCodec.DecodeBox(equation.ToString(), boxes[2]).Value.Should().Be(new EquationBoxPayload("", true));
+            equation.Element("image")!.SetAttributeValue("width", "1");
+            PageXmlCodec.DecodeBox(equation.ToString(), boxes[2]).IsFailure.Should().BeTrue();
+            await using SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection();
+            await connection.OpenAsync();
+            string payloads = string.Join("",
+                await connection.QueryAsync<string>("select payload_json from document_boxes;"));
+            payloads.Should().NotContain("DO_NOT_PERSIST").And.NotContain("producer").And.NotContain("mineru");
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Theory]
+    [InlineData("9.0", "equation")]
+    [InlineData("2.0", "unimplemented_widget")]
+    public async Task Middle_json_rejects_unknown_protocol_or_type_without_text_fallback(string version, string type)
+    {
+        await using Context context = await Context.CreateAsync();
+        string json = JsonSerializer.Serialize(new
+        {
+            schema = "docvortex.middle", schema_version = version,
+            pages = new[]
+            {
+                new
+                {
+                    page_idx = 0,
+                    blocks = new[] { new { type, index = 0, bbox = new[] { .1, .1, .9, .2 }, content = "x" } }
+                }
+            }
+        });
+        string zip = CreateZip("middle_json.json", json);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(context.Database.ConnectionFactory,
+                context.Clock, new OcrDocumentTreeImporter(context.Trees)).ImportResultZipAsync(
+                new MinerUImportRequest(zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+            result.IsFailure.Should().BeTrue();
+            await using SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection();
+            await connection.OpenAsync();
+            (await connection.ExecuteScalarAsync<int>("select count(*) from document_boxes;")).Should().Be(0);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Middle_json_preserves_visual_subtype_annotations_code_language_and_inline_formula_text()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("middle_json.json", """
+                                                   {"schema":"docvortex.middle","schema_version":"2.0","pages":[{"page_idx":0,"blocks":[
+                                                     {"type":"code","sub_type":"code","guess_lang":"python","index":0,"bbox":[0.1,0.1,0.9,0.2],"content":[
+                                                       {"type":"code_body","content":"if x < 3:\n    print(x)"}]},
+                                                     {"type":"image","sub_type":"seal","index":1,"bbox":[0.1,0.3,0.9,0.4],"content":[
+                                                       {"type":"image_body","content":"Seal transcription","image_path":"images/seal.png"},
+                                                       {"type":"image_caption","content":[{"type":"text","content":"Seal caption"}]}]},
+                                                     {"type":"paragraph_title","level":3,"index":2,"bbox":[0.1,0.5,0.9,0.6],"content":[
+                                                       {"type":"text","content":"Value "},{"type":"equation_inline","content":"x_i"},
+                                                       {"type":"text","content":" <option>"}]}
+                                                   ]}]}
+                                                   """);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(context.Database.ConnectionFactory,
+                context.Clock, new OcrDocumentTreeImporter(context.Trees)).ImportResultZipAsync(
+                new MinerUImportRequest(zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            DocumentTreeRevisionId revision =
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(revision)).Value;
+            boxes[0].CodeLanguage.Should().Be("python");
+            boxes[0].SubType.Should().Be("code");
+            boxes[0].Payload.Should().BeOfType<CodeBoxPayload>().Which.Code.Should().Be("if x < 3:\n    print(x)");
+            boxes[1].SubType.Should().Be("seal");
+            DocumentBoxProjection.PlainText(boxes[1], new MarkdigMarkdownEngine()).Should().Contain("Seal caption");
+            boxes[1].Payload!.Annotations.Should().Equal(new DocumentAnnotation("image_caption", "Seal caption"));
+            boxes[2].Payload.Should().BeOfType<TextBoxPayload>().Which.Markdown.Should().Contain("$x_i$");
+            CompiledMarkdown compiled = (await new DocumentMarkdownCompiler(context.Trees, new MarkdigMarkdownEngine())
+                .CompilePageMarkdownAsync(revision)).Value;
+            compiled.Markdown.Split("Seal caption", StringSplitOptions.None).Should().HaveCount(2);
+            ReadingScene scene = ReadingSceneBuilder.Build(compiled.Document!, compiled.SourceMap, boxes, "page",
+                markdownSource: compiled.Markdown);
+            scene.Blocks.Count(block => block.Kind == "media").Should().Be(1);
+            scene.Blocks.Should().Contain(block => block.Kind == "paragraph" && block.Text == "Seal caption");
+            string xml = PageXmlCodec.EncodePage(context.DocumentId, 1, revision, boxes);
+            System.Xml.Linq.XElement image = System.Xml.Linq.XDocument.Parse(xml).Descendants("box")
+                .Single(element => (string?)element.Attribute("type") == "image");
+            PageXmlCodec.DecodeBox(image.ToString(), boxes[1]).IsSuccess.Should().BeTrue();
+            image.Element("annotation")!.Value = "changed";
+            PageXmlCodec.DecodeBox(image.ToString(), boxes[1]).IsFailure.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Migration_removes_legacy_base_type_and_preserves_history_ids_links_and_payload_references()
+    {
+        string legacyDirectory = Path.Combine(Path.GetTempPath(), "legacy-box-schema-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(legacyDirectory);
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql"))
+            {
+                if (Path.GetFileName(file).StartsWith("048_", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                string sql = await File.ReadAllTextAsync(file);
+                if (Path.GetFileName(file).StartsWith("005_", StringComparison.Ordinal))
+                {
+                    sql = sql.Replace("sub_type text null,", "sub_type text null,\n    base_type text null,",
+                            StringComparison.Ordinal)
+                        .Replace("check (length(trim(box_type)) > 0),",
+                            "check (length(trim(box_type)) > 0),\n    check (base_type is null or base_type in ('text','image','table','code','unknown')),",
+                            StringComparison.Ordinal);
+                }
+
+                await File.WriteAllTextAsync(Path.Combine(legacyDirectory, Path.GetFileName(file)), sql);
+            }
+
+            await using Context context = await Context.CreateAsync(legacyDirectory);
+            PageId pageId;
+            await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync();
+                pageId = PageId.Parse(
+                    await connection.ExecuteScalarAsync<string>(
+                        "select page_id from pages order by page_index limit 1;")
+                    ?? throw new InvalidOperationException("Test page is missing."));
+            }
+
+            DocumentTreeRevision revision = await BoxTreeTestData.CommitTextAsync(context.Database.ConnectionFactory,
+                context.Clock, context.DocumentId, pageId, "");
+            DocumentBox before = (await context.Trees.ListBoxesAsync(revision.TreeRevisionId)).Value.Single();
+            await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync();
+                // Reproduce the legacy importer writing a working row, then adopting it.
+                await connection.ExecuteAsync("update document_tree_revisions set status='working',is_current=0;");
+                await connection.ExecuteAsync(
+                    "update document_boxes set box_type='equation_interline', base_type='text';");
+                await connection.ExecuteAsync("update document_tree_revisions set status='committed',is_current=1;");
+            }
+
+            await new MigrationRunner(context.Database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+            DocumentBox after = (await context.Trees.ListBoxesAsync(revision.TreeRevisionId)).Value.Single();
+            after.BoxId.Should().Be(before.BoxId);
+            after.TreeRevisionId.Should().Be(before.TreeRevisionId);
+            after.BBox.Should().Be(before.BBox);
+            after.Payload.Should().Be(new EquationBoxPayload("", true));
+            await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync();
+                (await connection.QueryAsync<string>("select name from pragma_table_info('document_boxes');"))
+                    .Should().NotContain("base_type");
+                (await connection.QueryAsync<dynamic>("pragma foreign_key_check;")).Should().BeEmpty();
+                // Recreated payload-reference triggers must remain functional after the table rebuild.
+                SqliteException? rejection = null;
+                try
+                {
+                    await connection.ExecuteAsync("update document_boxes set suppressed=1;");
+                }
+                catch (SqliteException exception)
+                {
+                    rejection = exception;
+                }
+
+                rejection.Should().NotBeNull();
+                rejection!.Message.Should().Contain("immutable");
+                await connection.ExecuteAsync("update document_tree_revisions set status='working',is_current=0;");
+                string asset = Guid.NewGuid().ToString();
+                await connection.ExecuteAsync("update document_boxes set box_type='image', payload_json=@Payload;",
+                    new { Payload = JsonSerializer.Serialize(new { assetId = asset, description = "Figure" }) });
+                (await connection.ExecuteScalarAsync<string>("select file_asset_id from file_asset_payload_refs;"))
+                    .Should().Be(asset);
+            }
+
+            (await new MigrationRunner(context.Database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync())
+                .Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(legacyDirectory, true);
+        }
+    }
+
+    [Fact]
+    public async Task V2_interline_equation_persists_latex_and_projects_the_page_crop()
+    {
+        await using Context context = await Context.CreateAsync();
+        const string latex =
+            @"\mathrm{BI}=1-|r_{pb}(p,y)|,\quad r_{pb}(p,y)=\frac{\mu_{p,y=1}-\mu_{p,y=0}}{\sigma_p}\sqrt{q(1-q)}";
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[{"type":"equation_interline","content":{
+                                                          "math_content":"\\mathrm{BI}=1-|r_{pb}(p,y)|,\\quad r_{pb}(p,y)=\\frac{\\mu_{p,y=1}-\\mu_{p,y=0}}{\\sigma_p}\\sqrt{q(1-q)}",
+                                                          "math_type":"latex","image_source":{"path":"images/formula.jpg"}},
+                                                          "bbox":[279,513,717,549]}]]
+                                                        """);
+        try
+        {
+            Result<MinerUImportResult> imported = await new MinerUResultImporter(context.Database.ConnectionFactory,
+                    context.Clock, new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(zip, context.DocumentId.ToString(),
+                    context.LibraryId.ToString()));
+            imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+            DocumentTreeRevisionId revision =
+                DocumentTreeRevisionId.Parse(imported.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(revision)).Value;
+            DocumentBox equation = boxes.Should().ContainSingle().Subject;
+            equation.BoxType.Should().Be(DocumentBoxType.Equation);
+            equation.Payload.Should().Be(new EquationBoxPayload(latex, true));
+            (await context.Trees.CommitWorkingRevisionAsync(revision)).IsSuccess.Should().BeTrue();
+
+            await using SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection();
+            await connection.OpenAsync();
+            string json = await connection.QuerySingleAsync<string>(
+                "select payload_json from document_boxes where tree_revision_id=@Revision;",
+                new { Revision = revision.ToString() });
+            using JsonDocument stored = JsonDocument.Parse(json);
+            stored.RootElement.GetProperty("latex").GetString().Should().Be(latex);
+            stored.RootElement.TryGetProperty("markdown", out _).Should().BeFalse();
+
+            CompiledMarkdown compiled = (await new DocumentMarkdownCompiler(context.Trees, new MarkdigMarkdownEngine())
+                .CompilePageMarkdownAsync(revision)).Value;
+            foreach (string key in new[] { "current-page", "page:2" })
+            {
+                ReadingBlock block = ReadingSceneBuilder.Build(compiled.Document!, compiled.SourceMap, boxes, key,
+                    markdownSource: compiled.Markdown).Blocks.Should().ContainSingle().Subject;
+                block.Kind.Should().Be("equation");
+                block.Image.Should().Be(new ReadingImageRegion(key, new NormalizedBBox(.279, .513, .438, .036)));
+            }
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_escapes_paper_prompt_placeholders_and_preserves_their_display_text()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"What did the AI assistant say about the \"<feature>\" for Option \"<option>\"?"}]},"bbox":[0,0,1000,200]},
+                                                          {"type":"list","content":{"list_type":"reference_list","list_items":[{"item_type":"text","item_content":[{"type":"text","content":"Choose <option>"}]}]},"bbox":[0,200,1000,400]}
+                                                        ]]
+                                                        """);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock, new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(zip, context.DocumentId.ToString(),
+                    context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            DocumentTreeRevisionId revisionId =
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(revisionId)).Value;
+            boxes[0].Payload.Should().Be(new TextBoxPayload(
+                "What did the AI assistant say about the \"<feature>\" for Option \"&lt;option>\"?"));
+            boxes[1].Payload.Should().Be(new ListBoxPayload("- Choose &lt;option>"));
+            MarkdigMarkdownEngine markdown = new();
+            CompiledMarkdown compiled = (await new DocumentMarkdownCompiler(context.Trees, markdown)
+                .CompilePageMarkdownAsync(revisionId)).Value;
+            compiled.Markdown.Should().Contain("&lt;option>");
+            string.Concat(compiled.Document!.Blocks.First().Inlines!.Select(inline => inline.Text))
+                .Should().Be("What did the AI assistant say about the \"<feature>\" for Option \"<option>\"?");
+            (await context.Trees.CommitWorkingRevisionAsync(revisionId)).IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
     [Fact]
     public async Task Importer_preserves_v2_page_footer_content_as_suppressed_text()
     {
@@ -516,11 +855,12 @@ public sealed class MinerUDocumentTreeTests
         public DocumentInstanceId DocumentId { get; }
         public DocumentTreeService Trees { get; }
 
-        public static async Task<Context> CreateAsync()
+        public static async Task<Context> CreateAsync(string? migrationsDirectory = null)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
-            await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+            await new MigrationRunner(database.ConnectionFactory, migrationsDirectory ?? TestPaths.MigrationsDirectory)
+                .RunAsync();
             LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
             LibraryMetadata library = (await libraries.CreateLibraryAsync("MinerU Box Tree")).Value;
             ItemMetadata item = (await new ItemService(database.ConnectionFactory, libraries, clock)
