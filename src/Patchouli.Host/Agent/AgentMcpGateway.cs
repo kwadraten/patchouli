@@ -26,7 +26,20 @@ public sealed record AgentToolOutcome(bool Succeeded, string Payload, string? Er
 /// actually-used revision, view type, MIME, actual width/height, crop range, image_index).</param>
 /// <param name="Base64Data">Raw base64 PNG bytes (no data-URL prefix).</param>
 /// <param name="MimeType">Always image/png in v1.</param>
-public sealed record AgentImageResult(string MetadataJson, string Base64Data, string MimeType);
+public sealed record AgentImageResult(string MetadataJson, string Base64Data, string MimeType)
+{
+    /// <summary>Actual image width in pixels, for the session media sidecar.</summary>
+    public int Width { get; init; }
+
+    /// <summary>Actual image height in pixels, for the session media sidecar.</summary>
+    public int Height { get; init; }
+
+    /// <summary>Canonical resource URI pinned to the actually-used revision.</summary>
+    public string ResourceUri { get; init; } = "";
+
+    /// <summary>Library revision the image was rendered from.</summary>
+    public string Revision { get; init; } = "";
+}
 
 /// <summary>The outcome of one atomic whole-resource <c>put</c>.</summary>
 /// <param name = "Committed">True when the commit succeeded; false means it rolled back.</param>
@@ -258,11 +271,18 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
             return new AgentToolOutcome(false, text, command.Error?.Name);
         }
 
+        McpViewImageMetadata? imageMetadata = command.Envelope?.Entries.FirstOrDefault();
         return new AgentToolOutcome(true, text)
         {
             Images =
             [
                 new AgentImageResult(text, Convert.ToBase64String(result.PngBytes), "image/png")
+                {
+                    Width = imageMetadata?.Width ?? 0,
+                    Height = imageMetadata?.Height ?? 0,
+                    ResourceUri = imageMetadata?.Uri ?? "",
+                    Revision = command.Envelope?.Meta.LibraryRevision ?? ""
+                }
             ]
         };
     }

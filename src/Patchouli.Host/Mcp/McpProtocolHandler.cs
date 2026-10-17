@@ -471,7 +471,10 @@ public sealed class McpProtocolHandler
             new ToolDefinition(
                 "patchouli.view",
                 "Return the source image of a library page or box for model text-image collation. Images come " +
-                "from the original PDF, never re-rendered from OCR text. One target, one image per call.",
+                "from the original PDF, never re-rendered from OCR text. One target, one image per call. " +
+                "Recommended collation flow: fetch (text plus version) to read the text, then view the same " +
+                "revision or box source image, then put with the original source_revision; if the version " +
+                "changed in the meantime the put reports a normal revision conflict instead of overwriting.",
                 ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {

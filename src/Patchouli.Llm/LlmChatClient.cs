@@ -44,6 +44,12 @@ public sealed class LlmChatClient : ILlmChatClient
 
     public bool SupportsMaxTokens => _provider.AuthenticationMode != LlmAuthenticationModes.Subscription;
 
+    /// <summary>
+    /// Issue #11: the subscription backend accepts text only (same rule as
+    /// <c>LlmProviderReadiness.SupportsVision</c>); API providers accept images.
+    /// </summary>
+    public bool SupportsVision => _provider.AuthenticationMode != LlmAuthenticationModes.Subscription;
+
     public string ConfigurationKey => System.Text.Json.JsonSerializer.Serialize(new
     {
         _provider.ProviderId, _provider.Model, _provider.BaseUrl, _provider.Subscription,
@@ -58,10 +64,16 @@ public sealed class LlmChatClient : ILlmChatClient
         if (request.History.Messages.Any(message =>
                 message.Parts.Any(part => part is LlmMessagePart.LlmImagePart)))
         {
-            // Native tool calls, results and assistant metadata belong to ordinary chat history.
-            // Only images require the vision entry point.
-            return Task.FromResult(Failure(LlmFailureCodes.UnsupportedInput,
-                "A text completion does not accept image parts; send images through CompleteVisionAsync."));
+            // Issue #11: image parts in history are real vision input for the provider's
+            // multimodal representation (the transport renders LlmImagePart natively).
+            // A model without vision input fails explicitly here; collation is never faked.
+            if (!SupportsVision)
+            {
+                return Task.FromResult(Failure(LlmFailureCodes.UnsupportedInput,
+                    "The configured model does not accept image input. The agent viewed a source " +
+                    "image for text-image collation, but this model has no vision capability; " +
+                    "choose a vision-capable model to continue."));
+            }
         }
 
         return SendAsync(conversationKey, request, null, cancellationToken);

@@ -85,6 +85,13 @@ public interface ILlmChatClient
     bool SupportsMaxTokens => true;
 
     /// <summary>
+    /// Issue #11: true when the backing model accepts image input. Models without vision
+    /// input must report capability-unavailable explicitly; the agent chain never fakes
+    /// text-image collation for them.
+    /// </summary>
+    bool SupportsVision => true;
+
+    /// <summary>
     /// Sends one text completion. The history must be append-only relative to the previous call with the same
     /// <paramref name="conversationKey"/>; a violation is reported as
     /// <see cref="LlmFailureCodes.HistoryInvariantViolated"/> instead of being sent to the provider.

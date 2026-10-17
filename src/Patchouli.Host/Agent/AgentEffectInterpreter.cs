@@ -41,6 +41,15 @@ public sealed record AgentEffectContext(
 
     public bool UsesTextToolProtocol { get; init; }
     public string? SessionDirectory { get; init; }
+
+    /// <summary>
+    /// Issue #11: resolves a session media id to its image bytes for model messages.
+    /// Set when the session has a media directory; null keeps history text-only. The
+    /// model adapter converts resolved images to <c>LlmImagePart</c> data-URIs — real
+    /// vision input, never a path or base64 text.
+    /// </summary>
+    public Func<string, AgentSessionImageData?>? ResolveSessionImage { get; init; }
+
     public AgentSdkPolicy? SdkPolicy { get; init; }
     public Func<AgentSdkReceipt, Task>? RecordSdk { get; init; }
     public int ToolResultMaxCharacters { get; init; } = LlmAppSettings.DefaultToolResultMaxCharacters;
@@ -369,9 +378,28 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             }.ToJsonString();
         }
 
+        // Issue #11: a successful tool result that carries images (the view tool) stores
+        // them in the session-managed persistent media area and wraps the payload with
+        // media references. The model adapter later resolves those references to real
+        // vision input; the recorded event never carries base64. Failures never wrap.
+        string toolPayload = outcome.Payload;
+        if (outcome.Succeeded && outcome.Images.Count > 0 && context.SessionDirectory is { } sessionDirectory)
+        {
+            IReadOnlyList<AgentSessionImageRef> stored =
+                await AgentSessionMediaStore.StoreToolImagesAsync(
+                    sessionDirectory,
+                    tool.effectId.Item.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    outcome.Images, cancellationToken)
+                .ConfigureAwait(false);
+            if (stored.Count > 0)
+            {
+                toolPayload = AgentToolImagePayload.Wrap(outcome.Payload, stored);
+            }
+        }
+
         return AgentEffectOutcome.Completed(
                 outcome.Succeeded
-                    ? Event.NewToolResult(tool.effectId, tool.name, outcome.Payload)
+                    ? Event.NewToolResult(tool.effectId, tool.name, toolPayload)
                     : Event.NewToolFailure(tool.effectId, tool.name, returnedPayload),
                 outcome.Succeeded
                     ? $"tool {tool.name} completed"
@@ -577,12 +605,53 @@ public static class AgentChatHistoryBuilder
                 : original;
             // Text tool requests have no provider-native tool_call_id. Their results are
             // ordinary user messages so OpenAI-compatible providers accept the next turn.
+            // Tool results that carry session media images (the view tool) additionally
+            // attach one LlmImagePart per image: real vision input, never a path or
+            // base64 text.
             messages.Add(entry is HistoryEntry.ToolResult tool
-                ? LlmChatMessage.User("Tool result " + Content(tool.name + ": " + tool.payload))
+                ? ToToolResultMessage(context, tool)
                 : ToModelMessage(entry));
         }
 
         return messages.Count == 0 ? history : history.Append(messages);
+    }
+
+    /// <summary>
+    /// Issue #11: maps a tool result to its chat message, attaching session media images
+    /// as <c>LlmImagePart</c> data-URI parts. The image bytes come from the session-managed
+    /// persistent media area (reloaded by media reference, so retry/resume/context rebuild
+    /// keep working); a missing image is reported as explicit text, never faked.
+    /// </summary>
+    private static LlmChatMessage ToToolResultMessage(AgentEffectContext context, HistoryEntry.ToolResult tool)
+    {
+        if (context.ResolveSessionImage is null ||
+            !AgentToolImagePayload.TryUnwrap(tool.payload, out string resultText,
+                out IReadOnlyList<AgentSessionImageRef> images))
+        {
+            return LlmChatMessage.User("Tool result " + Content(tool.name + ": " + tool.payload));
+        }
+
+        List<LlmMessagePart> parts =
+        [
+            new LlmMessagePart.LlmTextPart("Tool result " + Content(tool.name + ": " + resultText))
+        ];
+        foreach (AgentSessionImageRef image in images)
+        {
+            AgentSessionImageData? data = context.ResolveSessionImage(image.MediaId);
+            if (data is null)
+            {
+                parts.Add(new LlmMessagePart.LlmTextPart(
+                    $"[image {image.MediaId} ({image.ResourceUri}, revision {image.Revision}) is unavailable: session media missing]"));
+                continue;
+            }
+
+            parts.Add(new LlmMessagePart.LlmImagePart(
+                "data:" + data.Ref.MimeType + ";base64," + Convert.ToBase64String(data.PngBytes),
+                data.Ref.MimeType,
+                "auto"));
+        }
+
+        return new LlmChatMessage(LlmChatRole.User, parts);
     }
 
     /// <summary>Maps one core history entry to its chat message.</summary>
