@@ -310,6 +310,43 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         await _main.RefreshSidebarPathsAsync();
         SetStatus($"已删除文件搜索根：{rootPath}");
     }
+
+    /// <summary>
+    /// Issue #11: moves a search root up or down in the stable order and persists the
+    /// new order via <c>SetSearchRootOrderAsync</c>. The first root is the move target
+    /// for "move to first file search root" import behavior, so the order has a UI echo.
+    /// </summary>
+    internal async Task MoveFileSearchRootAsync(FileSearchRootId rootId, int direction)
+    {
+        int index = -1;
+        for (int i = 0; i < _fileSearchRoots.Count; i++)
+        {
+            if (_fileSearchRoots[i].RootId.Equals(rootId))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        int target = index + direction;
+        if (index < 0 || target < 0 || target >= _fileSearchRoots.Count)
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        List<FileSearchRootId> orderedIds = _fileSearchRoots.Select(row => row.RootId).ToList();
+        (orderedIds[index], orderedIds[target]) = (orderedIds[target], orderedIds[index]);
+        Result reordered = await services.FileResolution.SetSearchRootOrderAsync(orderedIds);
+        if (reordered.IsFailure)
+        {
+            SetStatus(reordered.ErrorMessage ?? "文件搜索根排序保存失败。");
+            return;
+        }
+
+        await LoadFileSearchRootsAsync();
+        SetStatus("文件搜索根顺序已更新：第一个目录是“移动到第一个文件搜索根”导入的目标。");
+    }
 }
 
 public sealed partial class FileSearchRootSettingsRowViewModel : ViewModelBase
@@ -322,9 +359,13 @@ public sealed partial class FileSearchRootSettingsRowViewModel : ViewModelBase
         RootId = root.RootId;
         RootPath = root.RootPath;
         DeleteCommand = new AsyncCommand(() => _parent.DeleteFileSearchRootAsync(RootId, RootPath));
+        MoveUpCommand = new AsyncCommand(() => _parent.MoveFileSearchRootAsync(RootId, -1));
+        MoveDownCommand = new AsyncCommand(() => _parent.MoveFileSearchRootAsync(RootId, 1));
     }
 
     public FileSearchRootId RootId { get; }
     public string RootPath { get; }
     public AsyncCommand DeleteCommand { get; }
+    public AsyncCommand MoveUpCommand { get; }
+    public AsyncCommand MoveDownCommand { get; }
 }

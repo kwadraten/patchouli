@@ -2583,6 +2583,37 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return true;
     }
 
+    /// <summary>Issue #11: loads the device-local file handling behavior settings.</summary>
+    public async Task<FileHandlingBehaviorSettings> GetFileHandlingBehaviorAsync()
+    {
+        HostServices services = await ServicesAsync();
+        Result<FileHandlingBehaviorSettings> settings =
+            await services.FileHandlingBehaviorSettings.GetSettingsAsync();
+        if (settings.IsFailure)
+        {
+            ReportError(settings.ErrorMessage ?? "无法读取文件处理设置。");
+            return FileHandlingBehaviorSettings.Default();
+        }
+
+        return settings.Value;
+    }
+
+    /// <summary>Issue #11: saves the device-local file handling behavior settings.</summary>
+    public async Task<bool> SaveFileHandlingBehaviorAsync(FileHandlingBehaviorSettings settings)
+    {
+        HostServices services = await ServicesAsync();
+        Result<FileHandlingBehaviorSettings> saved =
+            await services.FileHandlingBehaviorSettings.SaveSettingsAsync(settings);
+        if (saved.IsFailure)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存文件处理设置。");
+            return false;
+        }
+
+        Report("文件处理设置已保存。");
+        return true;
+    }
+
     public async Task<bool> RemoveMinerUCredentialAsync()
     {
         ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(
