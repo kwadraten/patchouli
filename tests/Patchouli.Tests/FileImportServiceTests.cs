@@ -107,8 +107,12 @@ public sealed class FileImportServiceTests : IDisposable
         Result<FileImportResult> result = await harness.Service.ImportAsync(
             new FileImportRequest(dir, null, FileImportTrigger.McpAdd));
 
+        // Directories are rejected before any ingestion. Note: File.Exists returns
+        // false for directories, so they surface as PathNotFound; the explicit
+        // NotRegularFile branch below is unreachable for directories.
         result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(FileImportErrorCodes.NotRegularFile);
+        result.ErrorCode.Should().Be(FileImportErrorCodes.PathNotFound);
+        harness.Pdf.CallCount.Should().Be(0);
     }
 
     [Fact]

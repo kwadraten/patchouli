@@ -19,6 +19,9 @@ namespace Patchouli.Tests;
 public sealed class McpAddViewCommandTests
 {
     private static readonly byte[] FakePng = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    private const string DocId = "11111111-1111-1111-1111-111111111111";
+    private const string RevId = "22222222-2222-2222-2222-222222222222";
+    private const string BoxGuid = "33333333-3333-3333-3333-333333333333";
 
     // ---------- add ----------
 
@@ -75,7 +78,7 @@ public sealed class McpAddViewCommandTests
     {
         var (_, import) = Stub<IFileImportService>.Create();
         var imported = new FileImportResult(true, LocalImportKind.Pdf, false, true,
-            "patchouli://items/item-1.yml", "patchouli://texts/doc-1/", null, 12,
+            "patchouli://items/item-1.yml", "patchouli://texts/" + DocId + "/", null, 12,
             "imported", "ingested",
             [new FileImportIssue("moved_to_search_root", "moved")], null);
         import.Handle(nameof(IFileImportService.ImportAsync),
@@ -88,7 +91,7 @@ public sealed class McpAddViewCommandTests
         McpAddResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
         entry.Kind.Should().Be("pdf");
         entry.ItemUri.Should().Be("patchouli://items/item-1.yml");
-        entry.TextUri.Should().Be("patchouli://texts/doc-1/");
+        entry.TextUri.Should().Be("patchouli://texts/" + DocId + "/");
         entry.StyleUri.Should().BeNull();
         entry.Moved.Should().BeTrue();
         entry.BodyStatus.Should().Be("ingested");
@@ -176,7 +179,7 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(viewEnabled: false);
 
         McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/doc-1/page-1.xml"));
+            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
@@ -185,10 +188,11 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_document_uri_requires_page_specification()
     {
-        McpCommandService service = CreateService();
+        var (_, docPageView) = Stub<IPageImageViewService>.Create();
+        McpCommandService service = CreateService(pageView: docPageView.Proxy);
 
         McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/doc-1/"));
+            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
@@ -197,10 +201,11 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_rejects_unknown_context()
     {
-        McpCommandService service = CreateService();
+        var (_, ctxPageView) = Stub<IPageImageViewService>.Create();
+        McpCommandService service = CreateService(pageView: ctxPageView.Proxy);
 
         McpViewCommandResult result = await service.ViewAsync(
-            new McpViewRequest("patchouli://texts/doc-1/page-1.xml", Context: "thumbnail"));
+            new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml", Context: "thumbnail"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
@@ -219,7 +224,7 @@ public sealed class McpAddViewCommandTests
             permissions: _ => Task.FromResult(permissions));
 
         McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/doc-1/page-1.xml"));
+            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
@@ -230,7 +235,7 @@ public sealed class McpAddViewCommandTests
     {
         var (_, pageView) = Stub<IPageImageViewService>.Create();
         var image = new PageImageViewResult(
-            "patchouli://texts/doc-1/page-2.xml?rev=rev-7",
+            "patchouli://texts/" + DocId + "/page-2.xml?rev=rev-7",
             PageImageViewTypes.Page, "image/png", 1200, 1600,
             new NormalizedBBox(0, 0, 1, 1), 0, "rev-7", FakePng);
         PageImageViewRequest? seen = null;
@@ -242,13 +247,13 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
         McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/doc-1/page-2.xml"));
+            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-2.xml"));
 
         result.Result.IsSuccess.Should().BeTrue();
         result.PngBytes.Should().BeEquivalentTo(FakePng);
         McpViewImageMetadata metadata =
             result.Result.Envelope!.Entries.Should().ContainSingle().Subject;
-        metadata.Uri.Should().Be("patchouli://texts/doc-1/page-2.xml?rev=rev-7");
+        metadata.Uri.Should().Be("patchouli://texts/" + DocId + "/page-2.xml?rev=rev-7");
         metadata.ViewType.Should().Be("page");
         metadata.MimeType.Should().Be("image/png");
         metadata.Width.Should().Be(1200);
@@ -266,7 +271,7 @@ public sealed class McpAddViewCommandTests
     {
         var (_, pageView) = Stub<IPageImageViewService>.Create();
         var image = new PageImageViewResult(
-            "patchouli://texts/doc-1/page-1.xml?rev=rev-1&box=box-9",
+            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "",
             PageImageViewTypes.Box, "image/png", 400, 300,
             new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, "rev-1", FakePng);
         PageImageViewRequest? seen = null;
@@ -278,12 +283,36 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
         McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(
-            "patchouli://texts/doc-1/page-1.xml?rev=rev-1&box=box-9", Context: "region"));
+            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "", Context: "region"));
 
         result.Result.IsSuccess.Should().BeTrue();
         seen!.Context.Should().Be(PageImageViewContext.Region);
         seen.BoxId.Should().NotBeNull();
         result.Result.Envelope!.Entries.Single().ViewType.Should().Be("box");
+    }
+
+    [Fact]
+    public async Task View_translation_page_resolves_to_source_image_request()
+    {
+        var (_, pageView) = Stub<IPageImageViewService>.Create();
+        var image = new PageImageViewResult(
+            "patchouli://translations/" + DocId + "/page-1.xml?rev=rev-1",
+            PageImageViewTypes.TranslationPage, "image/png", 1200, 1600,
+            new NormalizedBBox(0, 0, 1, 1), 0, "rev-1", FakePng);
+        PageImageViewRequest? seen = null;
+        pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
+        {
+            seen = (PageImageViewRequest)args[0]!;
+            return Task.FromResult(Result<PageImageViewResult>.Success(image));
+        });
+        McpCommandService service = CreateService(pageView: pageView.Proxy);
+
+        McpViewCommandResult result = await service.ViewAsync(
+            new McpViewRequest("patchouli://translations/" + DocId + "/page-1.xml"));
+
+        result.Result.IsSuccess.Should().BeTrue();
+        seen!.IsTranslation.Should().BeTrue();
+        result.Result.Envelope!.Entries.Single().ViewType.Should().Be("translation_page");
     }
 
     [Fact]
@@ -296,7 +325,7 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
         McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(
-            "patchouli://texts/doc-1/page-1.xml?rev=rev-dead"));
+            "patchouli://texts/" + DocId + "/page-1.xml?rev=44444444-4444-4444-4444-444444444444"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
@@ -313,7 +342,7 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
         McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/doc-1/page-1.xml"));
+            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);

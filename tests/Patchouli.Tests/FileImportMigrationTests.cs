@@ -12,14 +12,15 @@ namespace Patchouli.Tests;
 /// </summary>
 public sealed class FileImportMigrationTests : IDisposable
 {
-    private readonly string _databasePath = Path.Combine(
-        Path.GetTempPath(), $"patchouli-migration-{Guid.NewGuid():N}.sqlite");
+    private readonly string _root = Directory.CreateDirectory(
+        Path.Combine(Path.GetTempPath(), $"patchouli-migration-{Guid.NewGuid():N}")).FullName;
 
     public void Dispose()
     {
-        TestTempFileCleanup.DeleteDirectoryWithRetry(
-            Path.GetDirectoryName(_databasePath));
+        TestTempFileCleanup.DeleteDirectoryWithRetry(_root);
     }
+
+    private string DatabasePath => Path.Combine(_root, "test.sqlite");
 
     private static async Task<SqliteConnection> MigrateAsync(string databasePath)
     {
@@ -34,7 +35,7 @@ public sealed class FileImportMigrationTests : IDisposable
     [Fact]
     public async Task Migrations_048_and_049_apply_on_fresh_database()
     {
-        await using SqliteConnection connection = await MigrateAsync(_databasePath);
+        await using SqliteConnection connection = await MigrateAsync(DatabasePath);
 
         IReadOnlyList<string> applied = (await connection.QueryAsync<string>(
             "select id from schema_migrations;")).ToArray();
@@ -45,7 +46,7 @@ public sealed class FileImportMigrationTests : IDisposable
     [Fact]
     public async Task Migration_048_adds_sort_order_to_search_root_definitions()
     {
-        await using SqliteConnection connection = await MigrateAsync(_databasePath);
+        await using SqliteConnection connection = await MigrateAsync(DatabasePath);
 
         IReadOnlyList<string> columns = (await connection.QueryAsync<string>(
             "select name from pragma_table_info('file_search_root_definitions');")).ToArray();
@@ -56,7 +57,7 @@ public sealed class FileImportMigrationTests : IDisposable
     [Fact]
     public async Task Migration_049_creates_recovery_records_table_with_status_check()
     {
-        await using SqliteConnection connection = await MigrateAsync(_databasePath);
+        await using SqliteConnection connection = await MigrateAsync(DatabasePath);
 
         // A valid status inserts fine.
         await connection.ExecuteAsync(

@@ -93,8 +93,13 @@ public sealed class MoveTargetNamerTests
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "paper.pdf");
         var sourceIdentity = new MoveCandidateIdentity(100, "new-hash");
+        // First two names taken with different content; the third is free.
         Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(new MoveCandidateIdentity(5, "taken"));
+            Task.FromResult<MoveCandidateIdentity?>(
+                candidate.EndsWith("paper-2.pdf", StringComparison.Ordinal) ||
+                candidate.EndsWith("paper.pdf", StringComparison.Ordinal)
+                    ? new MoveCandidateIdentity(5, "taken")
+                    : null);
 
         MoveTargetPlan first = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
         MoveTargetPlan second = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);

@@ -75,11 +75,11 @@ public sealed class PageImageViewMathTests
 
         // Absurdly small region would demand enormous DPI.
         int tiny = PageImageViewService.ChooseDpi(page, new NormalizedBBox(0.5, 0.5, 0.001, 0.001), 2048);
-        // Enormous max edge on a full page would demand tiny DPI.
-        int huge = PageImageViewService.ChooseDpi(page, new NormalizedBBox(0, 0, 1, 1), 8192);
+        // A tiny max edge on a full page would demand sub-minimum DPI.
+        int small = PageImageViewService.ChooseDpi(page, new NormalizedBBox(0, 0, 1, 1), 64);
 
         tiny.Should().Be(600);
-        huge.Should().Be(72);
+        small.Should().Be(72);
     }
 
     [Fact]
