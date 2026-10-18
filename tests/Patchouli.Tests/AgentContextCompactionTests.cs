@@ -17,12 +17,23 @@ public sealed class AgentContextCompactionTests
         fixture.Transport.NormalTools.Enqueue([
             new LlmToolCall("history-1", "history", """{"query":"needle","limit":1}""")
         ]);
-        AgentEffectInterpreter interpreter = new(new Provider(Client(fixture.Transport, 32768)),
+        string userMessage = "needle " + new string('x', 100000);
+        AgentEffectContext initialContext = new("budget", AgentNativeTools.Instructions,
+            AgentNativeTools.Definitions, [HistoryEntry.NewUserMessage(userMessage)]);
+        long initialTokens = AgentContextBudget.Estimate(initialContext);
+        // Include the real tool envelope while keeping the request above the compaction
+        // threshold and leaving room for the summary instruction and output reservation.
+        LlmChatClient client = Client(fixture.Transport, (int)Math.Ceiling(initialTokens / 0.84));
+        initialTokens.Should().BeGreaterThanOrEqualTo(AgentContextBudget.Threshold(client));
+        (initialTokens + AgentContextBudget.OutputTokens(client) + 512).Should()
+            .BeLessThan(client.ContextWindowTokens);
+        AgentEffectInterpreter interpreter = new(new Provider(client),
             new UnusedGateway(), new PlaceholderAgentHostPrimitives(), compactor: fixture.Compactor);
         await using AgentSessionService sessions = new(fixture.Store, interpreter);
-        AgentSessionSnapshot created = await sessions.CreateChatAsync("needle " + new string('x', 100000));
+        AgentSessionSnapshot created = await sessions.CreateChatAsync(userMessage);
         await sessions.WakeChatAsync(created.SessionId);
-        sessions.TryGetSnapshot(created.SessionId)!.Status.Should().Be(AgentSessionStatus.Idle);
+        AgentSessionSnapshot snapshot = sessions.TryGetSnapshot(created.SessionId)!;
+        snapshot.Status.Should().Be(AgentSessionStatus.Idle, snapshot.Detail);
         Context restored = (await fixture.Store.TryReadContextAsync(created.SessionId, CancellationToken.None))!;
         restored.History.OfType<HistoryEntry.NativeToolResult>().Should().ContainSingle()
             .Which.payload.Should().Contain("needle");
