@@ -117,6 +117,44 @@ public sealed class PageImageViewMathTests
         PageImageViewRequest.DefaultMaxEdge.Should().Be(2048);
     }
 
+    // ---- issue #11 review P2-7: max_edge must cap the output's longest edge ----
+
+    [Fact]
+    public void ComputeOutputSize_caps_longest_edge_at_max_edge()
+    {
+        // The review's case: a 612x792pt page rendered at the 72 DPI floor produced
+        // 612x792 px even with max_edge=64. The output must now honor the cap.
+        (int width, int height) = PageImageViewService.ComputeOutputSize(612, 792, 64);
+
+        Math.Max(width, height).Should().Be(64);
+        width.Should().Be(49);
+        height.Should().Be(64);
+    }
+
+    [Fact]
+    public void ComputeOutputSize_keeps_aspect_ratio_when_scaling_down()
+    {
+        (int width, int height) = PageImageViewService.ComputeOutputSize(800, 600, 400);
+
+        width.Should().Be(400);
+        height.Should().Be(300);
+    }
+
+    [Fact]
+    public void ComputeOutputSize_leaves_small_images_untouched()
+    {
+        PageImageViewService.ComputeOutputSize(100, 50, 2048).Should().Be((100, 50));
+        PageImageViewService.ComputeOutputSize(64, 64, 64).Should().Be((64, 64));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ComputeOutputSize_ignores_non_positive_max_edge(int maxEdge)
+    {
+        PageImageViewService.ComputeOutputSize(612, 792, maxEdge).Should().Be((612, 792));
+    }
+
     private static Page FakePage(double? width, double? height) =>
         new(
             PageId.New(),

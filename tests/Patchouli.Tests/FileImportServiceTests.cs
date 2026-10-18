@@ -107,11 +107,10 @@ public sealed class FileImportServiceTests : IDisposable
         Result<FileImportResult> result = await harness.Service.ImportAsync(
             new FileImportRequest(dir, null, FileImportTrigger.McpAdd));
 
-        // Directories are rejected before any ingestion. Note: File.Exists returns
-        // false for directories, so they surface as PathNotFound; the explicit
-        // NotRegularFile branch below is unreachable for directories.
+        // Directories are rejected before any ingestion. Directory.Exists is checked
+        // before File.Exists so directories surface as NotRegularFile, not PathNotFound.
         result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(FileImportErrorCodes.PathNotFound);
+        result.ErrorCode.Should().Be(FileImportErrorCodes.NotRegularFile);
         harness.Pdf.CallCount.Should().Be(0);
     }
 
@@ -432,6 +431,36 @@ public sealed class FileImportServiceTests : IDisposable
         // The file is back where it started; nothing is lost.
         File.Exists(path).Should().BeTrue();
         File.Exists(Path.Combine(first.RootPath, "restore.pdf")).Should().BeFalse();
+        harness.Recovery.Records.Should().ContainSingle(record =>
+            record.Status == FileImportRecoveryStatuses.ImportFailedRestored);
+    }
+
+    [Fact]
+    public async Task Import_cancellation_after_move_restores_original_position()
+    {
+        // Issue #11 review P1-4: when the import is cancelled after the file was
+        // moved (here the PDF import observes the cancellation), the moved file
+        // must be restored with a non-cancelled cleanup token and the cancellation
+        // rethrown — never swallowed, never leaving the file stranded at the target.
+        var first = SearchRoot("first");
+        using var cts = new CancellationTokenSource();
+        Harness harness = CreateHarness(
+            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            roots: [first],
+            pdfImport: _ =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            });
+        string path = WriteFile("cancel.pdf", PdfBytes);
+
+        Func<Task> act = () => harness.Service.ImportAsync(
+            new FileImportRequest(path, null, FileImportTrigger.McpAdd), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        // The file is back where it started; nothing is lost.
+        File.Exists(path).Should().BeTrue();
+        File.Exists(Path.Combine(first.RootPath, "cancel.pdf")).Should().BeFalse();
         harness.Recovery.Records.Should().ContainSingle(record =>
             record.Status == FileImportRecoveryStatuses.ImportFailedRestored);
     }
