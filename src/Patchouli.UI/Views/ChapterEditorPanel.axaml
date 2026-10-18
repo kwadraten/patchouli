@@ -1,0 +1,164 @@
+<UserControl x:Class="Patchouli.UI.Views.ChapterEditorPanel"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Patchouli.UI.ViewModels" xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+             x:DataType="vm:ChapterSidebarViewModel">
+  <UserControl.Styles>
+    <Style Selector="Border.PreviewChapter">
+      <Setter Property="BorderBrush" Value="#B8B8B8" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="Button.ChapterIcon">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="5" />
+      <Setter Property="MinWidth" Value="28" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="CornerRadius" Value="4" />
+    </Style>
+    <Style Selector="Border.PreviewChapter.before">
+      <Setter Property="BorderThickness" Value="1,3,1,1" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.PreviewChapter.after">
+      <Setter Property="BorderThickness" Value="1,1,1,3" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.PreviewChapter.inside">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+  </UserControl.Styles>
+  <StackPanel Spacing="8">
+    <Button Classes="ChapterIcon" Command="{Binding CancelScanCommand}" IsVisible="{Binding IsScanning}"
+            ToolTip.Tip="取消扫描" AutomationProperties.Name="取消扫描">
+      <lucide:Lucide Icon="X" Width="16" Height="16" />
+    </Button>
+    <Button Classes="ChapterIcon" Command="{Binding ReloadBaselineCommand}"
+            IsVisible="{Binding HasConflict}" IsEnabled="{Binding !IsBusy}" ToolTip.Tip="重新加载映射，保留输入"
+            AutomationProperties.Name="重新加载映射，保留输入">
+      <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+    </Button>
+
+    <Border x:Name="ChapterForm" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" Padding="10"
+            IsVisible="{Binding IsFormOpen}">
+      <StackPanel Spacing="8" IsEnabled="{Binding CanEditForm}">
+        <TextBlock Text="{Binding FormTitle}" FontWeight="SemiBold" />
+        <TextBox x:Name="ChapterTitleInput" Text="{Binding Title, Mode=TwoWay}" PlaceholderText="章节标题" />
+        <TextBlock Text="目标 PDF 物理页（从 1 开始）" FontSize="12" />
+        <TextBox Text="{Binding TargetPdfPage, Mode=TwoWay}" />
+        <WrapPanel>
+          <Button Classes="ChapterIcon" Command="{Binding UseCurrentPositionCommand}" Margin="0,0,6,4"
+                  ToolTip.Tip="设为当前页" AutomationProperties.Name="设为当前页">
+            <lucide:Lucide Icon="Pin" Width="16" Height="16" />
+          </Button>
+          <Button Classes="ChapterIcon" Command="{Binding LoadLogicalTargetsCommand}" Margin="0,0,6,4"
+                  ToolTip.Tip="加载此页逻辑页" AutomationProperties.Name="加载此页逻辑页">
+            <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+          </Button>
+        </WrapPanel>
+        <ComboBox ItemsSource="{Binding LogicalTargets}" SelectedItem="{Binding SelectedLogicalTarget, Mode=TwoWay}"
+                  HorizontalAlignment="Stretch" />
+        <TextBlock Text="只使用已提交的逻辑页；更改页码后自动刷新可选目标。" FontSize="11" TextWrapping="Wrap" />
+        <WrapPanel>
+          <Button Classes="ChapterIcon" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSaveForm}"
+                  Margin="0,0,6,0" ToolTip.Tip="保存" AutomationProperties.Name="保存">
+            <lucide:Lucide Icon="Check" Width="16" Height="16" />
+          </Button>
+          <Button Classes="ChapterIcon" Command="{Binding CancelFormCommand}" ToolTip.Tip="取消"
+                  AutomationProperties.Name="取消">
+            <lucide:Lucide Icon="X" Width="16" Height="16" />
+          </Button>
+        </WrapPanel>
+      </StackPanel>
+    </Border>
+
+    <Border x:Name="ChapterDeleteConfirmation" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+            Padding="10"
+            IsVisible="{Binding IsDeletePending}">
+      <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
+        <TextBlock Text="{Binding DeleteMessage}" TextWrapping="Wrap" />
+        <WrapPanel>
+          <Button Classes="ChapterIcon" x:Name="ChapterConfirmDelete" Command="{Binding ConfirmDeleteCommand}"
+                  Margin="0,0,6,0" ToolTip.Tip="确认删除" AutomationProperties.Name="确认删除">
+            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+          </Button>
+          <Button Classes="ChapterIcon" Command="{Binding CancelDeleteCommand}" ToolTip.Tip="取消"
+                  AutomationProperties.Name="取消">
+            <lucide:Lucide Icon="X" Width="16" Height="16" />
+          </Button>
+        </WrapPanel>
+      </StackPanel>
+    </Border>
+
+    <StackPanel Spacing="10" IsVisible="{Binding HasPreview}" IsEnabled="{Binding !IsBusy}">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
+        <TextBlock Text="扫描预览" FontWeight="SemiBold" VerticalAlignment="Center"
+                   ToolTip.Tip="勾选要导入的章节；拖动手柄调整顺序，向右拖动设为子章节，向左拖动提升层级。" />
+        <Button Grid.Column="1" Classes="ChapterIcon" Command="{Binding ApplyScanCommand}"
+                IsEnabled="{Binding !IsFormOpen}" ToolTip.Tip="应用扫描结果" AutomationProperties.Name="应用扫描结果">
+          <lucide:Lucide Icon="Check" Width="16" Height="16" />
+        </Button>
+        <Button Grid.Column="2" Classes="ChapterIcon" Command="{Binding CancelPreviewCommand}"
+                IsEnabled="{Binding !IsFormOpen}" ToolTip.Tip="取消预览" AutomationProperties.Name="取消预览">
+          <lucide:Lucide Icon="X" Width="16" Height="16" />
+        </Button>
+      </Grid>
+      <ItemsControl ItemsSource="{Binding PreviewRows}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:ChapterScanRowViewModel">
+            <Border Margin="{Binding Indent}">
+              <Border Classes="PreviewChapter" CornerRadius="6"
+                      Padding="8" Margin="0,0,0,6">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="3"
+                      RowSpacing="4">
+                  <CheckBox IsChecked="{Binding IsIncluded, Mode=TwoWay}" VerticalAlignment="Top"
+                            ToolTip.Tip="导入此章节" />
+                  <TextBlock Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding Title}" TextWrapping="Wrap"
+                             VerticalAlignment="Center" />
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourceText}" FontSize="11"
+                             VerticalAlignment="Center" />
+                  <Button Grid.Row="1" Grid.Column="2" Classes="ChapterIcon" Command="{Binding EditCommand}"
+                          ToolTip.Tip="编辑标题与目标" AutomationProperties.Name="编辑标题与目标">
+                    <lucide:Lucide Icon="Pencil" Width="15" Height="15" />
+                  </Button>
+                  <Button Grid.Row="1" Grid.Column="3" Classes="ChapterIcon" Command="{Binding NavigateCommand}"
+                          ToolTip.Tip="跳转到章节" AutomationProperties.Name="跳转到章节">
+                    <lucide:Lucide Icon="ArrowUpRight" Width="15" Height="15" />
+                  </Button>
+                  <Border x:Name="PreviewDragHandle" Grid.Row="1" Grid.Column="4" Background="Transparent" Padding="5"
+                          Cursor="SizeAll" ToolTip.Tip="拖动排序；右拖或按住 Ctrl 设为子章节，左拖提升层级"
+                          PointerPressed="OnPreviewPointerPressed" PointerMoved="OnPreviewPointerMoved"
+                          PointerReleased="OnPreviewPointerReleased" PointerCaptureLost="OnPreviewPointerCaptureLost">
+                    <lucide:Lucide Icon="GripVertical" Width="15" Height="15" />
+                  </Border>
+                </Grid>
+              </Border>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <CheckBox IsChecked="{Binding ReplaceExisting, Mode=TwoWay}" HorizontalContentAlignment="Stretch"
+                ToolTip.Tip="默认追加到现有目录；勾选后将替换全部章节。">
+        <TextBlock Text="替换现有目录" TextWrapping="Wrap" />
+      </CheckBox>
+      <CheckBox IsChecked="{Binding ConfirmReplacement, Mode=TwoWay}" IsVisible="{Binding ReplaceExisting}"
+                HorizontalContentAlignment="Stretch">
+        <TextBlock Text="确认替换全部章节" TextWrapping="Wrap" />
+      </CheckBox>
+      <Expander Header="导入后的目录" HorizontalAlignment="Stretch">
+        <ItemsControl ItemsSource="{Binding SelectedPreviewTree}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:ChapterPreviewTreeRow">
+              <StackPanel Margin="{Binding Indent}" Spacing="2">
+                <TextBlock Text="{Binding Title}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Position}" FontSize="11" />
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </Expander>
+    </StackPanel>
+  </StackPanel>
+</UserControl>

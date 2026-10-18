@@ -13,6 +13,8 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
+using Patchouli.Core.Pagination;
 using Patchouli.Ocr;
 using System.Linq;
 using Patchouli.Core.Results;
@@ -77,6 +79,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     {
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
+        UpdateChapterSelection();
     }
 
     [ObservableProperty]
@@ -157,6 +160,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         Item = item;
+        ChapterEditor = new ChapterSidebarViewModel(async () =>
+            {
+                HostServices services = await _main.ServicesAsync();
+                return new ChapterSidebarServices(services.DocumentPageMaps, services.ChapterScanner, services.Pages,
+                    services.DocumentTrees);
+            }, () => TryGetDocumentInstanceId(out DocumentInstanceId id) ? id : null,
+            () => PageIndex + 1, NavigateToChapterPositionAsync, LoadChapterMapAsync);
+        Register(ChapterEditor);
+        ChapterEditor.PropertyChanged += OnChapterEditorPropertyChanged;
+        Register(System.Reactive.Disposables.Disposable.Create(() =>
+            ChapterEditor.PropertyChanged -= OnChapterEditorPropertyChanged));
         ReadingImages = new CurrentPageImageSource(() => Image);
         PreviousPageCommand = new AsyncCommand(PreviousPageAsync, () => !IsEditMode && PageIndex > 0);
         NextPageCommand =
@@ -222,6 +236,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ShowContentTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.Content);
         ShowHistoryTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.History);
         ShowTranslationTabCommand = new AsyncCommand(ShowTranslationTabAsync);
+        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync);
         ToggleTranslationCompareCommand =
             new RelayCommand(_ => IsTranslationCompareVisible = !IsTranslationCompareVisible);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
@@ -413,13 +428,43 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public bool IsContentTabActive => ActiveSidebarTab == SidebarTab.Content;
     public bool IsHistoryTabActive => ActiveSidebarTab == SidebarTab.History;
     public bool IsTranslationTabActive => ActiveSidebarTab == SidebarTab.Translation;
+    public bool IsChaptersTabActive => ActiveSidebarTab == SidebarTab.Chapters;
+    public bool IsNavigationSidebarVisible => !IsEditMode || IsChaptersTabActive;
+    public bool IsBoxSidebarVisible => IsEditMode && !IsChaptersTabActive;
+    public ChapterSidebarViewModel ChapterEditor { get; }
 
     public string SidebarTabTitle => ActiveSidebarTab switch
     {
         SidebarTab.History => "版本历史",
         SidebarTab.Translation => "翻译",
+        SidebarTab.Chapters => "章节",
         _ => "页面内容"
     };
+
+    // Chapter navigation (issue #4): the flattened chapter tree of the document's page map.
+    // The tree is rebuilt from the resolved map; expansion is preserved across reloads by
+    // chapter id, the current page and active tab are never touched by a reload.
+    public System.Collections.ObjectModel.ObservableCollection<ChapterTreeNodeViewModel> ChapterNodes { get; } =
+        new();
+
+    [ObservableProperty] public partial bool HasChapterMap { get; private set; }
+    [ObservableProperty] public partial bool HasNoChapters { get; private set; } = true;
+
+    [ObservableProperty] public partial string ChapterMapStatusText { get; private set; } = string.Empty;
+
+    partial void OnChapterMapStatusTextChanged(string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            Status = value;
+        }
+    }
+
+    [ObservableProperty] public partial ChapterTreeNodeViewModel? SelectedChapterNode { get; private set; }
+
+    private int _chapterMapGeneration;
+    private IDisposable? _chapterMapSubscription;
+    private ILibraryRevisionService? _chapterMapRevisions;
 
     [ObservableProperty] public partial bool IsViewingHistoricalRevision { get; private set; }
 
@@ -704,6 +749,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public RelayCommand ShowContentTabCommand { get; }
     public RelayCommand ShowHistoryTabCommand { get; }
     public AsyncCommand ShowTranslationTabCommand { get; }
+    public AsyncCommand ShowChaptersTabCommand { get; }
     public RelayCommand ToggleTranslationCompareCommand { get; }
     public AsyncCommand MergeSelectedCommand { get; }
     public AsyncCommand ConfirmMergeCommand { get; }
@@ -1852,6 +1898,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _lastNavigationDirection = 0;
         _renderGeneration++;
         await RenderCurrentPageAsync();
+        await EnsureChapterMapLoadedAsync();
     }
 
     public void Clear()
@@ -1892,6 +1939,18 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ClearPendingBox();
         ClearLocalOcrCandidate();
         ClearSourceValidation();
+        // Invalidate any in-flight chapter-map load so a late response can never populate the
+        // cleared workspace, and drop the revision subscription (recreated on next load).
+        _chapterMapGeneration++;
+        ChapterEditor.Reset();
+        ChapterNodes.Clear();
+        SelectedChapterNode = null;
+        HasChapterMap = false;
+        HasNoChapters = true;
+        ChapterMapStatusText = string.Empty;
+        _chapterMapSubscription?.Dispose();
+        _chapterMapSubscription = null;
+        _chapterMapRevisions = null;
         Status = "选择题录后可预览 PDF。";
     }
 
@@ -1939,6 +1998,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             _workspaceCancellation.Cancel();
             _workspaceCancellation.Dispose();
             _bookReadingInitialWindowPending = false;
+            _chapterMapSubscription?.Dispose();
+            _chapterMapSubscription = null;
+            _chapterMapRevisions = null;
         }
 
         base.Dispose(disposing);
@@ -2676,6 +2738,267 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     {
         ActiveSidebarTab = SidebarTab.Translation;
         await LoadTranslationAsync();
+    }
+
+    private async Task ShowChaptersTabAsync()
+    {
+        ActiveSidebarTab = SidebarTab.Chapters;
+        await EnsureChapterMapLoadedAsync();
+    }
+
+    /// <summary>
+    /// Subscribes to the Library revision stream (once per Library) and loads the chapter
+    /// navigation. Map writes publish a <see cref="LibraryChangeSet"/> carrying the
+    /// DocumentInstanceId, so an open workspace reloads its navigation here.
+    /// </summary>
+    private async Task EnsureChapterMapLoadedAsync()
+    {
+        HostServices services = await _main.ServicesAsync();
+        ILibraryRevisionService revisions = services.LibraryRevisions;
+        if (!ReferenceEquals(_chapterMapRevisions, revisions))
+        {
+            _chapterMapSubscription?.Dispose();
+            _chapterMapRevisions = revisions;
+            _chapterMapSubscription = Observable
+                .FromEventPattern<LibraryRevisionCommittedEventArgs>(
+                    handler => revisions.ChangeCommitted += handler,
+                    handler => revisions.ChangeCommitted -= handler)
+                .Select(pattern => pattern.EventArgs.ChangeSet)
+                .Subscribe(OnLibraryChangeSet);
+        }
+
+        await LoadChapterMapAsync();
+    }
+
+    private void OnLibraryChangeSet(LibraryChangeSet changeSet)
+    {
+        if (!TryGetDocumentInstanceId(out DocumentInstanceId documentId) ||
+            !changeSet.DocumentInstanceIds.Contains(documentId))
+        {
+            return;
+        }
+
+        // Reload navigation preserving the current page, tab, and chapter expansion. The load
+        // marshals its UI updates back to the UI thread itself.
+        Dispatcher.UIThread.InvokeAsync(() =>
+            LoadChapterMapAsync().Observe(nameof(PdfWorkspaceViewModel), "chapter-map-reload"));
+    }
+
+    private async Task LoadChapterMapAsync()
+    {
+        int generation = ++_chapterMapGeneration;
+        if (!TryGetDocumentInstanceId(out DocumentInstanceId documentId))
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => ApplyChapterMap(null));
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        Result<ResolvedDocumentPageMap?> resolved =
+            await services.DocumentPageMaps.GetResolvedAsync(documentId);
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (generation != _chapterMapGeneration)
+            {
+                // Stale: the document was switched or cleared while loading; drop the result so
+                // a late response can never populate the wrong document's navigation.
+                return;
+            }
+
+            if (resolved.IsFailure)
+            {
+                HasChapterMap = false;
+                ChapterMapStatusText = $"章节映射加载失败：{resolved.ErrorMessage}";
+                return;
+            }
+
+            ApplyChapterMap(resolved.Value);
+        });
+        if (generation == _chapterMapGeneration)
+        {
+            await ChapterEditor.RefreshAsync();
+        }
+    }
+
+    private bool TryGetDocumentInstanceId(out DocumentInstanceId documentInstanceId)
+    {
+        if (Guid.TryParse(Item.DocumentInstanceId, out Guid guid))
+        {
+            documentInstanceId = new DocumentInstanceId(guid);
+            return true;
+        }
+
+        documentInstanceId = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Rebuilds the flattened chapter tree. Expansion is preserved by chapter id; the current
+    /// page and the active tab are never touched by a reload.
+    /// </summary>
+    private void ApplyChapterMap(ResolvedDocumentPageMap? resolved)
+    {
+        HashSet<string> expanded = ChapterNodes
+            .Where(node => node.IsExpanded)
+            .Select(node => node.ChapterId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        string? selectedId = ChapterEditor.SelectedChapterId ?? SelectedChapterNode?.ChapterId;
+        Dictionary<string, bool> expansion =
+            ChapterNodes.ToDictionary(n => n.ChapterId, n => n.IsExpanded, StringComparer.Ordinal);
+        ChapterNodes.Clear();
+        HasNoChapters = true;
+        SelectedChapterNode = null;
+
+        if (resolved is null || !resolved.HasMap)
+        {
+            HasChapterMap = false;
+            ChapterMapStatusText = string.Empty;
+            return;
+        }
+
+        HasChapterMap = true;
+        foreach (ResolvedChapterNode chapter in resolved.Chapters)
+        {
+            AppendChapterNode(chapter, 0, expanded);
+        }
+
+        HasNoChapters = ChapterNodes.Count == 0;
+
+        foreach (ChapterTreeNodeViewModel node in ChapterNodes)
+        {
+            if (expansion.TryGetValue(node.ChapterId, out bool wasExpanded))
+            {
+                node.IsExpanded = wasExpanded;
+            }
+
+            node.IsSelected = node.ChapterId == selectedId;
+        }
+
+        SelectedChapterNode = ChapterNodes.FirstOrDefault(n => n.ChapterId == selectedId);
+        RefreshChapterVisibility();
+        UpdateChapterSelection();
+
+        ChapterMapStatusText = string.Join("\n", resolved.Diagnostics.Select(diagnostic => diagnostic.Message)
+            .Concat(ChapterNodes.Where(node => node.HasDiagnostics).Select(node => node.DiagnosticText)).Distinct());
+    }
+
+    private void AppendChapterNode(
+        ResolvedChapterNode chapter, int depth, HashSet<string> expanded)
+    {
+        bool hasChildren = chapter.Children.Count > 0;
+        ChapterTreeNodeViewModel node = new(
+            chapter,
+            depth,
+            hasChildren,
+            hasChildren && (depth == 0 || expanded.Contains(chapter.ChapterId)),
+            NavigateToChapterAsync,
+            _ => RefreshChapterVisibility(), ChapterEditor);
+        ChapterNodes.Add(node);
+        foreach (ResolvedChapterNode child in chapter.Children)
+        {
+            AppendChapterNode(child, depth + 1, expanded);
+        }
+    }
+
+    /// <summary>A flattened node is visible only when every ancestor is expanded.</summary>
+    private void RefreshChapterVisibility()
+    {
+        Stack<(int Depth, bool SubtreeVisible)> stack = new();
+        foreach (ChapterTreeNodeViewModel node in ChapterNodes)
+        {
+            while (stack.Count > 0 && stack.Peek().Depth >= node.Depth)
+            {
+                stack.Pop();
+            }
+
+            bool visible = stack.Count == 0 || stack.Peek().SubtreeVisible;
+            node.IsVisible = visible;
+            stack.Push((node.Depth, visible && (!node.HasChildren || node.IsExpanded)));
+        }
+    }
+
+    /// <summary>
+    /// Page-level stable matching for v1: every chapter targeting the current page is marked
+    /// selected; the first one becomes the selected node.
+    /// </summary>
+    private void UpdateChapterSelection()
+    {
+        int pdfPage = PageIndex + 1;
+        foreach (ChapterTreeNodeViewModel node in ChapterNodes)
+        {
+            node.IsCurrentPage = node.PdfPage == pdfPage;
+        }
+    }
+
+    private void OnChapterEditorPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ChapterSidebarViewModel.Status) &&
+            !string.IsNullOrWhiteSpace(ChapterEditor.Status))
+        {
+            Status = ChapterEditor.Status;
+        }
+
+        if (e.PropertyName != nameof(ChapterSidebarViewModel.SelectedChapterId))
+        {
+            return;
+        }
+
+        SelectedChapterNode = ChapterNodes.FirstOrDefault(node => node.ChapterId == ChapterEditor.SelectedChapterId);
+        foreach (ChapterTreeNodeViewModel node in ChapterNodes)
+        {
+            node.IsSelected = node == SelectedChapterNode;
+        }
+    }
+
+    /// <summary>
+    /// Chapter click: jump to the page FIRST via <see cref="GoToPageAsync"/>, confirm the jump
+    /// actually landed, and only then highlight the logical region. Draft-blocking never leads
+    /// to operating on the wrong page because the highlight is skipped unless the page matches.
+    /// </summary>
+    private async Task NavigateToChapterAsync(ChapterTreeNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        SelectedChapterNode = node;
+        ChapterEditor.SelectedChapterId = node.ChapterId;
+        foreach (ChapterTreeNodeViewModel chapter in ChapterNodes)
+        {
+            chapter.IsSelected = chapter == node;
+        }
+
+        await NavigateToChapterPositionAsync(new NavigationPosition(node.PdfPage, node.LogicalBoxId));
+    }
+
+    private async Task NavigateToChapterPositionAsync(NavigationPosition target)
+    {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再使用章节导航。";
+            return;
+        }
+
+        await GoToPageAsync(target.PdfPage);
+
+        if (PageIndex != target.PdfPage - 1)
+        {
+            Status = $"未能跳转到 PDF 第 {target.PdfPage} 页，未执行章节高亮。";
+            return;
+        }
+
+        if (target.LogicalPage.HasValue && !TryHighlightBox(target.LogicalPage.Value))
+        {
+            Status = $"已到达 PDF 第 {target.PdfPage} 页，但未找到该章节的逻辑页区域（可能版本已变化）。"
+                     + "章节条目已保留，可继续使用物理页码。";
+            UpdateChapterSelection();
+            return;
+        }
+
+        UpdateChapterSelection();
     }
 
     private async Task CopyTranslationMarkdownAsync()

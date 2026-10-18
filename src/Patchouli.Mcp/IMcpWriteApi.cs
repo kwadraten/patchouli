@@ -55,4 +55,19 @@ public interface IMcpWriteApi
         PageId pageId,
         string content,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Parses, validates, and atomically replaces a document's chapter/pagination map from
+    /// <c>map.yml</c> YAML. An empty definition clears the map. The write advances the
+    /// Library revision and publishes the change after the transaction commits.
+    /// </summary>
+    Task<Result<McpPutResponse>> PutDocumentMapAsync(
+        string uri,
+        DocumentInstanceId documentInstanceId,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Page-map writes unavailable."));
+    }
 }

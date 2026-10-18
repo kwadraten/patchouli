@@ -6,6 +6,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
+using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
@@ -29,6 +30,7 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly IDocumentMarkdownCompiler _markdownCompiler;
     private readonly ICompiledMarkdownCache _compiledMarkdownCache;
     private readonly IPageTranslationService? _pageTranslations;
+    private readonly IDocumentPageMapService? _pageMaps;
 
     /// <summary>Safe, content-free counters for the shared compiled-markdown read cache.</summary>
     public CompiledMarkdownCacheMetrics CompiledMarkdownCacheMetrics => _compiledMarkdownCache.Metrics;
@@ -38,7 +40,8 @@ public sealed class McpReadApi : IMcpReadApi
         ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null,
         IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null,
         ICompiledMarkdownCache? compiledMarkdownCache = null,
-        IPageTranslationService? pageTranslations = null)
+        IPageTranslationService? pageTranslations = null,
+        IDocumentPageMapService? pageMaps = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
@@ -47,6 +50,7 @@ public sealed class McpReadApi : IMcpReadApi
         _cslRenderer = cslRenderer;
         _markdown = markdown ?? new MarkdigMarkdownEngine();
         _pageTranslations = pageTranslations;
+        _pageMaps = pageMaps;
         _compiledMarkdownCache = compiledMarkdownCache ??
                                  (markdownCompiler as CachedDocumentMarkdownCompiler)?.Cache ??
                                  new CompiledMarkdownCache();
@@ -1151,6 +1155,20 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpDocumentOutlineResponse>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {ex.Message}");
         }
+    }
+
+    public async Task<Result<string>> GetDocumentMapYamlAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_pageMaps is null)
+        {
+            return Result<string>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Page-map projection unavailable.");
+        }
+
+        // Plain fetch triggers no OCR or AI work: the projection is read from the stored map,
+        // or the empty-map projection when the document has no map.
+        return await _pageMaps.GetMapYamlAsync(documentInstanceId, cancellationToken);
     }
 
     public async Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,

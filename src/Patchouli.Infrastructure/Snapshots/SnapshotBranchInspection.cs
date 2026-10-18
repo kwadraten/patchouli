@@ -72,6 +72,13 @@ public sealed record BranchImportPlan(
 
     public IReadOnlyDictionary<string, ItemBranchStateOverride> ItemStateOverrides { get; init; } =
         new Dictionary<string, ItemBranchStateOverride>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per-document page-map conflict resolutions: document id -> whether the incoming branch
+    /// map wins. Absent entries keep the default import behavior (incoming map replaces local).
+    /// </summary>
+    public IReadOnlyDictionary<string, bool> DocumentPageMapOverrides { get; init; } =
+        new Dictionary<string, bool>(StringComparer.Ordinal);
 }
 
 public sealed record ItemBranchStateOverride(string? DeletedAt, string? MergedIntoItemId);
@@ -425,6 +432,22 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                             ConflictId = CreateConflictId(branch, ConflictCode.PrimaryDocumentConflict, documentId)
                         });
                 }
+
+                // Page-map conflict: both sides define a different chapter/pagination map for the
+                // same document. Surface it instead of silently last-writer-winning the import.
+                string? sourceMapJson = await ReadPageMapDefinitionAsync(source, documentId);
+                string? targetMapJson = await ReadPageMapDefinitionAsync(target, documentId);
+                if (sourceMapJson is not null && targetMapJson is not null &&
+                    !string.Equals(sourceMapJson, targetMapJson, StringComparison.Ordinal))
+                {
+                    conflicts.Add(ConflictDescriptorMapper.DocumentPageMapConflict(
+                            DocumentInstanceId.Parse(documentId),
+                            SummarizePageMap(targetMapJson),
+                            SummarizePageMap(sourceMapJson)) with
+                        {
+                            ConflictId = CreateConflictId(branch, ConflictCode.DocumentPageMapConflict, documentId)
+                        });
+                }
             }
 
             ItemId[] itemsToImport = selectedItems.Select(ItemId.Parse).ToArray();
@@ -497,6 +520,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         Dictionary<string, bool> primaryOverrides = new(plan.DocumentPrimaryOverrides, StringComparer.Ordinal);
         Dictionary<string, ItemBranchStateOverride> itemStateOverrides =
             new(plan.ItemStateOverrides, StringComparer.Ordinal);
+        Dictionary<string, bool> pageMapOverrides =
+            new(plan.DocumentPageMapOverrides, StringComparer.Ordinal);
 
         try
         {
@@ -567,6 +592,17 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
                     break;
 
+                case ConflictCode.DocumentPageMapConflict:
+                    if (selection.ActionId is not ("keep_local" or "use_incoming"))
+                    {
+                        return Result<BranchImportPlan>.Failure("conflict_action_unknown",
+                            "The selected action is not executable for the page-map conflict.", [conflict]);
+                    }
+
+                    pageMapOverrides[conflict.ObjectId] = string.Equals(selection.ActionId, "use_incoming",
+                        StringComparison.Ordinal);
+                    break;
+
                 default:
                     return Result<BranchImportPlan>.Failure("conflict_executor_unavailable",
                         $"No branch-plan executor is registered for {conflict.ConflictCode}.", [conflict]);
@@ -592,7 +628,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             ConflictResolutions = resolutions,
             ItemIdRemappings = itemRemappings,
             DocumentPrimaryOverrides = primaryOverrides,
-            ItemStateOverrides = itemStateOverrides
+            ItemStateOverrides = itemStateOverrides,
+            DocumentPageMapOverrides = pageMapOverrides
         });
     }
 
@@ -848,6 +885,36 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     """,
                     new { Docs = documents },
                     transaction);
+
+                // Page maps travel with their document instances. A conflict resolved as
+                // keep_local skips the incoming map; every other case takes the branch map.
+                bool branchHasPageMaps = await TableExistsAsync(connection, "branch", "document_page_maps");
+                if (branchHasPageMaps)
+                {
+                    foreach (string documentId in documents)
+                    {
+                        bool keepLocal = plan.DocumentPageMapOverrides.TryGetValue(documentId,
+                            out bool useIncoming) && !useIncoming;
+                        if (keepLocal)
+                        {
+                            continue;
+                        }
+
+                        await connection.ExecuteAsync(
+                            """
+                            insert into document_page_maps
+                                (document_instance_id, definition_json, created_at, updated_at)
+                            select document_instance_id, definition_json, created_at, updated_at
+                            from branch.document_page_maps
+                            where document_instance_id = @DocumentId
+                            on conflict (document_instance_id) do update set
+                                definition_json = excluded.definition_json,
+                                updated_at = excluded.updated_at;
+                            """,
+                            new { DocumentId = documentId },
+                            transaction);
+                    }
+                }
 
                 foreach (string documentId in documents)
                 {
@@ -1124,6 +1191,67 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         return $"{branch.BranchId}:{conflictCode}:{objectId}";
     }
 
+    /// <summary>
+    /// Reads a document's stored page-map definition JSON, or null when the database predates
+    /// migration 048 or the document has no map.
+    /// </summary>
+    private static async Task<bool> IsPageMapConflictCurrentAsync(
+        SqliteConnection source,
+        SqliteConnection target,
+        ConflictDescriptor conflict)
+    {
+        string? incoming = await ReadPageMapDefinitionAsync(source, conflict.ObjectId);
+        string? local = await ReadPageMapDefinitionAsync(target, conflict.ObjectId);
+        return incoming is not null && local is not null &&
+               conflict.LocalSnapshot == SummarizePageMap(local) &&
+               conflict.IncomingSnapshot == SummarizePageMap(incoming);
+    }
+
+    private static async Task<string?> ReadPageMapDefinitionAsync(DbConnection connection, string documentId)
+    {
+        int tableCount = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from sqlite_master where type = 'table' and name = 'document_page_maps';");
+        if (tableCount == 0)
+        {
+            return null;
+        }
+
+        return await connection.ExecuteScalarAsync<string?>(
+            "select definition_json from document_page_maps where document_instance_id = @Id;",
+            new { Id = documentId });
+    }
+
+    private static string SummarizePageMap(string definitionJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(definitionJson);
+            JsonElement root = document.RootElement;
+            int physicalRules = root.TryGetProperty("physical_rules", out JsonElement physical)
+                ? physical.GetArrayLength() : 0;
+            int logicalRules = root.TryGetProperty("logical_rules", out JsonElement logical)
+                ? logical.GetArrayLength() : 0;
+            int labels = root.TryGetProperty("page_labels", out JsonElement labelElement)
+                ? labelElement.GetArrayLength() : 0;
+            int chapters = root.TryGetProperty("chapters", out JsonElement chapterElement)
+                ? chapterElement.GetArrayLength() : 0;
+            return JsonSerializer.Serialize(new
+            {
+                physical_rules = physicalRules,
+                logical_rules = logicalRules,
+                page_labels = labels,
+                top_level_chapters = chapters,
+                content_sha256 = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(definitionJson)))
+            });
+        }
+        catch (JsonException)
+        {
+            return "{\"unparseable\":true}";
+        }
+    }
+
     private async Task<ConflictDescriptor[]> FindSupersededConflictsAsync(
         BranchImportPlan plan,
         CancellationToken cancellationToken)
@@ -1149,6 +1277,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 ConflictCode.PrimaryDocumentConflict => await IsPrimaryDocumentConflictCurrentAsync(source, target,
                     conflict),
                 ConflictCode.ItemLevelBranch => await IsItemLevelConflictCurrentAsync(source, target, conflict),
+                ConflictCode.DocumentPageMapConflict => await IsPageMapConflictCurrentAsync(source, target, conflict),
                 _ => true
             };
             if (!unchanged)

@@ -14,6 +14,7 @@ public enum McpUriKind
     Item,
     Document,
     Page,
+    DocumentMap,
     TranslationDocument,
     TranslationPage,
     Style,
@@ -169,6 +170,15 @@ public static class McpResourceUris
         return $"{Prefix}runs/ocr/{RequirePathToken(taskId, nameof(taskId))}/status";
     }
 
+    /// <summary>
+    /// Builds the canonical page-map URI. The filename is fixed: every document's chapter and
+    /// pagination map lives at <c>texts/{document-id}/map.yml</c>.
+    /// </summary>
+    public static string MapUri(DocumentInstanceId documentId)
+    {
+        return $"{Prefix}texts/{documentId}/map.yml";
+    }
+
     /// <summary>The read-only workflow metadata root.</summary>
     public static string WorkflowsScopeUri()
     {
@@ -267,6 +277,7 @@ public static class McpResourceUris
             McpUriKind.Item => ItemUri(target.ItemId!.Value),
             McpUriKind.Document => DocumentUri(target.DocumentId!.Value),
             McpUriKind.Page => PageUri(target.DocumentId!.Value, target.PageIndex!.Value),
+            McpUriKind.DocumentMap => MapUri(target.DocumentId!.Value),
             McpUriKind.Evidence => EvidencePageUri(target.DocumentId!.Value, target.PageIndex!.Value,
                 target.TreeRevisionId, target.BoxId),
             McpUriKind.TranslationDocument => TranslationDocumentUri(target.DocumentId!.Value),
@@ -513,7 +524,8 @@ public static class McpResourceUris
     private static Result<McpUriParseResult> ParseTextsUri(string uri, string[] segments, string? query)
     {
         // patchouli://texts/ or patchouli://texts/{id}/ or
-        // patchouli://texts/{id}/page-{page-index}.xml[?rev=<id>[&box=<id>]]
+        // patchouli://texts/{id}/page-{page-index}.xml[?rev=<id>[&box=<id>]] or
+        // patchouli://texts/{id}/map.yml (fixed filename; no query parameters)
         if (segments.Length == 2 && segments[0] == "texts" && segments[1].Length == 0)
         {
             return query is null
@@ -528,6 +540,17 @@ public static class McpResourceUris
                 ? Result<McpUriParseResult>.Success(
                     new McpUriParseResult(McpUriKind.Document, DocumentId: new DocumentInstanceId(documentId)))
                 : Invalid(uri, "Document URIs do not accept query parameters.");
+        }
+
+        // Page-map URI: texts/{id}/map.yml with a fixed filename.
+        if (segments.Length == 3 && segments[2] == "map.yml" &&
+            TryParseGuid(segments[1], out Guid documentIdForMap))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.DocumentMap,
+                    DocumentId: new DocumentInstanceId(documentIdForMap)))
+                : Invalid(uri, "Page-map URIs do not accept query parameters.");
         }
 
         // Page URI: texts/{id}/page-{index}.xml with an optional versioned evidence query.
@@ -556,8 +579,9 @@ public static class McpResourceUris
                 "Page URI queries must use the form ?rev={tree-revision-id}[&box={box-id}]. Legacy ?evref= is not supported.");
         }
 
-        return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/ or " +
-                            "patchouli://texts/{document-id}/page-{page-index}.xml.");
+        return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/, " +
+                            "patchouli://texts/{document-id}/page-{page-index}.xml, or " +
+                            "patchouli://texts/{document-id}/map.yml.");
     }
 
     private static Result<McpUriParseResult> ParseTranslationsUri(string uri, string[] segments, string? query)

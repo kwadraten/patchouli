@@ -4,8 +4,22 @@
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:reading="using:Patchouli.Reading"
              xmlns:vm="using:Patchouli.UI.ViewModels"
+             xmlns:views="using:Patchouli.UI.Views"
              x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
+    <ControlTheme x:Key="ChapterExpanderTheme" TargetType="ToggleButton">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="Black" />
+      <Setter Property="Padding" Value="4,2" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+            <ContentPresenter Content="{TemplateBinding Content}" Foreground="Black"
+                              HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </ControlTheme>
     <!-- Shared context menu for canvas boxes and the edit-mode box tree.
          DataContext is the PdfBBoxViewModel of the control the flyout is attached to. -->
     <MenuFlyout x:Key="BBoxContextMenu" x:DataType="vm:PdfBBoxViewModel">
@@ -30,6 +44,9 @@
     <StaticResource ResourceKey="BBoxContextMenu" />
   </FlyoutBase.AttachedFlyout>
   <UserControl.Styles>
+    <Style Selector="Border.ChapterRow.selected">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+    </Style>
     <Style Selector="Button.ToolbarButton">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -570,7 +587,7 @@
 
           <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
             <!-- View mode: tabbed sidebar — page content (read-only Markdown preview) or version history -->
-            <Grid RowDefinitions="Auto,*" IsVisible="{Binding !IsEditMode}">
+            <Grid RowDefinitions="Auto,*" IsVisible="{Binding IsNavigationSidebarVisible}">
               <Border Classes="SidebarHeader">
                 <Grid ColumnDefinitions="Auto,*" Height="32">
                   <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
@@ -583,10 +600,28 @@
                           <MenuItem Header="页面内容" Command="{Binding ShowContentTabCommand}" />
                           <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
+                          <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
+                          <MenuItem Header="返回页面编辑" Command="{Binding ShowContentTabCommand}"
+                                    IsVisible="{Binding IsEditMode}" />
                         </MenuFlyout>
                       </Button.Flyout>
                       <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
                                      StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                  </StackPanel>
+                  <StackPanel x:Name="ChapterHeaderActions" Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                              HorizontalAlignment="Right" VerticalAlignment="Center"
+                              IsVisible="{Binding IsChaptersTabActive}"
+                              IsEnabled="{Binding ChapterEditor.CanStartOperation}">
+                    <Button x:Name="AddChapterButton" Command="{Binding ChapterEditor.AddCommand}"
+                            Background="Transparent" BorderThickness="0" Padding="6"
+                            ToolTip.Tip="添加章节" AutomationProperties.Name="添加章节">
+                      <lucide:Lucide Icon="Plus" Width="18" Height="18" />
+                    </Button>
+                    <Button x:Name="ScanChaptersButton" Command="{Binding ChapterEditor.ScanCommand}"
+                            Background="Transparent" BorderThickness="0" Padding="6"
+                            ToolTip.Tip="扫描全本章节" AutomationProperties.Name="扫描章节">
+                      <lucide:Lucide Icon="ScanText" Width="18" Height="18" />
                     </Button>
                   </StackPanel>
                 </Grid>
@@ -681,13 +716,79 @@
                     </StackPanel>
                   </StackPanel>
                 </ScrollViewer>
+                <!-- Tab: chapters (chapter structure + printed page numbers from the page map) -->
+                <ScrollViewer IsVisible="{Binding IsChaptersTabActive}" Margin="16,8">
+                  <StackPanel>
+                    <views:ChapterEditorPanel DataContext="{Binding ChapterEditor}" Margin="0,0,0,12" />
+                    <TextBlock Text="尚无章节。可将当前页添加为章节，或扫描已有 OCR 文本中的标题。" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding HasNoChapters}" />
+                    <ItemsControl ItemsSource="{Binding ChapterNodes}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="vm:ChapterTreeNodeViewModel">
+                          <Border IsVisible="{Binding IsVisible}" Margin="{Binding Indent}">
+                            <Border Classes="ChapterRow" Classes.selected="{Binding IsSelected}"
+                                    BorderBrush="#B8B8B8" BorderThickness="1"
+                                    CornerRadius="6" Padding="6" Margin="0,0,0,6">
+                              <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                                <Grid.ContextMenu>
+                                  <ContextMenu x:DataType="vm:ChapterTreeNodeViewModel">
+                                    <MenuItem Header="编辑标题 / 目标" Command="{Binding EditCommand}" />
+                                    <MenuItem Header="添加同级章节" Command="{Binding AddSiblingCommand}" />
+                                    <MenuItem Header="添加子章节" Command="{Binding AddChildCommand}" />
+                                    <MenuItem Header="设为当前位置" Command="{Binding SetCurrentPositionCommand}" />
+                                    <Separator />
+                                    <MenuItem Header="删除章节及子章节" Command="{Binding DeleteCommand}" />
+                                  </ContextMenu>
+                                </Grid.ContextMenu>
+                                <ToggleButton Content="{Binding ExpanderGlyph}"
+                                              Theme="{StaticResource ChapterExpanderTheme}"
+                                              IsChecked="{Binding IsExpanded, Mode=TwoWay}"
+                                              IsVisible="{Binding HasChildren}"
+                                              Background="Transparent" BorderThickness="0" Padding="4,2"
+                                              VerticalAlignment="Top"
+                                              ToolTip.Tip="展开/折叠子章节" />
+                                <Button Grid.Column="1" Command="{Binding NavigateCommand}"
+                                        Background="Transparent" BorderThickness="0" Padding="6,4"
+                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                                  <StackPanel>
+                                    <TextBlock Text="{Binding Title}" FontSize="13" TextWrapping="Wrap"
+                                               FontWeight="{Binding TitleFontWeight}" />
+                                    <TextBlock Text="{Binding PositionText}" FontSize="11"
+                                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                  </StackPanel>
+                                </Button>
+                                <Button Grid.Column="2" Command="{Binding EditCommand}"
+                                        Padding="5" VerticalAlignment="Top" Background="Transparent"
+                                        BorderThickness="0" ToolTip.Tip="编辑章节" AutomationProperties.Name="编辑章节">
+                                  <lucide:Lucide Icon="Pencil" Width="15" Height="15" />
+                                </Button>
+                                <Border x:Name="ChapterDragHandle" Grid.Column="3" Padding="6" Background="Transparent"
+                                        Cursor="SizeAll"
+                                        PointerPressed="OnChapterPointerPressed" PointerMoved="OnChapterPointerMoved"
+                                        PointerReleased="OnChapterPointerReleased"
+                                        PointerCaptureLost="OnChapterPointerCaptureLost"
+                                        ToolTip.Tip="拖动调整顺序；按住 Ctrl 拖到章节上可设为其子章节。">
+                                  <lucide:Lucide Icon="GripVertical" Width="15" Height="15" VerticalAlignment="Top" />
+                                </Border>
+                              </Grid>
+                            </Border>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </ScrollViewer>
               </Grid>
             </Grid>
 
             <!-- Edit mode: Box tree -->
-            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsEditMode}">
+            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
               <Border Classes="SidebarHeader">
-                <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <Button Grid.Column="1" Content="章节" Command="{Binding ShowChaptersTabCommand}" />
+                </Grid>
               </Border>
               <Grid Grid.Row="1">
                 <ScrollViewer>

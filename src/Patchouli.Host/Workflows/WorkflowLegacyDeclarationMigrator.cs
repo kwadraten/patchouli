@@ -82,7 +82,7 @@ public sealed class WorkflowLegacyDeclarationMigrator(WorkflowStore store, Scrip
         const string legacyEntry = "__patchouliLegacyEntry";
         const string modelVariable = "__patchouliMigratedModel";
         string modelKey = "executionModel";
-        while (definition.Parameters.Any(parameter => parameter.Name == modelKey))
+        while (definition.Parameters.Select(parameter => parameter.Name).Contains(modelKey))
         {
             modelKey = "_" + modelKey;
         }

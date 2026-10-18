@@ -8,6 +8,7 @@ using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.Mcp;
 
@@ -20,15 +21,18 @@ public sealed class McpWriteApi : IMcpWriteApi
     private readonly ICslStyleStore _styles;
     private readonly IPageTranslationService? _pageTranslations;
     private readonly IDocumentTreeService? _trees;
+    private readonly IDocumentPageMapService? _pageMaps;
 
     public McpWriteApi(IItemService items, IBiblatexHelperClient biblatex, ICslStyleStore styles,
-        IPageTranslationService? pageTranslations = null, IDocumentTreeService? trees = null)
+        IPageTranslationService? pageTranslations = null, IDocumentTreeService? trees = null,
+        IDocumentPageMapService? pageMaps = null)
     {
         _items = items;
         _biblatex = biblatex;
         _styles = styles;
         _pageTranslations = pageTranslations;
         _trees = trees;
+        _pageMaps = pageMaps;
     }
 
     public async Task<Result<McpPutResponse>> PutPageXmlAsync(McpPutRequest request, DocumentInstanceId documentId,
@@ -243,6 +247,30 @@ public sealed class McpWriteApi : IMcpWriteApi
             : [];
         return Result<McpPutResponse>.Success(new McpPutResponse(
             uri, "translation_page", true, ContentBytes(content ?? string.Empty), warnings));
+    }
+
+    public async Task<Result<McpPutResponse>> PutDocumentMapAsync(
+        string uri,
+        DocumentInstanceId documentInstanceId,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        if (_pageMaps is null)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Page-map writes are not configured.");
+        }
+
+        Result<DocumentPageMap> replaced = await _pageMaps.ReplaceFromYamlAsync(
+            documentInstanceId, content ?? string.Empty, cancellationToken);
+        if (replaced.IsFailure)
+        {
+            return Result<McpPutResponse>.Failure(
+                replaced.ErrorCode!, replaced.ErrorMessage!, replaced.Conflicts, replaced.Details);
+        }
+
+        return Result<McpPutResponse>.Success(new McpPutResponse(
+            uri, "document_page_map", true, ContentBytes(content ?? string.Empty), []));
     }
 
     public async Task<Result<McpPutResponse>> PutAsync(

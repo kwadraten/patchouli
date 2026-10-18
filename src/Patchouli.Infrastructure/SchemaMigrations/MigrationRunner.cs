@@ -41,7 +41,7 @@ public sealed class MigrationRunner
         await EnsureSupportedSchemaEpochAsync(connection);
         await EnsureSchemaMigrationsTableAsync(connection);
 
-        // Issue #11 used these IDs before main assigned them to document types and CSL.
+        // Issues #4 and #11 used these IDs before main assigned them to document types and CSL.
         // Match the full name so existing main databases keep their migration history.
         await connection.ExecuteAsync(
             """
@@ -49,6 +49,8 @@ public sealed class MigrationRunner
             where id = '048' and name = '048_file_search_root_sort_order';
             update schema_migrations set id = '051', name = '051_file_import_recovery'
             where id = '049' and name = '049_file_import_recovery';
+            update schema_migrations set id = '052', name = '052_create_document_page_maps'
+            where id = '048' and name = '048_create_document_page_maps';
             """);
 
         IReadOnlySet<string> appliedIds = await LoadAppliedMigrationIdsAsync(connection);

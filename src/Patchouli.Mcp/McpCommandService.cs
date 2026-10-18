@@ -668,6 +668,11 @@ public sealed class McpCommandService
             return await PutTranslationAsync(request, parsed.Value, cancellationToken);
         }
 
+        if (kind == McpUriKind.DocumentMap)
+        {
+            return await PutMapAsync(request, parsed.Value, cancellationToken);
+        }
+
         if (request.Boxes is not null)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
@@ -681,8 +686,9 @@ public sealed class McpCommandService
             or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
-                $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, and " +
-                "translations/{document-id}/page-{page-index}.xml can be replaced.");
+                $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
+                "texts/{document-id}/map.yml, and translations/{document-id}/page-{page-index}.xml " +
+                "can be replaced.");
         }
 
         if (kind == McpUriKind.TranslationPage)
@@ -792,6 +798,66 @@ public sealed class McpCommandService
             ? failure.Errors.Select(error => new McpTranslationStructureError(
                 error.BlockIndex, error.Expected, error.Actual)).ToArray()
             : null;
+    }
+
+    /// <summary>
+    /// Replaces a document's chapter/pagination map from whole-resource <c>map.yml</c> content.
+    /// The texts-domain permission and the put switch are enforced by <see cref="PutCoreAsync"/>
+    /// before dispatch; box replacements are not supported for maps.
+    /// </summary>
+    private async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutMapAsync(McpPutRequest request,
+        McpUriParseResult target, CancellationToken cancellationToken)
+    {
+        if (request.Boxes is not null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
+                "map.yml takes whole-resource content only; box replacements are not supported.");
+        }
+
+        if (request.Content is null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
+                "content is required.");
+        }
+
+        Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(
+            target.DocumentId!.Value, cancellationToken);
+        if (outline.IsFailure)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(
+                McpErrorMappings.ToReadError(outline.ErrorCode),
+                outline.ErrorMessage ?? outline.ErrorCode ?? "Document was not found.");
+        }
+
+        Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
+        string baseRevision = beforeWrite.IsSuccess ? beforeWrite.Value.LibraryRevision : "lib:0";
+
+        Result<McpPutResponse> result = await _write.PutDocumentMapAsync(
+            target.CanonicalUri, target.DocumentId.Value, request.Content, cancellationToken);
+        if (result.IsFailure)
+        {
+            McpErrorCode code = McpErrorMappings.ToWriteError(result.ErrorCode);
+            string detail = result.ErrorMessage ?? result.ErrorCode ?? "Put failed.";
+            McpPutResult rejected = new(
+                target.CanonicalUri,
+                "document_page_map",
+                false,
+                Encoding.UTF8.GetByteCount(request.Content));
+            McpEnvelope<McpPutMeta, McpPutResult> failed = McpEnvelope<McpPutMeta, McpPutResult>.Create(
+                new McpPutMeta(baseRevision), [rejected],
+                message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
+            return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
+        }
+
+        Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
+        string newRevision = afterWrite.IsSuccess ? afterWrite.Value.LibraryRevision : baseRevision;
+        McpPutResult putResult = new(target.CanonicalUri, result.Value.ResourceType, result.Value.Committed,
+            result.Value.ContentBytes);
+        IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
+        McpEnvelope<McpPutMeta, McpPutResult> envelope = McpEnvelope<McpPutMeta, McpPutResult>.Create(
+            new McpPutMeta(newRevision), [putResult],
+            message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
+        return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
     }
 
     private async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteCoreAsync(McpCiteRequest request,
@@ -1219,6 +1285,7 @@ public sealed class McpCommandService
             McpUriKind.Item => await FetchItemAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Document => await FetchDocumentAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Page => await FetchPageAsync(parsed.Value, range, limitBytes, state, cancellationToken),
+            McpUriKind.DocumentMap => await FetchMapAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Style => await FetchStyleAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Evidence => await FetchEvidenceAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
@@ -1612,6 +1679,45 @@ public sealed class McpCommandService
 
         return FitDocumentEntry(uri, itemUri, outline.Value.Title, outline.Value.DocumentInstanceId, selected,
             limitBytes, state.LibraryRevision);
+    }
+
+    /// <summary>
+    /// Fetches the <c>map.yml</c> projection of a document's chapter/pagination map. Plain
+    /// fetch triggers no OCR or AI work. Documents without a stored map get the discoverable,
+    /// first-put-able empty-map projection. The map itself is not citable.
+    /// </summary>
+    private async Task<McpFetchResult> FetchMapAsync(McpUriParseResult target, string? range, int limitBytes,
+        McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        string uri = McpResourceUris.MapUri(target.DocumentId!.Value);
+        Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(target.DocumentId.Value,
+            cancellationToken);
+        if (outline.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(outline.ErrorCode),
+                    outline.ErrorMessage ?? outline.ErrorCode ?? "Document was not found."), limitBytes);
+        }
+
+        string? rangeError = ValidateRange(range, "lines");
+        if (rangeError is not null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
+        }
+
+        Result<string> yaml = await _read.GetDocumentMapYamlAsync(target.DocumentId.Value, cancellationToken);
+        if (yaml.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(yaml.ErrorCode),
+                    yaml.ErrorMessage ?? yaml.ErrorCode ?? "Page map was not found."), limitBytes);
+        }
+
+        string? itemUri = outline.Value.ItemId is null
+            ? null
+            : McpResourceUris.ItemUri(outline.Value.ItemId.Value);
+        string content = ApplyLines(yaml.Value, range, "lines");
+        return FitTextEntry(uri, "document_page_map", itemUri, content, limitBytes, state.LibraryRevision);
     }
 
     private async Task<McpFetchResult> FetchPageAsync(McpUriParseResult target, string? range, int limitBytes,
@@ -2368,7 +2474,22 @@ public sealed class McpCommandService
             ? BuildLongEntryFromSingleton(singleton)
             : new McpFindEntry(singleton.Uri,
                 singleton.Title, singleton.Type);
-        return new FindPage(keep ? new object[] { entry } : [], null, 1, keep ? 1 : 0);
+        List<object> entries = keep ? [entry] : [];
+
+        // The document scope also discovers the fixed map.yml child: the chapter/pagination map
+        // is always addressable (and first-put-able) even when no map is stored yet.
+        if (target.Kind == McpUriKind.Document && target.DocumentId.HasValue && keep)
+        {
+            string mapUri = McpResourceUris.MapUri(target.DocumentId.Value);
+            string mapTitle = singleton.Title + " — page map (map.yml)";
+            if (string.IsNullOrWhiteSpace(query) ||
+                mapTitle.Contains(query, StringComparison.OrdinalIgnoreCase))
+            {
+                entries.Add(new McpFindEntry(mapUri, mapTitle, "file"));
+            }
+        }
+
+        return new FindPage(entries, null, 1, entries.Count);
     }
 
     private async Task<SingletonResource?> ResolveSingletonAsync(McpUriParseResult target,
@@ -2431,6 +2552,21 @@ public sealed class McpCommandService
                     Type = "file",
                     DocumentId = target.DocumentId.Value
                 };
+            }
+
+            case McpUriKind.DocumentMap:
+            {
+                // The map is discoverable even without a stored map; it is never citable.
+                Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(
+                    target.DocumentId!.Value, cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return null;
+                }
+
+                return new SingletonResource(McpResourceUris.MapUri(target.DocumentId.Value),
+                    (outline.Value.Title ?? target.DocumentId.Value.ToString()) + " — page map (map.yml)",
+                    "file", false, outline.Value.ItemId, null, target.DocumentId.Value);
             }
 
             case McpUriKind.Style:
@@ -3009,7 +3145,8 @@ public sealed class McpCommandService
                     "item_type", "item_status", "primary_document_ocr_index_status", "citable", "tag",
                     "collection_id"
                 },
-            McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence =>
+            McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence
+                or McpUriKind.DocumentMap =>
                 new[]
                 {
                     "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
@@ -3047,7 +3184,7 @@ public sealed class McpCommandService
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
             or McpUriKind.RunOcrStatus or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-            or McpUriKind.RunAgentEvents or McpUriKind.Workflow;
+            or McpUriKind.RunAgentEvents or McpUriKind.Workflow or McpUriKind.DocumentMap;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,

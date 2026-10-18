@@ -133,6 +133,7 @@ RESOURCE TREE
   patchouli://texts/{document-instance-id}/
   patchouli://texts/{document-instance-id}/page-{page-index}.xml
   patchouli://texts/{document-instance-id}/page-{page-index}.xml?rev={tree-revision-id}&box={box-id}
+  patchouli://texts/{document-instance-id}/map.yml
 
   patchouli://translations/
   patchouli://translations/{document-instance-id}/
@@ -162,6 +163,35 @@ RESOURCE TREE
 `page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.xml` 是人类报告和程序调用共用的第一页。Legacy `page-1.md` 地址仍可用于兼容请求，并在响应中给出 canonical `.xml` URI 与 `[obsoleted]` warning。`?rev=&box=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证 `tree_revision_id`/`box_id` 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
 
 `patchouli://translations/` 是页面翻译的派生资源树，形态与 `texts/` 一一对应并共享同一套一基物理页码。目录条目携带翻译进度：`patchouli://translations/` 返回每个 DocumentInstance 的 `page_count`、`translated_page_count`、`partial_page_count`、`untranslated_page_count`、`stale_page_count`；`patchouli://translations/{document-instance-id}/` 返回每页的 `translation_status`（`untranslated`/`partial`/`translated`/`stale`）与 `translated_box_count`/`total_box_count`。翻译不是独立事实，而是当前 committed Box Tree 的派生数据：任何内容变更都会产生新 revision，页面上一次写入的翻译因而变为 `stale`，读取时先做懒重对齐（保留 `box_id` 与源 payload 均未变的行，删除过期行）。Canonical XML page views expose stable box IDs, translated markers, and a `translation_version`; without a stored view, `fetch` returns version 0 with source payload fallback. Partial writes replace selected box payloads by ID and validate against `source_revision` and `translation_version`, preserving all page structure. Full XML replacement must preserve current box identity and structure. A mismatch returns `INVALID_CONTENT`; version mismatch returns `REVISION_CONFLICT`. Legacy translation `.md` requests retain whole-page Markdown validation and compatibility write behavior, but return a canonical XML URI plus `[obsoleted]`, `0.4.0`, and replacement URI warning. The translation tree does not expose bboxes, trigger OCR, rebuild indexes, or return local paths; the built-in and external agents write through the same `put` contract. See ADR `0034` for historical rationale and ADR `0044` for the current profile.
+
+`patchouli://texts/{document-instance-id}/map.yml` 是该文档的章节结构与印刷页码映射（profile
+`patchouli-page-map-1`，见 ADR `0045`）；文件名固定，不接受查询参数。数据库持有权威结构化模型，
+YAML 只是 MCP 虚拟文件投影：不持久化逐页完整映射，也不复制 `Page.PageLabel` 的权威（PDF 内嵌页标签仍是
+outline 的标签来源；map 的 `page_labels` 只覆盖 map 自身计算出的显示值）。
+
+导航位置是 `pdf_page`（一基物理页）+ 可选 `logical_page`（Box ID，永不用序号）。
+分页规则：`physical_page` 用 `printed = printed_start + pdf_page - start`（两端包含）；
+`logical_page` 在范围内按“物理页序 + 调用方给定的阅读顺序”逐个 `+1`（解析器永不按 Box ID 或几何排序）；
+`page_labels` 用显式字符串覆盖同一目标的计算值，同一目标上不得有冲突重复。章节只存目标位置，
+显示用的印刷页码在读取时解析，未知则退化为物理页（章节保留并附诊断）。
+
+范围外不外推，只用步长 1 的整数；插入页/缺页/重编号用拆分后的多个 range 表达；
+同一物理页不得混用两种规则；`logical_page` 范围内没有逻辑页的物理页必须拆分或补齐逻辑划分。
+`find` 在文档作用域可发现 `map.yml`（即使尚无 map 也可发现、可首次 `put`）；
+`fetch` 对无 map 的文档返回可发现的**空映射投影**（`map_present: false`），普通 `fetch` 不触发 OCR/AI；
+map 本身不可被 `cite` 引用。`put` 接收完整 YAML，做全量解析与校验后原子替换（空定义清空映射），
+需要 texts 域的 `put` 权限与 put 总开关；成功后 Library revision 递增并在事务提交后发布变更。
+超限截断必须显式（`RESPONSE_TRUNCATED` + `next_range`），绝不呈现为完整可提交资源。
+
+逻辑页失效：写入时保存每个 `logical_page` 范围内逻辑页的结构签名（identity + order，
+即写入时的阅读顺序），纯文本变更不使签名失效；删除、新增、跨页移动（重排）、端点消失会将受影响的
+rule 标记为待修复——该 rule 的计算暂停但保留原定义，map 其余部分继续解析，单个坏引用不会让整个
+map 不可读；逻辑目标失效的章节保留章节并退化到物理页 + 诊断。
+
+桌面章节侧栏直接编辑和 Markdown 标题扫描预览与此资源共享同一份数据。侧栏写入仅替换章节树，
+保留页码规则、标签及未修改的失效引用；新建或改变的目标仍需严格校验。映射版本冲突或扫描来源
+页面版本变化会阻止应用。扫描只读取已提交的文本，不触发 OCR；MCP `put` 仍遵守完整 YAML
+替换与严格校验契约，不受桌面章节编辑的局部更新语义影响。
 
 **`runs/` 是 VFS 首个易失运行时资源树**：`patchouli://runs/` 只投影运行时任务与会话的实时状态与事件，不进任何快照、不可 `put`、不属 canonical 资源——`meta.library_revision` 不因其变化，宿主的资源变更通知也不因它发布。它在宿主进程生命周期内有效，宿主退出或重启后其中的运行时投影不承诺保留，也不属于 `cite.refs` 可引用对象。OCR 运行与 agent 会话运行是两个不同的运行时投影，各自有各自的 status/events 语义，**不强行统一为一个通用 run 模型**：`runs/ocr/{task-id}/status` 只承载 OCR 任务的阶段与进度，`runs/agent/{session-id}/status` 与 `runs/agent/{session-id}/events` 只承载会话状态与事件流。`workflows/` 则是只读的持久化元数据树，与 `runs/` 的易失运行时投影分离。
 
@@ -213,6 +243,10 @@ BEHAVIOUR
   `patchouli://texts/{document-instance-id}/page-{page-index}.xml?rev={tree-revision-id}&box={box-id}`.
   The `rev`/`box` query parameters are therefore present in the default three-field entry projection,
   not only in --long metadata or a separate match field.
+  Browsing a document scope (`patchouli://texts/{document-instance-id}/`) returns the document
+  entry plus its fixed `map.yml` child (`patchouli://texts/{document-instance-id}/map.yml`,
+  the chapter/pagination map). The map entry is always discoverable — even when the document
+  has no stored map yet — so agents can fetch the empty-map projection and first-put it.
 
 DEFAULT SCOPE
   patchouli://
@@ -310,6 +344,7 @@ CANONICAL REPRESENTATIONS
   text document URI    Document outline, owning item link, and page links
   text page URI        Page XML profile `patchouli-page-2`, box metadata and payloads
   text page ?rev=&box= URI  Versioned evidence text, source mapping, and owning item link
+  text page-map URI    Page-map YAML profile `patchouli-page-map-1` (or the empty-map projection)
   translation document URI  Page list with per-page translation status
   translation page URI  Page XML, translated markers, payloads and version metadata
   library URI          YAML projection with library identity and optional tags/collections
@@ -357,11 +392,12 @@ MCP INPUT
 WRITABLE
   patchouli://items/*.yml        (includes general items, mapped to @misc)
   patchouli://csl-styles/*.csl
+  patchouli://texts/*/map.yml    (chapter/pagination map; whole-resource YAML only)
   patchouli://texts/*/page-*.xml
   patchouli://translations/*/page-*.xml
 
 READ-ONLY
-  patchouli://texts/**
+  patchouli://texts/**           (except texts/*/map.yml, which is writable)
   patchouli://texts/*/page-*.xml?rev=*&box=* (historical evidence)
   patchouli://translations/ 和 patchouli://translations/*/ 目录（只能浏览，不能 `put`）
   patchouli://runs/**            （易失运行时资源，永远不可 `put`）
@@ -382,6 +418,11 @@ BEHAVIOUR
   Source writes atomically create a committed page-tree revision and document commit; they
   honor `texts.put` permission and are refused while a UI draft is active. Translation writes
   atomically update selected derived box payloads and increment the translation version.
+  Page-map writes parse and validate the whole `map.yml` YAML, then atomically replace the
+  stored definition (an empty definition clears the map); they honor `texts.put` permission
+  and the put switch, advance the Library revision, and publish the change after the
+  transaction commits. Validation failures (shape, ownership, range bounds, logical-page
+  box type and current committed revision ownership) write nothing.
   Legacy `.bib` and `.md` whole-resource writes keep their old format and semantics during
   migration, but report `[obsoleted]`, the 0.4.0 deprecation target, and the canonical URI.
   Legacy source `.md` and evidence addresses remain read-only. A translation XML view without
