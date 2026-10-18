@@ -70,6 +70,8 @@ and honor the `texts.put` permission. Historical revision addresses remain read-
 
 实现状态（2026-10-17）：七动词（`find`/`fetch`/`add`/`view`/`put`/`cite`/`send`）、`runs/`/`workflows/` 资源根、CLI HTTP 客户端、TOON/JSON、有限写入、本地文件导入、源图像读取，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（`send` 与两根的决策见 ADR `0036`，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 ADR `0045`）。回归义务继续约束后续改动。
 
+下一版计划：[MCP / CLI 显式 OCR 任务入口（#16）](https://github.com/kwadraten/patchouli/issues/16)。当前 `add` 不隐式启动 OCR，`runs/ocr/` 只提供已有任务的只读状态；OCR 启动入口不属于本轮 add/view 的交付范围。
+
 **定位**：`patchouli-cli` — access an academic literature library powered by Patchouli.NET
 
 ## 1 全局
