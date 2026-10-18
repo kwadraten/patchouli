@@ -239,7 +239,7 @@ public sealed class McpNativeResourceTests
     {
         return new DocumentBoxSeed(DocumentBoxId.New(), null, index,
             suppressed ? DocumentBoxType.PageFootnote : DocumentBoxType.Text,
-            null, null, new NormalizedBBox(0.1, 0.1 + index * 0.3, 0.7, 0.2), new TextBoxPayload(text),
+            null, new NormalizedBBox(0.1, 0.1 + index * 0.3, 0.7, 0.2), new TextBoxPayload(text),
             Suppressed: suppressed);
     }
 

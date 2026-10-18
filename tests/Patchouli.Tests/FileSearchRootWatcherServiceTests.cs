@@ -31,11 +31,20 @@ public sealed class FileSearchRootWatcherServiceTests
         second.Value.ImportedPdfCount.Should().Be(0);
         second.Value.SkippedKnownPdfCount.Should().Be(1);
 
-        // If the next scan invokes PDF import instead of recognizing the remembered path,
-        // the duplicate writer will bump the revision again. An unchanged revision proves
-        // the next scan does not rehash or read this PDF's page metadata.
+        // An unchanged scan must not publish another library change.
         await using SqliteConnection connection = context.Services.ConnectionFactory.CreateReadConnection();
         await connection.OpenAsync();
+        (await connection.ExecuteScalarAsync<string>("select original_path from file_assets;"))
+            .Should().Be(renamed);
+        (await connection.ExecuteScalarAsync<string>("select file_name from file_assets;"))
+            .Should().Be("renamed.pdf");
+        (await connection.ExecuteScalarAsync<string>("select title from items;"))
+            .Should().Be("original");
+        (await connection.ExecuteScalarAsync<string>("select title from document_instances;"))
+            .Should().Be("original");
+        (await connection.ExecuteScalarAsync<string>(
+                "select status from known_file_locations where path = @Path;", new { Path = original }))
+            .Should().Be(FileAssetStatus.Missing);
         long revision = await connection.ExecuteScalarAsync<long>("select library_revision from library_metadata;");
         Result<FileSearchRootRescanSummary> third = await watcher.RescanFileSearchRootsAsync();
         third.IsSuccess.Should().BeTrue(third.ErrorMessage);
@@ -43,6 +52,147 @@ public sealed class FileSearchRootWatcherServiceTests
         (await connection.ExecuteScalarAsync<long>("select library_revision from library_metadata;"))
             .Should().Be(revision);
         (await connection.ExecuteScalarAsync<int>("select count(*) from items;")).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rescan_recognizes_both_copies_and_recovers_after_original_is_removed_or_replaced(bool replace)
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        (await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root))).IsSuccess.Should().BeTrue();
+        string original = TestFixtures.CopyRealThreePagePdfTo(root, "original.pdf");
+        await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
+        (await watcher.RescanFileSearchRootsAsync()).Value.ImportedPdfCount.Should().Be(1);
+        string copy = Path.Combine(root, "copy.pdf");
+        File.Copy(original, copy);
+        (await watcher.RescanFileSearchRootsAsync()).Value.ImportedPdfCount.Should().Be(0);
+        await using SqliteConnection connection = context.Services.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync();
+        string assetId = (await connection.ExecuteScalarAsync<string>("select file_asset_id from file_assets;"))!;
+        (await connection.ExecuteScalarAsync<int>(
+            "select count(*) from known_file_locations where status = 'available';")).Should().Be(2);
+        (await connection.ExecuteScalarAsync<string>("select original_path from file_assets;"))
+            .Should().Be(original);
+        if (replace)
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, original, true);
+            await File.AppendAllTextAsync(original, "\n% a distinct PDF revision");
+        }
+        else
+        {
+            File.Delete(original);
+        }
+
+        Result<FileSearchRootRescanSummary> result = await watcher.RescanFileSearchRootsAsync();
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.FailedPdfCount.Should().Be(0);
+        result.Value.ImportedPdfCount.Should().Be(replace ? 1 : 0);
+        (await connection.ExecuteScalarAsync<string>(
+                "select original_path from file_assets where file_asset_id = @Id;", new { Id = assetId }))
+            .Should().Be(copy);
+        (await connection.ExecuteScalarAsync<string>(
+                "select status from known_file_locations where file_asset_id = @Id and path = @Path;",
+                new { Id = assetId, Path = original })).Should()
+            .Be(replace ? FileAssetStatus.Changed : FileAssetStatus.Missing);
+        (await connection.ExecuteScalarAsync<int>("select count(*) from items;"))
+            .Should().Be(replace ? 2 : 1);
+    }
+
+    [Fact]
+    public async Task Rescan_repairs_an_already_remembered_rename_from_an_older_version()
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        (await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root))).IsSuccess.Should().BeTrue();
+        string original = TestFixtures.CopyRealThreePagePdfTo(root, "original.pdf");
+        await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
+        (await watcher.RescanFileSearchRootsAsync()).IsSuccess.Should().BeTrue();
+        string renamed = Path.Combine(root, "renamed.pdf");
+        File.Move(original, renamed);
+        await using (SqliteConnection connection = context.Services.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
+                select @LocationId, file_asset_id, @Path, updated_at, 'available' from file_assets;
+                """, new { LocationId = Guid.NewGuid().ToString(), Path = renamed });
+        }
+
+        (await watcher.RescanFileSearchRootsAsync()).Value.ImportedPdfCount.Should().Be(0);
+        await using SqliteConnection read = context.Services.ConnectionFactory.CreateReadConnection();
+        await read.OpenAsync();
+        (await read.ExecuteScalarAsync<string>("select original_path from file_assets;"))
+            .Should().Be(renamed);
+        (await read.ExecuteScalarAsync<int>(
+            "select count(*) from known_file_locations where status = 'available';")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Watcher_rename_switches_location_without_changing_titles_or_identity()
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        Result<FileSearchRoot> added = await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
+        added.IsSuccess.Should().BeTrue();
+        string original = TestFixtures.CopyRealThreePagePdfTo(root, "original.pdf");
+        await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
+        (await watcher.RescanFileSearchRootsAsync()).IsSuccess.Should().BeTrue();
+        TaskCompletionSource completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.RescanCompleted += (_, args) =>
+        {
+            if (args.Trigger == FileSearchRootWatcherService.FileWatcherTrigger)
+            {
+                completed.TrySetResult();
+            }
+        };
+        watcher.RefreshWatchers([added.Value]);
+        string renamed = Path.Combine(root, "renamed.pdf");
+        File.Move(original, renamed);
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await using SqliteConnection read = context.Services.ConnectionFactory.CreateReadConnection();
+        await read.OpenAsync();
+        (await read.ExecuteScalarAsync<string>("select original_path from file_assets;")).Should().Be(renamed);
+        (await read.ExecuteScalarAsync<string>("select title from items;")).Should().Be("original");
+        (await read.ExecuteScalarAsync<int>("select count(*) from document_instances;")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Watcher_rechecks_changed_content_even_when_size_and_mtime_are_preserved()
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        Result<FileSearchRoot> added = await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
+        added.IsSuccess.Should().BeTrue();
+        string path = TestFixtures.CopyRealThreePagePdfTo(root, "same-path.pdf");
+        await File.AppendAllTextAsync(path, "\n% A");
+        await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
+        (await watcher.RescanFileSearchRootsAsync()).IsSuccess.Should().BeTrue();
+        TaskCompletionSource completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.RescanCompleted += (_, args) =>
+        {
+            if (args.Trigger == FileSearchRootWatcherService.FileWatcherTrigger)
+            {
+                completed.TrySetResult();
+            }
+        };
+        watcher.RefreshWatchers([added.Value]);
+        DateTime modified = File.GetLastWriteTimeUtc(path);
+        await using (FileStream stream = File.OpenWrite(path))
+        {
+            stream.Position = stream.Length - 1;
+            stream.WriteByte((byte)'B');
+        }
+
+        File.SetLastWriteTimeUtc(path, modified);
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await using SqliteConnection read = context.Services.ConnectionFactory.CreateReadConnection();
+        await read.OpenAsync();
+        (await read.ExecuteScalarAsync<int>("select count(*) from file_assets;")).Should().Be(2);
+        (await read.ExecuteScalarAsync<int>(
+            "select count(*) from known_file_locations where status = 'available';")).Should().Be(1);
     }
 
     [Fact]

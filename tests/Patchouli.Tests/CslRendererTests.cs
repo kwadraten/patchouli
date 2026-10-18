@@ -83,6 +83,7 @@ public sealed class CslRendererTests
             new CreateItemRequest(
                 "book",
                 "Localized Book",
+                Language: "zh",
                 Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Literal: "Anonymous")]));
 
         Result<CslRenderResult> rendered =

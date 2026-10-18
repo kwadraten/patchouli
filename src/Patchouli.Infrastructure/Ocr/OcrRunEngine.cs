@@ -904,7 +904,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
                                 new OcrBoxCandidate(
                                     DocumentBoxType.LogicalPage,
                                     null,
-                                    null,
                                     0,
                                     new TextBoxPayload("Blank page (OCR returned no content)."),
                                     new NormalizedBBox(0, 0, 1, 1),
@@ -928,7 +927,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
                         OcrEngineTextBox box = textBoxes[i];
                         boxCandidates.Add(new OcrBoxCandidate(
                             DocumentBoxType.Text,
-                            null,
                             null,
                             i,
                             new TextBoxPayload(box.Text.Trim()),
@@ -966,7 +964,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
                             [
                                 new OcrBoxCandidate(
                                     DocumentBoxType.Text,
-                                    null,
                                     null,
                                     0,
                                     new TextBoxPayload(output.Value.Text!.Trim()),

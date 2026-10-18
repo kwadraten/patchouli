@@ -27,6 +27,28 @@ public sealed class AppSettingsStoreTests
     }
 
     [Fact]
+    public async Task Successful_save_notifies_minimal_runtime_category_with_committed_snapshot()
+    {
+        using TemporaryAppSettingsFile file = new();
+        PatchouliAppSettings initial = PatchouliAppSettings.Load(file.Path);
+        await using AppSettingsStore store = new(file.Path, initial, TimeSpan.FromHours(1));
+        AppSettingsCommittedEventArgs? committed = null;
+        store.SettingsCommitted += (_, change) => committed = change;
+        PatchouliAppSettings next = initial with
+        {
+            Llm = initial.Llm with { ToolResultMaxCharacters = 16384 }
+        };
+        store.Update(settings => settings with { Llm = next.Llm }, "Llm");
+
+        SettingsSaveResult result = await store.SaveImmediatelyAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        committed.Should().NotBeNull();
+        committed!.Snapshot.Llm.ToolResultMaxCharacters.Should().Be(16384);
+        committed.Categories.Should().Equal("Llm");
+    }
+
+    [Fact]
     public async Task Failed_write_preserves_dirty_state()
     {
         string root = Directory.CreateDirectory(
@@ -40,6 +62,8 @@ public sealed class AppSettingsStoreTests
                 invalidPath,
                 PatchouliAppSettings.Default(),
                 TimeSpan.FromHours(1));
+            bool notified = false;
+            store.SettingsCommitted += (_, _) => notified = true;
             store.Update(settings => settings with
             {
                 Ui = settings.Ui with { PaletteId = "will-fail" }
@@ -49,6 +73,7 @@ public sealed class AppSettingsStoreTests
 
             result.IsSuccess.Should().BeFalse();
             store.IsDirty.Should().BeTrue();
+            notified.Should().BeFalse();
         }
         finally
         {

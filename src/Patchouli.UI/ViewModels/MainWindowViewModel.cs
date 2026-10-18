@@ -78,6 +78,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             UnexpectedExceptions.Sink.Report(exception, boundary, operation);
 
     private HostServices? _services;
+    private readonly object _shutdownGate = new();
+    private Task? _shutdownTask;
     private ILibraryRevisionService? _observedLibraryRevisions;
     private McpServerHost? _mcpHost;
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
@@ -160,6 +162,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ExcludeFromDerivedGeneration] public string ToggleMcpServerLabel => McpServerRunning ? "关闭 MCP" : "开启 MCP";
 
     [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
+    [ExcludeFromDerivedGeneration] internal McpServerSettings? McpRunningSettings => _mcpHost?.RunningSettings;
 
     [ObservableProperty] public partial string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
 
@@ -195,6 +198,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settingsViewModel ??= CreateSettingsViewModel();
 
     [ExcludeFromDerivedGeneration] public bool HasDirtySettings => _settingsViewModel?.HasDirtySections == true;
+
+    [ExcludeFromDerivedGeneration]
+    public bool HasPendingMcpSettings => _settingsViewModel?.McpSettings.HasPendingLeaveDecision == true;
 
     [ObservableProperty] public partial FirstRunViewModel FirstRun { get; private set; }
 
@@ -532,19 +538,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string? fieldCategory = "Ui")
     {
         ArgumentNullException.ThrowIfNull(updater);
-        _settings = updater(_settings);
-        _settingsStore.Update(_ => _settings, fieldCategory);
+        _settingsStore.Update(current => updater(current), fieldCategory);
+        _settings = _settingsStore.Current;
     }
 
     public void UpdateAppOptionsDeferred(PatchouliAppSettings settings, string? fieldCategory = "Ui")
     {
-        UpdateAppOptionsDeferred(_ => settings, fieldCategory);
+        UpdateAppOptionsDeferred(current => MergeSettingsCategory(current, settings, fieldCategory), fieldCategory);
     }
 
     public SettingsSaveResult UpdateAppOptions(PatchouliAppSettings settings)
     {
-        ApplyAppOptions(settings);
-        _settingsStore.Update(_ => settings);
+        _settingsStore.Update(current => MergeSettingsCategory(current, settings, null));
+        _settings = _settingsStore.Current;
         return SettingsSaveResult.Success;
     }
 
@@ -553,17 +559,64 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string? fieldCategory = null,
         CancellationToken cancellationToken = default)
     {
-        ApplyAppOptions(settings);
-        _settingsStore.Update(_ => settings, fieldCategory);
-        return await _settingsStore.SaveImmediatelyAsync(cancellationToken);
+        _settingsStore.Update(current => MergeSettingsCategory(current, settings, fieldCategory), fieldCategory);
+        _settings = _settingsStore.Current;
+        SettingsSaveResult result = await _settingsStore.SaveImmediatelyAsync(cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
     }
 
-    private void ApplyAppOptions(PatchouliAppSettings settings)
+    private static PatchouliAppSettings MergeSettingsCategory(PatchouliAppSettings current,
+        PatchouliAppSettings updated, string? fieldCategory)
     {
-        _settings = settings;
-        _services?.UpdateLlmSettings(settings.Llm);
-        _services?.UpdateMetadataLookupPreferences(settings.MetadataLookup);
-        _services?.UpdateFileScanExclusions(settings.FileScanning);
+        return fieldCategory?.ToUpperInvariant() switch
+        {
+            "RUNTIME" => current with { Runtime = updated.Runtime },
+            "MINERU" => current with { MinerU = updated.MinerU },
+            "MCP" => current with { Mcp = updated.Mcp },
+            "UI" => current with { Ui = updated.Ui },
+            "CREDENTIALS" => current with { Credentials = updated.Credentials },
+            "SYNC" => current with { Sync = MergeSyncFields(current.Sync, updated.Sync) },
+            "METADATALOOKUP" => current with { MetadataLookup = updated.MetadataLookup },
+            "FILESCANNING" => current with { FileScanning = updated.FileScanning },
+            "OCRENGINES" => current with { OcrEngines = updated.OcrEngines },
+            "IMPORT" => current with { Import = updated.Import },
+            "LLM" => current with { Llm = updated.Llm },
+            _ => updated with { Sync = MergeSyncFields(current.Sync, updated.Sync) }
+        };
+    }
+
+    private static SyncAppSettings MergeSyncFields(SyncAppSettings current, SyncAppSettings updated)
+    {
+        return updated with
+        {
+            DeviceBindings = current.DeviceBindings,
+            SnapshotState = current.SnapshotState,
+            SyncedSettingKeys = current.SyncedSettingKeys
+        };
+    }
+
+    public async Task<SettingsSaveResult> UpdateSyncBindingAsync(
+        SyncAppSettings settings,
+        DeviceRootBindingAppSettings binding,
+        CancellationToken cancellationToken = default)
+    {
+        SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAsync(
+            settings, binding, cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
+    }
+
+    private async Task<SettingsSaveResult> UpdateSyncBindingAndMetadataLookupAsync(
+        SyncAppSettings settings,
+        DeviceRootBindingAppSettings binding,
+        MetadataLookupAppSettings materializedMetadataLookup,
+        CancellationToken cancellationToken = default)
+    {
+        SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAndMetadataLookupAsync(
+            settings, binding, materializedMetadataLookup, cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
     }
 
     internal void NotifyLlmCredentialsChanged()
@@ -631,6 +684,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             library.Value.LibraryId,
             LibrarySettingKeys.MetadataLookup,
             enabled);
+        DeviceRootBindingAppSettings? binding = syncOverride is null
+            ? nextSync.CurrentSyncRootBinding(library.Value.LibraryId)
+            : nextSync.Bindings.FirstOrDefault(candidate =>
+                !string.IsNullOrWhiteSpace(nextSync.SyncRootId) &&
+                candidate.Matches(library.Value.LibraryId.ToString(), LogicalRootKinds.SyncRoot,
+                    nextSync.SyncRootId, nextSync.DeviceId));
+        binding ??= nextSync.CurrentSyncRootBinding(library.Value.LibraryId);
+        binding ??= nextSync.EnsureCurrentSyncRootBinding(library.Value.LibraryId);
+
         if (enabled)
         {
             MetadataLookupAppSettings normalized =
@@ -639,7 +701,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 LibrarySettingKeys.MetadataLookup,
                 normalized,
                 _settings.Sync.DeviceId,
-                _ => UpdateAppOptionsAsync(_settings with { Sync = nextSync }, "Sync"),
+                _ => UpdateSyncBindingAsync(nextSync, binding),
                 services.UpdateMetadataLookupPreferences);
         }
 
@@ -647,11 +709,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             LibrarySettingKeys.MetadataLookup,
             currentlyEnabled,
             _settings.MetadataLookup,
-            (materialized, _) => UpdateAppOptionsAsync(_settings with
-            {
-                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
-                Sync = nextSync
-            }, null),
+            (materialized, cancellationToken) => UpdateSyncBindingAndMetadataLookupAsync(
+                nextSync,
+                binding,
+                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
+                cancellationToken),
             materialized => services.UpdateMetadataLookupPreferences(
                 MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources)));
     }
@@ -747,6 +809,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
+        Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
 
@@ -1338,6 +1401,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     private void AttachHostServices(HostServices services)
     {
+        services.ObserveSettingsStore(_settingsStore);
         McpServerHost mcpHost = new(services, ReportUnexpectedException);
         _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
@@ -1497,17 +1561,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         if (changeSet.StyleIds.Count > 0)
         {
-            foreach (CslStyleManagerViewModel manager in OpenTabs.Select(tab => tab.Content)
-                         .OfType<CslStyleManagerViewModel>())
+            if (_settingsViewModel is { } settings)
             {
-                await manager.RefreshInstalledStylesAsync();
+                await settings.CslStyleManager.RefreshIfLoadedAsync();
             }
 
-            foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
-                         .OfType<ItemEditorViewModel>())
-            {
-                await editor.RefreshStylePreviewAsync();
-            }
+            await RefreshCslPreviewsAsync();
         }
 
         if (gen != LibraryGeneration)
@@ -1953,8 +2012,22 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await ShutdownAsync();
     }
 
-    public async Task ShutdownAsync()
+    public Task ShutdownAsync()
     {
+        lock (_shutdownGate)
+        {
+            return _shutdownTask ??= ShutdownCoreAsync();
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
+    {
+        foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
+                     .ToArray())
+        {
+            await pdf.StopAsync();
+        }
+
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         Shell.Dispose();
@@ -2061,11 +2134,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         await _mcpHost.StopAsync(detail);
-        await StartMcpServerAsync(_services!);
+        // Applying an explicit configuration must not silently substitute another port.
+        await _mcpHost.StartAsync();
         if (!_mcpHost.IsRunning)
         {
             throw new InvalidOperationException("MCP Server 未能重启。请检查状态栏中的错误详情。");
         }
+
+        await PublishRuntimeHostAsync(_services!);
     }
 
     /// <summary>
@@ -2074,6 +2150,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
+        foreach (WorkspaceTabViewModel tab in Layout.Tabs.Where(tab => tab.Kind == WorkspaceTabKind.PdfWorkspace)
+                     .ToArray())
+        {
+            if (!await Workspace.CloseAsync(tab.TabId))
+            {
+                throw new InvalidOperationException("页面草稿清理失败，无法切换书库。");
+            }
+        }
+
         Interlocked.Increment(ref _libraryGeneration);
         Raise(nameof(LibraryGeneration));
         DetachLibraryChangeNotifications();
@@ -2182,7 +2267,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             CreateMigrationProgress(),
             reportUnexpectedException: ReportUnexpectedException,
             startupProgress: CreateStartupStageProgress(),
-            activityTracker: _activityTracker);
+            activityTracker: _activityTracker,
+            runtimeHostLease: _runtimeHostLease);
     }
 
     private async Task StopHostServicesAsync()
@@ -2583,6 +2669,37 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return true;
     }
 
+    /// <summary>Issue #11: loads the device-local file handling behavior settings.</summary>
+    public async Task<FileHandlingBehaviorSettings> GetFileHandlingBehaviorAsync()
+    {
+        HostServices services = await ServicesAsync();
+        Result<FileHandlingBehaviorSettings> settings =
+            await services.FileHandlingBehaviorSettings.GetSettingsAsync();
+        if (settings.IsFailure)
+        {
+            ReportError(settings.ErrorMessage ?? "无法读取文件处理设置。");
+            return FileHandlingBehaviorSettings.Default();
+        }
+
+        return settings.Value;
+    }
+
+    /// <summary>Issue #11: saves the device-local file handling behavior settings.</summary>
+    public async Task<bool> SaveFileHandlingBehaviorAsync(FileHandlingBehaviorSettings settings)
+    {
+        HostServices services = await ServicesAsync();
+        Result<FileHandlingBehaviorSettings> saved =
+            await services.FileHandlingBehaviorSettings.SaveSettingsAsync(settings);
+        if (saved.IsFailure)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存文件处理设置。");
+            return false;
+        }
+
+        Report("文件处理设置已保存。");
+        return true;
+    }
+
     public async Task<bool> RemoveMinerUCredentialAsync()
     {
         ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(
@@ -2737,14 +2854,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             : title[..(maxLength - suffix.Length)] + suffix;
     }
 
-    private async Task OpenCslStyleManagerAsync()
+    internal async Task RefreshCslPreviewsAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.CslStyleManager, "CslStyleManager", "CSL 样式", "Quote", true,
-            () => new CslStyleManagerViewModel(this));
-        if (ActiveTab?.Content is CslStyleManagerViewModel csl)
+        foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
+                     .OfType<ItemEditorViewModel>().ToArray())
         {
-            await csl.InitializeAsync();
+            await editor.RefreshStylePreviewAsync();
         }
+    }
+
+    private Task OpenCslStyleManagerAsync()
+    {
+        return OpenSettingsAsync("csl_installed");
     }
 
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)
@@ -3429,35 +3550,50 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Report($"已导出 {itemDesc} HTML 到剪贴板：{rendered.Value.StyleDisplayName}");
     }
 
-    private Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable,
+    private async Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName,
+        bool isClosable,
         Func<ViewModelBase> contentFactory)
     {
         Workspace.OpenOrActivate(kind, tabId, title, iconName, isClosable, contentFactory);
-        return Task.CompletedTask;
+        await Layout.WaitForNavigationAsync();
     }
 
-    private Task CloseTabAsync(WorkspaceTabKind kind)
+    private async Task CloseTabAsync(WorkspaceTabKind kind)
     {
-        Workspace.CloseKind(kind);
-        return Task.CompletedTask;
+        await Workspace.CloseKindAsync(kind);
     }
 
-    private Task CloseSettingsTabAsync()
+    private async Task CloseSettingsTabAsync()
     {
+        if (_settingsViewModel is not null && !await _settingsViewModel.ConfirmLeaveMcpAsync())
+        {
+            return;
+        }
+
         if (_settingsViewModel?.HasDirtySections == true)
         {
             _settingsViewModel.GlobalStatus = "设置有未保存的更改；请先保存或放弃后再关闭设置。";
-            return Task.CompletedTask;
+            return;
         }
 
-        Workspace.CloseKind(WorkspaceTabKind.Settings);
-        return Task.CompletedTask;
+        await Workspace.CloseKindAsync(WorkspaceTabKind.Settings);
     }
 
-    private Task CloseTabAsync(string tabId)
+    private Task<bool> ConfirmWorkspaceNavigationAsync(WorkspaceTabViewModel? target)
     {
-        Workspace.Close(tabId);
-        return Task.CompletedTask;
+        return Layout.ActiveTab?.Content is SettingsViewModel settings && target?.Content != settings
+            ? settings.ConfirmLeaveMcpAsync()
+            : Task.FromResult(true);
+    }
+
+    internal Task<bool> ConfirmMcpSettingsBeforeExitAsync()
+    {
+        return _settingsViewModel?.ConfirmLeaveMcpAsync() ?? Task.FromResult(true);
+    }
+
+    private async Task CloseTabAsync(string tabId)
+    {
+        await Workspace.CloseAsync(tabId);
     }
 
     public async Task ExportEvidenceMarkdownToFileAsync(string versionedUri, string targetPath)

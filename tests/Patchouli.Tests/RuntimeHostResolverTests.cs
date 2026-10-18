@@ -87,18 +87,12 @@ public sealed class RuntimeHostResolverTests : IDisposable
             await services.ShutdownAsync();
         }
 
-#if DEBUG
-        const string configuration = "Debug";
-#else
-        const string configuration = "Release";
-#endif
-        string cliDirectory = TestPaths.FromRepositoryRoot(
-            "src", "Patchouli.Cli", "bin", configuration, "net10.0");
-        string cliPath = Path.Combine(cliDirectory,
-            OperatingSystem.IsWindows() ? "patchouli-cli.exe" : "patchouli-cli");
+        // Use the CLI and host assemblies from this test build, including isolated artifacts output.
+        string cliDirectory = AppContext.BaseDirectory;
+        string cliPath = Path.Combine(cliDirectory, "patchouli-cli.dll");
         File.Exists(cliPath).Should().BeTrue();
 
-        ProcessStartInfo start = new(cliPath)
+        ProcessStartInfo start = new("dotnet")
         {
             WorkingDirectory = cliDirectory,
             UseShellExecute = false,
@@ -106,6 +100,7 @@ public sealed class RuntimeHostResolverTests : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        start.ArgumentList.Add(cliPath);
         start.ArgumentList.Add("--db");
         start.ArgumentList.Add(database);
         start.ArgumentList.Add("--json");

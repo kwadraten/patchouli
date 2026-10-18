@@ -1,3 +1,5 @@
+using Patchouli.UI.ViewModels.Settings;
+
 namespace Patchouli.UI.ViewModels;
 
 public sealed class WorkspaceManager
@@ -67,6 +69,16 @@ public sealed class WorkspaceManager
             return false;
         }
 
+        if (tab.Content is PdfWorkspaceViewModel { EditSessionId: not null })
+        {
+            return false;
+        }
+
+        if (tab.Content is SettingsViewModel { McpSettings.HasPendingLeaveDecision: true })
+        {
+            return false;
+        }
+
         bool wasActive = Layout.ActiveTab == tab;
         Layout.Tabs.Remove(tab);
         Cleanup(tab);
@@ -104,10 +116,39 @@ public sealed class WorkspaceManager
         return Layout.Tabs.FirstOrDefault(tab => tab.Kind == kind);
     }
 
-    private Task CloseAsync(string tabId)
+    public async Task<bool> CloseAsync(string tabId)
     {
-        Close(tabId);
-        return Task.CompletedTask;
+        WorkspaceTabViewModel? tab = Find(tabId);
+        if (tab is null || !tab.IsClosable)
+        {
+            return false;
+        }
+
+        if (tab.Content is SettingsViewModel settings && !await settings.ConfirmLeaveMcpAsync())
+        {
+            return false;
+        }
+
+        if (tab.Content is PdfWorkspaceViewModel pdf && !await pdf.ClearAsync())
+        {
+            return false;
+        }
+
+        return Close(tabId);
+    }
+
+    public async Task<int> CloseKindAsync(WorkspaceTabKind kind)
+    {
+        int closed = 0;
+        foreach (WorkspaceTabViewModel tab in Layout.Tabs.Where(tab => tab.Kind == kind).ToArray())
+        {
+            if (await CloseAsync(tab.TabId))
+            {
+                closed++;
+            }
+        }
+
+        return closed;
     }
 
     private static void Cleanup(WorkspaceTabViewModel tab)

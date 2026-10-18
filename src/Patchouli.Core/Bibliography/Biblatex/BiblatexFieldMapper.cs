@@ -106,7 +106,7 @@ public static class BiblatexFieldMapper
         string? number = MapNumber(entry, itemType);
         string? issue = MapIssue(entry, itemType);
         string? note = MapNote(entry);
-        string? language = FirstNonEmpty(Field(entry, "language"), Field(entry, "langid"));
+        string? language = ItemLanguage.Normalize(FirstNonEmpty(Field(entry, "language"), Field(entry, "langid")));
 
         return Result<BiblatexMappedItem>.Success(new BiblatexMappedItem(
             itemType,
@@ -566,8 +566,8 @@ public static class BiblatexFieldMapper
 
     private static string? MapNote(BiblatexEntryDto entry)
     {
-        string? note = NullIfEmpty(Field(entry, "note"));
-        string? addendum = NullIfEmpty(Field(entry, "addendum"));
+        string? note = DecodeNoteLineBreaks(Field(entry, "note"));
+        string? addendum = DecodeNoteLineBreaks(Field(entry, "addendum"));
         if (note is not null && addendum is not null)
         {
             if (string.Equals(note, addendum, StringComparison.Ordinal))
@@ -579,6 +579,11 @@ public static class BiblatexFieldMapper
         }
 
         return note ?? addendum;
+    }
+
+    private static string? DecodeNoteLineBreaks(string? value)
+    {
+        return NullIfEmpty(value?.Replace("\\newline{}", "\n", StringComparison.Ordinal));
     }
 
     private static IReadOnlyDictionary<string, string> MapCustomFields(BiblatexEntryDto entry, string itemType)

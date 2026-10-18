@@ -329,9 +329,12 @@ public sealed class MinerUUploadPreparer
             using MinerUZipReader reader = MinerUZipReader.Open(download.Value.ZipPath);
             string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
                                       ?? reader.ReadFileContent("_content_list.json");
-            MinerUContentListDocument? document = contentListJson is null
-                ? null
-                : new MinerUContentListParser().Parse(contentListJson);
+            string? middleJson = reader.ReadFileContent("middle_json.json");
+            MinerUContentListDocument? document = middleJson is not null
+                ? MinerUMiddleJsonParser.Parse(middleJson)
+                : contentListJson is null
+                    ? null
+                    : new MinerUContentListParser().Parse(contentListJson);
             IReadOnlyList<int> pageIndexMap = document is null
                 ? []
                 : document.Pages.Select(page => page.PageNum - 1).Distinct().OrderBy(index => index).ToArray();
@@ -496,10 +499,30 @@ public sealed class MinerUUploadPreparer
             JsonArray contentItems = new();
             JsonArray contentListV2Pages = new();
             StringBuilder markdown = new();
+            JsonObject? middle = null;
+            JsonArray middlePages = [];
+            bool hasLegacyChunk = false;
 
             foreach ((int pageIndexOffset, MinerUDownloadedResult download) in downloads)
             {
                 using MinerUZipReader reader = MinerUZipReader.Open(download.ZipPath);
+                string? middleText = reader.ReadFileContent("middle_json.json");
+                if (middleText is not null)
+                {
+                    _ = MinerUMiddleJsonParser.Parse(middleText);
+                    JsonObject chunk = JsonNode.Parse(middleText)!.AsObject();
+                    middle ??= chunk.DeepClone().AsObject();
+                    foreach (JsonNode? page in chunk["pages"]!.AsArray())
+                    {
+                        JsonObject shifted = page!.DeepClone().AsObject();
+                        shifted["page_idx"] = shifted["page_idx"]!.GetValue<int>() + pageIndexOffset;
+                        middlePages.Add(shifted);
+                    }
+
+                    continue;
+                }
+
+                hasLegacyChunk = true;
                 string? contentListJson = reader.ReadFileContent("_content_list.json");
                 if (!string.IsNullOrWhiteSpace(contentListJson))
                 {
@@ -524,7 +547,21 @@ public sealed class MinerUUploadPreparer
                 }
             }
 
+            if (middle is not null && hasLegacyChunk)
+            {
+                return Result<string>.Failure("mixed_result_formats",
+                    "Cannot merge Middle JSON and legacy content-list chunks.");
+            }
+
             using ZipArchive archive = ZipFile.Open(mergedPath, ZipArchiveMode.Create);
+            if (middle is not null)
+            {
+                middle["pages"] = middlePages;
+                ZipArchiveEntry entry = archive.CreateEntry("middle_json.json");
+                using StreamWriter writer = new(entry.Open(), Encoding.UTF8);
+                writer.Write(middle.ToJsonString());
+            }
+
             if (contentItems.Count > 0)
             {
                 ZipArchiveEntry entry = archive.CreateEntry("merged_content_list.json");

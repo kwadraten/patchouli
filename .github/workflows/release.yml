@@ -52,11 +52,16 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           test -n "$version"
           echo "value=$version" >> "$GITHUB_OUTPUT"
-      - name: Build macOS disk image
+      - name: Build ad-hoc signed macOS disk image
         shell: bash
         run: bash scripts/package-macos.sh osx-arm64
         env:
           VERSION: ${{ steps.version.outputs.value }}
+      - name: Verify app bundle signature inside final disk image
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: bash scripts/verify-macos-dmg.sh ".tmp/installer/Patchouli.NET-$VERSION-osx-arm64.dmg"
       - name: Upload macOS disk image
         uses: actions/upload-artifact@v7
         with:

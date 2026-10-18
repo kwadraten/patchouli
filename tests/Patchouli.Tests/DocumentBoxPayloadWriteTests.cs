@@ -11,6 +11,22 @@ namespace Patchouli.Tests;
 public sealed class DocumentBoxPayloadWriteTests
 {
     [Fact]
+    public async Task Replacement_preserves_a_meaningful_visual_subtype()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId boxId = DocumentBoxId.New();
+        DocumentTreeRevision original = await context.CommitAsync(new DocumentBoxSeed(boxId, null, 0,
+            DocumentBoxType.Image, "seal", new NormalizedBBox(.1, .1, .5, .2), new MediaBoxPayload(null, "original")));
+        Result<DocumentTreeRevision> replaced = await context.Trees.ReplaceBoxPayloadsAsync(context.DocumentId,
+            context.PageId, original.TreeRevisionId,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload> { [boxId] = new MediaBoxPayload(null, "replacement") });
+        replaced.IsSuccess.Should().BeTrue(replaced.ErrorMessage);
+        DocumentBox box = Assert.Single(await context.ListBoxesAsync(replaced.Value.TreeRevisionId));
+        box.SubType.Should().Be("seal");
+        box.Payload.Should().Be(new MediaBoxPayload(null, "replacement"));
+    }
+
+    [Fact]
     public async Task Replacement_commits_one_revision_and_preserves_box_identity_and_metadata()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
@@ -33,7 +49,6 @@ public sealed class DocumentBoxPayloadWriteTests
         after.TreeRevisionId.Should().Be(result.Value.TreeRevisionId);
         after.Payload.Should().Be(new TextBoxPayload("replacement"));
         after.SubType.Should().Be(before.SubType);
-        after.BaseType.Should().Be(before.BaseType);
         after.BBox.Should().Be(before.BBox);
         after.Confidence.Should().Be(before.Confidence);
         after.Suppressed.Should().Be(before.Suppressed);
@@ -116,9 +131,9 @@ public sealed class DocumentBoxPayloadWriteTests
         DocumentBoxId pageBoxId = DocumentBoxId.New();
         DocumentBoxId leafId = DocumentBoxId.New();
         DocumentTreeRevision original = await context.CommitAsync(
-            new DocumentBoxSeed(pageBoxId, null, 0, DocumentBoxType.LogicalPage, null, null,
+            new DocumentBoxSeed(pageBoxId, null, 0, DocumentBoxType.LogicalPage, null,
                 new NormalizedBBox(0.02, 0.02, 0.9, 0.9), null),
-            new DocumentBoxSeed(leafId, pageBoxId, 0, DocumentBoxType.Text, null, null,
+            new DocumentBoxSeed(leafId, pageBoxId, 0, DocumentBoxType.Text, null,
                 new NormalizedBBox(0.1, 0.1, 0.5, 0.2), new TextBoxPayload("original")));
         int originalCommitCount = await CountForPageAsync(context, "document_commits");
 
@@ -141,10 +156,9 @@ public sealed class DocumentBoxPayloadWriteTests
         DocumentBoxId tableId = DocumentBoxId.New();
         const string tableMarkdown = "[Table]";
         DocumentTreeRevision original = await context.CommitAsync(
-            new DocumentBoxSeed(mediaId, null, 0, DocumentBoxType.Image, null, null,
-                new NormalizedBBox(0.02, 0.02, 0.4, 0.3), new MediaBoxPayload("asset-original", "old description")),
-            new DocumentBoxSeed(tableId, null, 1, DocumentBoxType.Table, null, null,
-                new NormalizedBBox(0.55, 0.02, 0.4, 0.3),
+            new DocumentBoxSeed(mediaId, null, 0, DocumentBoxType.Image, null, new NormalizedBBox(0.02, 0.02, 0.4, 0.3),
+                new MediaBoxPayload("asset-original", "old description")),
+            new DocumentBoxSeed(tableId, null, 1, DocumentBoxType.Table, null, new NormalizedBBox(0.55, 0.02, 0.4, 0.3),
                 new TableBoxPayload(tableMarkdown, "<table><tr><td>hidden</td></tr></table>")));
 
         Result<DocumentTreeRevision> result = await context.Trees.ReplaceBoxPayloadsAsync(context.DocumentId,
@@ -171,9 +185,9 @@ public sealed class DocumentBoxPayloadWriteTests
         DocumentBoxId imageId = DocumentBoxId.New();
         DocumentBoxId captionId = DocumentBoxId.New();
         DocumentTreeRevision original = await context.CommitAsync(
-            new DocumentBoxSeed(imageId, null, 0, DocumentBoxType.Image, null, null,
-                new NormalizedBBox(0.02, 0.02, 0.7, 0.5), new MediaBoxPayload("asset", "description")),
-            new DocumentBoxSeed(captionId, imageId, 0, DocumentBoxType.ImageCaption, null, null,
+            new DocumentBoxSeed(imageId, null, 0, DocumentBoxType.Image, null, new NormalizedBBox(0.02, 0.02, 0.7, 0.5),
+                new MediaBoxPayload("asset", "description")),
+            new DocumentBoxSeed(captionId, imageId, 0, DocumentBoxType.ImageCaption, null,
                 new NormalizedBBox(0.1, 0.1, 0.5, 0.1), new TextBoxPayload("caption")));
         int originalCommitCount = await CountForPageAsync(context, "document_commits");
 
@@ -217,7 +231,7 @@ public sealed class DocumentBoxPayloadWriteTests
 
     private static DocumentBoxSeed Seed(DocumentBoxId boxId)
     {
-        return new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, "source-subtype", "text",
+        return new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, null,
             new NormalizedBBox(0.1, 0.1, 0.5, 0.2), new TextBoxPayload("original"),
             Confidence: 0.73, Suppressed: true);
     }

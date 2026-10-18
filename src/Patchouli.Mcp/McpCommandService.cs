@@ -5,9 +5,11 @@ using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Documents;
+using Patchouli.Core.View;
 
 namespace Patchouli.Mcp;
 
@@ -31,6 +33,10 @@ public sealed class McpCommandService
     private readonly bool _exposeLibraryCollections;
     private readonly bool _putEnabled;
     private readonly bool _sendEnabled;
+    private readonly bool _addEnabled;
+    private readonly bool _viewEnabled;
+    private readonly IFileImportService? _fileImport;
+    private readonly IPageImageViewService? _pageView;
     private readonly Func<CancellationToken, Task<McpServerSettings>>? _permissionSettings;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
@@ -38,7 +44,9 @@ public sealed class McpCommandService
         bool exposeLibraryTags = true, bool exposeLibraryCollections = true,
         IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
         IMcpOcrRunsApi? ocrRuns = null, bool putEnabled = true, bool sendEnabled = true,
-        Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null)
+        Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null,
+        IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
+        bool addEnabled = true, bool viewEnabled = true)
     {
         _read = read;
         _write = write;
@@ -52,6 +60,10 @@ public sealed class McpCommandService
         _exposeLibraryCollections = exposeLibraryCollections;
         _putEnabled = putEnabled;
         _sendEnabled = sendEnabled;
+        _addEnabled = addEnabled;
+        _viewEnabled = viewEnabled;
+        _fileImport = fileImport;
+        _pageView = pageView;
         _permissionSettings = permissionSettings;
     }
 
@@ -114,6 +126,27 @@ public sealed class McpCommandService
             new McpCiteMeta("lib:0", null, null, "text", null));
     }
 
+    /// <summary>
+    /// Issue #11: imports one host-local file into the library. The path is the explicitly
+    /// allowed local-path input exception; the response never exposes host paths.
+    /// </summary>
+    public Task<McpCommandResult<McpAddMeta, McpAddResult>> AddAsync(McpAddRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return AddCoreAsync(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// Issue #11: reads one source image for model text-image collation. The returned
+    /// <see cref="McpViewCommandResult"/> carries the PNG bytes alongside the text
+    /// metadata envelope so the transport can emit the native MCP image content block.
+    /// </summary>
+    public Task<McpViewCommandResult> ViewAsync(McpViewRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return ViewCoreAsync(request, cancellationToken);
+    }
+
     public Task<McpCommandResult<McpSendMeta, McpSendResult>> SendAsync(McpSendRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -122,6 +155,240 @@ public sealed class McpCommandService
             Workflow = request.Workflow is null ? null : McpResourceUris.Normalize(request.Workflow),
             Session = request.Session is null ? null : McpResourceUris.Normalize(request.Session)
         }, cancellationToken);
+    }
+
+    private async Task<McpCommandResult<McpAddMeta, McpAddResult>> AddCoreAsync(McpAddRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Path))
+        {
+            return McpCommandResult<McpAddMeta, McpAddResult>.Fail(McpErrorCode.InvalidArgument,
+                "path is required.");
+        }
+
+        if (!_addEnabled)
+        {
+            return McpCommandResult<McpAddMeta, McpAddResult>.Fail(McpErrorCode.PermissionDenied,
+                "add is disabled by the host's MCP tool switches.");
+        }
+
+        if (_fileImport is null)
+        {
+            return McpCommandResult<McpAddMeta, McpAddResult>.Fail(McpErrorCode.Unavailable,
+                "The host does not expose local file import.");
+        }
+
+        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
+
+        Result<FileImportResult> imported = await _fileImport.ImportAsync(
+            new FileImportRequest(request.Path, request.Kind, FileImportTrigger.McpAdd, kind =>
+                Task.FromResult(AuthorizeAddKind(permissions, kind))),
+            cancellationToken);
+        if (imported.IsFailure)
+        {
+            McpErrorCode code = MapImportError(imported.ErrorCode);
+            McpEnvelope<McpAddMeta, McpAddResult> failed =
+                McpEnvelope<McpAddMeta, McpAddResult>.Create(new McpAddMeta(revision), []);
+            McpMessage message = new(McpToolError.From(code, imported.ErrorMessage ?? "Import failed.")
+                .ToTerminalLine(), []);
+            failed = failed with { Message = message };
+            return McpCommandResult<McpAddMeta, McpAddResult>.Partial(failed, code,
+                imported.ErrorMessage ?? "Import failed.");
+        }
+
+        FileImportResult result = imported.Value;
+        McpAddResult entry = new(
+            result.Kind.ToString().ToLowerInvariant(),
+            result.Reused,
+            result.Moved,
+            result.ItemUri,
+            result.TextUri,
+            result.StyleUri,
+            result.PageCount,
+            result.ImportStatus,
+            result.BodyStatus,
+            result.Issues.Select(issue => new McpAddIssue(issue.Code, issue.Message)).ToArray());
+        McpEnvelope<McpAddMeta, McpAddResult> envelope =
+            McpEnvelope<McpAddMeta, McpAddResult>.Create(new McpAddMeta(revision), [entry]);
+        return McpCommandResult<McpAddMeta, McpAddResult>.Ok(envelope);
+    }
+
+    private static Result AuthorizeAddKind(McpServerSettings? permissions, LocalImportKind kind)
+    {
+        // PDF imports need items.add + texts.add; CSL installs need csl-styles.add.
+        // Existing put grants are never auto-expanded to add.
+        bool allowed = kind switch
+        {
+            LocalImportKind.Pdf => Allowed(permissions, "add", "patchouli://items/") &&
+                                   Allowed(permissions, "add", "patchouli://texts/"),
+            LocalImportKind.Csl => Allowed(permissions, "add", "patchouli://csl-styles/"),
+            _ => false
+        };
+        return allowed
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "add is disabled for this domain by the host's MCP permissions.");
+    }
+
+    private static McpErrorCode MapImportError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound => McpErrorCode.NotFound,
+            AppErrorCodes.UnsupportedOperation => McpErrorCode.PermissionDenied,
+            FileImportErrorCodes.UrlNotAllowed => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.KindMismatch => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.UnsupportedFormat => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.NotRegularFile => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.PathNotFound => McpErrorCode.NotFound,
+            FileImportErrorCodes.UnreadableFile => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.CloudPlaceholderUnavailable => McpErrorCode.Unavailable,
+            FileImportErrorCodes.NoSearchRoot => McpErrorCode.InvalidArgument,
+            FileImportErrorCodes.SearchRootUnavailable => McpErrorCode.Unavailable,
+            FileImportErrorCodes.MoveFailed => McpErrorCode.Internal,
+            FileImportErrorCodes.RecoveryFailed => McpErrorCode.Internal,
+            FileImportErrorCodes.StyleConflict => McpErrorCode.RevisionConflict,
+            FileImportErrorCodes.StyleInvalid => McpErrorCode.InvalidContent,
+            _ => McpErrorCode.Internal
+        };
+    }
+
+    private async Task<McpViewCommandResult> ViewCoreAsync(McpViewRequest request,
+        CancellationToken cancellationToken)
+    {
+        McpViewCommandResult Fail(McpErrorCode code, string detail)
+        {
+            return new McpViewCommandResult(
+                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(code, detail), null);
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Uri))
+        {
+            return Fail(McpErrorCode.InvalidArgument, "uri is required.");
+        }
+
+        if (!_viewEnabled)
+        {
+            return Fail(McpErrorCode.PermissionDenied, "view is disabled by the host's MCP tool switches.");
+        }
+
+        if (_pageView is null)
+        {
+            return Fail(McpErrorCode.Unavailable, "The host does not expose source image reading.");
+        }
+
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Uri);
+        if (parsed.IsFailure)
+        {
+            return Fail(McpErrorCode.InvalidArgument, parsed.ErrorMessage ?? "Invalid URI.");
+        }
+
+        McpUriParseResult target = parsed.Value;
+        bool isTranslation = target.Kind == McpUriKind.TranslationPage;
+        if (target.Kind is McpUriKind.Document or McpUriKind.TranslationDocument)
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "view requires a page URI; a document catalog needs a page specification.");
+        }
+
+        if (target.Kind is not (McpUriKind.Page or McpUriKind.Evidence or McpUriKind.TranslationPage) ||
+            target.DocumentId is null || target.PageIndex is null)
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "view supports page, box/evidence and translation page/box URIs.");
+        }
+
+        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+        if (!Allowed(permissions, "view", target.CanonicalUri))
+        {
+            return Fail(McpErrorCode.PermissionDenied, "view is disabled for this domain.");
+        }
+
+        if (isTranslation &&
+            !Allowed(permissions, "view", McpResourceUris.DocumentUri(target.DocumentId.Value)))
+        {
+            // Translation-source images also check the source text domain.
+            return Fail(McpErrorCode.PermissionDenied, "view is disabled for the source text domain.");
+        }
+
+        PageImageViewContext context = request.Context switch
+        {
+            null or "page" => PageImageViewContext.Page,
+            "region" => PageImageViewContext.Region,
+            _ => (PageImageViewContext)(-1)
+        };
+        if ((int)context < 0)
+        {
+            return Fail(McpErrorCode.InvalidArgument, "context must be \"page\" or \"region\".");
+        }
+
+        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
+        Result<PageImageViewResult> viewed = await _pageView.ViewAsync(
+            new PageImageViewRequest(
+                target.DocumentId.Value,
+                target.PageIndex.Value,
+                target.TreeRevisionId,
+                target.BoxId,
+                isTranslation,
+                context,
+                request.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge),
+            cancellationToken);
+        if (viewed.IsFailure)
+        {
+            return new McpViewCommandResult(
+                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(
+                    MapViewError(viewed.ErrorCode), viewed.ErrorMessage ?? "View failed."),
+                null);
+        }
+
+        PageImageViewResult image = viewed.Value;
+        McpViewImageMetadata metadata = new(
+            image.CanonicalUri,
+            image.ViewType,
+            image.MimeType,
+            image.Width,
+            image.Height,
+            [image.CropRange.X, image.CropRange.Y, image.CropRange.Width, image.CropRange.Height],
+            image.ImageIndex);
+        McpEnvelope<McpViewMeta, McpViewImageMetadata> envelope =
+            McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
+        return new McpViewCommandResult(
+            McpCommandResult<McpViewMeta, McpViewImageMetadata>.Ok(envelope), image.PngBytes);
+    }
+
+    private static McpErrorCode MapViewError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.TargetNotFound => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.StaleRevision => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.StaleCoordinates => McpErrorCode.InvalidArgument,
+            PageImageViewErrorCodes.SourceMissing => McpErrorCode.Unavailable,
+            PageImageViewErrorCodes.SourceChanged => McpErrorCode.RevisionConflict,
+            PageImageViewErrorCodes.RenderFailed => McpErrorCode.Internal,
+            PageImageViewErrorCodes.ImageTooLarge => McpErrorCode.InvalidArgument,
+            PageImageViewErrorCodes.PageSpecificationRequired => McpErrorCode.InvalidArgument,
+            _ => McpErrorCode.Internal
+        };
+    }
+
+    private async Task<string> CurrentLibraryRevisionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            Result<McpLibraryStateResponse> state = await _read.GetCurrentLibraryStateAsync(cancellationToken);
+            return state.IsSuccess && !string.IsNullOrWhiteSpace(state.Value.LibraryRevision)
+                ? state.Value.LibraryRevision
+                : "lib:0";
+        }
+        catch
+        {
+            return "lib:0";
+        }
     }
 
     private static McpCommandResult<TMeta, TEntry> WithLegacyWarnings<TMeta, TEntry>(

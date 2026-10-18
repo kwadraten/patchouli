@@ -29,6 +29,8 @@ public sealed class ItemInspectorViewModelTests
         inspector.Groups.Should().Contain(group => group.Title == "其他");
         inspector.Groups.SelectMany(group => group.Fields).Should().Contain(field =>
             field.Label == "标题" && field.Value == metadata.Title);
+        inspector.Groups.SelectMany(group => group.Fields).Should().Contain(field =>
+            field.Label == "附注" && field.Value == metadata.Note);
     }
 
     [Fact]
@@ -50,7 +52,7 @@ public sealed class ItemInspectorViewModelTests
         await inspector.LoadAsync(itemId);
 
         inspector.Groups.SelectMany(group => group.Fields)
-            .Where(field => field.Label is "摘要" or "备注")
+            .Where(field => field.Label is "摘要" or "附注")
             .Should().OnlyContain(field => field.WrapText);
     }
 
@@ -70,7 +72,7 @@ public sealed class ItemInspectorViewModelTests
         await inspector.LoadAsync(itemId);
 
         inspector.Groups.SelectMany(group => group.Fields)
-            .Where(field => field.Label is not "摘要" and not "备注")
+            .Where(field => field.Label is not "摘要" and not "附注")
             .Should().OnlyContain(field => !field.WrapText);
     }
 

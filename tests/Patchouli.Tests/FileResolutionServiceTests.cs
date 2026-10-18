@@ -88,14 +88,14 @@ public sealed class FileResolutionServiceTests
     }
 
     [Fact]
-    public async Task ResolveFile_missing_original_but_found_in_search_root_returns_moved_candidate()
+    public async Task ResolveFile_renamed_original_found_in_search_root_becomes_available()
     {
         await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
         string original = await context.Temp.WriteFileAsync("moved.pdf", "move me");
         Result<FileAsset> asset = await context.FileAssetService.RegisterFileAsync(original);
         File.Delete(original);
         string root = context.Temp.CreateDirectory("root");
-        string moved = Path.Combine(root, "moved.pdf");
+        string moved = Path.Combine(root, "renamed.pdf");
         await File.WriteAllTextAsync(moved, "move me");
         await context.FileResolutionService.AddSearchRootAsync(SelectedRoot(root));
 
@@ -103,14 +103,14 @@ public sealed class FileResolutionServiceTests
             await context.FileResolutionService.ResolveFileAsync(asset.Value.FileAssetId,
                 ResolveFilePurpose.OpenOriginal);
 
-        result.Value.Status.Should().Be(FileAssetStatus.MovedCandidate);
+        result.Value.Status.Should().Be(FileAssetStatus.Available);
         result.Value.ResolvedPath.Should().Be(Path.GetFullPath(moved));
         result.Value.RequiredAction.Should().Be(FileResolutionRequiredAction.None);
         result.Value.Candidates.Should().ContainSingle();
     }
 
     [Fact]
-    public async Task ResolveFile_multiple_matching_candidates_returns_conflict()
+    public async Task ResolveFile_multiple_verified_copies_are_available_without_conflict()
     {
         await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
         string original = await context.Temp.WriteFileAsync("duplicate.pdf", "duplicate");
@@ -127,12 +127,52 @@ public sealed class FileResolutionServiceTests
             await context.FileResolutionService.ResolveFileAsync(asset.Value.FileAssetId,
                 ResolveFilePurpose.OpenOriginal);
 
-        result.Value.Status.Should().Be(FileAssetStatus.Conflict);
-        result.Value.ResolvedPath.Should().BeNull();
-        result.Value.RequiredAction.Should().Be(FileResolutionRequiredAction.ChooseCandidate);
+        result.Value.Status.Should().Be(FileAssetStatus.Available);
+        result.Value.ResolvedPath.Should().NotBeNull();
+        result.Value.RequiredAction.Should().Be(FileResolutionRequiredAction.None);
         result.Value.Candidates.Should().HaveCount(2);
-        result.Value.Conflicts.Should().ContainSingle(conflict =>
-            conflict.ConflictCode == ConflictCode.FileRelocationMultipleCandidates);
+        result.Value.Conflicts.Should().BeEmpty();
+        Result<IReadOnlyList<KnownFileLocation>> locations =
+            await context.FileResolutionService.ListKnownLocationsAsync(asset.Value.FileAssetId);
+        locations.Value.Count(location => location.Status == FileAssetStatus.Available).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ResolveFile_rejects_a_full_hash_mismatch_even_when_quick_hash_is_unchanged()
+    {
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
+        string file = Path.Combine(context.Temp.Path, "sparse-change.pdf");
+        await File.WriteAllBytesAsync(file, new byte[32768]);
+        FileAsset asset = (await context.FileAssetService.RegisterFileAsync(file)).Value;
+        await using (FileStream stream = File.OpenWrite(file))
+        {
+            stream.Position = 8192; // Outside the head, middle and tail quick-hash windows.
+            stream.WriteByte(1);
+        }
+
+        Result<FileResolutionResult> result = await context.FileResolutionService.ResolveFileAsync(asset.FileAssetId,
+            ResolveFilePurpose.VerifyHash);
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.Status.Should().Be(FileAssetStatus.Changed);
+        result.Value.ResolvedPath.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ResolveFile_uses_verified_copy_when_original_path_contains_different_content()
+    {
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
+        string original = await context.Temp.WriteFileAsync("original.pdf", "source content");
+        FileAsset asset = (await context.FileAssetService.RegisterFileAsync(original)).Value;
+        string copy = Path.Combine(context.Temp.Path, "copy.pdf");
+        File.Copy(original, copy);
+        (await context.FileAssetService.RegisterFileAsync(copy)).IsSuccess.Should().BeTrue();
+        await File.WriteAllTextAsync(original, "different content");
+
+        Result<FileResolutionResult> result = await context.FileResolutionService.ResolveFileAsync(asset.FileAssetId,
+            ResolveFilePurpose.OpenOriginal);
+        result.Value.Status.Should().Be(FileAssetStatus.Available);
+        result.Value.ResolvedPath.Should().Be(copy);
+        (await context.FileAssetService.GetFileAssetAsync(asset.FileAssetId)).Value.OriginalPath.Should().Be(copy);
     }
 
     [Fact]

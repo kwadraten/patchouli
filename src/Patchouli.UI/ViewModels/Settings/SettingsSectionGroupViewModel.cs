@@ -1,4 +1,3 @@
-using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -8,30 +7,56 @@ public sealed record SettingsSectionEntryViewModel(string Id, string Title, obje
 /// <summary>Presentation grouping; each section keeps its own persistence and lifecycle.</summary>
 public sealed partial class SettingsSectionGroupViewModel : ViewModelBase
 {
-    public SettingsSectionGroupViewModel(bool useTabs, params SettingsSectionEntryViewModel[] entries)
+    public SettingsSectionGroupViewModel(params SettingsSectionEntryViewModel[] entries)
     {
-        UseTabs = useTabs;
         Entries = entries;
         ActiveEntry = entries[0];
     }
 
-    public bool UseTabs { get; }
-    public bool UseStack => !UseTabs;
     public IReadOnlyList<SettingsSectionEntryViewModel> Entries { get; }
 
-    public IReadOnlyList<SettingsSectionEntryViewModel> StackEntries => UseStack ? Entries : [];
-    public IReadOnlyList<SettingsSectionEntryViewModel> TabEntries => UseTabs ? Entries : [];
+    private SettingsSectionEntryViewModel _activeEntry = null!;
+    internal Action<SettingsSectionEntryViewModel>? SelectionRequested { get; set; }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(SelectedTab))]
-    public partial SettingsSectionEntryViewModel ActiveEntry { get; set; }
+    public SettingsSectionEntryViewModel ActiveEntry
+    {
+        get => _activeEntry;
+        set
+        {
+            if (value is null || ReferenceEquals(value, _activeEntry))
+            {
+                return;
+            }
+
+            if (SelectionRequested is { } request)
+            {
+                request(value);
+            }
+            else
+            {
+                SetActiveEntry(value);
+            }
+        }
+    }
+
+    internal void SetActiveEntry(SettingsSectionEntryViewModel value)
+    {
+        _activeEntry = value;
+        Raise(nameof(ActiveEntry));
+        Raise(nameof(SelectedTab));
+    }
+
+    internal void RefreshSelection()
+    {
+        Raise(nameof(SelectedTab));
+    }
 
     public SettingsSectionEntryViewModel? SelectedTab
     {
-        get => UseTabs ? ActiveEntry : null;
+        get => ActiveEntry;
         set
         {
-            if (UseTabs && value is not null)
+            if (value is not null)
             {
                 ActiveEntry = value;
             }

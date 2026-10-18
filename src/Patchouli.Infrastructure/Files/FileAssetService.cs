@@ -118,49 +118,13 @@ public sealed class FileAssetService : IFileAssetService
                             "File content already exists in a different library.");
                     }
 
-                    FileAsset updatedAsset = existingAsset with
-                    {
-                        SizeBytes = asset.SizeBytes,
-                        MtimeUtc = asset.MtimeUtc,
-                        QuickHash = asset.QuickHash,
-                        FullBlake3 = asset.FullBlake3,
-                        Status = FileAssetStatus.Available,
-                        UpdatedAt = now
-                    };
+                    bool changed = await VerifiedFileLocationWriter.RecordAsync(connection, transaction,
+                        existingAsset.FileAssetId, fingerprint!.Value, now, _fingerprintService, cancellationToken);
 
-                    await connection.ExecuteAsync(
-                        """
-                        update file_assets
-                        set size_bytes = @SizeBytes,
-                            mtime_utc = @MtimeUtc,
-                            quick_hash = @QuickHash,
-                            full_blake3 = @FullBlake3,
-                            status = @Status,
-                            updated_at = @UpdatedAt
-                        where file_asset_id = @FileAssetId;
-                        """,
-                        new
-                        {
-                            FileAssetId = updatedAsset.FileAssetId.ToString(),
-                            updatedAsset.SizeBytes,
-                            MtimeUtc = updatedAsset.MtimeUtc?.ToUniversalTime().ToString("O"),
-                            updatedAsset.QuickHash,
-                            updatedAsset.FullBlake3,
-                            updatedAsset.Status,
-                            UpdatedAt = updatedAsset.UpdatedAt.ToUniversalTime().ToString("O")
-                        },
-                        transaction);
-
-                    await UpsertKnownLocationAsync(
-                        connection,
-                        transaction,
-                        updatedAsset.FileAssetId,
-                        normalizedPath,
-                        FileAssetStatus.Available,
-                        now);
-
-                    Result<LibraryChangeSet?> existingRevision = await IncrementRevisionAsync(
-                        connection, transaction, updatedAsset.FileAssetId, cancellationToken);
+                    Result<LibraryChangeSet?> existingRevision = changed
+                        ? await IncrementRevisionAsync(connection, transaction, existingAsset.FileAssetId,
+                            cancellationToken)
+                        : Result<LibraryChangeSet?>.Success(null);
                     if (existingRevision.IsFailure)
                     {
                         await transaction.RollbackAsync(cancellationToken);
@@ -169,7 +133,7 @@ public sealed class FileAssetService : IFileAssetService
 
                     await transaction.CommitAsync(cancellationToken);
                     PublishRevision(existingRevision.Value);
-                    return Result<FileAsset>.Success(updatedAsset);
+                    return await GetFileAssetAsync(existingAsset.FileAssetId, cancellationToken);
                 }
 
                 // Confirming a changed source preserves its asset ID. Do not overwrite that
@@ -318,7 +282,11 @@ public sealed class FileAssetService : IFileAssetService
             """
             select di.document_instance_id as DocumentInstanceId, di.item_id as ItemId
             from document_instances di
-            where di.file_asset_id = @FileAssetId;
+            where di.file_asset_id = @FileAssetId or exists (
+                select 1 from known_file_locations current_location
+                join known_file_locations affected_location on affected_location.path = current_location.path
+                where current_location.file_asset_id = @FileAssetId
+                  and affected_location.file_asset_id = di.file_asset_id);
             """,
             new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
         Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
@@ -383,7 +351,7 @@ public sealed class FileAssetService : IFileAssetService
         return Result<T>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
     }
 
-    internal static Task UpsertKnownLocationAsync(
+    internal static async Task<int> UpsertKnownLocationAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         FileAssetId fileAssetId,
@@ -391,7 +359,32 @@ public sealed class FileAssetService : IFileAssetService
         string status,
         DateTimeOffset lastSeenAt)
     {
-        return connection.ExecuteAsync(
+        int displaced = 0;
+        // A path now verified for this asset cannot remain an available location for other content.
+        if (status == FileAssetStatus.Available)
+        {
+            displaced = await connection.ExecuteAsync(
+                """
+                update known_file_locations set status = 'changed'
+                where path = @Path and file_asset_id <> @FileAssetId and status = 'available'
+                  and file_asset_id in (select file_asset_id from file_assets
+                    where full_blake3 is not (select full_blake3 from file_assets where file_asset_id = @FileAssetId));
+                """, new { Path = Path.GetFullPath(path), FileAssetId = fileAssetId.ToString() }, transaction);
+            await connection.ExecuteAsync(
+                """
+                update file_assets set status = 'changed', updated_at = @Now
+                where original_path = @Path and file_asset_id <> @FileAssetId
+                  and status = 'available' and not exists (
+                    select 1 from known_file_locations k
+                    where k.file_asset_id = file_assets.file_asset_id and k.status = 'available');
+                """, new
+                {
+                    Path = Path.GetFullPath(path), FileAssetId = fileAssetId.ToString(),
+                    Now = lastSeenAt.ToUniversalTime().ToString("O")
+                }, transaction);
+        }
+
+        await connection.ExecuteAsync(
             """
             insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
             values (@LocationId, @FileAssetId, @Path, @LastSeenAt, @Status)
@@ -408,6 +401,7 @@ public sealed class FileAssetService : IFileAssetService
                 Status = status
             },
             transaction);
+        return displaced;
     }
 
     private sealed class FileAssetRow

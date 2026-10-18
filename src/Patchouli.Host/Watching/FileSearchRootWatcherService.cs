@@ -31,6 +31,8 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly object _fileSearchRootWatchSync = new();
+    private readonly Dictionary<string, long> _changedPaths = new(StringComparer.OrdinalIgnoreCase);
+    private long _fileChangeVersion;
     private readonly SemaphoreSlim _fileSearchRootRescanGate = new(1, 1);
     private CancellationTokenSource? _fileSearchRootWatchDebounce;
     private Task? _fileSearchRootWatchDebounceTask;
@@ -91,9 +93,10 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     EnableRaisingEvents = true
                 };
                 FileSystemEventHandler changed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}", watcherGeneration);
+                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}", watcherGeneration, e.FullPath);
                 RenamedEventHandler renamed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration);
+                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration,
+                        e.FullPath);
                 ErrorEventHandler error = (_, e) =>
                     ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}", watcherGeneration);
                 watcher.Created += changed;
@@ -227,6 +230,13 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             }
 
             HashSet<string> knownPaths = await LoadKnownFilePathsAsync(cancellationToken);
+            Dictionary<string, long> changedPaths;
+            lock (_fileSearchRootWatchSync)
+            {
+                changedPaths = new Dictionary<string, long>(_changedPaths, StringComparer.OrdinalIgnoreCase);
+            }
+
+            knownPaths.ExceptWith(changedPaths.Keys);
             int processedRoots = 0;
             int scanned = 0;
             int imported = 0;
@@ -416,6 +426,20 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
             FileSearchRootRescanSummary summary = new(scanned, imported, skipped, failed, partialRoots,
                 unavailableRoots, skippedDirectories, skippedFiles);
+            if (!summary.HasWarnings)
+            {
+                lock (_fileSearchRootWatchSync)
+                {
+                    foreach ((string path, long version) in changedPaths)
+                    {
+                        if (_changedPaths.TryGetValue(path, out long current) && current == version)
+                        {
+                            _changedPaths.Remove(path);
+                        }
+                    }
+                }
+            }
+
             string message = BuildFileSearchRootRescanMessage(summary, completionMessage);
             progress?.Invoke(roots.Value.Count, roots.Value.Count, "文件重新扫描完成。", message);
             await LogOperationAsync("file-scan",
@@ -487,16 +511,72 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     {
         await using SqliteConnection connection = _services.ConnectionFactory.CreateReadConnection();
         await connection.OpenAsync(cancellationToken);
-        IEnumerable<string> paths = await connection.QueryAsync<string>(new CommandDefinition(
+        KnownPath[] paths = (await connection.QueryAsync<KnownPath>(new CommandDefinition(
             """
-            select original_path from file_assets
+            select a.file_asset_id as FileAssetId, a.original_path as OriginalPath,
+                   a.original_path as Path, a.size_bytes as SizeBytes, a.mtime_utc as MtimeUtc,
+                   (select k.status from known_file_locations k
+                    where k.file_asset_id = a.file_asset_id and k.path = a.original_path) as PrimaryStatus
+            from file_assets a where a.status = 'available'
             union all
-            select path from known_file_locations where status = 'available';
-            """, cancellationToken: cancellationToken));
-        return paths.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            select a.file_asset_id, a.original_path, k.path, a.size_bytes, a.mtime_utc,
+                   (select p.status from known_file_locations p
+                    where p.file_asset_id = a.file_asset_id and p.path = a.original_path)
+            from known_file_locations k join file_assets a on a.file_asset_id = k.file_asset_id
+            where k.status = 'available' and a.status = 'available';
+            """, cancellationToken: cancellationToken))).ToArray();
+        HashSet<string> unchanged = new(StringComparer.OrdinalIgnoreCase);
+        foreach (IGrouping<string, KnownPath> group in paths.GroupBy(path => path.FileAssetId))
+        {
+            // A remembered path is only a shortcut while the primary path and all remembered
+            // copies still exist. Otherwise reimport a discovered copy to reconcile old state.
+            if (group.First().PrimaryStatus != FileAssetStatus.Available ||
+                group.Any(path => !File.Exists(path.Path) && Directory.Exists(Path.GetDirectoryName(path.Path))) ||
+                !MatchesMetadata(group.First(), true))
+            {
+                continue;
+            }
+
+            foreach (KnownPath path in group.Where(path => MatchesMetadata(path, false)))
+            {
+                unchanged.Add(Path.GetFullPath(path.Path));
+            }
+        }
+
+        return unchanged;
     }
 
-    private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration)
+    private static bool MatchesMetadata(KnownPath path, bool primary)
+    {
+        try
+        {
+            FileInfo info = new(primary ? path.OriginalPath : path.Path);
+            return info.Exists && info.Length == path.SizeBytes &&
+                   DateTimeOffset.TryParse(path.MtimeUtc, out DateTimeOffset modified) &&
+                   info.LastWriteTimeUtc == modified.UtcDateTime;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private sealed class KnownPath
+    {
+        public string FileAssetId { get; init; } = "";
+        public string OriginalPath { get; init; } = "";
+        public string Path { get; init; } = "";
+        public long SizeBytes { get; init; }
+        public string? MtimeUtc { get; init; }
+        public string? PrimaryStatus { get; init; }
+    }
+
+    private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration,
+        string? changedPath = null)
     {
         try
         {
@@ -510,6 +590,11 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 {
                     current.Dispose();
                     return;
+                }
+
+                if (changedPath is not null)
+                {
+                    _changedPaths[changedPath] = ++_fileChangeVersion;
                 }
 
                 previous = _fileSearchRootWatchDebounce;

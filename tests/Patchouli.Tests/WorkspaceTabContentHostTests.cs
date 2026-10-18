@@ -231,9 +231,6 @@ public sealed class WorkspaceTabContentHostTests
                 WorkspaceTabViewModel sync = viewModel.Workspace.OpenOrActivate(
                     WorkspaceTabKind.SyncCenter, "integration-sync", "Sync", "RefreshCw", true,
                     () => viewModel.Snapshot);
-                WorkspaceTabViewModel csl = viewModel.Workspace.OpenOrActivate(
-                    WorkspaceTabKind.CslStyleManager, "integration-csl", "CSL", "Quote", true,
-                    () => new CslStyleManagerViewModel(viewModel));
                 LibraryItemViewModel pdfItem = new(
                     ItemId.New().ToString(), "PDF item", "book", "", "", "", null,
                     DocumentInstanceId.New().ToString(), null, "paper.pdf", "C:/paper.pdf", 3, 0, "not_indexed",
@@ -261,7 +258,6 @@ public sealed class WorkspaceTabContentHostTests
                     (search, typeof(SearchResultsPage)),
                     (ocr, typeof(OcrQueuePage)),
                     (sync, typeof(SyncCenterPage)),
-                    (csl, typeof(CslStyleManagerPage)),
                     (pdf, typeof(PdfWorkspacePage)),
                     (editor, typeof(ItemEditorPage))
                 ];
@@ -357,8 +353,14 @@ public sealed class WorkspaceTabContentHostTests
                 PumpLayout(window, new Size(1000, 480));
                 Control libraryContent = categoryHost.Children.Single(child =>
                     ReferenceEquals(child.DataContext, libraryCategory));
+                SettingsSectionGroupViewModel libraryGroup = (SettingsSectionGroupViewModel)libraryCategory.Content!;
+                RetainedContentHost libraryTabs = libraryContent.GetVisualDescendants()
+                    .OfType<RetainedContentHost>()
+                    .Single(host => ReferenceEquals(host.ItemsSource, libraryGroup.Entries));
+                Control libraryTabContent = libraryTabs.Children.Single(child =>
+                    ReferenceEquals(child.DataContext, libraryGroup.ActiveEntry));
                 ScrollViewer categoryScroll = await WaitForScrollableViewerAsync(
-                    libraryContent, window, new Size(1000, 480), 60);
+                    libraryTabContent, window, new Size(1000, 480), 60);
                 categoryScroll.Extent.Height.Should().BeGreaterThan(categoryScroll.Viewport.Height + 60);
                 categoryScroll.Offset = new Vector(0, 60);
 
@@ -372,9 +374,9 @@ public sealed class WorkspaceTabContentHostTests
                     .BeOfType<SettingsSectionGroupViewModel>().Which;
                 RetainedContentHost tabs = page.GetVisualDescendants()
                     .OfType<RetainedContentHost>()
-                    .Single(host => ReferenceEquals(host.ItemsSource, group.TabEntries));
-                SettingsSectionEntryViewModel firstEntry = group.TabEntries[0];
-                SettingsSectionEntryViewModel secondEntry = group.TabEntries.Single(entry => entry.Id == "mcp");
+                    .Single(host => ReferenceEquals(host.ItemsSource, group.Entries));
+                SettingsSectionEntryViewModel firstEntry = group.Entries[0];
+                SettingsSectionEntryViewModel secondEntry = group.Entries.Single(entry => entry.Id == "mcp");
 
                 group.SelectedTab = firstEntry;
                 PumpLayout(window, new Size(1000, 480));

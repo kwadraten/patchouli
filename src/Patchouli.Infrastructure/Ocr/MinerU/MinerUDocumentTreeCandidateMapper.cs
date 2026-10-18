@@ -149,7 +149,6 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             boxes.Add(new OcrBoxCandidate(
                 DocumentBoxType.LogicalPage,
                 null,
-                null,
                 0,
                 new TextBoxPayload("Blank page (MinerU returned no content)."),
                 region ?? new NormalizedBBox(0, 0, 1, 1),
@@ -289,6 +288,11 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         }
 
         string originalType = (block.Type ?? "text").Trim().ToLowerInvariant();
+        if (originalType == "text" && block.HeadingLevel > 0)
+        {
+            originalType = DocumentBoxType.Title;
+        }
+
         if (originalType is "phonetic" or "ruby")
         {
             diagnostics.Add(new OcrDiagnostic(
@@ -299,7 +303,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             originalType = DocumentBoxType.Text;
         }
 
-        (string boxType, string? subType, string? baseType, DocumentBoxPayload? payload, int? headingLevel,
+        (string boxType, string? subType, DocumentBoxPayload? payload, int? headingLevel,
             bool auxiliary) = MapType(block, originalType, diagnostics, page.PageId, sourceOrder);
         if (payload is null)
         {
@@ -308,17 +312,16 @@ internal sealed class MinerUDocumentTreeCandidateMapper
 
         return new OcrBoxCandidate(
             boxType,
-            subType,
-            baseType,
+            subType ?? block.SubType,
             sourceOrder,
-            payload,
+            payload with { Annotations = block.Annotations },
             bbox.Value,
             headingLevel,
             block.Confidence,
-            discarded || auxiliary);
+            discarded || auxiliary, CodeLanguage: block.CodeLanguage);
     }
 
-    private static (string BoxType, string? SubType, string? BaseType, DocumentBoxPayload? Payload,
+    private static (string BoxType, string? SubType, DocumentBoxPayload? Payload,
         int? HeadingLevel, bool Auxiliary) MapType(
             MinerUContentBlock block,
             string originalType,
@@ -330,26 +333,24 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         return originalType switch
         {
             "text" or "paragraph" => Text(DocumentBoxType.Text, text),
-            "title" or "heading" => (
+            "title" or "heading" or "doc_title" or "paragraph_title" => (
                 DocumentBoxType.Title,
-                null,
                 null,
                 new TextBoxPayload(text),
                 Math.Clamp(block.HeadingLevel ?? 1, 1, 6),
                 false),
             "ref_text" => Text(DocumentBoxType.RefText, text),
-            "formula" or "equation" => (
+            "formula" or "equation" or "equation_interline" => (
                 DocumentBoxType.Equation,
                 null,
-                null,
-                new EquationBoxPayload((block.LaTex ?? block.Text ?? string.Empty).Trim()),
+                new EquationBoxPayload(StripMathFence(block.LaTex ?? block.Text ?? string.Empty), true),
                 null,
                 false),
             "list" => MapList(text, diagnostics, pageId, sourceOrder),
+            "index" => (DocumentBoxType.Index, null, new ListBoxPayload(text), null, false),
             "table" => MapTable(block, diagnostics, pageId, sourceOrder),
             "image" or "figure" => (
                 DocumentBoxType.Image,
-                null,
                 null,
                 new MediaBoxPayload(null, NullIfWhiteSpace(text)),
                 null,
@@ -357,28 +358,25 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             "chart" => (
                 DocumentBoxType.Chart,
                 null,
-                null,
                 new MediaBoxPayload(null, NullIfWhiteSpace(text)),
                 null,
                 false),
             "code" => (
                 DocumentBoxType.Code,
                 null,
-                null,
-                new CodeBoxPayload(text),
+                block.SubType == DocumentBoxType.Algorithm ? new AlgorithmBoxPayload(text) : new CodeBoxPayload(text),
                 null,
                 false),
             "algorithm" => (
                 DocumentBoxType.Code,
                 DocumentBoxType.Algorithm,
-                null,
-                new CodeBoxPayload(text),
+                new AlgorithmBoxPayload(text),
                 null,
                 false),
             "page_header" or "header" => Text(DocumentBoxType.Header, text, true),
             "page_footer" or "footer" => Text(DocumentBoxType.Footer, text, true),
             "page_number" => Text(DocumentBoxType.PageNumber, text, true),
-            "aside_text" or "aside" => Text(DocumentBoxType.AsideText, text, true),
+            "aside_text" or "aside" or "page_aside_text" => Text(DocumentBoxType.AsideText, text, true),
             "footnote" or "page_footnote" => Text(DocumentBoxType.PageFootnote, text, true),
             "image_caption" => Text(DocumentBoxType.ImageCaption, text),
             "image_footnote" => Text(DocumentBoxType.ImageFootnote, text),
@@ -388,17 +386,28 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             "chart_footnote" => Text(DocumentBoxType.ChartFootnote, text),
             "code_caption" => Text(DocumentBoxType.CodeCaption, text),
             "code_footnote" => Text(DocumentBoxType.CodeFootnote, text),
-            _ => (
-                originalType,
-                null,
-                "text",
-                new TextBoxPayload(text),
-                null,
-                false)
+            _ => UnsupportedType(originalType, diagnostics, pageId, sourceOrder)
         };
     }
 
-    private static (string, string?, string?, DocumentBoxPayload?, int?, bool) MapList(
+    private static string StripMathFence(string value)
+    {
+        string text = value.Trim();
+        return text.StartsWith("$$", StringComparison.Ordinal) && text.EndsWith("$$", StringComparison.Ordinal) &&
+               text.Length >= 4
+            ? text[2..^2].Trim()
+            : text;
+    }
+
+    private static (string, string?, DocumentBoxPayload?, int?, bool) UnsupportedType(string type,
+        List<OcrDiagnostic> diagnostics, Core.Ids.PageId pageId, int order)
+    {
+        diagnostics.Add(new OcrDiagnostic("unsupported_box_type", $"Unsupported content type '{type}'.", pageId, order,
+            true));
+        return (type, null, null, null, false);
+    }
+
+    private static (string, string?, DocumentBoxPayload?, int?, bool) MapList(
         string text,
         List<OcrDiagnostic> diagnostics,
         Core.Ids.PageId pageId,
@@ -412,10 +421,10 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                 "MinerU list block had no list item text and was skipped.",
                 pageId,
                 sourceOrder));
-            return (DocumentBoxType.List, null, null, null, null, false);
+            return (DocumentBoxType.List, null, null, null, false);
         }
 
-        return (DocumentBoxType.List, null, null, new ListBoxPayload(markdown), null, false);
+        return (DocumentBoxType.List, null, new ListBoxPayload(markdown), null, false);
     }
 
     private static string ToGfmListMarkdown(string text)
@@ -444,7 +453,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         return string.Join("\n", gfmLines);
     }
 
-    private static (string, string?, string?, DocumentBoxPayload, int?, bool) MapTable(
+    private static (string, string?, DocumentBoxPayload, int?, bool) MapTable(
         MinerUContentBlock block,
         List<OcrDiagnostic> diagnostics,
         Core.Ids.PageId pageId,
@@ -477,7 +486,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             gfm = "[Table]";
         }
 
-        return (DocumentBoxType.Table, null, null,
+        return (DocumentBoxType.Table, null,
             new TableBoxPayload(gfm, gfm == "[Table]" ? block.TableHtml : null), null, false);
     }
 
@@ -559,12 +568,12 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         return new NormalizedBBox(x, y, width, height);
     }
 
-    private static (string, string?, string?, DocumentBoxPayload?, int?, bool) Text(
+    private static (string, string?, DocumentBoxPayload?, int?, bool) Text(
         string type,
         string text,
         bool auxiliary = false)
     {
-        return (type, null, null, new TextBoxPayload(text), null, auxiliary);
+        return (type, null, new TextBoxPayload(text), null, auxiliary);
     }
 
     private static string? NullIfWhiteSpace(string value)

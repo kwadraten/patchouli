@@ -30,13 +30,13 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.Document.DocumentInstanceId,
             context.Page.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("firstunique indexed phrase")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, null,
-                    new NormalizedBBox(.1, .02, .8, .05), new TextBoxPayload("hiddenunique running head"),
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("firstunique indexed phrase")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, new NormalizedBBox(.1, .02, .8, .05),
+                    new TextBoxPayload("hiddenunique running head"),
                     Suppressed: true),
-                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .3, .8, .1), new TextBoxPayload("secondunique indexed phrase"))
+                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, new NormalizedBBox(.1, .3, .8, .1),
+                    new TextBoxPayload("secondunique indexed phrase"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
@@ -64,8 +64,8 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.Document.DocumentInstanceId,
             context.Page.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("sharedtoken alpha phrase"), null)
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("sharedtoken alpha phrase"), null)
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(first.TreeRevisionId);
@@ -73,8 +73,8 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.SecondDocument.DocumentInstanceId,
             context.SecondPage.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("sharedtoken beta phrase"), null)
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("sharedtoken beta phrase"), null)
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(second.TreeRevisionId);
@@ -164,7 +164,7 @@ public sealed class SearchUnitFtsBoxTreeTests
         DocumentTreeRevision revision = (await context.Trees.BeginWorkingRevisionAsync(
             context.Document.DocumentInstanceId,
             context.Page.PageId,
-            texts.Select((text, ordinal) => new DocumentBoxSeed(null, null, ordinal, DocumentBoxType.Text, null, null,
+            texts.Select((text, ordinal) => new DocumentBoxSeed(null, null, ordinal, DocumentBoxType.Text, null,
                 new NormalizedBBox(.1, .05 + ordinal * .05, .8, .04), new TextBoxPayload(text))).ToArray(),
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(revision.TreeRevisionId);
@@ -203,10 +203,10 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.Document.DocumentInstanceId,
             context.Page.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("first --- marker")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .2, .8, .1), new TextBoxPayload("first -- near miss"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("first --- marker")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(.1, .2, .8, .1),
+                    new TextBoxPayload("first -- near miss"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(first.TreeRevisionId);
@@ -214,8 +214,8 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.SecondDocument.DocumentInstanceId,
             context.SecondPage.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("second --- marker"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("second --- marker"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(second.TreeRevisionId);
@@ -243,7 +243,7 @@ public sealed class SearchUnitFtsBoxTreeTests
             context.Document.DocumentInstanceId,
             context.Page.PageId,
             Enumerable.Range(0, unitCount).Select(ordinal => new DocumentBoxSeed(
-                null, null, ordinal, DocumentBoxType.Text, null, null,
+                null, null, ordinal, DocumentBoxType.Text, null,
                 new NormalizedBBox(.1, .01 + ordinal * .0009, .8, .0008),
                 new TextBoxPayload(ordinal == targetOrdinal
                     ? "left targetcontextmarker right"

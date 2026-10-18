@@ -47,6 +47,45 @@ public sealed class PdfPageRenderingTests
         c.Renderer.CallCount.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rendering_accepts_a_verified_renamed_location(bool preview)
+    {
+        await using Context c = await Context.CreateAsync();
+        string renamed = Path.Combine(c.RootDirectory, "renamed.pdf");
+        File.Move(c.PdfPath, renamed);
+        await using (SqliteConnection connection = c.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
+                values (@LocationId, @AssetId, @Path, @Now, 'available');
+                """, new
+                {
+                    LocationId = Guid.NewGuid().ToString(), AssetId = c.AssetId.ToString(),
+                    Path = renamed, Now = DateTimeOffset.UtcNow.ToString("O")
+                });
+        }
+
+        if (preview)
+        {
+            Result<PdfPagePixelBufferLease> result = await c.RenderService.RenderPreviewAsync(
+                new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                    Purpose: PageRenderPurpose.Preview));
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            using PdfPagePixelBufferLease lease = result.Value;
+            lease.BgraBytes.Length.Should().Be(16);
+        }
+        else
+        {
+            (await c.RenderAsync()).Value.Status.Should().Be(PageRenderStatus.Rendered);
+        }
+
+        c.Materializer.Paths.Should().Contain(renamed);
+    }
+
     [Fact]
     public async Task RenderPage_missing_source_returns_source_missing()
     {
@@ -323,8 +362,8 @@ public sealed class PdfPageRenderingTests
         DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
             c.DocumentInstanceId, c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("rendered evidence"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("rendered evidence"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
@@ -418,8 +457,8 @@ public sealed class PdfPageRenderingTests
         DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
             c.DocumentInstanceId, c.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("edited box"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("edited box"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
@@ -493,7 +532,11 @@ public sealed class PdfPageRenderingTests
                 "044_project_document_box_file_asset_refs.sql",
                 "045_project_item_tags.sql",
                 "046_track_local_maintenance.sql",
-                "047_index_file_import_content_hash.sql");
+                "047_index_file_import_content_hash.sql",
+                "048_normalize_document_box_types.sql",
+                "049_add_csl_language_locale_mappings.sql",
+                "050_file_search_root_sort_order.sql",
+                "051_file_import_recovery.sql");
     }
 
     private sealed class Context : IAsyncDisposable

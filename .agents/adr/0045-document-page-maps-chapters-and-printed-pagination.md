@@ -7,7 +7,7 @@ Status: accepted by user direction, 2026-10-17.
 Each document instance may carry one authoritative structured page map: pagination rules
 that bind physical PDF pages (1-based) and logical pages (Box IDs, never serial numbers)
 to printed page numbers, explicit page-label overrides, and a chapter tree. The database
-(`document_page_maps`, migration 048) holds the structured model; the MCP
+(`document_page_maps`, migration 052) holds the structured model; the MCP
 `patchouli://texts/{document-id}/map.yml` resource (fixed filename, profile
 `patchouli-page-map-1`) is a virtual-file projection of it. Full per-page maps are never
 persisted, and PageLabel authority is not duplicated: the PDF-embedded `Page.PageLabel`

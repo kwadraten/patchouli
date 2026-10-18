@@ -8,6 +8,23 @@ namespace Patchouli.Tests;
 
 public sealed class ReadingSceneBuilderTests
 {
+    [Theory]
+    [InlineData(DocumentBoxType.Equation)]
+    [InlineData(DocumentBoxType.LegacyEquationInterline)]
+    public void Equations_use_their_page_region_without_requiring_a_mineru_image_file(string type)
+    {
+        DocumentBoxId id = DocumentBoxId.New();
+        NormalizedBBox region = new(.279, .513, .438, .036);
+        MarkdownDocumentModel model = new([Block("paragraph", "latex")]);
+        ReadingBlock block = ReadingSceneBuilder.Build(model, [SourceMap(id, 0, 1)],
+            [Box(id, type, bbox: region)], "page:2").Blocks.Single();
+
+        block.Kind.Should().Be("equation");
+        block.MediaLabel.Should().Be("公式");
+        block.Image.Should().Be(new ReadingImageRegion("page:2", region));
+        block.Text.Should().Be("latex");
+    }
+
     [Fact]
     public void Returns_empty_scene_for_an_empty_model()
     {
@@ -501,7 +518,6 @@ public sealed class ReadingSceneBuilderTests
             null,
             null,
             boxType,
-            null,
             null,
             bbox ?? new NormalizedBBox(.1, .1, .8, .1),
             payload,

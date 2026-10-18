@@ -207,11 +207,22 @@ public sealed class MetadataLookupSettingsTests
             await restarted.ServicesAsync();
             restarted.Settings.MetadataLookupSettings.Sources[0].Enabled.Should().BeFalse();
 
+            string switchedSyncRoot = Path.Combine(root, "sync-switched");
+            sync.SyncRoot = switchedSyncRoot;
             sync.SyncMetadataLookup = false;
             await sync.SaveAsync();
 
             (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().BeNull();
-            PatchouliAppSettings.Load(settingsPath).MetadataLookup.Sources[0].Enabled.Should().BeFalse();
+            PatchouliAppSettings persisted = PatchouliAppSettings.Load(settingsPath);
+            persisted.MetadataLookup.Sources[0].Enabled.Should().BeFalse();
+            persisted.Sync.SyncRootId.Should().Be(persisted.Sync.Bindings.Single(binding =>
+                binding.LocalPath == Path.GetFullPath(switchedSyncRoot)).LogicalRootId);
+            persisted.Sync.Bindings.Should().Contain(binding =>
+                binding.LocalPath == Path.GetFullPath(Path.Combine(root, "sync")) &&
+                binding.SyncedSettingKeys!.Contains(LibrarySettingKeys.MetadataLookup));
+            persisted.Sync.Bindings.Should().Contain(binding =>
+                binding.LocalPath == Path.GetFullPath(switchedSyncRoot) &&
+                !binding.SyncedSettingKeys!.Contains(LibrarySettingKeys.MetadataLookup));
         }
         finally
         {

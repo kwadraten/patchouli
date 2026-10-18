@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
@@ -546,8 +546,8 @@ public sealed class ItemPurgeServiceTests
                 DocumentInstanceId,
                 PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("working draft"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("working draft"))
                 ],
                 DocumentTreeRevisionSource.ManualEdit);
         }

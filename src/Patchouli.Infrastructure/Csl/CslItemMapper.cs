@@ -36,7 +36,7 @@ public sealed class CslItemMapper : ICslItemMapper
             ["version"] = item.Version,
             ["issue"] = item.Issue,
             ["page"] = item.Pages,
-            ["language"] = item.Language,
+            ["language"] = ItemLanguage.Normalize(item.Language),
             ["status"] = item.Status,
             ["note"] = item.Note,
             ["abstract"] = item.Abstract,

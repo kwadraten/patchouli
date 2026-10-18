@@ -121,11 +121,13 @@ public sealed class LlmPublicSurfaceTests
         transport.Count.Should().Be(2);
     }
 
-    [Fact]
-    public async Task A_text_completion_refuses_a_history_that_carries_an_image()
+    [Theory]
+    [InlineData(LlmAuthenticationModes.ApiKey, false)]
+    [InlineData(LlmAuthenticationModes.Subscription, true)]
+    public async Task Image_history_is_accepted_only_by_vision_capable_clients(string authenticationMode, bool rejected)
     {
         LLlmRecordingTransport transport = new();
-        LlmChatClient client = new(Settings(), transport);
+        LlmChatClient client = new(Settings() with { AuthenticationMode = authenticationMode }, transport);
         LlmChatHistory history = LlmChatHistory.Create("instructions").Append(
         [
             new LlmChatMessage(LlmChatRole.User,
@@ -135,9 +137,13 @@ public sealed class LlmPublicSurfaceTests
         Core.Results.Result<LlmChatCompletion> result =
             await client.CompleteAsync("session-1", new LlmChatRequest(history));
 
-        result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(LlmFailureCodes.UnsupportedInput);
-        transport.Count.Should().Be(0);
+        result.IsFailure.Should().Be(rejected);
+        if (rejected)
+        {
+            result.ErrorCode.Should().Be(LlmFailureCodes.UnsupportedInput);
+        }
+
+        transport.Count.Should().Be(rejected ? 0 : 1);
     }
 
     private sealed class ThrowingTransport : ILlmChatTransport

@@ -642,7 +642,8 @@ public sealed record PatchouliAppSettings(
         }
     }
 
-    public SettingsSaveResult Save(string? settingsPath = null)
+    // Friend tests use this full writer to seed complete settings fixtures. Runtime writes use field-level or Sync-only updates.
+    internal SettingsSaveResult Save(string? settingsPath = null)
     {
         string? temporaryPath = null;
         SemaphoreSlim? writeGate = null;
@@ -908,54 +909,24 @@ public sealed record PatchouliAppSettings(
 
             if (saveAll || dirtyFields!.Contains("Sync"))
             {
-                SyncAppSettings syncToWrite = Sync;
-                try
+                JsonObject? existingSyncNode = root["Sync"] as JsonObject;
+                JsonObject syncNode = existingSyncNode ?? new JsonObject();
+                JsonObject? incomingSync = JsonSerializer.SerializeToNode(Sync) as JsonObject;
+                if (incomingSync is not null)
                 {
-                    JsonNode? persistedSync = root["Sync"];
-                    SnapshotSyncLocalState? existingSnapshotState =
-                        persistedSync?["SnapshotState"]?.Deserialize<SnapshotSyncLocalState>();
-                    if (existingSnapshotState is not null &&
-                        (syncToWrite.SnapshotState is null ||
-                         existingSnapshotState.UpdatedAt > syncToWrite.SnapshotState.UpdatedAt))
-                    {
-                        syncToWrite = syncToWrite with { SnapshotState = existingSnapshotState };
-                    }
-
-                    DeviceRootBindingAppSettings[] existingBindings =
-                        persistedSync?["DeviceBindings"] is JsonArray array
-                            ? ReadDeviceBindings(array).ToArray()
-                            : [];
-                    if (existingBindings.Length > 0)
-                    {
-                        foreach (DeviceRootBindingAppSettings existing in existingBindings)
-                        {
-                            DeviceRootBindingAppSettings? incoming = syncToWrite.Bindings.FirstOrDefault(binding =>
-                                binding.Matches(existing.LibraryId, existing.RootKind, existing.LogicalRootId,
-                                    existing.DeviceId));
-                            if (incoming is null)
-                            {
-                                syncToWrite = syncToWrite.WithDeviceBinding(existing);
-                                continue;
-                            }
-
-                            if (existing.SnapshotState is not null &&
-                                (incoming.SnapshotState is null ||
-                                 existing.SnapshotState.UpdatedAt > incoming.SnapshotState.UpdatedAt))
-                            {
-                                syncToWrite =
-                                    syncToWrite.WithDeviceBinding(incoming with
-                                    {
-                                        SnapshotState = existing.SnapshotState
-                                    });
-                            }
-                        }
-                    }
-                }
-                catch (JsonException)
-                {
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.DeviceId));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.DeviceName));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRoot));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncMetadataLookup));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRootId));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncAgentSessions));
+                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncWorkflowDefinitions));
                 }
 
-                root["Sync"] = JsonSerializer.SerializeToNode(syncToWrite);
+                if (existingSyncNode is null)
+                {
+                    root["Sync"] = syncNode;
+                }
             }
 
             if (saveAll || dirtyFields!.Contains("Mcp"))
@@ -1067,6 +1038,212 @@ public sealed record PatchouliAppSettings(
             {
                 writeGate?.Release();
             }
+        }
+    }
+
+    internal static async Task<SettingsSaveResult> UpdateSyncJsonAsync(
+        string? settingsPath,
+        Func<JsonObject, bool> updateSync,
+        CancellationToken cancellationToken = default,
+        MetadataLookupAppSettings? materializedMetadataLookup = null)
+    {
+        string? temporaryPath = null;
+        SemaphoreSlim? writeGate = null;
+        bool acquired = false;
+        try
+        {
+            string path = ResolvePath(settingsPath);
+            writeGate = SettingsFileWriteCoordinator.ForPath(path);
+            await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            acquired = true;
+            AppPathGuard.ValidateMutablePath(path);
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            JsonObject root;
+            try
+            {
+                if (File.Exists(path))
+                {
+                    string existingText = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+                    JsonNode? parsed = JsonNode.Parse(existingText);
+                    if (parsed is not JsonObject existing)
+                    {
+                        return new SettingsSaveResult(false, "settings_json_invalid",
+                            "The settings file root must be a JSON object.", "user_settings", false);
+                    }
+
+                    root = existing;
+                }
+                else
+                {
+                    root = new JsonObject();
+                }
+            }
+            catch (JsonException exception)
+            {
+                return new SettingsSaveResult(false, "settings_json_invalid", exception.Message,
+                    "user_settings", false);
+            }
+
+            JsonObject? existingSync = root["Sync"] as JsonObject;
+            JsonObject sync = existingSync ?? new JsonObject();
+            if (existingSync is null)
+            {
+                root["Sync"] = sync;
+            }
+
+            bool syncChanged = updateSync(sync);
+            if (!syncChanged && materializedMetadataLookup is null)
+            {
+                return SettingsSaveResult.Success;
+            }
+
+            if (materializedMetadataLookup is not null)
+            {
+                root["MetadataLookup"] = JsonSerializer.SerializeToNode(
+                    new { materializedMetadataLookup.Sources });
+            }
+
+            temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
+            await File.WriteAllTextAsync(temporaryPath,
+                    root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
+                .ConfigureAwait(false);
+            File.Move(temporaryPath, path, true);
+            temporaryPath = null;
+            return SettingsSaveResult.Success;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException
+                                              or InvalidOperationException)
+        {
+            string code = exception switch
+            {
+                UnauthorizedAccessException or SecurityException => "settings_access_denied",
+                InvalidOperationException => "settings_path_rejected",
+                _ => "settings_io_failed"
+            };
+            return new SettingsSaveResult(false, code, exception.Message, "user_settings", exception is IOException);
+        }
+        finally
+        {
+            if (temporaryPath is not null && File.Exists(temporaryPath))
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    _ = exception;
+                }
+            }
+
+            if (acquired)
+            {
+                writeGate?.Release();
+            }
+        }
+    }
+
+    internal static Task<SettingsSaveResult> SaveSyncBindingAsync(
+        string? settingsPath,
+        SyncAppSettings desiredSync,
+        DeviceRootBindingAppSettings targetBinding,
+        CancellationToken cancellationToken = default,
+        MetadataLookupAppSettings? materializedMetadataLookup = null)
+    {
+        return UpdateSyncJsonAsync(settingsPath, sync =>
+        {
+            JsonObject? incomingSync = JsonSerializer.SerializeToNode(desiredSync) as JsonObject;
+            if (incomingSync is not null)
+            {
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.DeviceId));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.DeviceName));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncRoot));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncMetadataLookup));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncRootId));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncedSettingKeys));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncAgentSessions));
+                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncWorkflowDefinitions));
+            }
+
+            UpsertDeviceBindingJson(sync, targetBinding);
+            return true;
+        }, cancellationToken, materializedMetadataLookup);
+    }
+
+    internal static void UpsertDeviceBindingJson(JsonObject sync, DeviceRootBindingAppSettings binding)
+    {
+        JsonArray? existingBindings = sync["DeviceBindings"] as JsonArray;
+        JsonArray bindings = existingBindings ?? new JsonArray();
+        JsonObject incoming = JsonSerializer.SerializeToNode(binding) as JsonObject ?? new JsonObject();
+        bool replaced = false;
+        for (int i = 0; i < bindings.Count; i++)
+        {
+            if (bindings[i] is not JsonObject existingNode ||
+                DeserializeDeviceBinding(existingNode) is not { } existing ||
+                !existing.Matches(binding.LibraryId, binding.RootKind, binding.LogicalRootId, binding.DeviceId))
+            {
+                continue;
+            }
+
+            JsonObject merged = (JsonObject)existingNode.DeepClone();
+            foreach ((string name, JsonNode? value) in incoming)
+            {
+                if (name == nameof(DeviceRootBindingAppSettings.SnapshotState) &&
+                    existing.SnapshotState is not null &&
+                    (binding.SnapshotState is null ||
+                     existing.SnapshotState.UpdatedAt > binding.SnapshotState.UpdatedAt))
+                {
+                    merged[name] = existingNode[name]?.DeepClone();
+                }
+                else if (name == nameof(DeviceRootBindingAppSettings.SyncedSettingKeys) && value is null &&
+                         existingNode.TryGetPropertyValue(name, out JsonNode? existingValue))
+                {
+                    merged[name] = existingValue?.DeepClone();
+                }
+                else
+                {
+                    merged[name] = value?.DeepClone();
+                }
+            }
+
+            bindings[i] = merged;
+            replaced = true;
+            break;
+        }
+
+        if (!replaced)
+        {
+            bindings.Add(incoming);
+        }
+
+        if (existingBindings is null)
+        {
+            sync["DeviceBindings"] = bindings;
+        }
+    }
+
+    private static DeviceRootBindingAppSettings? DeserializeDeviceBinding(JsonObject node)
+    {
+        try
+        {
+            return node.Deserialize<DeviceRootBindingAppSettings>();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static void CopyJsonMember(JsonObject source, JsonObject destination, string name)
+    {
+        if (source.TryGetPropertyValue(name, out JsonNode? value))
+        {
+            destination[name] = value?.DeepClone();
         }
     }
 

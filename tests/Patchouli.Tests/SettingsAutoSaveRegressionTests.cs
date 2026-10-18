@@ -63,7 +63,7 @@ public sealed class SettingsAutoSaveRegressionTests
 
     [Theory]
     [InlineData("csl-styles", "cite", false)]
-    [InlineData("texts", "put", false)]
+    [InlineData("texts", "put", true)]
     [InlineData("translations", "send", false)]
     [InlineData("runs", "send", true)]
     [InlineData("items", "cite", true)]
@@ -165,6 +165,12 @@ public sealed class SettingsAutoSaveRegressionTests
         public bool IsDirty => false;
         public List<PatchouliAppSettings> Written { get; } = [];
 
+        public event EventHandler<AppSettingsCommittedEventArgs>? SettingsCommitted
+        {
+            add { }
+            remove { }
+        }
+
         public TaskCompletionSource FirstWriteStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -174,6 +180,29 @@ public sealed class SettingsAutoSaveRegressionTests
         public void Update(Func<PatchouliAppSettings, PatchouliAppSettings> updater, string? fieldCategory = null)
         {
             Current = updater(Current);
+        }
+
+        public Task<SettingsSaveResult> UpdateSyncBindingAsync(
+            SyncAppSettings settings,
+            DeviceRootBindingAppSettings binding,
+            CancellationToken cancellationToken = default)
+        {
+            Current = Current with { Sync = settings.WithDeviceBinding(binding) };
+            return Task.FromResult(SettingsSaveResult.Success);
+        }
+
+        public Task<SettingsSaveResult> UpdateSyncBindingAndMetadataLookupAsync(
+            SyncAppSettings settings,
+            DeviceRootBindingAppSettings binding,
+            MetadataLookupAppSettings materializedMetadataLookup,
+            CancellationToken cancellationToken = default)
+        {
+            Current = Current with
+            {
+                Sync = settings.WithDeviceBinding(binding),
+                MetadataLookup = materializedMetadataLookup
+            };
+            return Task.FromResult(SettingsSaveResult.Success);
         }
 
         public async Task<SettingsSaveResult> SaveImmediatelyAsync(CancellationToken cancellationToken = default)

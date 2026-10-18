@@ -57,8 +57,8 @@ public sealed class AlphaRegressionWorkflowTests
                 document.Value.DocumentInstanceId,
                 page.Value.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("这是 Alpha 中文回归文本。"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("这是 Alpha 中文回归文本。"))
                 ],
                 DocumentTreeRevisionSource.Import)).Value;
             DocumentTreeRevision revision =

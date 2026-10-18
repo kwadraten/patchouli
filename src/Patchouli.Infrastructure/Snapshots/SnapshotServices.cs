@@ -1174,8 +1174,10 @@ public sealed class SnapshotImporter : ISnapshotImporter
             }
 
             await RebuildLocalSnapshotProjectionsAsync(stagingPath, cancellationToken);
-            await SnapshotPublisher.ValidateDatabaseSchemaAsync(stagingPath);
             SqliteConnectionFactory stagingFactory = new(stagingPath);
+            await new MigrationRunner(stagingFactory, Path.Combine(AppContext.BaseDirectory, "migrations"))
+                .RunAsync(cancellationToken);
+            await SnapshotPublisher.ValidateDatabaseSchemaAsync(stagingPath);
             DocumentTreeService trees = new(stagingFactory, new SystemClock(), new MarkdigMarkdownEngine());
             Result treeValidation = await trees.ValidateStoredTreesAsync(cancellationToken);
             if (treeValidation.IsFailure)

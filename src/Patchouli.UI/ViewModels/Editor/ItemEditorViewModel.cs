@@ -318,12 +318,25 @@ public sealed record ExtraCslVariableOption(string Key, string Label, bool IsMul
 
 public sealed record ItemTypeOption(string Key, string DisplayName);
 
+public sealed class EditorTagViewModel
+{
+    public EditorTagViewModel(string name, Action<EditorTagViewModel> remove)
+    {
+        Name = name;
+        RemoveCommand = new RelayCommand(_ => remove(this));
+    }
+
+    public string Name { get; }
+    public RelayCommand RemoveCommand { get; }
+}
+
 public enum ItemEditorSection
 {
     BasicInformation,
     ExtendedInformation,
     Identifiers,
-    Files
+    Files,
+    BibliographyAndNotes
 }
 
 /// <summary>Low-frequency standard CSL variables offered by the structured extra-CSL editor. All values
@@ -453,6 +466,19 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         ImportBiblatexFromClipboardCommand = new AsyncCommand(ImportBiblatexFromClipboardAsync);
         ImportBiblatexFromFileCommand = new AsyncCommand(ImportBiblatexFromFileAsync);
         AddExtraCslRowCommand = new AsyncCommand(AddExtraCslRow);
+        AddTagCommand = new RelayCommand(_ => AddTag());
+        ToggleTagEditorCommand = new RelayCommand(_ => IsTagEditorOpen = !IsTagEditorOpen);
+        Register(Observable.FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                handler => Tags.CollectionChanged += handler,
+                handler => Tags.CollectionChanged -= handler)
+            .Subscribe(_ =>
+            {
+                Raise(nameof(HasNoTags));
+                if (!_isLoading && !_isConstructing)
+                {
+                    MarkUnsaved();
+                }
+            }));
 
         ActiveNavSection = NavSections[0];
         RefreshExtraCslVariableChoices();
@@ -475,9 +501,9 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
                 h => MoreFields.CollectionChanged += h,
                 h => MoreFields.CollectionChanged -= h)
-            .Select(_ => MoreFields.Count > 0)
+            .Select(_ => MoreFields.Any(field => !field.IsNoteLineEditor))
             .BindOutput(this, has => HasMoreFields = has, ImmediateScheduler.Instance, null, true,
-                MoreFields.Count > 0);
+                MoreFields.Any(field => !field.IsNoteLineEditor));
 
         Observable
             .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
@@ -519,7 +545,8 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     [
         new("基本信息", "Pencil", ItemEditorSection.BasicInformation),
         new("扩展信息", "List", ItemEditorSection.ExtendedInformation),
-        new("唯一标识符", "Database", ItemEditorSection.Identifiers),
+        new("题录与笔记", "BookOpen", ItemEditorSection.BibliographyAndNotes),
+        new("标签、集合与标识符", "Database", ItemEditorSection.Identifiers),
         new("文件关联", "FolderOpen", ItemEditorSection.Files)
     ];
 
@@ -527,6 +554,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     public bool IsBasicSectionActive => ActiveNavSection?.Content is ItemEditorSection.BasicInformation;
     public bool IsExtendedSectionActive => ActiveNavSection?.Content is ItemEditorSection.ExtendedInformation;
+    public bool IsNotesSectionActive => ActiveNavSection?.Content is ItemEditorSection.BibliographyAndNotes;
     public bool IsIdentifiersSectionActive => ActiveNavSection?.Content is ItemEditorSection.Identifiers;
     public bool IsFilesSectionActive => ActiveNavSection?.Content is ItemEditorSection.Files;
 
@@ -599,8 +627,16 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     public ObservableCollection<ItemFieldDescriptor> Fields { get; } = new();
 
-    /// <summary>Overflow fields rendered inside the collapsed "更多字段" section of the metadata card.</summary>
+    /// <summary>Additional fields shared by the extended-information and notes sections.</summary>
     public ObservableCollection<ItemFieldDescriptor> MoreFields { get; } = new();
+
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<ItemFieldDescriptor> ExtendedFields =>
+        MoreFields.Where(descriptor => !descriptor.IsNoteLineEditor).ToArray();
+
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<ItemFieldDescriptor> NoteFields =>
+        MoreFields.Where(descriptor => descriptor.IsNoteLineEditor).ToArray();
 
     [ObservableProperty] public partial bool HasMoreFields { get; private set; }
 
@@ -667,6 +703,8 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         SynchronizeExtraCslProjectionRows();
         SyncProjectionFields();
+        Raise(nameof(ExtendedFields));
+        Raise(nameof(NoteFields));
         Raise(nameof(IsExtendedSectionEmpty));
         RaiseEditorFieldProxies();
     }
@@ -873,6 +911,36 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
     public ObservableCollection<DocumentCommitViewModel> DocumentCommits { get; } = new();
     public ObservableCollection<CollectionSelectionItemViewModel> Collections { get; } = new();
+    public ObservableCollection<EditorTagViewModel> Tags { get; } = new();
+    public bool HasNoTags => Tags.Count == 0;
+    [ObservableProperty] public partial string NewTagName { get; set; } = "";
+    [ObservableProperty] public partial bool IsTagEditorOpen { get; private set; }
+    public RelayCommand AddTagCommand { get; }
+    public RelayCommand ToggleTagEditorCommand { get; }
+
+    private void AddTag()
+    {
+        string? name = TagNormalizer.Normalize(NewTagName);
+        if (IsMergedSource || name is null)
+        {
+            return;
+        }
+
+        if (!Tags.Any(tag => string.Equals(tag.Name, name, StringComparison.Ordinal)))
+        {
+            Tags.Add(new EditorTagViewModel(name, RemoveTag));
+        }
+
+        NewTagName = "";
+    }
+
+    private void RemoveTag(EditorTagViewModel tag)
+    {
+        if (!IsMergedSource)
+        {
+            Tags.Remove(tag);
+        }
+    }
 
     [ObservableProperty] public partial bool HasIdentifierSchemeShortcuts { get; private set; }
 
@@ -924,6 +992,9 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             _fieldValueCache.Clear();
             _creatorCache.Clear();
             _projectionStaged.Clear();
+            Tags.Clear();
+            NewTagName = "";
+            IsTagEditorOpen = false;
             ItemType = "general";
 
             Result<CslItemTypeProfile> profileResult =
@@ -1051,7 +1122,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             _fieldValueCache["Status"] = item.Value.Status ?? "";
             _fieldValueCache["Note"] = item.Value.Note ?? "";
             _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
-            _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
+            LoadTags(item.Value.TagsJson);
             LoadExtraCslRows(item.Value.CustomFieldsJson);
             foreach (ItemCreator creator in item.Value.Creators)
             {
@@ -1942,7 +2013,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private string SerializeTags()
     {
-        return JsonSerializer.Serialize(SplitNames(GetSavedFieldValue("TagsText")).ToArray());
+        return JsonSerializer.Serialize(Tags.Select(tag => tag.Name).ToArray());
     }
 
     private string? GetOptionalFieldValue(string key, string? existingValue = null)
@@ -1975,13 +2046,6 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         return true;
     }
 
-    private static IEnumerable<string> SplitNames(string value)
-    {
-        return value.Split(new[] { ';', ',', '\n' },
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(part => !string.IsNullOrWhiteSpace(part));
-    }
-
     private static string FormatDate(IEnumerable<ItemDate> dates, string role, string? fallback)
     {
         ItemDate? date = dates.FirstOrDefault(candidate => candidate.Role == role);
@@ -1995,16 +2059,26 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             : fallback ?? "";
     }
 
-    private static string FormatTags(string tagsJson)
+    private void LoadTags(string tagsJson)
     {
+        IReadOnlyList<string> names;
         try
         {
-            return string.Join(", ", JsonSerializer.Deserialize<string[]>(tagsJson) ?? Array.Empty<string>());
+            names = TagNormalizer.NormalizeMany(JsonSerializer.Deserialize<string[]>(tagsJson));
         }
-        catch
+        catch (JsonException)
         {
-            return "";
+            names = Array.Empty<string>();
         }
+
+        Tags.Clear();
+        foreach (string name in names)
+        {
+            Tags.Add(new EditorTagViewModel(name, RemoveTag));
+        }
+
+        NewTagName = "";
+        IsTagEditorOpen = false;
     }
 
     private void LoadExtraCslRows(string customFieldsJson)

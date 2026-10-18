@@ -62,7 +62,6 @@ public sealed record DocumentBox(
     DocumentBoxId? NextSiblingBoxId,
     string BoxType,
     string? SubType,
-    string? BaseType,
     NormalizedBBox BBox,
     DocumentBoxPayload? Payload,
     int? HeadingLevel,
@@ -71,15 +70,24 @@ public sealed record DocumentBox(
     bool Suppressed,
     DocumentBoxId? ContinuesFromBoxId = null);
 
-public abstract record DocumentBoxPayload;
+public abstract record DocumentBoxPayload
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition =
+        System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<DocumentAnnotation>? Annotations { get; init; }
+}
+
+public sealed record DocumentAnnotation(string Type, string Markdown);
 
 public sealed record TextBoxPayload(string Markdown) : DocumentBoxPayload;
 
-public sealed record EquationBoxPayload(string Latex) : DocumentBoxPayload;
+public sealed record EquationBoxPayload(string Latex, bool HasImage = false) : DocumentBoxPayload;
 
 public sealed record ListBoxPayload(string Markdown) : DocumentBoxPayload;
 
 public sealed record TableBoxPayload(string Markdown, string? Html = null) : DocumentBoxPayload;
+
+public sealed record AlgorithmBoxPayload(string Markdown) : DocumentBoxPayload;
 
 public sealed record CodeBoxPayload(string Code) : DocumentBoxPayload;
 
@@ -91,8 +99,14 @@ public static class DocumentBoxType
     public const string Text = "text";
     public const string Title = "title";
     public const string RefText = "ref_text";
+
     public const string Equation = "equation";
+
+    // Read compatibility: older MinerU v2 imports stored this unknown type with empty text.
+    // New imports must use Equation with an EquationBoxPayload.
+    public const string LegacyEquationInterline = "equation_interline";
     public const string List = "list";
+    public const string Index = "index";
     public const string Image = "image";
     public const string Table = "table";
     public const string Chart = "chart";
@@ -114,7 +128,7 @@ public static class DocumentBoxType
 
     private static readonly HashSet<string> KnownTypes =
     [
-        LogicalPage, Text, Title, RefText, Equation, List, Image, Table, Chart, Code, Algorithm,
+        LogicalPage, Text, Title, RefText, Equation, List, Index, Image, Table, Chart, Code,
         ImageCaption, ImageFootnote, TableCaption, TableFootnote, ChartCaption, ChartFootnote,
         CodeCaption, CodeFootnote, Header, Footer, PageNumber, AsideText, PageFootnote
     ];
@@ -123,6 +137,17 @@ public static class DocumentBoxType
 
     private static readonly HashSet<string> OverlapTypes =
         ["phonetic", "ruby", "warichu", "annotation", "aside", "seal"];
+
+    public static bool IsValidSubType(string type, string? subType)
+    {
+        return subType is null || type switch
+        {
+            Code => subType is Code or Algorithm,
+            List => subType is Text or RefText,
+            Image or Chart => !string.IsNullOrWhiteSpace(subType),
+            _ => false
+        };
+    }
 
     public static bool IsKnown(string value)
     {
@@ -151,7 +176,6 @@ public sealed record InsertLeafCommand(
     DocumentBoxId? InsertAfterBoxId,
     string BoxType,
     string? SubType,
-    string? BaseType,
     NormalizedBBox BBox,
     DocumentBoxPayload Payload,
     int? HeadingLevel = null,
@@ -166,8 +190,7 @@ public sealed record UpdateLeafCommand(
     DocumentBoxPayload Payload,
     int? HeadingLevel = null,
     string? CodeLanguage = null,
-    string? SubType = null,
-    string? BaseType = null);
+    string? SubType = null);
 
 public sealed record MoveBoxCommand(
     DocumentBoxId BoxId,
@@ -196,7 +219,6 @@ public sealed record DocumentBoxSeed(
     int SourceOrder,
     string BoxType,
     string? SubType,
-    string? BaseType,
     NormalizedBBox BBox,
     DocumentBoxPayload? Payload,
     int? HeadingLevel = null,

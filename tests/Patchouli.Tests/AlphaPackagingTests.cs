@@ -14,7 +14,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.11");
+        BuildInfo.Version.Should().Be("0.3.12");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -82,7 +82,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.11").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.12").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.11");
+        BuildInfo.Version.Should().Be("0.3.12");
     }
 
     [Fact]
@@ -114,16 +114,17 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.11").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.12").And.NotContain("0.3.5");
         }
     }
 
     [Fact]
-    public void Macos_package_relocates_defaults_validates_plist_and_skips_signing()
+    public void Macos_package_relocates_defaults_validates_plist_and_signs_bundle()
     {
         string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
         script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
-            .Contain("plutil -lint").And.NotContain("codesign").And.NotContain("entitlements");
+            .Contain("plutil -lint").And.Contain("codesign --force --sign - \"$app_dir\"").And
+            .Contain("codesign --verify --deep --strict").And.NotContain("--deep --sign");
     }
 
     [Fact]

@@ -1,8 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Platform;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Patchouli.UI.Controls;
+using Patchouli.Host.Composition;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels.Dialogs;
@@ -40,6 +44,12 @@ public sealed partial class MainWindow : Window
         DataContext = _viewModel;
         InitializeComponent();
         Opened += OnFirstOpened;
+        // Window-level PDF drop target. Bubble routing means child controls that handle
+        // their own drops (e.g. the ItemEditorPage .bib drop zone) run first; the window
+        // only reacts to drops no child claimed, so a single drop never double-imports.
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, OnWindowDragOver);
+        AddHandler(DragDrop.DropEvent, OnWindowDrop);
         if (CatIndicatorControl is { } cat)
         {
             cat.IsWindowMinimized = WindowState == WindowState.Minimized;
@@ -242,15 +252,78 @@ public sealed partial class MainWindow : Window
         _viewModel.StartMcpServerInBackground();
     }
 
-    private void OnToolbarSearchKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+    private void OnToolbarSearchKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key != Avalonia.Input.Key.Enter)
+        if (e.Key != Key.Enter)
         {
             return;
         }
 
         e.Handled = true;
         _viewModel.RunToolbarSearchCommand.Execute(null);
+    }
+
+    private void OnWindowDragOver(object? sender, DragEventArgs e)
+    {
+        if (e.Handled)
+        {
+            return;
+        }
+
+        if (e.DataTransfer.Contains(DataFormat.File)
+            && PdfDragDropImporter.LooksLikePdfDrop(GetDroppedPaths(e)))
+        {
+            e.DragEffects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
+    private async void OnWindowDrop(object? sender, DragEventArgs e)
+    {
+        if (e.Handled || !e.DataTransfer.Contains(DataFormat.File))
+        {
+            return;
+        }
+
+        List<string> files = GetDroppedPaths(e);
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        // A file drop the window owns: PDFs import, everything else gets explicit
+        // feedback (never silent success). Mark handled so children never see it.
+        e.Handled = true;
+        await UnexpectedExceptionBoundary.RunAsync(
+            () => ImportDroppedPdfsAsync(files), "pdf-drag-drop-import");
+    }
+
+    private static List<string> GetDroppedPaths(DragEventArgs e)
+    {
+        IStorageItem[]? items = e.DataTransfer.TryGetFiles();
+        List<string> paths = [];
+        if (items is null)
+        {
+            return paths;
+        }
+
+        foreach (IStorageItem item in items)
+        {
+            string? path = item.TryGetLocalPath();
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths;
+    }
+
+    private async Task ImportDroppedPdfsAsync(IReadOnlyList<string> files)
+    {
+        HostServices services = await _viewModel.ServicesAsync();
+        PdfDragDropImporter importer = new(services.FileImport, _viewModel.ModalOperations, _viewModel.Dialogs);
+        await importer.ImportAsync(files);
     }
 
     private void OnOcrMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -264,7 +337,7 @@ public sealed partial class MainWindow : Window
             .Observe("ui-event", "ocr-engine-menu-refresh");
     }
 
-    private async void OnWorkflowMenuPointerEntered(object? sender, Avalonia.Input.PointerEventArgs e)
+    private async void OnWorkflowMenuPointerEntered(object? sender, PointerEventArgs e)
     {
         // Menus are opened far more often than workflows change: rebuilding the entries here keeps the
         // list current (and picks up the current Library selection) without watching the store.
@@ -297,7 +370,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_exitConfirmed || !_viewModel.HasDirtySettings)
+        if (_exitConfirmed || (!_viewModel.HasDirtySettings && !_viewModel.HasPendingMcpSettings))
         {
             base.OnClosing(e);
             return;
@@ -305,6 +378,19 @@ public sealed partial class MainWindow : Window
 
         e.Cancel = true;
         base.OnClosing(e);
+        if (!await _viewModel.ConfirmMcpSettingsBeforeExitAsync())
+        {
+            _exitRequested = false;
+            return;
+        }
+
+        if (!_viewModel.HasDirtySettings)
+        {
+            _exitConfirmed = true;
+            Close();
+            return;
+        }
+
         ConfirmDialogResult? choice = await _viewModel.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
             new ConfirmDialogViewModel(
                 "退出前保存设置？",

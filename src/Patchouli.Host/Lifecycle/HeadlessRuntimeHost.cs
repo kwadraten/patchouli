@@ -50,7 +50,8 @@ public static class HeadlessRuntimeHost
                 lease.DatabasePath,
                 settingsPath: settingsPath,
                 reportUnexpectedException: ReportUnexpected,
-                activityTracker: activityTracker);
+                activityTracker: activityTracker,
+                runtimeHostLease: lease);
 
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
             if (library.IsFailure)
@@ -59,7 +60,7 @@ public static class HeadlessRuntimeHost
                 return 1;
             }
 
-            McpServerSettings settings = services.Settings.Mcp;
+            McpServerSettings settings = services.StartupSettings.Mcp;
             if (portOverride is not null)
             {
                 settings = settings with { Port = portOverride.Value };

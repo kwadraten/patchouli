@@ -50,6 +50,9 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Sun Oct 18 2026 kwadraten <schild0van0man@duck.com> - 0.3.12-1
+- Add MCP local imports and source images, CSL localization and settings fixes
+
 * Fri Oct 16 2026 kwadraten <schild0van0man@duck.com> - 0.3.11-1
 - Add YAML/XML MCP editing and managed multimodal OCR layouts
 

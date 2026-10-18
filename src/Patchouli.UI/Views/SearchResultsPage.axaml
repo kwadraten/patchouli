@@ -135,6 +135,8 @@
               <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
                         IsEnabled="{Binding IsSingleSelectionOrNone}"
                         IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
               <MenuItem Header="合并条目" Command="{Binding MergeSelectedItemsCommand}"
                         IsEnabled="{Binding CanMergeSelectedItems}"
                         IsVisible="{Binding Sidebar.IsActiveSelected}" />
@@ -148,8 +150,6 @@
               <MenuItem Header="取消批量获取元数据"
                         Command="{Binding CancelMetadataBatchCommand}"
                         IsVisible="{Binding IsMetadataBatchBusy}" />
-              <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
               <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
                         IsVisible="{Binding Sidebar.IsActiveSelected}" />
               <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"

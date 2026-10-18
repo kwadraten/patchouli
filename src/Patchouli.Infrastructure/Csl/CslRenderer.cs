@@ -54,10 +54,11 @@ public sealed class CslRenderer : ICslRenderer
             return Result<CslRenderResult>.Failure(styleContent.ErrorCode!, styleContent.ErrorMessage!);
         }
 
-        Result<string?> locale = await ResolveLocaleAsync(request.Locale, style.Value.Style, cancellationToken);
-        if (locale.IsFailure)
+        Result<ResolvedLocale> resolvedLocale =
+            await ResolveLocaleAsync(request.Locale, style.Value.Style, cancellationToken);
+        if (resolvedLocale.IsFailure)
         {
-            return Result<CslRenderResult>.Failure(locale.ErrorCode!, locale.ErrorMessage!);
+            return Result<CslRenderResult>.Failure(resolvedLocale.ErrorCode!, resolvedLocale.ErrorMessage!);
         }
 
         List<string> warnings = style.Value.Warnings.ToList();
@@ -88,7 +89,8 @@ public sealed class CslRenderer : ICslRenderer
         }
 
         Result<FsharpCiteprocRenderResponse> rendered = _citeproc.Render(
-            new FsharpCiteprocRenderRequest(style.Value.Style.StyleId, styleContent.Value, locale.Value, mappedItems),
+            new FsharpCiteprocRenderRequest(style.Value.Style.StyleId, styleContent.Value,
+                resolvedLocale.Value.Locale, resolvedLocale.Value.LanguageLocaleMappings, mappedItems),
             cancellationToken);
         if (rendered.IsFailure)
         {
@@ -153,27 +155,39 @@ public sealed class CslRenderer : ICslRenderer
                 ["configured CSL style unavailable; using the first enabled fallback style."]));
     }
 
-    private async Task<Result<string?>> ResolveLocaleAsync(string? requestedLocale, CslStyle style,
+    private async Task<Result<ResolvedLocale>> ResolveLocaleAsync(string? requestedLocale, CslStyle style,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(requestedLocale))
-        {
-            return Result<string?>.Success(requestedLocale.Trim());
-        }
-
         Result<CslSettings> settings = await _styleStore.GetSettingsAsync(cancellationToken);
         if (settings.IsFailure)
         {
-            return Result<string?>.Failure(settings.ErrorCode!, settings.ErrorMessage!);
+            return Result<ResolvedLocale>.Failure(settings.ErrorCode!, settings.ErrorMessage!);
         }
 
-        if (!string.IsNullOrWhiteSpace(settings.Value.Locale))
-        {
-            return Result<string?>.Success(settings.Value.Locale.Trim());
-        }
-
-        return Result<string?>.Success(style.DefaultLocale);
+        string? locale = FirstValidLocale(requestedLocale, settings.Value.Locale, style.DefaultLocale);
+        return Result<ResolvedLocale>.Success(new ResolvedLocale(
+            locale,
+            settings.Value.EffectiveLanguageLocaleMappings));
     }
 
     private sealed record ResolvedStyle(CslStyle Style, IReadOnlyList<string> Warnings);
+
+    private sealed record ResolvedLocale(string? Locale, IReadOnlyDictionary<string, string> LanguageLocaleMappings);
+
+    private static string? FirstValidLocale(params string?[] locales)
+    {
+        return locales.FirstOrDefault(static locale => IsValidLocale(locale))?.Trim();
+    }
+
+    private static bool IsValidLocale(string? locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+        {
+            return false;
+        }
+
+        string[] parts = locale.Trim().Split('-', StringSplitOptions.None);
+        return parts.Length > 0 && parts[0].Length is 2 or 3 && parts[0].All(char.IsAsciiLetter) &&
+               parts.Skip(1).All(static part => part.Length is >= 2 and <= 8 && part.All(char.IsAsciiLetterOrDigit));
+    }
 }

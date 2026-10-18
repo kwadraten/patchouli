@@ -280,7 +280,9 @@ and included in durable identity. Primitive dependencies are callable inside the
 exposing unrestricted primitives to the model; ordinary MCP permission checks still apply.
 `Sdk.find`/`fetch`/`put` accept semantic resource DUs. `Sdk.call` provides the lossless JSON boundary
 for every primitive, including history. The worker also receives callable `AgentTools.find`,
-`fetch`, `put`, `cite` and `history` records generated from the declared schemas; `send` remains
+`fetch`, `add`, `view`, `put`, `cite` and `history` records generated from the declared schemas (`add`
+returns the new or reused resource URIs; `view` returns the image metadata text while the PNG bytes
+travel through the session media area into `LlmImagePart` vision input); `send` remains
 available through the raw SDK boundary when explicitly permitted by the stage. Optional
 native fields use `None` and are omitted on the wire. Exported option fields use their explicit codec.
 

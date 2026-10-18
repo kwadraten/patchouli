@@ -9,6 +9,24 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class DesktopInstanceActivationTests
 {
+    [Fact]
+    public async Task Closing_window_and_disposing_view_model_share_one_shutdown()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            MainWindow window = new(main);
+            window.Show();
+            window.Close();
+            Task first = main.ShutdownAsync();
+            main.ShutdownAsync().Should().BeSameAs(first);
+            await first;
+            await main.DisposeAsync();
+        }, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -18,7 +36,7 @@ public sealed class DesktopInstanceActivationTests
         // and shutdown must wait for the worker before completing its input queue.
         for (int iteration = 0; iteration < 2000; iteration++)
         {
-            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(Avalonia.Application));
+            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
             if (asynchronously)
             {
                 await session.DisposeAsync();

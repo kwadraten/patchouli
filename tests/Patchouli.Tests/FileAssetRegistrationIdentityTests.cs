@@ -66,6 +66,54 @@ public sealed class FileAssetRegistrationIdentityTests : IAsyncLifetime
             new { Id = legacyId.ToString(), Path = renamed })).Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Registration_preserves_copies_but_switches_to_a_renamed_file(bool rename)
+    {
+        FileAsset original = (await _files.RegisterFileAsync(_original)).Value;
+        string newPath = Path.Combine(_root, "new-name.pdf");
+        if (rename)
+        {
+            File.Move(_original, newPath);
+        }
+        else
+        {
+            File.Copy(_original, newPath);
+        }
+
+        Result<FileAsset> result = await _files.RegisterFileAsync(newPath);
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.FileAssetId.Should().Be(original.FileAssetId);
+        result.Value.OriginalPath.Should().Be(rename ? newPath : _original);
+        result.Value.FileName.Should().Be(rename ? "new-name.pdf" : "original.pdf");
+        await using SqliteConnection connection = _database.CreateReadConnection();
+        await connection.OpenAsync();
+        (await connection.ExecuteScalarAsync<int>(
+                "select count(*) from known_file_locations where status = 'available';"))
+            .Should().Be(rename ? 1 : 2);
+    }
+
+    [Fact]
+    public async Task Registration_keeps_an_inaccessible_parent_as_a_remembered_location()
+    {
+        string folder = Path.Combine(_root, "offline");
+        Directory.CreateDirectory(folder);
+        string originalPath = Path.Combine(folder, "original.pdf");
+        File.Copy(_original, originalPath);
+        FileAsset original = (await _files.RegisterFileAsync(originalPath)).Value;
+        Directory.Delete(folder, true);
+
+        Result<FileAsset> result = await _files.RegisterFileAsync(_original);
+        result.Value.FileAssetId.Should().Be(original.FileAssetId);
+        result.Value.OriginalPath.Should().Be(_original);
+        await using SqliteConnection connection = _database.CreateReadConnection();
+        await connection.OpenAsync();
+        (await connection.ExecuteScalarAsync<string>(
+                "select status from known_file_locations where path = @Path;", new { Path = originalPath }))
+            .Should().Be(FileAssetStatus.Available, "absence of the parent does not prove the file was deleted");
+    }
+
     [Fact]
     public async Task Registration_preserves_a_confirmed_changed_asset_that_retained_its_original_hash_id()
     {

@@ -355,8 +355,8 @@ public sealed class McpReadApi : IMcpReadApi
             DocumentBoxRow[] rawRows = (await connection.QueryAsync<DocumentBoxRow>(
                 """
                 select b.box_id as BoxId, b.parent_box_id as ParentBoxId,
-                       b.next_sibling_box_id as NextSiblingBoxId, b.box_type as BoxType,
-                       b.base_type as BaseType, b.payload_json as PayloadJson, b.suppressed as Suppressed,
+                       b.next_sibling_box_id as NextSiblingBoxId, b.box_type as BoxType, b.sub_type as SubType,
+                       b.payload_json as PayloadJson, b.suppressed as Suppressed,
                        b.bbox_x as BBoxX, b.bbox_y as BBoxY,
                        b.bbox_width as BBoxWidth, b.bbox_height as BBoxHeight
                 from document_boxes b
@@ -1488,7 +1488,7 @@ public sealed class McpReadApi : IMcpReadApi
         public string? ParentBoxId { get; set; }
         public string? NextSiblingBoxId { get; set; }
         public string BoxType { get; set; } = "";
-        public string? BaseType { get; set; }
+        public string? SubType { get; set; }
         public string? PayloadJson { get; set; }
         public int Suppressed { get; set; }
         public double BBoxX { get; set; }
@@ -1501,9 +1501,9 @@ public sealed class McpReadApi : IMcpReadApi
         {
             return new DocumentBox(treeRevisionId, DocumentBoxId.Parse(BoxId), documentInstanceId, pageId,
                 ParentBoxId is null ? null : DocumentBoxId.Parse(ParentBoxId),
-                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, null, BaseType,
+                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, SubType,
                 new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
-                DocumentBoxPayloadSerializer.Deserialize(BoxType, BaseType, PayloadJson), null, null, null,
+                DocumentBoxPayloadSerializer.Deserialize(BoxType, SubType, PayloadJson), null, null, null,
                 Suppressed == 1);
         }
     }

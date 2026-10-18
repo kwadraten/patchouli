@@ -278,3 +278,75 @@ public static class McpWarningCodes
         };
     }
 }
+
+/// <summary>Issue #11: request to import one host-local file into the library.</summary>
+/// <param name="Path">Host-local file path. URLs are rejected.</param>
+/// <param name="Kind">Optional explicit kind ("pdf" or "csl"); null content-sniffs.</param>
+public sealed record McpAddRequest(
+    string Path,
+    string? Kind = null);
+
+public sealed record McpAddMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision);
+
+public sealed record McpAddIssue(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("message")] string Message);
+
+public sealed record McpAddResult(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("reused")] bool Reused,
+    [property: JsonPropertyName("moved")] bool Moved,
+    [property: JsonPropertyName("item_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ItemUri = null,
+    [property: JsonPropertyName("text_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TextUri = null,
+    [property: JsonPropertyName("style_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? StyleUri = null,
+    [property: JsonPropertyName("page_count")] int PageCount = 0,
+    [property: JsonPropertyName("import_status")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ImportStatus = null,
+    [property: JsonPropertyName("body_status")] string BodyStatus = "ingested",
+    [property: JsonPropertyName("issues")] IReadOnlyList<McpAddIssue>? Issues = null);
+
+/// <summary>Issue #11: request to read one source image for text-image collation.</summary>
+/// <param name="Uri">Page, box/evidence or translation page/box URI.</param>
+/// <param name="Context">"page" (default) or "region".</param>
+/// <param name="MaxEdge">Longest-edge pixel cap; null selects the validated default.</param>
+public sealed record McpViewRequest(
+    string Uri,
+    string? Context = null,
+    int? MaxEdge = null);
+
+public sealed record McpViewMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision);
+
+/// <summary>
+/// Issue #11: image metadata carried in the text content block of a view response.
+/// The base64 PNG itself travels in the native MCP image content block, never inside
+/// this text envelope.
+/// </summary>
+public sealed record McpViewImageMetadata(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("view_type")] string ViewType,
+    [property: JsonPropertyName("mime_type")] string MimeType,
+    [property: JsonPropertyName("width")] int Width,
+    [property: JsonPropertyName("height")] int Height,
+    [property: JsonPropertyName("crop")]
+    IReadOnlyList<double> Crop,
+    [property: JsonPropertyName("image_index")] int ImageIndex);
+
+/// <summary>
+/// Issue #11: the full outcome of a view command. The envelope carries the text
+/// metadata; <see cref="PngBytes"/> carries the image bytes for the native image
+/// content block (null when the command failed).
+/// </summary>
+public sealed record McpViewCommandResult(
+    McpCommandResult<McpViewMeta, McpViewImageMetadata> Result,
+    byte[]? PngBytes);

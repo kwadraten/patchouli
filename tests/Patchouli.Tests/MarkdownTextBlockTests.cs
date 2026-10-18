@@ -2,12 +2,31 @@ using Avalonia.Controls.Documents;
 using Avalonia.Media;
 using FluentAssertions;
 using Patchouli.UI.Controls;
+using Patchouli.Infrastructure.Documents;
 
 namespace Patchouli.Tests;
 
 [Collection("RetainedTabUI")]
 public sealed class MarkdownTextBlockTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Native_text_runs_show_literal_option_in_direct_and_compiled_block_paths(bool useBlock)
+    {
+        return _headless.Session.Dispatch(() =>
+        {
+            const string source = "**Option &lt;option&gt;** &amp; &#x4E2D;";
+            MarkdownTextBlock textBlock = useBlock
+                ? new MarkdownTextBlock { Block = new MarkdigMarkdownEngine().Parse(source).Blocks.Single() }
+                : new MarkdownTextBlock { Markdown = source };
+
+            string text = string.Concat((textBlock.Inlines?.OfType<Run>() ?? []).Select(run => run.Text));
+            text.Should().Be("Option <option> & 中");
+            text.Should().NotContain("&lt;").And.NotContain("&gt;");
+        }, CancellationToken.None);
+    }
+
     private readonly AvaloniaSharedSessionFixture _headless;
 
     public MarkdownTextBlockTests(AvaloniaSharedSessionFixture headless)

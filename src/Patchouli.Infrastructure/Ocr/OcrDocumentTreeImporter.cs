@@ -11,6 +11,7 @@ namespace Patchouli.Infrastructure.Ocr;
 public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
 {
     private readonly IDocumentTreeService _trees;
+    private readonly MarkdigMarkdownEngine _markdown = new();
 
     public OcrDocumentTreeImporter(IDocumentTreeService trees)
     {
@@ -81,7 +82,6 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                         order++,
                         root.BoxType,
                         root.SubType,
-                        root.BaseType,
                         root.BBox,
                         null));
                 }
@@ -93,11 +93,10 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 box.SourceOrder,
                 box.BoxType,
                 box.SubType,
-                box.BaseType,
                 box.BBox,
-                box.Payload,
+                EscapeTextPayload(box.Payload),
                 box.HeadingLevel,
-                null,
+                box.CodeLanguage,
                 box.Confidence,
                 box.Suppressed,
                 box.ContinuesFromBoxId)));
@@ -122,6 +121,27 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
             revisions,
             count,
             request.Candidate.Diagnostics));
+    }
+
+    private DocumentBoxPayload EscapeTextPayload(DocumentBoxPayload payload)
+    {
+        DocumentBoxPayload escaped = payload switch
+        {
+            AlgorithmBoxPayload algorithm => algorithm with
+            {
+                Markdown = _markdown.EscapeDangerousHtmlLiterals(algorithm.Markdown)
+            },
+            TextBoxPayload text => text with { Markdown = _markdown.EscapeDangerousHtmlLiterals(text.Markdown) },
+            ListBoxPayload list => list with { Markdown = _markdown.EscapeDangerousHtmlLiterals(list.Markdown) },
+            _ => payload
+        };
+        return escaped with
+        {
+            Annotations = payload.Annotations?.Select(annotation => annotation with
+            {
+                Markdown = _markdown.EscapeDangerousHtmlLiterals(annotation.Markdown)
+            }).ToArray()
+        };
     }
 
     public async Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> CommitAsync(

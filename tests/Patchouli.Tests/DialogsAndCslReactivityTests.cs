@@ -10,6 +10,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Csl;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
@@ -274,7 +275,7 @@ public sealed class DialogsAndCslReactivityTests
     }
 
     [Fact]
-    public async Task CslStyleManagerViewModel_LoadInstalledStylesAsync_does_not_raise_property_changed_for_locale()
+    public async Task Refreshing_installed_styles_preserves_the_localization_draft()
     {
         using TemporaryAppSettingsFile settings = new();
         string dbPath = Path.Combine(Path.GetTempPath(), $"patchouli-csl-test-{Guid.NewGuid():N}.sqlite");
@@ -287,15 +288,19 @@ public sealed class DialogsAndCslReactivityTests
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
 
-            CslStyleManagerViewModel vm = new(main);
-            vm.Locale = "custom-locale";
+            CslLocalizationSettingsViewModel localization = main.Settings.CslLocalizationSettings;
+            await localization.LoadAsync();
+            localization.SelectedDefaultLocale =
+                localization.DefaultLocaleOptions.Single(option => option.Locale == "fr-FR");
 
             ConcurrentQueue<string?> changes = new();
-            vm.PropertyChanged += (_, args) => changes.Enqueue(args.PropertyName);
+            localization.PropertyChanged += (_, args) => changes.Enqueue(args.PropertyName);
 
-            await vm.RefreshInstalledStylesAsync();
+            await main.Settings.CslStyleManager.RefreshInstalledStylesAsync();
 
-            changes.Should().NotContain(nameof(vm.Locale));
+            localization.SelectedDefaultLocale.Locale.Should().Be("fr-FR");
+            localization.IsDirty.Should().BeTrue();
+            changes.Should().NotContain(nameof(localization.SelectedDefaultLocale));
         }
         finally
         {

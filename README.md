@@ -13,13 +13,13 @@
 
 ## 下载与更新日志
 
-当前版本：**0.3.11**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
+当前版本：**0.3.12**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon 和 Linux 安装包。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
 ## 特性
 
-- 不再有卡到爆的webview和来自前端项目的屎山代码，本项目尽可能使用.net或rust等原生轮子实现功能，保证性能。
+- 不再有卡到爆的webview和来自前端项目的屎山代码，本项目尽可能使用.NET或Rust等原生轮子实现功能，保证性能。
 - 不会擅自移动、重命名或接管PDF源文件，本项目用文件哈希追踪PDF文件位置，文件爱放哪就放哪。
 - OCR 识别错了也不浪费，文本、表格、类型、顺序和 bbox 进入页级不可变边界框树，PDF 工作台可在草稿中持续校正后再提交。
 - 带有虚拟文件系统和结构化工具的MCP服务器，允许AI Agent像探索代码库一样渐进式地探索和维护你的文献库。
@@ -34,18 +34,16 @@
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持 box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
-- [x] 旧接口迁移：兼容解析旧 BibLaTeX、Markdown 和 TOON 地址，返回新地址与 0.4.0 弃用提示；支持省略 `patchouli://` 的虚拟文件系统寻址。
-- [x] CSL 数据往返：保留日期范围与自定义字段类型，兼容旧日期存储，统一题录展示与引用渲染的标识符选择。
+- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`add`、`view`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持本地文件导入、原件图像读取、box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
 - [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
 - [x] PDF 导入容错：整本原子提交、坏页诊断占位、可配置失败阈值，以及历史导入残留清理
-- [x] 完善题录系统：实装标签系统（增删改、合并、置顶与筛选），提供回收站、重复题录检测、题录合并与永久清除
+- [x] 较为完备的题录组织系统：具备集合和标签功能，提供回收站、重复题录检测、题录合并与永久清除
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL古典籍OCR-Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
-- [x] 多模态 LLM OCR：复用模型提供程序配置，支持文档与区域识别。
 - [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、可配置推理强度、上下文压缩、历史检索和会话内 F# REPL。
 - [x] F# 工作流：脚本编辑、运行检查点、菜单启动、独立的聊天模型与推理强度设置，以及工作流与会话的快照同步。
+- [ ] 下一版：[MCP / CLI 显式 OCR 任务入口](https://github.com/kwadraten/patchouli/issues/16)，复用现有 OCR 队列并支持任务状态查询；当前 `add` 仅负责入库，不自动启动 OCR。
 
 ## 开发指南
 
@@ -70,7 +68,7 @@ CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一�
 cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
 ```
 
-Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
+Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`add`、`view`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
 
 ### 运行单元测试
 

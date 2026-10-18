@@ -5,23 +5,27 @@ using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.UI.ViewModels.Csl;
 
-public sealed partial class CslStyleManagerViewModel : ViewModelBase
+public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private readonly bool _isConstructing;
     private string? _defaultStyleId;
     private bool _loadingCatalogSources;
+    private HostServices? _installedServices;
+    private HostServices? _catalogServices;
+    private int _searchVersion;
+    private CslCatalogSourceViewModel _selectedCatalogSource = null!;
 
     public CslStyleManagerViewModel(MainWindowViewModel main)
     {
         _isConstructing = true;
         _main = main;
-        RefreshCommand = new AsyncCommand(RefreshAsync);
-        SearchCommand = new AsyncCommand(SearchAsync);
-        SaveLocaleCommand = new AsyncCommand(SaveLocaleAsync);
+        RefreshCommand = new AsyncCommand(RefreshAsync, () => SelectedCatalogSource is not null);
+        SearchCommand = new AsyncCommand(SearchAsync, () => SelectedCatalogSource is not null);
         _isConstructing = false;
     }
 
@@ -53,32 +57,68 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
     public ObservableCollection<CslCatalogStyleViewModel> RemoteStyles { get; } = new();
     public ObservableCollection<CslCatalogSourceViewModel> CatalogSources { get; } = new();
 
-    [ObservableProperty] public partial CslCatalogSourceViewModel SelectedCatalogSource { get; set; } = null!;
-
-    partial void OnSelectedCatalogSourceChanged(CslCatalogSourceViewModel value)
+    public CslCatalogSourceViewModel SelectedCatalogSource
     {
-        if (_isConstructing || _loadingCatalogSources)
+        get => _selectedCatalogSource;
+        set
         {
-            return;
-        }
+            if (value is null || !SetProperty(ref _selectedCatalogSource, value))
+            {
+                return;
+            }
 
-        if (value is not null)
-        {
-            ChangeCatalogSourceAsync(value)
-                .Observe(nameof(CslStyleManagerViewModel), nameof(ChangeCatalogSourceAsync));
+            RefreshCommand.NotifyCanExecuteChanged();
+            SearchCommand.NotifyCanExecuteChanged();
+            if (!_loadingCatalogSources)
+            {
+                ChangeCatalogSourceAsync(value)
+                    .Observe(nameof(CslStyleManagerViewModel), nameof(ChangeCatalogSourceAsync));
+            }
         }
     }
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SearchCommand { get; }
-    public AsyncCommand SaveLocaleCommand { get; }
 
-    [ObservableProperty] private string _locale = "";
+    public override bool SupportsEditing => false;
+    public override bool IsDirty => false;
+    public override bool CanSave => false;
 
-    public async Task InitializeAsync()
+    public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        await LoadInstalledStylesAsync();
-        await LoadCatalogSourcesAsync();
+        HostServices services = await _main.ServicesAsync();
+        if (!ReferenceEquals(services, _installedServices))
+        {
+            await LoadInstalledStylesAsync();
+        }
+    }
+
+    public async Task InitializeCatalogAsync()
+    {
+        await LoadAsync();
+        HostServices services = await _main.ServicesAsync();
+        if (!ReferenceEquals(services, _catalogServices))
+        {
+            _searchVersion++;
+            RemoteStyles.Clear();
+            await LoadCatalogSourcesAsync();
+            _catalogServices = services;
+        }
+    }
+
+    public override Task SaveAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    public override Task DiscardAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task RefreshIfLoadedAsync()
+    {
+        return _installedServices is null ? Task.CompletedTask : LoadInstalledStylesAsync();
     }
 
     public Task RefreshInstalledStylesAsync()
@@ -95,10 +135,11 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
         if (settingsResult.IsSuccess)
         {
             _defaultStyleId = settingsResult.Value.DefaultStyleId;
-            // 直接写字段而不走 Locale setter：重载不得触发 PropertyChanged 回写文本框，否则用户未保存的输入会被抹掉。
-#pragma warning disable MVVMTK0034
-            _locale = settingsResult.Value.Locale ?? "";
-#pragma warning restore MVVMTK0034
+        }
+        else
+        {
+            StatusText = settingsResult.ErrorMessage ?? "加载默认样式失败。";
+            return;
         }
 
         Result<IReadOnlyList<CslStyle>> installedResult = await services.CslStore.ListInstalledStylesAsync();
@@ -108,6 +149,13 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
             foreach (CslStyle style in installedResult.Value.OrderBy(s => s.DisplayName))
             {
                 InstalledStyles.Add(new CslStyleViewModel(style, this, _defaultStyleId == style.StyleId));
+            }
+
+            _installedServices = services;
+            HashSet<string> installedIds = InstalledStyles.Select(style => style.StyleId).ToHashSet();
+            foreach (CslCatalogStyleViewModel remote in RemoteStyles)
+            {
+                remote.IsInstalled = installedIds.Contains(remote.StyleId);
             }
 
             StatusText = $"已加载 {InstalledStyles.Count} 个本地样式。";
@@ -142,9 +190,15 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
 
     private async Task RefreshAsync()
     {
+        int searchVersion = ++_searchVersion;
         StatusText = $"正在刷新远程索引：{SelectedCatalogSource.DisplayName}...";
         HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<CslCatalogStyle>> refreshResult = await services.CslCatalog.RefreshAsync();
+        if (searchVersion != _searchVersion)
+        {
+            return;
+        }
+
         if (refreshResult.IsFailure)
         {
             StatusText = refreshResult.ErrorMessage ?? "刷新远程索引失败。";
@@ -157,10 +211,16 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
 
     private async Task SearchAsync()
     {
+        int searchVersion = ++_searchVersion;
         StatusText = $"正在搜索远程样式：{SelectedCatalogSource.DisplayName}...";
         HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<CslCatalogStyle>> searchResult =
             await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
+
+        if (searchVersion != _searchVersion)
+        {
+            return;
+        }
 
         if (searchResult.IsFailure)
         {
@@ -181,6 +241,7 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
 
     private async Task ChangeCatalogSourceAsync(CslCatalogSourceViewModel source)
     {
+        _searchVersion++;
         HostServices services = await _main.ServicesAsync();
         Result result = services.CslCatalog.SetSource(source.SourceId);
         if (result.IsFailure)
@@ -238,8 +299,7 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
     internal async Task SetDefaultStyleAsync(string styleId)
     {
         HostServices services = await _main.ServicesAsync();
-        string? localeToSave = string.IsNullOrWhiteSpace(Locale) ? null : Locale.Trim();
-        Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(styleId, localeToSave);
+        Result<CslSettings> result = await services.CslStore.SaveDefaultStyleAsync(styleId);
         if (result.IsSuccess)
         {
             _defaultStyleId = styleId;
@@ -249,19 +309,12 @@ public sealed partial class CslStyleManagerViewModel : ViewModelBase
             }
 
             StatusText = "默认样式已更新。";
+            await _main.RefreshCslPreviewsAsync();
         }
         else
         {
             StatusText = result.ErrorMessage ?? "更新默认样式失败。";
         }
-    }
-
-    private async Task SaveLocaleAsync()
-    {
-        string? localeToSave = string.IsNullOrWhiteSpace(Locale) ? null : Locale.Trim();
-        Result<CslSettings> result =
-            await (await _main.ServicesAsync()).CslStore.SaveSettingsAsync(_defaultStyleId, localeToSave);
-        StatusText = result.IsSuccess ? "CSL locale 已保存。" : result.ErrorMessage ?? "CSL locale 保存失败。";
     }
 
     internal async Task RemoveStyleAsync(string styleId)

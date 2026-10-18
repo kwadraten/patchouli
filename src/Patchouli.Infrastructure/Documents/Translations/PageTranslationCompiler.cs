@@ -132,7 +132,8 @@ internal static class TranslationBoxCodec
         return box.Payload switch
         {
             TextBoxPayload => new TextBoxPayload(stored),
-            EquationBoxPayload => new EquationBoxPayload(stored),
+            EquationBoxPayload equation => equation with { Latex = stored },
+            AlgorithmBoxPayload algorithm => algorithm with { Markdown = stored },
             ListBoxPayload => new ListBoxPayload(stored),
             TableBoxPayload table => new TableBoxPayload(stored, table.Html),
             CodeBoxPayload => new CodeBoxPayload(stored),
@@ -155,6 +156,7 @@ internal static class TranslationBoxCodec
             TextBoxPayload when box.BoxType == DocumentBoxType.Title => StripHeadingMarker(trimmed),
             TextBoxPayload => trimmed,
             EquationBoxPayload => StripMathFence(trimmed),
+            AlgorithmBoxPayload => trimmed,
             ListBoxPayload => trimmed,
             TableBoxPayload => trimmed,
             CodeBoxPayload => StripCodeFence(trimmed),
@@ -171,7 +173,8 @@ internal static class TranslationBoxCodec
             TextBoxPayload when box.BoxType == DocumentBoxType.Title =>
                 $"{new string('#', Math.Clamp(box.HeadingLevel ?? 1, 1, 6))} {value.Trim()}",
             TextBoxPayload => value,
-            EquationBoxPayload => $"$$\n{value.Trim()}\n$$",
+            EquationBoxPayload => string.IsNullOrWhiteSpace(value) ? "[Equation image]" : $"$$\n{value.Trim()}\n$$",
+            AlgorithmBoxPayload => value,
             ListBoxPayload => value,
             TableBoxPayload => value,
             CodeBoxPayload => DocumentMarkdownRenderer.CompileCode(value, box.CodeLanguage),

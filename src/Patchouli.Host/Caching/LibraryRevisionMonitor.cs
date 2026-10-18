@@ -14,7 +14,7 @@ namespace Patchouli.Host.Caching;
 /// external changes reload the cache. The monitor never auto-starts; call <see cref="Start"/>
 /// explicitly for recovery.
 /// </summary>
-public sealed class LibraryRevisionMonitor : IDisposable
+public sealed class LibraryRevisionMonitor : IDisposable, IAsyncDisposable
 {
     private static readonly Action<Exception, string, string?> FallbackUnexpectedExceptionReporter =
         static (exception, boundary, operation) =>
@@ -32,6 +32,8 @@ public sealed class LibraryRevisionMonitor : IDisposable
     private readonly object _pollLifecycleGate = new();
     private CancellationTokenSource? _pollCts;
     private Task? _pollLoop;
+    private Task? _refreshTask;
+    private Task? _disposeTask;
     private bool _disposed;
     private LibraryChangeSet? _pendingChanges;
     private bool _pendingFullReload;
@@ -124,36 +126,46 @@ public sealed class LibraryRevisionMonitor : IDisposable
 
     public void Dispose()
     {
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    public ValueTask DisposeAsync()
+    {
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposeTask is null)
             {
-                return;
+                _disposed = true;
+                // Run outside a caller's UI/test synchronization context, including synchronous Dispose.
+                _disposeTask = Task.Run(DisposeCoreAsync);
             }
 
-            _disposed = true;
+            return new ValueTask(_disposeTask);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        _revisions.ChangeCommitted -= OnChangeCommitted;
+        Stop();
+        Task? refresh;
+        lock (_gate)
+        {
+            refresh = _refreshTask;
         }
 
-        Stop();
-        _revisions.ChangeCommitted -= OnChangeCommitted;
-        try
+        if (refresh is not null)
         {
-            _refreshGate.Wait(TimeSpan.FromSeconds(5));
+            await refresh.ConfigureAwait(false);
         }
-        catch (ObjectDisposedException)
-        {
-        }
-        finally
-        {
-            _refreshGate.Dispose();
-        }
+
+        _refreshGate.Dispose();
     }
 
     // ChangeCommitted subscribers must not run database work on the committer's thread, so the
     // refresh is scheduled fire-and-forget; the gate serializes it against poll-triggered refreshes.
     private void OnChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
     {
-        bool schedule;
         lock (_gate)
         {
             if (_disposed)
@@ -167,15 +179,15 @@ public sealed class LibraryRevisionMonitor : IDisposable
             _pendingFullReload |= changes.IsEmpty || knownRevision < 0 ||
                                   changes.NewRevision > knownRevision + 1;
             _pendingChanges = _pendingChanges is null ? changes : MergeChanges(_pendingChanges, changes);
-            schedule = !_refreshScheduled;
-            _refreshScheduled = true;
             Interlocked.Exchange(ref _lastKnownRevision,
                 Math.Max(Interlocked.Read(ref _lastKnownRevision), changes.NewRevision));
-        }
 
-        if (schedule)
-        {
-            _ = Task.Run(RefreshPendingChangesAsync);
+            if (!_refreshScheduled)
+            {
+                _refreshScheduled = true;
+                // Register before releasing the lifecycle lock so disposal cannot miss queued work.
+                _refreshTask = Task.Run(RefreshPendingChangesAsync);
+            }
         }
     }
 

@@ -7,9 +7,10 @@ namespace Patchouli.Cli;
 /// A single MCP tool invocation produced by parsing patchouli-cli arguments. The CLI is a
 /// thin local MCP HTTP client: it never opens a SQLite connection or calls a domain service
 /// directly. Command-line flags map one-to-one onto the <c>patchouli.find</c>,
-/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, and <c>patchouli.send</c>
-/// tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
-/// adapter that the executable reads before sending the same inline <c>content</c>.
+/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, <c>patchouli.send</c>,
+/// <c>patchouli.add</c> and <c>patchouli.view</c> tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
+/// adapter that the executable reads before sending the same inline <c>content</c>. For <c>view</c>,
+/// <see cref="ViewOutputPath"/> is the client-side PNG destination (required).
 /// </summary>
 internal sealed record CliToolCall(
     string Tool,
@@ -17,7 +18,9 @@ internal sealed record CliToolCall(
     string? PutSourcePath = null,
     bool PutStdin = false,
     string? PutBoxesSourcePath = null,
-    bool PutBoxesStdin = false);
+    bool PutBoxesStdin = false,
+    string? ViewOutputPath = null,
+    bool ViewOverwrite = false);
 
 /// <summary>
 /// Pure argument-to-request mapping used by the patchouli-cli executable. Kept free of I/O
@@ -32,6 +35,8 @@ internal static class CliArguments
     public const string Put = "patchouli.put";
     public const string Cite = "patchouli.cite";
     public const string Send = "patchouli.send";
+    public const string Add = "patchouli.add";
+    public const string View = "patchouli.view";
 
     public static CliToolCall BuildToolCall(string command, IReadOnlyList<string> args, bool json)
     {
@@ -42,6 +47,8 @@ internal static class CliArguments
             "put" => BuildPut(args, json),
             "cite" => BuildCite(args, json),
             "send" => BuildSend(args, json),
+            "add" => BuildAdd(args, json),
+            "view" => BuildView(args, json),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -55,6 +62,8 @@ internal static class CliArguments
             "put" => Put,
             "cite" => Cite,
             "send" => Send,
+            "add" => Add,
+            "view" => View,
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -367,6 +376,124 @@ internal static class CliArguments
         }
 
         return new CliToolCall(Send, WithFormat(arguments, json));
+    }
+
+    /// <summary>
+    /// Issue #11: <c>add &lt;path&gt; [--kind pdf|csl]</c>. The CLI resolves relative paths
+    /// to absolute, then calls the same MCP tool; there is no separate import logic.
+    /// </summary>
+    private static CliToolCall BuildAdd(IReadOnlyList<string> args, bool json)
+    {
+        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
+        string? path = null;
+        for (int index = 0; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--kind":
+                    string kind = TakeValue(args, ref index, "--kind");
+                    if (!string.Equals(kind, "pdf", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(kind, "csl", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new CliUsageException("the --kind option must be \"pdf\" or \"csl\".");
+                    }
+
+                    arguments["kind"] = kind.ToLowerInvariant();
+                    break;
+                case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
+                    throw new CliUsageException($"unknown option '{args[index]}' for add.");
+                default:
+                    if (path is not null)
+                    {
+                        throw new CliUsageException("add accepts a single PATH argument.");
+                    }
+
+                    path = args[index];
+                    break;
+            }
+        }
+
+        if (path is null)
+        {
+            throw new CliUsageException("add requires a PATH argument.");
+        }
+
+        // The CLI resolves relative paths to absolute before calling the MCP tool.
+        string absolute;
+        try
+        {
+            absolute = Path.GetFullPath(path);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or
+                                              System.IO.IOException or UnauthorizedAccessException)
+        {
+            throw new CliUsageException($"the add path is not a valid file path: {path}");
+        }
+
+        arguments["path"] = absolute;
+        return new CliToolCall(Add, WithFormat(arguments, json));
+    }
+
+    /// <summary>
+    /// Issue #11: <c>view &lt;URI&gt; --output image.png [--overwrite] [--context page|region]
+    /// [--max-edge N]</c>. The CLI calls the same MCP tool, decodes the image content
+    /// block and saves the PNG; <c>--output</c> is required so no temp images with
+    /// unclear lifecycle are produced.
+    /// </summary>
+    private static CliToolCall BuildView(IReadOnlyList<string> args, bool json)
+    {
+        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
+        string? uri = null;
+        string? output = null;
+        bool overwrite = false;
+        for (int index = 0; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--output":
+                    output = TakeValue(args, ref index, "--output");
+                    break;
+                case "--overwrite":
+                    overwrite = true;
+                    break;
+                case "--context":
+                    string context = TakeValue(args, ref index, "--context");
+                    if (!string.Equals(context, "page", StringComparison.Ordinal) &&
+                        !string.Equals(context, "region", StringComparison.Ordinal))
+                    {
+                        throw new CliUsageException("the --context option must be \"page\" or \"region\".");
+                    }
+
+                    arguments["context"] = context;
+                    break;
+                case "--max-edge":
+                    arguments["max_edge"] = ParseInt(TakeValue(args, ref index, "--max-edge"), "--max-edge");
+                    break;
+                case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
+                    throw new CliUsageException($"unknown option '{args[index]}' for view.");
+                default:
+                    if (uri is not null)
+                    {
+                        throw new CliUsageException("view accepts a single URI argument.");
+                    }
+
+                    uri = args[index];
+                    break;
+            }
+        }
+
+        if (uri is null)
+        {
+            throw new CliUsageException("view requires a URI argument.");
+        }
+
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            throw new CliUsageException("view requires --output <path>.");
+        }
+
+        arguments["uri"] = uri;
+        return new CliToolCall(View, WithFormat(arguments, json), ViewOutputPath: output, ViewOverwrite: overwrite);
     }
 
     private static Dictionary<string, object?> WithFormat(Dictionary<string, object?> arguments, bool json)

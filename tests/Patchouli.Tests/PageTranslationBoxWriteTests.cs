@@ -206,8 +206,8 @@ public sealed class PageTranslationBoxWriteTests
             Leaf(imageId, 3, "source image", DocumentBoxType.Image,
                 new MediaBoxPayload("asset-1", "source image")),
             new DocumentBoxSeed(
-                footnoteId, imageId, 4, DocumentBoxType.ImageFootnote, null, null,
-                new NormalizedBBox(0.1, 0.1, 0.2, 0.1), new TextBoxPayload("source footnote"),
+                footnoteId, imageId, 4, DocumentBoxType.ImageFootnote, null, new NormalizedBBox(0.1, 0.1, 0.2, 0.1),
+                new TextBoxPayload("source footnote"),
                 Suppressed: true),
             Leaf(siblingImageId, 5, "source chart", DocumentBoxType.Chart,
                 new MediaBoxPayload("asset-2", "source chart")));
@@ -296,8 +296,8 @@ public sealed class PageTranslationBoxWriteTests
             Leaf(imageId, 0, "image description", DocumentBoxType.Image,
                 new MediaBoxPayload("asset-1", "image description")),
             new DocumentBoxSeed(
-                footnoteId, imageId, 1, DocumentBoxType.ImageFootnote, null, null,
-                new NormalizedBBox(0.1, 0.1, 0.2, 0.1), new TextBoxPayload("source footnote"),
+                footnoteId, imageId, 1, DocumentBoxType.ImageFootnote, null, new NormalizedBBox(0.1, 0.1, 0.2, 0.1),
+                new TextBoxPayload("source footnote"),
                 Suppressed: true));
 
         using CancellationTokenSource cancelled = new();
@@ -335,7 +335,6 @@ public sealed class PageTranslationBoxWriteTests
             null,
             order,
             type,
-            null,
             null,
             new NormalizedBBox(0.02 + order * 0.13, 0.02, 0.15, 0.08),
             payload ?? new TextBoxPayload(markdown));

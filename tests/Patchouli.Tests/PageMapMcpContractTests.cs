@@ -5,6 +5,7 @@ using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Csl;
+using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Mcp;
@@ -48,8 +49,8 @@ public sealed class PageMapMcpContractTests
 
         public static async Task<McpFixture> CreateAsync()
         {
-            PageMapTestDocument document = await PageMapTestDocument.CreateAsync(pageCount: 2);
-            var connectionFactory = document.ConnectionFactory;
+            PageMapTestDocument document = await PageMapTestDocument.CreateAsync(2);
+            SqliteConnectionFactory connectionFactory = document.ConnectionFactory;
             FixedClock clock = document.Clock;
 
             DocumentPageMapService maps = document.CreateMapService();
@@ -72,12 +73,14 @@ public sealed class PageMapMcpContractTests
     {
         DocumentPageMap map = new(fixture.DocumentId,
             [],
-            [new LogicalPaginationRule(1, 2, 1,
+            [
+                new LogicalPaginationRule(1, 2, 1,
                 [
                     new LogicalPageReadingEntry(fixture.Document.BoxA, 1),
                     new LogicalPageReadingEntry(fixture.Document.BoxB, 1),
                     new LogicalPageReadingEntry(fixture.Document.BoxC, 2)
-                ])],
+                ])
+            ],
             [],
             [ChapterNode.Leaf("ch1", "第一章", new NavigationPosition(2, fixture.Document.BoxC))]);
         return DocumentPageMapYamlCodec.Encode(map, true);
@@ -111,8 +114,9 @@ public sealed class PageMapMcpContractTests
             new McpFindRequest(null, McpResourceUris.DocumentUri(fixture.DocumentId), null));
 
         found.IsSuccess.Should().BeTrue(found.Error?.Detail);
+        string mapUri = fixture.MapUri;
         found.Envelope!.Entries.OfType<McpFindEntry>()
-            .Should().Contain(entry => entry.Uri == fixture.MapUri);
+            .Should().Contain(entry => entry.Uri == mapUri);
     }
 
     [Fact]

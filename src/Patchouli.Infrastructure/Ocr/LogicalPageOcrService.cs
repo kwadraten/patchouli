@@ -190,8 +190,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         int rootOrder = 0;
         foreach (DocumentBox root in Order(logicalRoots))
         {
-            seeds.Add(new DocumentBoxSeed(root.BoxId, null, rootOrder++, root.BoxType, root.SubType, root.BaseType,
-                root.BBox, null));
+            seeds.Add(new DocumentBoxSeed(root.BoxId, null, rootOrder++, root.BoxType, root.SubType, root.BBox, null));
         }
 
         List<OcrRunId> runIds = [];
@@ -227,7 +226,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             foreach (DocumentBox box in regionBoxes.Value.Where(box => box.BoxType != DocumentBoxType.LogicalPage))
             {
                 seeds.Add(new DocumentBoxSeed(null, target.LogicalPageBoxId, sourceOrder++, box.BoxType, box.SubType,
-                    box.BaseType, box.BBox, box.Payload, box.HeadingLevel, box.CodeLanguage, box.Confidence,
+                    box.BBox, box.Payload, box.HeadingLevel, box.CodeLanguage, box.Confidence,
                     box.Suppressed));
             }
         }

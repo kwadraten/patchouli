@@ -346,7 +346,7 @@ public sealed class McpTranslationContractTests
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
                 documentId, pageId,
                 seeds.Select(seed => new DocumentBoxSeed(
-                        DocumentBoxId.New(), null, seed.Order, DocumentBoxType.Text, null, null,
+                        DocumentBoxId.New(), null, seed.Order, DocumentBoxType.Text, null,
                         new NormalizedBBox(.1, .1 + seed.Order * .1, .8, .05), new TextBoxPayload(seed.Text)))
                     .ToArray(),
                 DocumentTreeRevisionSource.Import);

@@ -4,6 +4,7 @@
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:views="using:Patchouli.UI.Views"
+             xmlns:converters="using:Avalonia.Data.Converters"
              x:DataType="vm:LibraryShellViewModel">
   <UserControl.Styles>
     <Style Selector="TextBlock.ListHeader">
@@ -220,9 +221,19 @@
                 Background="{DynamicResource SurfaceContainerLowestBrush}">
         <DataGrid.ContextMenu>
           <ContextMenu Opened="OnLibraryContextMenuOpened">
-            <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
+            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
+                      IsEnabled="{Binding IsSingleSelectionOrNone}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
-                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
+                      x:CompileBindings="False">
+              <MenuItem.IsVisible>
+                <MultiBinding Converter="{x:Static converters:BoolConverters.And}">
+                  <Binding Path="Sidebar.IsActiveSelected" />
+                  <Binding Path="HasWorkflowMenuEntries" />
+                </MultiBinding>
+              </MenuItem.IsVisible>
               <MenuItem.ItemTemplate>
                 <DataTemplate x:DataType="vm:WorkflowMenuEntryViewModel">
                   <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
@@ -235,25 +246,22 @@
                 </Style>
               </MenuItem.Styles>
             </MenuItem>
-            <Separator IsVisible="{Binding HasWorkflowMenuEntries}" />
-            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
-                      IsEnabled="{Binding IsSingleSelectionOrNone}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="合并题录" Command="{Binding MergeSelectedItemsCommand}"
                       IsEnabled="{Binding CanMergeSelectedItems}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="检测重复题录"
-                      Command="{Binding DetectDuplicatesCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="获取所选题录元数据"
                       Command="{Binding LookupMetadataBatchCommand}"
                       IsEnabled="{Binding HasBatchSelection}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="取消批量获取元数据"
-                      Command="{Binding CancelMetadataBatchCommand}"
-                      IsVisible="{Binding IsMetadataBatchBusy}" />
-            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+                      Command="{Binding CancelMetadataBatchCommand}">
+              <MenuItem.IsVisible>
+                <MultiBinding Converter="{x:Static converters:BoolConverters.And}">
+                  <Binding Path="Sidebar.IsActiveSelected" />
+                  <Binding Path="IsMetadataBatchBusy" />
+                </MultiBinding>
+              </MenuItem.IsVisible>
+            </MenuItem>
             <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
@@ -273,8 +281,14 @@
               </MenuItem.Styles>
             </MenuItem>
             <MenuItem Header="从当前集合移除"
-                      Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}"
-                      IsVisible="{Binding HasSelectedCollectionFilter}" />
+                      Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}">
+              <MenuItem.IsVisible>
+                <MultiBinding Converter="{x:Static converters:BoolConverters.And}">
+                  <Binding Path="Sidebar.IsActiveSelected" />
+                  <Binding Path="HasSelectedCollectionFilter" />
+                </MultiBinding>
+              </MenuItem.IsVisible>
+            </MenuItem>
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
                       Command="{Binding CopyCslBibliographyDescriptor}"
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
@@ -283,20 +297,27 @@
                       Command="{Binding ExportItemDescriptor}"
                       ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}" Command="{Binding ExportBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}" Command="{Binding CopyBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
-            <Separator />
+            <Separator IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
-                      Command="{Binding ImportBiblatexBatchDescriptor}" />
-            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}" Command="{Binding ExportBiblatexDescriptor}"
+                      Command="{Binding ImportBiblatexBatchDescriptor}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}" Command="{Binding CopyBiblatexDescriptor}"
+            <MenuItem Header="检测重复题录"
+                      Command="{Binding DetectDuplicatesCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
+            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
           </ContextMenu>
         </DataGrid.ContextMenu>
         <DataGrid.Columns>

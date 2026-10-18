@@ -5,6 +5,7 @@
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+             xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
              x:DataType="settings:SettingsViewModel">
   <Grid ColumnDefinitions="Auto,*">
     <!-- Sidebar -->
@@ -32,47 +33,44 @@
     </Border>
 
     <!-- Content Area -->
-    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*">
       <Border x:Name="SettingsHeader" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
               Padding="32,16">
         <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
       </Border>
 
-      <controls:RetainedContentHost Grid.Row="1" ItemsSource="{Binding Categories}"
-                                    SelectedItem="{Binding ActiveCategory}">
-        <controls:RetainedContentHost.DataTemplates>
-
-          <DataTemplate DataType="vm:NavCategoryViewModel">
-            <ScrollViewer>
-              <ContentControl Content="{Binding Content}" Margin="32" />
-            </ScrollViewer>
-          </DataTemplate>
-
+      <ContentControl Grid.Row="1" Content="{Binding ActiveTabbedGroup}" IsVisible="{Binding HasSectionTabs}">
+        <ContentControl.ContentTemplate>
           <DataTemplate DataType="settings:SettingsSectionGroupViewModel">
-            <Grid RowDefinitions="Auto,*" MaxHeight="{ReflectionBinding $parent[ScrollViewer].Viewport.Height}">
-              <ScrollViewer Grid.Row="1" IsVisible="{Binding UseStack}">
-                <ItemsControl ItemsSource="{Binding StackEntries}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate DataType="settings:SettingsSectionEntryViewModel">
-                      <StackPanel Spacing="12" Margin="0,0,0,24">
-                        <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="SemiBold" />
-                        <ContentControl Content="{Binding Content}" />
-                      </StackPanel>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </ScrollViewer>
-              <TabStrip Grid.Row="0" ItemsSource="{Binding TabEntries}" SelectedItem="{Binding SelectedTab}"
-                        IsVisible="{Binding UseTabs}" Margin="0,16,0,0">
+            <Border x:Name="SettingsTabHeader" Background="{DynamicResource SurfaceContainerLowBrush}"
+                    BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+              <TabStrip x:Name="SettingsSectionTabs" ItemsSource="{Binding Entries}"
+                        SelectedItem="{Binding SelectedTab}">
                 <TabStrip.ItemTemplate>
                   <DataTemplate DataType="settings:SettingsSectionEntryViewModel">
                     <TextBlock Text="{Binding Title}" />
                   </DataTemplate>
                 </TabStrip.ItemTemplate>
               </TabStrip>
-              <controls:RetainedContentHost Grid.Row="1" ItemsSource="{Binding TabEntries}"
-                                            SelectedItem="{Binding SelectedTab}"
-                                            IsVisible="{Binding UseTabs}">
+            </Border>
+          </DataTemplate>
+        </ContentControl.ContentTemplate>
+      </ContentControl>
+
+      <controls:RetainedContentHost Grid.Row="2" ItemsSource="{Binding Categories}"
+                                    SelectedItem="{Binding ActiveCategory}">
+        <controls:RetainedContentHost.DataTemplates>
+
+          <DataTemplate DataType="vm:NavCategoryViewModel">
+            <ScrollViewer>
+              <ContentControl Content="{Binding Content}" />
+            </ScrollViewer>
+          </DataTemplate>
+
+          <DataTemplate DataType="settings:SettingsSectionGroupViewModel">
+            <Grid MaxHeight="{ReflectionBinding $parent[ScrollViewer].Viewport.Height}">
+              <controls:RetainedContentHost ItemsSource="{Binding Entries}"
+                                            SelectedItem="{Binding SelectedTab}">
                 <controls:RetainedContentHost.ContentTemplate>
                   <DataTemplate DataType="settings:SettingsSectionEntryViewModel">
                     <ScrollViewer>
@@ -85,7 +83,7 @@
           </DataTemplate>
 
           <DataTemplate DataType="settings:LlmOcrDefaultsViewModel">
-            <ContentControl Content="{Binding Settings}">
+            <ContentControl Content="{Binding Settings}" Margin="32">
               <ContentControl.ContentTemplate>
                 <DataTemplate DataType="settings:LlmSettingsViewModel">
                   <StackPanel MaxWidth="720">
@@ -150,7 +148,7 @@
 
           <!-- Appearance Settings -->
           <DataTemplate DataType="settings:AppearanceSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="配色方案" Classes="CardTitle" />
@@ -216,7 +214,7 @@
 
           <!-- Library Settings -->
           <DataTemplate DataType="settings:LibrarySettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="路径信息" Classes="CardTitle" />
@@ -255,17 +253,21 @@
                   <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,4">
+                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,4">
                           <TextBlock Text="{Binding RootPath}" FontSize="12"
                                      Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                      TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
-                          <Button Grid.Column="1" Content="移除" Command="{Binding DeleteCommand}" Classes="Danger"
+                          <Button Grid.Column="1" Content="↑" Command="{Binding MoveUpCommand}"
+                                  Padding="10,2" ToolTip.Tip="上移（第一个目录是“移动到第一个文件搜索根”导入的目标）" />
+                          <Button Grid.Column="2" Content="↓" Command="{Binding MoveDownCommand}"
+                                  Padding="10,2" ToolTip.Tip="下移" />
+                          <Button Grid.Column="3" Content="移除" Command="{Binding DeleteCommand}" Classes="Danger"
                                   Padding="10,2" />
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock Text="以上操作立即生效。" FontSize="11"
+                  <TextBlock Text="第一个目录是“移动到第一个文件搜索根”导入行为的目标；以上操作立即生效。" FontSize="11"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Border>
@@ -274,7 +276,7 @@
 
           <!-- Import Settings -->
           <DataTemplate DataType="settings:ImportSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="整本失败阈值" Classes="CardTitle" />
@@ -292,11 +294,49 @@
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Border>
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="文件处理行为" Classes="CardTitle" />
+                  <TextBlock
+                    Text="按触发动作分别配置导入 PDF 时如何处理源文件。这是本机系统设置，不会随文库快照同步。MCP 调用方不能按请求覆盖。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="MCP add 导入 PDF" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding BehaviorOptions}"
+                              SelectedItem="{Binding McpAddBehaviorOption}"
+                              HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:FileHandlingBehaviorOption">
+                          <TextBlock Text="{Binding DisplayName}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock
+                      Text="“移动到第一个文件搜索根”会改变源文件的位置：文件先移动，再计算 BLAKE3 并登记。若无搜索根、或首个搜索根不可写，导入会显式失败，不会悄悄换用其他目录。"
+                      FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="窗口拖放 PDF" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding BehaviorOptions}"
+                              SelectedItem="{Binding PdfDragDropBehaviorOption}"
+                              HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:FileHandlingBehaviorOption">
+                          <TextBlock Text="{Binding DisplayName}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock
+                      Text="拖入主窗口的 PDF 使用与 MCP add 独立的设置；“保留在原位置”是默认行为，不改变源文件位置。"
+                      FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
             </StackPanel>
           </DataTemplate>
 
           <DataTemplate DataType="settings:SyncSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="本机同步绑定" Classes="CardTitle" />
@@ -403,7 +443,7 @@
 
           <!-- MCP Settings -->
           <DataTemplate DataType="settings:McpSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <Grid ColumnDefinitions="*,Auto">
@@ -496,24 +536,26 @@
                   <TextBlock Text="按域分别授权每个动词。授权不改变资源支持的操作；保存后内置 agent 的后续调用立即生效，MCP 服务需重新加载。"
                              FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="520" Spacing="4">
-                      <Grid ColumnDefinitions="160,72,72,72,72,72">
+                    <StackPanel MinWidth="664" Spacing="4">
+                      <Grid ColumnDefinitions="160,72,72,72,72,72,72,72">
                         <TextBlock Text="VFS 域" />
                         <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="3" Text="put" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="4" Text="cite" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="7" Text="view" HorizontalAlignment="Center" />
                       </Grid>
                       <ItemsControl ItemsSource="{Binding PermissionRows}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
-                            <Grid ColumnDefinitions="160,360" Margin="0,3">
+                            <Grid ColumnDefinitions="160,504" Margin="0,3">
                               <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
                               <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
                                 <ItemsControl.ItemsPanel>
                                   <ItemsPanelTemplate>
-                                    <UniformGrid Columns="5" />
+                                    <UniformGrid Columns="7" />
                                   </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
@@ -570,7 +612,7 @@
 
           <!-- OCR Settings -->
           <DataTemplate DataType="settings:OcrProviderSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
                   <TextBlock Text="OCR 通用配置" Classes="CardTitle" />
@@ -643,7 +685,7 @@
 
           <!-- LLM & Translation Settings -->
           <DataTemplate DataType="settings:LlmSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <TextBlock
                 Text="供应商表单按内置目录自动生成：新增供应商只需扩展目录，无需修改界面。API key 写入本机凭据存储，设置文件只保存端点与模型。"
                 FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
@@ -827,7 +869,7 @@
 
           <!-- Workflow Management -->
           <DataTemplate DataType="settings:WorkflowSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="760">
+            <StackPanel Spacing="20" MaxWidth="760" Margin="32">
               <Border Padding="12" CornerRadius="6"
                       Background="{DynamicResource SurfaceContainerHighestBrush}">
                 <StackPanel Spacing="4">
@@ -915,7 +957,7 @@
 
           <!-- Local File Management -->
           <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <TextBlock Text="管理 OCR 模型文件与运行时产生的临时文件。删除的模型可重新下载。"
                          FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
@@ -967,7 +1009,7 @@
 
           <!-- Metadata Lookup Settings -->
           <DataTemplate DataType="settings:MetadataLookupSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <TextBlock Text="按顺序尝试已启用的来源。更专业的国家、地区和学科来源默认优先。" FontSize="12"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
@@ -1004,9 +1046,149 @@
             </StackPanel>
           </DataTemplate>
 
+          <!-- CSL Localization Settings -->
+          <DataTemplate DataType="settings:CslLocalizationSettingsViewModel">
+            <StackPanel Spacing="16" MaxWidth="720" Margin="32">
+              <Border Classes="Card">
+                <StackPanel Spacing="12">
+                  <TextBlock Classes="CardTitle" Text="默认本地化" />
+                  <ComboBox x:Name="DefaultCslLocaleEditor" ItemsSource="{Binding DefaultLocaleOptions}"
+                            DisplayMemberBinding="{Binding DisplayName}"
+                            SelectedItem="{Binding SelectedDefaultLocale}" HorizontalAlignment="Stretch" />
+                  <TextBlock Text="控制默认输出中的本地化术语；选择“使用样式默认”时，遵循 CSL 样式自身的语言设置。更改会自动保存，不改变题录原始语言。"
+                             FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+              <TextBlock
+                Text="优先使用 CSL 样式中与题录语言匹配的布局；没有匹配时，再尝试下方的语言映射；映射也无法匹配时，使用样式自身的默认布局。默认本地化控制未指定语言的术语与回退输出。默认将日语、韩语映射为中文。"
+                FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <Border Classes="Card">
+                <StackPanel Spacing="12">
+                  <TextBlock Classes="CardTitle" Text="题录本地化规则" />
+                  <ItemsControl ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="settings:CslLanguageLocaleMappingRowViewModel">
+                        <Grid ColumnDefinitions="*,Auto,*,Auto" ColumnSpacing="8" Margin="0,2">
+                          <ComboBox x:Name="MappingLanguageEditor" Grid.Column="0"
+                                    ItemsSource="{Binding LanguageOptions}"
+                                    DisplayMemberBinding="{Binding DisplayName}"
+                                    SelectedItem="{Binding SelectedLanguage}"
+                                    MinWidth="120" HorizontalAlignment="Stretch" />
+                          <TextBlock Grid.Column="1" Text="→" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                     VerticalAlignment="Center" />
+                          <ComboBox x:Name="MappingLocaleEditor" Grid.Column="2"
+                                    ItemsSource="{Binding LocaleOptions}"
+                                    DisplayMemberBinding="{Binding DisplayName}"
+                                    SelectedItem="{Binding SelectedLocale}"
+                                    MinWidth="120" HorizontalAlignment="Stretch" />
+                          <Button x:Name="RemoveMappingButton" Grid.Column="3" Content="删除"
+                                  Command="{Binding RemoveCommand}" Padding="8,4" MinWidth="52" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <Button x:Name="AddMappingButton" Content="添加语言映射"
+                          Command="{Binding AddMappingCommand}" HorizontalAlignment="Left" Padding="12,6" />
+                  <TextBlock Text="每种题录语言只能有一条规则。删除规则或选择“使用默认输出”后，没有直接匹配布局的题录将使用样式的默认布局。规则会自动保存。"
+                             FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+
+          <DataTemplate DataType="csl:CslStyleManagerViewModel">
+            <StackPanel Spacing="16" MaxWidth="720" Margin="32">
+              <TextBlock Text="默认样式用于题录预览和默认引用输出。设为默认后立即保存。"
+                         FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <Border Classes="Card">
+                <StackPanel Spacing="12">
+                  <TextBlock Classes="CardTitle" Text="{Binding InstalledStyles.Count, StringFormat='已安装样式（{0}）'}" />
+                  <ItemsControl ItemsSource="{Binding InstalledStyles}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="csl:CslStyleViewModel">
+                        <Border Classes="CardTile" Margin="0,0,0,8">
+                          <StackPanel Spacing="6">
+                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding StyleId}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <TextBlock Text="{Binding FormattedUpdated, StringFormat='更新时间：{0}'}" FontSize="11"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                              <TextBlock Text="默认" IsVisible="{Binding IsDefault}" VerticalAlignment="Center"
+                                         Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0" />
+                              <Button Content="设为默认" Command="{Binding SetDefaultCommand}"
+                                      IsVisible="{Binding IsNotDefault}" Padding="10,4" />
+                              <Button Content="移除" Command="{Binding RemoveCommand}" Classes="Danger" Padding="10,4" />
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <TextBlock Text="可在“在线样式”中搜索并安装更多 CSL 样式。" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+
+          <DataTemplate DataType="settings:CslOnlineStylesSettingsViewModel">
+            <ContentControl Content="{Binding Styles}">
+              <ContentControl.ContentTemplate>
+                <DataTemplate DataType="csl:CslStyleManagerViewModel">
+                  <StackPanel Spacing="16" MaxWidth="720" Margin="32">
+                    <Border Classes="Card">
+                      <StackPanel Spacing="12">
+                        <TextBlock Classes="CardTitle" Text="在线样式" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                          <ComboBox x:Name="CslCatalogSourceEditor" ItemsSource="{Binding CatalogSources}"
+                                    DisplayMemberBinding="{Binding DisplayName}"
+                                    SelectedItem="{Binding SelectedCatalogSource}" HorizontalAlignment="Stretch"
+                                    ToolTip.Tip="{Binding SelectedCatalogSource.Description}" />
+                          <Button Grid.Column="1" Content="刷新索引" Command="{Binding RefreshCommand}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                          <TextBox x:Name="CslCatalogSearchEditor" Text="{Binding SearchQuery}"
+                                   PlaceholderText="搜索在线样式，留空加载当前源">
+                            <TextBox.KeyBindings>
+                              <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
+                            </TextBox.KeyBindings>
+                          </TextBox>
+                          <Button Grid.Column="1" Content="搜索" Command="{Binding SearchCommand}" />
+                        </Grid>
+                        <TextBlock Text="选择样式源后搜索；刷新索引可获取该来源的最新样式。" FontSize="12" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      </StackPanel>
+                    </Border>
+                    <ItemsControl ItemsSource="{Binding RemoteStyles}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="csl:CslCatalogStyleViewModel">
+                          <Border Classes="CardTile" Margin="0,0,0,8">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                              <StackPanel Spacing="4">
+                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding StyleId}" FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </StackPanel>
+                              <Button Grid.Column="1" Content="安装" Command="{Binding InstallCommand}"
+                                      IsVisible="{Binding IsNotInstalled}" VerticalAlignment="Center" Padding="10,4" />
+                              <TextBlock Grid.Column="1" Text="已安装" IsVisible="{Binding IsInstalled}"
+                                         Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </DataTemplate>
+              </ContentControl.ContentTemplate>
+            </ContentControl>
+          </DataTemplate>
+
           <!-- Search Rewrite Settings -->
           <DataTemplate DataType="settings:SearchRewriteSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <TextBlock Text="OCR 结果进入搜索单元后，可通过搜索菜单重建本地 FTS 索引。"
                          FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
               <TextBlock

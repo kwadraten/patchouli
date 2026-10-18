@@ -39,10 +39,15 @@ public sealed record OcrDocumentTreeCandidate(
                 return bbox;
             }
 
-            if (!DocumentBoxType.IsKnown(box.BoxType) && box.BaseType is not ("text" or "image" or "table" or "code"))
+            if (!DocumentBoxType.IsKnown(box.BoxType))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed,
-                    "Unknown OCR box types require a usable base_type before commit.");
+                    "Unknown OCR box types cannot be committed.");
+            }
+
+            if (!DocumentBoxType.IsValidSubType(box.BoxType, box.SubType))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed, "Invalid document box subtype.");
             }
 
             if (box.Payload is null)
@@ -66,7 +71,6 @@ public sealed record OcrPageCandidate(
 public sealed record OcrBoxCandidate(
     string BoxType,
     string? SubType,
-    string? BaseType,
     int SourceOrder,
     DocumentBoxPayload Payload,
     NormalizedBBox BBox,
@@ -75,7 +79,8 @@ public sealed record OcrBoxCandidate(
     bool Suppressed,
     DocumentBoxId? ParentLogicalPageBoxId = null,
     DocumentBoxId? PreassignedBoxId = null,
-    DocumentBoxId? ContinuesFromBoxId = null);
+    DocumentBoxId? ContinuesFromBoxId = null,
+    string? CodeLanguage = null);
 
 public sealed record OcrDiagnostic(
     string Code,

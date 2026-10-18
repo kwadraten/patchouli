@@ -48,8 +48,11 @@ public sealed class RapidOcrModelDownloadService : IRapidOcrModelDownloadService
             string tempPath = targetPath + ".tmp";
             try
             {
-                using HttpResponseMessage response = await _httpClient.GetAsync(
-                    file.DownloadUrl,
+                using HttpRequestMessage request = new(HttpMethod.Get, file.DownloadUrl);
+                // ModelScope rejects downloads with an empty User-Agent with HTTP 403.
+                request.Headers.UserAgent.ParseAdd("Patchouli");
+                using HttpResponseMessage response = await _httpClient.SendAsync(
+                    request,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken).ConfigureAwait(false);
 

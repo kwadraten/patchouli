@@ -1,9 +1,38 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Core.Settings;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.ViewModels.Settings;
+
+/// <summary>Issue #11 file handling behavior option for the settings UI.</summary>
+public sealed class FileHandlingBehaviorOption
+{
+    public FileHandlingBehaviorOption(FileHandlingBehavior value, string displayName)
+    {
+        Value = value;
+        DisplayName = displayName;
+    }
+
+    public FileHandlingBehavior Value { get; }
+
+    public string DisplayName { get; }
+
+    public static IReadOnlyList<FileHandlingBehaviorOption> All { get; } =
+    [
+        new(FileHandlingBehavior.KeepInPlace, "保留在原位置（默认）"),
+        new(FileHandlingBehavior.MoveToFirstSearchRoot, "移动到第一个文件搜索根"),
+    ];
+
+    public static FileHandlingBehaviorOption FromValue(FileHandlingBehavior value)
+    {
+        return All.First(option => option.Value == value);
+    }
+}
 
 /// <summary>「导入」section: configures the failed-page ratio threshold for whole-book imports.
 /// The UI presents the ratio as a percent in [0, 90]; persistence stores the 0–0.9 double.
@@ -67,6 +96,7 @@ public sealed partial class ImportSettingsViewModel : SettingsSectionViewModelBa
             SyncFromPersisted();
         }
 
+        LoadBehaviorSettingsAsync().Observe("settings", "load-file-handling-behavior");
         return Task.CompletedTask;
     }
 
@@ -134,5 +164,64 @@ public sealed partial class ImportSettingsViewModel : SettingsSectionViewModelBa
     {
         SaveState = SettingsSaveState.Dirty;
         Status = message;
+    }
+
+    // --- Issue #11 file handling behavior settings ("trigger action → behavior") ---
+
+    /// <summary>The available behavior options shown in the UI.</summary>
+    public IReadOnlyList<FileHandlingBehaviorOption> BehaviorOptions => FileHandlingBehaviorOption.All;
+
+    [ObservableProperty]
+    public partial FileHandlingBehaviorOption? McpAddBehaviorOption { get; set; }
+
+    [ObservableProperty]
+    public partial FileHandlingBehaviorOption? PdfDragDropBehaviorOption { get; set; }
+
+    private bool _isLoadingBehavior;
+
+    partial void OnMcpAddBehaviorOptionChanged(FileHandlingBehaviorOption? value)
+    {
+        OnBehaviorOptionChanged();
+    }
+
+    partial void OnPdfDragDropBehaviorOptionChanged(FileHandlingBehaviorOption? value)
+    {
+        OnBehaviorOptionChanged();
+    }
+
+    private void OnBehaviorOptionChanged()
+    {
+        if (_isConstructing || _isSyncing || _isLoadingBehavior)
+        {
+            return;
+        }
+
+        // Behavior settings save immediately (device-local system settings).
+        SaveBehaviorSettingsAsync().Observe("settings", "save-file-handling-behavior");
+    }
+
+    private async Task LoadBehaviorSettingsAsync()
+    {
+        _isLoadingBehavior = true;
+        try
+        {
+            FileHandlingBehaviorSettings settings = await _main.GetFileHandlingBehaviorAsync();
+            McpAddBehaviorOption = FileHandlingBehaviorOption.FromValue(settings.McpAddPdfBehavior);
+            PdfDragDropBehaviorOption = FileHandlingBehaviorOption.FromValue(settings.PdfDragDropBehavior);
+        }
+        finally
+        {
+            _isLoadingBehavior = false;
+        }
+    }
+
+    private async Task SaveBehaviorSettingsAsync()
+    {
+        FileHandlingBehaviorSettings settings = new(
+            McpAddBehaviorOption?.Value ?? FileHandlingBehavior.KeepInPlace,
+            PdfDragDropBehaviorOption?.Value ?? FileHandlingBehavior.KeepInPlace);
+        await _main.SaveFileHandlingBehaviorAsync(settings);
+        // Re-sync the UI from what was actually persisted.
+        await LoadBehaviorSettingsAsync();
     }
 }

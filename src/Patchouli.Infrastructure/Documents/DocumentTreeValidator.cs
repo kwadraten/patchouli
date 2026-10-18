@@ -92,9 +92,31 @@ internal sealed class DocumentTreeValidator
             return Invalid("Document box type is required.");
         }
 
-        if (!DocumentBoxType.IsKnown(box.BoxType) && box.BaseType is not ("text" or "image" or "table" or "code"))
+        if (!DocumentBoxType.IsKnown(box.BoxType))
         {
-            return Invalid("Unknown document box types require a usable base_type before commit.");
+            return Invalid("Unknown document box types cannot be committed.");
+        }
+
+        if (!DocumentBoxType.IsValidSubType(box.BoxType, box.SubType) ||
+            (box.BoxType == DocumentBoxType.Code &&
+             box.SubType == DocumentBoxType.Algorithm != box.Payload is AlgorithmBoxPayload))
+        {
+            return Invalid("Document box subtype and payload do not agree.");
+        }
+
+        foreach (DocumentAnnotation annotation in box.Payload?.Annotations ?? [])
+        {
+            if (annotation.Type != box.BoxType + "_caption" && annotation.Type != box.BoxType + "_footnote")
+            {
+                return Invalid("Annotation type must match its content box.");
+            }
+
+            Result annotationValidation =
+                _markdown.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload(annotation.Markdown));
+            if (annotationValidation.IsFailure)
+            {
+                return annotationValidation;
+            }
         }
 
         if (box.BoxType == DocumentBoxType.LogicalPage)
@@ -128,16 +150,7 @@ internal sealed class DocumentTreeValidator
             return Invalid("Only code boxes can store code_language.");
         }
 
-        string validationType = DocumentBoxType.IsKnown(box.BoxType)
-            ? box.BoxType
-            : box.BaseType switch
-            {
-                "image" => DocumentBoxType.Image,
-                "table" => DocumentBoxType.Table,
-                "code" => DocumentBoxType.Code,
-                _ => DocumentBoxType.Text
-            };
-        return _markdown.ValidateLeaf(validationType, box.Payload);
+        return _markdown.ValidateLeaf(box.BoxType, box.Payload);
     }
 
     private static Result ValidateShape(IReadOnlyList<DocumentBox> boxes)

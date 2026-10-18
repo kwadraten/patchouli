@@ -3,12 +3,12 @@ set -euo pipefail
 
 # Patchouli on macOS is intentionally not sandboxed and is not targeting the Mac App Store.
 # File access relies on the standard TCC folder picker prompts (NS*FolderUsageDescription in Info.plist).
-# Therefore this script has no sandbox profile, provisioning, or release-signing step.
-# The DMG is distributed as-is for testing; see ADR 0017 for the distribution model.
+# The completed bundle is ad-hoc signed for integrity, without sandbox provisioning.
+# This does not provide Developer ID trust or notarization; see ADR 0017.
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.3.11}"
+version="${VERSION:-0.3.12}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/.tmp/publish/$runtime"
 app_dir="$root/.tmp/macos/Patchouli.NET.app"
@@ -128,10 +128,33 @@ fi
 dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configuration" \
   --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUUploadPreparerTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
 
+# MacOS is a nested-code location: managed DLLs and data must be resources.
+# Relative symlinks preserve .NET's expected layout next to the apphost.
+for payload in "$macos_dir"/*; do
+  if [[ -f "$payload" && "$(file -b "$payload")" == *"Mach-O"* ]]; then
+    continue
+  fi
+  payload_name="$(basename "$payload")"
+  mv "$payload" "$resources_dir/$payload_name"
+  ln -s "../Resources/$payload_name" "$payload"
+done
+
+# Sign native code explicitly from the inside out; --deep is for verification only.
+# Preserve any runtime entitlements carried by the published native dependencies.
+# Signing the main executable can implicitly sign the bundle, so leave it until last.
+while IFS= read -r -d '' binary; do
+  if [[ "$binary" != "$macos_dir/Patchouli.UI" && "$(file -b "$binary")" == *"Mach-O"* ]]; then
+    codesign --force --sign - --preserve-metadata=entitlements "$binary"
+  fi
+done < <(find "$macos_dir" -type f -print0)
+codesign --force --sign - "$app_dir"
+codesign --verify --deep --strict --verbose=4 "$app_dir"
+
 rm -f "$dmg_path"
 staging="$(mktemp -d "$root/.tmp/packaging/dmg.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app_dir" "$staging/Patchouli.NET.app"
 ln -s /Applications "$staging/Applications"
 hdiutil create -volname "Patchouli.NET" -srcfolder "$staging" -ov -format UDZO "$dmg_path"
+codesign --force --sign - "$dmg_path"
 echo "$dmg_path"

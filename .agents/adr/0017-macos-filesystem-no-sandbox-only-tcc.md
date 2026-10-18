@@ -12,19 +12,21 @@ Patchouli desktop on macOS will not use App Sandbox entitlements and will not ta
 
 **Consequences**
 
-- Packaging does not need a sandbox entitlements file or an App Store provisioning profile. The existing `scripts/package-macos.sh` does not run any explicit codesign step; the DMG is distributed as-is for testing.
+- Packaging does not need a sandbox entitlements file or an App Store provisioning profile. `scripts/package-macos.sh` ad-hoc signs native binaries, then the completed app bundle and DMG for testing.
 - `packaging/macos/Info.plist.template` must keep `NSDocumentsFolderUsageDescription`, `NSDesktopFolderUsageDescription`, `NSDownloadsFolderUsageDescription`, `NSNetworkVolumesUsageDescription`, and `NSRemovableVolumesUsageDescription` so the TCC prompt shows a useful message.
 - `FileSearchRoot` records created from a macOS picker selection should use `AuthorizationKind = "tcc_picker"` to record provenance. No security-scoped bookmark payload is required because the app is not sandboxed.
 - A macOS-specific `INativeFileAccessAdapter` implementation must handle Finder aliases, iCloud placeholder materialization, mount-point/unmount detection, TCC/ACL denial classification, and symlink canonicalization. The portable adapter is intentionally incomplete for these cases.
-- Codesign is intentionally out of scope: `scripts/package-macos.sh` does not invoke `codesign`, so the produced `.app` and `.dmg` are distributed as-is for testing. The .NET SDK and clang already attach default ad-hoc signatures to the binaries they emit, which is sufficient for local use but not for notarized/Gatekeeper-clean distribution.
+- Whole-bundle ad-hoc signing is required after all files, resources, and `Info.plist` have been assembled. Individual .NET SDK and clang signatures do not seal the application bundle. The release workflow mounts the final DMG and verifies the app signature, bound `Info.plist`, and sealed resources before upload. Ad-hoc signing does not provide Developer ID trust or notarization, and does not promise Gatekeeper acceptance for browser downloads.
+- Managed DLLs and data live in `Contents/Resources`, with relative symlinks in `Contents/MacOS` preserving the .NET apphost's dependency layout. Leaving these files directly in the nested-code directory causes bundle signing to reject managed assemblies as unsigned code. Sign the outer bundle only after the other native binaries; signing its main executable can implicitly sign the bundle.
 - MCP server and local automation paths keep unrestricted file system access as far as TCC allows, because the app is not sandboxed.
 
 **Implementation Plan**
 
 1. Packaging simplification
    - Remove any sandbox/entitlements placeholders from the macOS packaging directory.
-   - Document in `scripts/package-macos.sh` that no `codesign` step is performed and that the DMG is distributed as-is for testing.
-   - Do not add an entitlements file and do not add any `codesign` invocations.
+   - Ad-hoc sign native Mach-O files explicitly, then the completed app bundle and DMG; use `--deep` only for verification.
+   - Preserve native dependencies' existing entitlements without adding App Sandbox entitlements or provisioning.
+   - Verify the signed app inside the final mounted DMG in the release workflow.
    - Keep `NS*FolderUsageDescription` keys in `Info.plist.template`; add a comment in `scripts/package-macos.sh` explaining why they are still required outside the sandbox.
 
 2. Picker-based root selection

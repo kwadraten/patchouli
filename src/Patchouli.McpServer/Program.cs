@@ -133,8 +133,8 @@ static async Task CommitFixtureTextAsync(
     Result<DocumentTreeRevision> working = await service.BeginWorkingRevisionAsync(
         documentId, pageId,
         [
-            new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload(text), null)
+            new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                new TextBoxPayload(text), null)
         ],
         DocumentTreeRevisionSource.Import);
     if (working.IsFailure)

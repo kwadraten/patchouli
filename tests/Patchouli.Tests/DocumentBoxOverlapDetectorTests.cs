@@ -92,7 +92,6 @@ public sealed class DocumentBoxOverlapDetectorTests
             null,
             boxType,
             null,
-            null,
             bbox,
             boxType == DocumentBoxType.LogicalPage ? null : new TextBoxPayload("text"),
             null,

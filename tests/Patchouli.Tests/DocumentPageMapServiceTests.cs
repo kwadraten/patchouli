@@ -93,14 +93,14 @@ internal sealed class PageMapTestDocument : IAsyncDisposable
 
     public static DocumentBoxSeed LogicalSeed(DocumentBoxId id, int order)
     {
-        return new DocumentBoxSeed(id, null, order, DocumentBoxType.LogicalPage, null, null,
+        return new DocumentBoxSeed(id, null, order, DocumentBoxType.LogicalPage, null,
             new NormalizedBBox(0.1, 0.1 + order * 0.2, 0.7, 0.1), null);
     }
 
     public static DocumentBoxSeed TextSeed(
         DocumentBoxId id, int order, string text = "paragraph", DocumentBoxId? parent = null)
     {
-        return new DocumentBoxSeed(id, parent, order, DocumentBoxType.Text, null, null,
+        return new DocumentBoxSeed(id, parent, order, DocumentBoxType.Text, null,
             new NormalizedBBox(0.1, 0.55, 0.7, 0.1), new TextBoxPayload(text));
     }
 
@@ -200,7 +200,7 @@ internal sealed class PageMapTestDocument : IAsyncDisposable
 }
 
 /// <summary>
-/// Service-level tests for <see cref="DocumentPageMapService"/>: migration 048, whole-YAML
+/// Service-level tests for <see cref="DocumentPageMapService"/>: migration 052, whole-YAML
 /// parse/validate/atomic-replace, empty-definition clearing, and the rule that any write
 /// validation failure leaves the previously stored map untouched.
 /// </summary>
@@ -215,12 +215,14 @@ public sealed class DocumentPageMapServiceTests
     {
         DocumentPageMap map = new(documentId,
             [new PhysicalPaginationRule(3, 3, 100)],
-            [new LogicalPaginationRule(1, 2, 1,
+            [
+                new LogicalPaginationRule(1, 2, 1,
                 [
                     new LogicalPageReadingEntry(fixture.BoxA, 1),
                     new LogicalPageReadingEntry(fixture.BoxB, 1),
                     new LogicalPageReadingEntry(fixture.BoxC, 2)
-                ])],
+                ])
+            ],
             [new PageLabelOverride(new PageLabelTarget(3, null), "100")],
             [ChapterNode.Leaf("ch1", "第一章", new NavigationPosition(1, fixture.BoxA))]);
         return DocumentPageMapYamlCodec.Encode(map, true);
@@ -232,7 +234,7 @@ public sealed class DocumentPageMapServiceTests
     }
 
     [Fact]
-    public async Task Migration_048_creates_document_page_maps_with_document_cascade()
+    public async Task Migration_052_creates_document_page_maps_with_document_cascade()
     {
         await using PageMapTestDocument fixture = await PageMapTestDocument.CreateAsync();
 
@@ -243,7 +245,7 @@ public sealed class DocumentPageMapServiceTests
             "select name from sqlite_master where type = 'table' and name = 'document_page_maps';");
         table.Should().Be("document_page_maps");
 
-        var foreignKeys = (await connection.QueryAsync<FkRow>(
+        List<FkRow> foreignKeys = (await connection.QueryAsync<FkRow>(
             "pragma foreign_key_list(document_page_maps);")).ToList();
         FkRow cascade = foreignKeys.Should().ContainSingle().Subject;
         cascade.Table.Should().Be("document_instances");
@@ -251,14 +253,44 @@ public sealed class DocumentPageMapServiceTests
     }
 
     [Fact]
+    public async Task Migration_runner_upgrades_the_legacy_page_map_migration_without_losing_maps()
+    {
+        await using PageMapTestDocument fixture = await PageMapTestDocument.CreateAsync();
+        Result<DocumentPageMap> stored = await fixture.CreateMapService()
+            .ReplaceFromYamlAsync(fixture.DocumentId, ValidMapYaml(fixture));
+        stored.IsSuccess.Should().BeTrue(stored.ErrorMessage);
+
+        await using SqliteConnection connection = fixture.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            """
+            delete from schema_migrations where id = '048';
+            update schema_migrations set id = '048', name = '048_create_document_page_maps'
+            where id = '052';
+            """);
+
+        await new MigrationRunner(fixture.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        (await connection.ExecuteScalarAsync<string>(
+                "select name from schema_migrations where id = '048';"))
+            .Should().Be("048_normalize_document_box_types");
+        (await connection.ExecuteScalarAsync<string>(
+                "select name from schema_migrations where id = '052';"))
+            .Should().Be("052_create_document_page_maps");
+        Result<ResolvedDocumentPageMap?> resolved = await GetResolvedAsync(fixture);
+        resolved.IsSuccess.Should().BeTrue(resolved.ErrorMessage);
+        resolved.Value.Should().NotBeNull();
+        resolved.Value!.HasMap.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Migration_runner_is_idempotent_on_a_migrated_database()
     {
         await using PageMapTestDocument fixture = await PageMapTestDocument.CreateAsync();
 
-        Func<Task> rerun = () => new MigrationRunner(
+        IReadOnlyList<AppliedMigration> applied = await new MigrationRunner(
             fixture.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
 
-        await rerun.Should().NotThrowAsync();
+        applied.Should().BeEmpty();
     }
 
     [Fact]
@@ -467,7 +499,7 @@ public sealed class DocumentPageMapServiceTests
         Result<DocumentPageMap> replaced = await maps.ReplaceFromYamlAsync(fixture.DocumentId, badYaml);
         replaced.IsFailure.Should().BeTrue();
         replaced.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
-        replaced.ErrorMessage.Should().Contain("was not found in the current committed revisions");
+        replaced.ErrorMessage.Should().Contain($"logical page {otherBox} is not on PDF page 1");
 
         (await GetResolvedAsync(fixture)).Value!.Definition.LogicalRules.Should().HaveCount(1);
     }

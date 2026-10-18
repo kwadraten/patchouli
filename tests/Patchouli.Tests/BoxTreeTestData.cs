@@ -30,8 +30,8 @@ internal static class BoxTreeTestData
             documentInstanceId,
             pageId,
             [
-                new DocumentBoxSeed(null, null, 0, boxType, null, null,
-                    new NormalizedBBox(.1, .1, .8, .1), Payload(boxType, text),
+                new DocumentBoxSeed(null, null, 0, boxType, null, new NormalizedBBox(.1, .1, .8, .1),
+                    Payload(boxType, text),
                     boxType == DocumentBoxType.Title ? 1 : null, Suppressed: suppressed)
             ],
             DocumentTreeRevisionSource.Import);

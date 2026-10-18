@@ -1,3 +1,4 @@
+using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
@@ -29,12 +30,18 @@ public sealed class PageMapYamlCodecTests
         return new DocumentPageMap(
             DocId,
             [new PhysicalPaginationRule(1, 4, 1)],
-            [new LogicalPaginationRule(5, 6, 10,
-                [new LogicalPageReadingEntry(boxA, 5), new LogicalPageReadingEntry(boxB, 6)])],
-            [new PageLabelOverride(new PageLabelTarget(2, null), "ii"),
-             new PageLabelOverride(new PageLabelTarget(null, boxB), "扉页二")],
-            [new ChapterNode("ch1", "第一章", new NavigationPosition(5, boxA),
-                [ChapterNode.Leaf("ch1-1", "第一节", new NavigationPosition(6))])]);
+            [
+                new LogicalPaginationRule(5, 6, 10,
+                    [new LogicalPageReadingEntry(boxA, 5), new LogicalPageReadingEntry(boxB, 6)])
+            ],
+            [
+                new PageLabelOverride(new PageLabelTarget(2, null), "ii"),
+                new PageLabelOverride(new PageLabelTarget(null, boxB), "扉页二")
+            ],
+            [
+                new ChapterNode("ch1", "第一章", new NavigationPosition(5, boxA),
+                    [ChapterNode.Leaf("ch1-1", "第一节", new NavigationPosition(6))])
+            ]);
     }
 
     [Fact]
@@ -48,7 +55,7 @@ public sealed class PageMapYamlCodecTests
         Assert.True(decoded.IsSuccess, decoded.ErrorMessage);
         DocumentPageMap back = decoded.Value;
         Assert.Equal(map.PhysicalRules, back.PhysicalRules);
-        Assert.Equal(map.LogicalRules, back.LogicalRules);
+        back.LogicalRules.Should().BeEquivalentTo(map.LogicalRules, options => options.WithStrictOrdering());
         Assert.Equal(map.PageLabels, back.PageLabels);
         Assert.Equal(map.Chapters.Count, back.Chapters.Count);
         Assert.Equal("ch1", back.Chapters[0].ChapterId);
