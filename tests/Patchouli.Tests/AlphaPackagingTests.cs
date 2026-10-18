@@ -119,11 +119,12 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public void Macos_package_relocates_defaults_validates_plist_and_skips_signing()
+    public void Macos_package_relocates_defaults_validates_plist_and_signs_bundle()
     {
         string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
         script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
-            .Contain("plutil -lint").And.NotContain("codesign").And.NotContain("entitlements");
+            .Contain("plutil -lint").And.Contain("codesign --force --sign - \"$app_dir\"").And
+            .Contain("codesign --verify --deep --strict").And.NotContain("--deep --sign");
     }
 
     [Fact]
