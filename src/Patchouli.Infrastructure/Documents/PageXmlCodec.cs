@@ -11,7 +11,7 @@ namespace Patchouli.Infrastructure.Documents;
 /// <summary>Encodes and validates the stable, page-local XML translation interchange format.</summary>
 public static class PageXmlCodec
 {
-    private const string Profile = "patchouli-page-1";
+    private const string Profile = "patchouli-page-2";
 
     public static string EncodePage(
         DocumentInstanceId documentId,
@@ -206,7 +206,6 @@ public static class PageXmlCodec
             new XAttribute("id", box.BoxId),
             new XAttribute("type", box.BoxType),
             new XAttribute("sub_type", box.SubType ?? string.Empty),
-            new XAttribute("base_type", box.BaseType ?? string.Empty),
             new XAttribute("heading_level", box.HeadingLevel?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
             new XAttribute("code_language", box.CodeLanguage ?? string.Empty),
             new XAttribute("suppressed", box.Suppressed ? "true" : "false"),
@@ -228,6 +227,16 @@ public static class PageXmlCodec
             element.Add(payloadElement);
         }
 
+        if (ImageElement(box) is { } image)
+        {
+            element.Add(image);
+        }
+
+        foreach (DocumentAnnotation annotation in box.Payload?.Annotations ?? [])
+        {
+            element.Add(new XElement("annotation", new XAttribute("type", annotation.Type), annotation.Markdown));
+        }
+
         foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
         {
             element.Add(EncodeBox(child, boxes, translations));
@@ -240,7 +249,7 @@ public static class PageXmlCodec
     {
         string[] allowedAttributes =
         [
-            "id", "type", "sub_type", "base_type", "heading_level", "code_language", "suppressed", "readonly",
+            "id", "type", "sub_type", "heading_level", "code_language", "suppressed", "readonly",
             "translated"
         ];
         if (element.Attributes().Any(attribute => attribute.Name.Namespace != XNamespace.None ||
@@ -252,7 +261,6 @@ public static class PageXmlCodec
 
         if (Attr(element, "readonly") != "false" || Attr(element, "type") != source.BoxType ||
             Attr(element, "sub_type") != (source.SubType ?? string.Empty) ||
-            Attr(element, "base_type") != (source.BaseType ?? string.Empty) ||
             Attr(element, "heading_level") !=
             (source.HeadingLevel?.ToString(CultureInfo.InvariantCulture) ?? string.Empty) ||
             Attr(element, "code_language") != (source.CodeLanguage ?? string.Empty) ||
@@ -262,7 +270,26 @@ public static class PageXmlCodec
         }
 
         string? expectedFormat = PayloadFormat(source.Payload);
-        XElement[] children = element.Elements().Where(child => child.Name != "box").ToArray();
+        XElement? expectedImage = ImageElement(source);
+        XElement[] images = element.Elements("image").ToArray();
+        if (images.Length != (expectedImage is null ? 0 : 1) ||
+            (expectedImage is not null && !XNode.DeepEquals(expectedImage, images[0])))
+        {
+            return Failure<DocumentBoxPayload?>("The formula image region is read-only and must match its source.");
+        }
+
+        XElement[] annotations = element.Elements("annotation").ToArray();
+        XElement[] expectedAnnotations = (source.Payload?.Annotations ?? [])
+            .Select(annotation =>
+                new XElement("annotation", new XAttribute("type", annotation.Type), annotation.Markdown)).ToArray();
+        if (annotations.Length != expectedAnnotations.Length ||
+            annotations.Where((annotation, index) => !XNode.DeepEquals(annotation, expectedAnnotations[index])).Any())
+        {
+            return Failure<DocumentBoxPayload?>("Annotations are read-only and must match their source.");
+        }
+
+        XElement[] children = element.Elements()
+            .Where(child => child.Name != "box" && child.Name != "image" && child.Name != "annotation").ToArray();
         if (expectedFormat is null)
         {
             return children.Length == 0
@@ -290,14 +317,30 @@ public static class PageXmlCodec
         DocumentBoxPayload payload = source.Payload switch
         {
             TextBoxPayload => new TextBoxPayload(value),
-            EquationBoxPayload => new EquationBoxPayload(value),
+            EquationBoxPayload equation => equation with { Latex = value },
+            AlgorithmBoxPayload algorithm => algorithm with { Markdown = value },
             ListBoxPayload => new ListBoxPayload(value),
             TableBoxPayload table => new TableBoxPayload(value, table.Html),
             CodeBoxPayload => new CodeBoxPayload(value),
             MediaBoxPayload media => new MediaBoxPayload(media.AssetId, isNull ? null : value),
             _ => throw new InvalidOperationException("Unsupported payload type.")
         };
-        return Result<DocumentBoxPayload?>.Success(payload);
+        return Result<DocumentBoxPayload?>.Success(payload with { Annotations = source.Payload?.Annotations });
+    }
+
+    private static XElement? ImageElement(DocumentBox box)
+    {
+        if (box.Payload is not EquationBoxPayload { HasImage: true })
+        {
+            return null;
+        }
+
+        return new XElement("image", new XAttribute("kind", "page-region"),
+            new XAttribute("page_id", box.PageId),
+            new XAttribute("x", box.BBox.X.ToString("R", CultureInfo.InvariantCulture)),
+            new XAttribute("y", box.BBox.Y.ToString("R", CultureInfo.InvariantCulture)),
+            new XAttribute("width", box.BBox.Width.ToString("R", CultureInfo.InvariantCulture)),
+            new XAttribute("height", box.BBox.Height.ToString("R", CultureInfo.InvariantCulture)));
     }
 
     private static XDocument LoadSecure(string xml)
@@ -342,6 +385,7 @@ public static class PageXmlCodec
         return payload switch
         {
             EquationBoxPayload => "latex",
+            AlgorithmBoxPayload => "markdown",
             CodeBoxPayload => "code",
             MediaBoxPayload => "description",
             TextBoxPayload or ListBoxPayload or TableBoxPayload => "markdown",
@@ -357,6 +401,7 @@ public static class PageXmlCodec
             ListBoxPayload list => list.Markdown,
             TableBoxPayload table => table.Markdown,
             EquationBoxPayload equation => equation.Latex,
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
             CodeBoxPayload code => code.Code,
             MediaBoxPayload media => media.Description,
             _ => null

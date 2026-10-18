@@ -13,6 +13,61 @@ namespace Patchouli.Tests;
 public sealed class CslStyleStoreTests
 {
     [Fact]
+    public async Task Independent_settings_subpages_preserve_each_others_fields_in_either_write_order()
+    {
+        await using TestContext context = await CreateContextAsync();
+        (await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+            StyleXml("apa", "APA", "en-US"))).IsSuccess.Should().BeTrue();
+        Dictionary<string, string> mappings = new() { ["de"] = "fr-FR" };
+
+        (await context.Store.SaveLocalizationAsync("fr-FR", mappings)).IsSuccess.Should().BeTrue();
+        CslSettings afterStyle = (await context.Store.SaveDefaultStyleAsync("apa")).Value;
+        afterStyle.Locale.Should().Be("fr-FR");
+        afterStyle.LanguageLocaleMappings.Should().BeEquivalentTo(mappings);
+
+        CslSettings afterLocalization =
+            (await context.Store.SaveLocalizationAsync(null, new Dictionary<string, string>())).Value;
+        afterLocalization.DefaultStyleId.Should().Be("apa");
+        afterLocalization.Locale.Should().BeNull();
+        afterLocalization.EffectiveLanguageLocaleMappings.Should().BeEmpty();
+
+        Result<CslSettings>[] concurrent = await Task.WhenAll(
+            context.Store.SaveDefaultStyleAsync(null), context.Store.SaveLocalizationAsync("de-DE", mappings));
+        concurrent.Should().OnlyContain(result => result.IsSuccess);
+        CslSettings final = (await context.Store.GetSettingsAsync()).Value;
+        final.DefaultStyleId.Should().BeNull();
+        final.Locale.Should().Be("de-DE");
+        final.EffectiveLanguageLocaleMappings.Should().BeEquivalentTo(mappings);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Removing_or_disabling_default_style_clears_only_the_default_style(bool disable)
+    {
+        await using TestContext context = await CreateContextAsync();
+        (await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+            StyleXml("apa", "APA", "en-US"))).IsSuccess.Should().BeTrue();
+        Dictionary<string, string> mappings = new() { ["de"] = "fr-FR" };
+        (await context.Store.SaveSettingsAsync("apa", "fr-FR", mappings)).IsSuccess.Should().BeTrue();
+        if (disable)
+        {
+            (await context.Store.DisableStyleAsync("apa")).IsSuccess.Should().BeTrue();
+        }
+        else
+        {
+            (await context.Store.RemoveStyleAsync("apa")).IsSuccess.Should().BeTrue();
+        }
+
+        CslSettings settings = (await context.Store.GetSettingsAsync()).Value;
+        settings.DefaultStyleId.Should().BeNull();
+        settings.Locale.Should().Be("fr-FR");
+        settings.EffectiveLanguageLocaleMappings.Should().BeEquivalentTo(mappings);
+    }
+
+    [Fact]
     public async Task Install_update_disable_remove_and_settings_round_trip()
     {
         await using TestContext context = await CreateContextAsync();

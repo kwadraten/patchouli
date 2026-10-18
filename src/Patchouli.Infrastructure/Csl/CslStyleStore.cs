@@ -459,6 +459,13 @@ public sealed class CslStyleStore : ICslStyleStore
                 "update csl_styles set enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
                 new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
                 transaction);
+            await connection.ExecuteAsync(
+                """
+                update csl_settings set default_style_id = null, updated_at = @UpdatedAt
+                where default_style_id = @StyleId;
+                """,
+                new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
+                transaction);
             Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
                 connection, transaction, style.Value.StyleId, cancellationToken);
             if (revision.IsFailure)
@@ -501,7 +508,11 @@ public sealed class CslStyleStore : ICslStyleStore
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             await connection.ExecuteAsync(
-                "update csl_styles set deleted = 1, enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
+                """
+                update csl_styles set deleted = 1, enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;
+                update csl_settings set default_style_id = null, updated_at = @UpdatedAt
+                where default_style_id = @StyleId;
+                """,
                 new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
                 transaction);
             Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
@@ -572,12 +583,14 @@ public sealed class CslStyleStore : ICslStyleStore
                 """
                 select default_style_id as DefaultStyleId,
                        locale as Locale,
+                       language_locale_mappings_json as LanguageLocaleMappingsJson,
                        updated_at as UpdatedAt
                 from csl_settings
                 limit 1;
                 """);
             return Result<CslSettings>.Success(row?.ToModel() ??
-                                               new CslSettings(null, null, _clock.UtcNow.ToUniversalTime()));
+                                               new CslSettings(null, null, _clock.UtcNow.ToUniversalTime(),
+                                                   CslSettings.DefaultLanguageLocaleMappings));
         }
         catch (OperationCanceledException)
         {
@@ -591,10 +604,50 @@ public sealed class CslStyleStore : ICslStyleStore
         }
     }
 
-    public async Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
+    public Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
         CancellationToken cancellationToken = default)
     {
-        if (!string.IsNullOrWhiteSpace(defaultStyleId))
+        return SaveSettingsCoreAsync(defaultStyleId, locale, null, false, cancellationToken);
+    }
+
+    public Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default)
+    {
+        return SaveSettingsCoreAsync(defaultStyleId, locale, languageLocaleMappings, true, cancellationToken);
+    }
+
+    public Task<Result<CslSettings>> SaveLanguageLocaleMappingsAsync(
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default)
+    {
+        return SaveSettingsCoreAsync(null, null, languageLocaleMappings, true, cancellationToken,
+            false, false);
+    }
+
+    public Task<Result<CslSettings>> SaveDefaultStyleAsync(string? defaultStyleId,
+        CancellationToken cancellationToken = default)
+    {
+        return SaveSettingsCoreAsync(defaultStyleId, null, null, false, cancellationToken, true, false);
+    }
+
+    public Task<Result<CslSettings>> SaveLocalizationAsync(string? locale,
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default)
+    {
+        return SaveSettingsCoreAsync(null, locale, languageLocaleMappings, true, cancellationToken, false);
+    }
+
+    private async Task<Result<CslSettings>> SaveSettingsCoreAsync(
+        string? defaultStyleId,
+        string? locale,
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        bool updateMappings,
+        CancellationToken cancellationToken,
+        bool updateDefaultStyle = true,
+        bool updateLocale = true)
+    {
+        if (updateDefaultStyle && !string.IsNullOrWhiteSpace(defaultStyleId))
         {
             Result<CslStyle> style = await GetStyleAsync(defaultStyleId, cancellationToken);
             if (style.IsFailure)
@@ -612,24 +665,52 @@ public sealed class CslStyleStore : ICslStyleStore
         try
         {
             DateTimeOffset updatedAt = _clock.UtcNow.ToUniversalTime();
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            IReadOnlyDictionary<string, string> mappings = NormalizeLanguageLocaleMappings(languageLocaleMappings);
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
             await connection.OpenAsync(cancellationToken);
-            await connection.ExecuteAsync("delete from csl_settings;");
-            await connection.ExecuteAsync(
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            // Only update fields owned by the caller; independent settings subpages may save concurrently.
+            List<string> assignments = ["updated_at = excluded.updated_at"];
+            if (updateDefaultStyle)
+            {
+                assignments.Add("default_style_id = excluded.default_style_id");
+            }
+
+            if (updateLocale)
+            {
+                assignments.Add("locale = excluded.locale");
+            }
+
+            if (updateMappings)
+            {
+                assignments.Add("language_locale_mappings_json = excluded.language_locale_mappings_json");
+            }
+
+            string sql = """
+                         insert into csl_settings (
+                             settings_id, default_style_id, locale, language_locale_mappings_json, updated_at)
+                         values ('default', @DefaultStyleId, @Locale, @LanguageLocaleMappingsJson, @UpdatedAt)
+                         on conflict(settings_id) do update set
+                         """ + " " + string.Join(", ", assignments) + ";";
+            await connection.ExecuteAsync(sql, new
+            {
+                DefaultStyleId = string.IsNullOrWhiteSpace(defaultStyleId) ? null : defaultStyleId.Trim(),
+                Locale = NormalizeLocale(locale),
+                LanguageLocaleMappingsJson = JsonSerializer.Serialize(mappings),
+                UpdatedAt = updatedAt.ToString("O")
+            }, transaction);
+            SettingsRow row = await connection.QuerySingleAsync<SettingsRow>(
                 """
-                insert into csl_settings (settings_id, default_style_id, locale, updated_at)
-                values ('default', @DefaultStyleId, @Locale, @UpdatedAt);
-                """,
-                new
-                {
-                    DefaultStyleId = string.IsNullOrWhiteSpace(defaultStyleId) ? null : defaultStyleId.Trim(),
-                    Locale = string.IsNullOrWhiteSpace(locale) ? null : locale.Trim(),
-                    UpdatedAt = updatedAt.ToString("O")
-                });
-            return Result<CslSettings>.Success(new CslSettings(
-                string.IsNullOrWhiteSpace(defaultStyleId) ? null : defaultStyleId.Trim(),
-                string.IsNullOrWhiteSpace(locale) ? null : locale.Trim(),
-                updatedAt));
+                select default_style_id as DefaultStyleId,
+                       locale as Locale,
+                       language_locale_mappings_json as LanguageLocaleMappingsJson,
+                       updated_at as UpdatedAt
+                from csl_settings where settings_id = 'default';
+                """, transaction: transaction);
+            await transaction.CommitAsync(cancellationToken);
+            return Result<CslSettings>.Success(row.ToModel());
         }
         catch (OperationCanceledException)
         {
@@ -838,11 +919,76 @@ public sealed class CslStyleStore : ICslStyleStore
     {
         public string? DefaultStyleId { get; set; }
         public string? Locale { get; set; }
+        public string? LanguageLocaleMappingsJson { get; set; }
         public string UpdatedAt { get; set; } = "";
 
         public CslSettings ToModel()
         {
-            return new CslSettings(DefaultStyleId, Locale, DateTimeOffset.Parse(UpdatedAt));
+            IReadOnlyDictionary<string, string> mappings = CslSettings.DefaultLanguageLocaleMappings;
+            if (!string.IsNullOrWhiteSpace(LanguageLocaleMappingsJson))
+            {
+                try
+                {
+                    mappings = NormalizeLanguageLocaleMappings(
+                        JsonSerializer.Deserialize<Dictionary<string, string>>(LanguageLocaleMappingsJson));
+                }
+                catch (JsonException)
+                {
+                    mappings = CslSettings.DefaultLanguageLocaleMappings;
+                }
+            }
+
+            return new CslSettings(DefaultStyleId, Locale, DateTimeOffset.Parse(UpdatedAt), mappings);
         }
+    }
+
+    private static string? NormalizeLocale(string? locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+        {
+            return null;
+        }
+
+        string normalized = locale.Trim().Replace('_', '-');
+        string[] parts = normalized.Split('-', StringSplitOptions.None);
+        if (parts[0].Length is < 2 or > 3 || !parts[0].All(char.IsAsciiLetter) ||
+            parts.Skip(1).Any(static part => part.Length is < 1 or > 8 || !part.All(char.IsAsciiLetterOrDigit)))
+        {
+            return null;
+        }
+
+        return Core.Bibliography.ItemLanguage.Normalize(normalized);
+    }
+
+    private static IReadOnlyDictionary<string, string> NormalizeLanguageLocaleMappings(
+        IReadOnlyDictionary<string, string>? mappings)
+    {
+        if (mappings is null)
+        {
+            return CslSettings.DefaultLanguageLocaleMappings;
+        }
+
+        Dictionary<string, string> normalized = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string rawLanguage, string rawLocale) in mappings)
+        {
+            string? language = Core.Bibliography.ItemLanguage.GetPrimaryLanguage(rawLanguage);
+            if (language is null || string.IsNullOrWhiteSpace(rawLocale))
+            {
+                continue;
+            }
+
+            string? locale = NormalizeLocale(rawLocale);
+            if (language == "zh" && locale == "zh-CN")
+            {
+                continue;
+            }
+
+            if (locale is not null)
+            {
+                normalized[language] = locale;
+            }
+        }
+
+        return normalized;
     }
 }

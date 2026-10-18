@@ -36,8 +36,8 @@ public sealed class MinerUPageRegionRunTests
         DocumentTreeRevision original = (await context.Trees.BeginWorkingRevisionAsync(
             context.Document.DocumentInstanceId, pageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("original"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0, 0, 1, 1),
+                    new TextBoxPayload("original"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(original.TreeRevisionId);
@@ -208,7 +208,7 @@ public sealed class MinerUPageRegionRunTests
             ? (await context.Trees.InsertLogicalPageAsync(edit.SessionId, null, new NormalizedBBox(0, 0, 1, 1))).Value
             : null;
         await context.Trees.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(root?.BoxId, null,
-            DocumentBoxType.Text, null, null, new NormalizedBBox(.1, .1, .5, .5), new TextBoxPayload("old text")));
+            DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .5, .5), new TextBoxPayload("old text")));
         context.MinerUClient.ContentListJson =
             """[{"type":"list","page_idx":0,"text":"","bbox":[0,0,100,100]}]""";
         OcrQueueScheduler queue = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow),
@@ -318,9 +318,9 @@ public sealed class MinerUPageRegionRunTests
             context.Document.DocumentInstanceId,
             context.Pages[0].PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage, null, null,
-                    new NormalizedBBox(0, 0, 0.5, 1), null),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.LogicalPage, null, null,
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 0.5, 1),
+                    null),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.LogicalPage, null,
                     new NormalizedBBox(0.5, 0, 0.5, 1), null)
             ],
             DocumentTreeRevisionSource.Import)).Value;
@@ -382,8 +382,8 @@ public sealed class MinerUPageRegionRunTests
             context.Document.DocumentInstanceId,
             targetedPage.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage, null, null,
-                    new NormalizedBBox(0, 0, 1, 1), null)
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 1, 1),
+                    null)
             ],
             DocumentTreeRevisionSource.Import)).Value;
         DocumentTreeRevision committed =

@@ -118,7 +118,7 @@ public static class AgentNativeTools
         text.AppendLine("""find => {"in":"patchouli://texts/document-id/","limit":10}""");
         text.AppendLine("""fetch => {"uris":["patchouli://texts/document-id/page-1.xml"]}""");
         text.AppendLine(
-            """put => {"uri":"patchouli://translations/document-id/page-1.xml","source_revision":"rev-id","translation_version":1,"boxes":[{"box_id":"box-id","content":"<box id=\"box-id\" type=\"text\" sub_type=\"\" base_type=\"\" heading_level=\"\" code_language=\"\" suppressed=\"false\" readonly=\"false\" translated=\"true\"><payload format=\"markdown\">Translated text</payload></box>"}]}""");
+            """put => {"uri":"patchouli://translations/document-id/page-1.xml","source_revision":"rev-id","translation_version":1,"boxes":[{"box_id":"box-id","content":"<box id=\"box-id\" type=\"text\" sub_type=\"\" heading_level=\"\" code_language=\"\" suppressed=\"false\" readonly=\"false\" translated=\"true\"><payload format=\"markdown\">Translated text</payload></box>"}]}""");
         text.AppendLine("""cite => {"refs":["patchouli://items/item-id.yml"]}""");
         text.AppendLine("""fsi => {"code":"printfn \"%d\" (1 + 1)"}""");
         return text.ToString();

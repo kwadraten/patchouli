@@ -9,18 +9,90 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Host.Lifecycle;
+using Patchouli.Host.Composition;
+using Patchouli.UI;
+using Patchouli.Reading;
 
 namespace Patchouli.Tests;
 
 public sealed class DocumentTreeServiceTests
 {
+    [Theory]
+    [InlineData(RuntimeHostKind.Desktop)]
+    [InlineData(RuntimeHostKind.Headless)]
+    public async Task New_owned_host_recovers_manual_drafts_and_preserves_other_revisions(RuntimeHostKind kind)
+    {
+        await using Context context = await Context.CreateAsync();
+        using TemporaryAppSettingsFile settings = new();
+        string path = context.DatabaseConnectionFactory.DatabasePath;
+        DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(
+            context.DatabaseConnectionFactory, context.Clock, context.DocumentId, context.PageId, "committed");
+        PageEditSession saved = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        (await context.Trees.CommitPageEditAsync(saved.SessionId)).IsSuccess.Should().BeTrue();
+        PageEditSession draft = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentTreeRevision ocr = (await context.Trees.BeginWorkingRevisionAsync(context.DocumentId, context.PageId,
+            [], DocumentTreeRevisionSource.Import)).Value;
+
+        // Shutdown and unowned service construction do not discard manual drafts.
+        HostServices unowned = await HostServices.CreateAsync(path, settingsPath: settings.Path);
+        await unowned.ShutdownAsync();
+        (await context.Trees.GetPageEditAsync(draft.SessionId)).IsSuccess.Should().BeTrue();
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(path, kind)!;
+        HostServices owned = await HostServices.CreateAsync(path, settingsPath: settings.Path, runtimeHostLease: lease);
+        try
+        {
+            (await owned.DocumentTrees.GetPageEditAsync(draft.SessionId)).IsFailure.Should().BeTrue();
+            (await owned.DocumentTrees.ListBoxesAsync(draft.DraftRevisionId)).IsFailure.Should().BeTrue();
+            (await owned.DocumentTrees.ListBoxesAsync(committed.TreeRevisionId)).Value.Should().ContainSingle();
+            (await owned.DocumentTrees.ListBoxesAsync(ocr.TreeRevisionId)).IsSuccess.Should().BeTrue();
+            (await owned.DocumentTrees.GetCurrentRevisionAsync(context.DocumentId, context.PageId)).Value
+                .TreeRevisionId.Should().Be(saved.DraftRevisionId);
+            (await owned.DocumentTrees.BeginPageEditAsync(context.DocumentId, context.PageId)).IsSuccess.Should()
+                .BeTrue();
+        }
+        finally
+        {
+            await owned.ShutdownAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Startup_recovery_requires_a_live_lease_for_the_same_database_and_rolls_back_on_failure()
+    {
+        await using Context context = await Context.CreateAsync();
+        string path = context.DatabaseConnectionFactory.DatabasePath;
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        await context.Editor.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(null, null,
+            DocumentBoxType.Text, null, new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("draft")));
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(path, RuntimeHostKind.Desktop)!;
+        Task wrongDatabase = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory,
+            lease, path + ".other");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => wrongDatabase);
+
+        await using SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+                                      create trigger fail_draft_delete before delete on document_tree_revisions
+                                      when old.status = 'working'
+                                      begin select raise(abort, 'injected failure'); end;
+                                      """);
+        Task failing = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory, lease, path);
+        await Assert.ThrowsAsync<SqliteException>(() => failing);
+        (await context.Trees.GetPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should().ContainSingle();
+        await lease.DisposeAsync();
+        Task disposed = PageEditSessionRecovery.RecoverAsync(context.DatabaseConnectionFactory, lease, path);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => disposed);
+    }
+
     [Fact]
     public async Task Invalid_page_ocr_replacement_rolls_back_the_draft()
     {
         await using Context context = await Context.CreateAsync();
         PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
         await context.Editor.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(null, null,
-            DocumentBoxType.Text, null, null, new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("draft")));
+            DocumentBoxType.Text, null, new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("draft")));
         IReadOnlyList<DocumentBox> original = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
 
         Result result = await context.Editor.ApplyPageOcrAsync(edit, original,
@@ -38,8 +110,8 @@ public sealed class DocumentTreeServiceTests
         PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
         DocumentTreeRevision replacement = (await context.Trees.BeginWorkingRevisionAsync(context.DocumentId,
             context.PageId, [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("new current"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0, 0, 1, 1),
+                    new TextBoxPayload("new current"))
             ],
             DocumentTreeRevisionSource.Import)).Value;
         await context.Trees.CommitWorkingRevisionAsync(replacement.TreeRevisionId);
@@ -65,15 +137,15 @@ public sealed class DocumentTreeServiceTests
         DocumentTreeRevision working = (await context.Trees.BeginWorkingRevisionAsync(
             context.DocumentId, context.PageId,
             [
-                new DocumentBoxSeed(before, null, 0, DocumentBoxType.LogicalPage, null, null,
-                    new NormalizedBBox(0, 0, 1, .1), null),
-                new DocumentBoxSeed(parent, null, 1, DocumentBoxType.LogicalPage, null, null,
+                new DocumentBoxSeed(before, null, 0, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 1, .1),
+                    null),
+                new DocumentBoxSeed(parent, null, 1, DocumentBoxType.LogicalPage, null,
                     new NormalizedBBox(0, .1, 1, .5), null),
-                new DocumentBoxSeed(child, parent, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.05, .2, .9, .1), new TextBoxPayload("Child")),
-                new DocumentBoxSeed(after, null, 2, DocumentBoxType.LogicalPage, null, null,
-                    new NormalizedBBox(0, .6, 1, .4), null),
-                new DocumentBoxSeed(continuation, after, 0, DocumentBoxType.Text, null, null,
+                new DocumentBoxSeed(child, parent, 0, DocumentBoxType.Text, null, new NormalizedBBox(.05, .2, .9, .1),
+                    new TextBoxPayload("Child")),
+                new DocumentBoxSeed(after, null, 2, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, .6, 1, .4),
+                    null),
+                new DocumentBoxSeed(continuation, after, 0, DocumentBoxType.Text, null,
                     new NormalizedBBox(.05, .8, .9, .1), new TextBoxPayload(""), ContinuesFromBoxId: child)
             ], DocumentTreeRevisionSource.Import)).Value;
         (await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).IsSuccess.Should().BeTrue();
@@ -102,7 +174,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Title,
                 null,
-                null,
                 new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
                 new TextBoxPayload("A **title**"),
                 2))).Value;
@@ -112,7 +183,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 title.BoxId,
                 DocumentBoxType.Text,
-                null,
                 null,
                 new NormalizedBBox(0.05, 0.25, 0.9, 0.2),
                 new TextBoxPayload("First paragraph.")))).Value;
@@ -161,7 +231,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
                 new TextBoxPayload("Original text.")))).Value;
 
@@ -195,7 +264,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
                 new TextBoxPayload("Paragraph.")))).Value;
         DocumentBox title = (await context.Editor.DrawAndInsertLeafAsync(
@@ -204,7 +272,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 text.BoxId,
                 DocumentBoxType.Title,
-                null,
                 null,
                 new NormalizedBBox(0.05, 0.2, 0.9, 0.1),
                 new TextBoxPayload("Heading."),
@@ -215,7 +282,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 title.BoxId,
                 DocumentBoxType.Code,
-                null,
                 null,
                 new NormalizedBBox(0.05, 0.35, 0.9, 0.1),
                 new CodeBoxPayload("x = 1"),
@@ -259,7 +325,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(0.1, 0.1, 0.5, 0.3),
                 new TextBoxPayload("Existing")));
 
@@ -269,7 +334,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 null,
                 DocumentBoxType.Text,
-                null,
                 null,
                 new NormalizedBBox(0.2, 0.2, 0.5, 0.3),
                 new TextBoxPayload("Overlap")));
@@ -286,10 +350,10 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("First")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.2, 0.2, 0.6, 0.4), new TextBoxPayload("Second"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.6, 0.4),
+                    new TextBoxPayload("First")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(0.2, 0.2, 0.6, 0.4),
+                    new TextBoxPayload("Second"))
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -308,12 +372,12 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.8), new MediaBoxPayload(null, "Figure")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.2, 0.2, 0.2, 0.1), new TextBoxPayload("Embedded label")),
-                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.5, 0.6, 0.2, 0.1), new TextBoxPayload("Embedded note"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.8),
+                    new MediaBoxPayload(null, "Figure")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(0.2, 0.2, 0.2, 0.1),
+                    new TextBoxPayload("Embedded label")),
+                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, new NormalizedBBox(0.5, 0.6, 0.2, 0.1),
+                    new TextBoxPayload("Embedded note"))
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -346,12 +410,12 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.8), new TextBoxPayload("Outer")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.2, 0.2, 0.5, 0.5), new TextBoxPayload("Middle")),
-                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.3, 0.3, 0.2, 0.2), new TextBoxPayload("Inner"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.8),
+                    new TextBoxPayload("Outer")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(0.2, 0.2, 0.5, 0.5),
+                    new TextBoxPayload("Middle")),
+                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, new NormalizedBBox(0.3, 0.3, 0.2, 0.2),
+                    new TextBoxPayload("Inner"))
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -374,9 +438,9 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.5, 0.5), new TextBoxPayload("Container")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.5, 0.5),
+                    new TextBoxPayload("Container")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null,
                     new NormalizedBBox(0.15, 0.15, 0.45, 0.455), new TextBoxPayload("Protruding"))
             ],
             DocumentTreeRevisionSource.Import);
@@ -396,10 +460,10 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.4, 0.4), new TextBoxPayload("First")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.4, 0.4), new TextBoxPayload("Duplicate"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.4, 0.4),
+                    new TextBoxPayload("First")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.4, 0.4),
+                    new TextBoxPayload("Duplicate"))
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -416,10 +480,10 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("Body")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("Header"), Suppressed: true)
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.6, 0.4),
+                    new TextBoxPayload("Body")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, new NormalizedBBox(0.1, 0.1, 0.6, 0.4),
+                    new TextBoxPayload("Header"), Suppressed: true)
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -444,7 +508,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(0.05, 0.05, 0.9, 0.2),
                 new TextBoxPayload("Top")));
         DocumentBox footer = (await context.Editor.DrawAndInsertLeafAsync(
@@ -453,7 +516,6 @@ public sealed class DocumentTreeServiceTests
                 secondPage.BoxId,
                 null,
                 DocumentBoxType.Footer,
-                null,
                 null,
                 new NormalizedBBox(0.05, 0.8, 0.9, 0.1),
                 new TextBoxPayload("Bottom"),
@@ -474,11 +536,11 @@ public sealed class DocumentTreeServiceTests
         await using Context context = await Context.CreateAsync();
         PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
         DocumentBox first = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
-            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(.05, .05, .4, .2), new TextBoxPayload("First")))).Value;
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, new NormalizedBBox(.05, .05, .4, .2),
+                new TextBoxPayload("First")))).Value;
         DocumentBox second = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
-            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(.55, .05, .4, .2), new TextBoxPayload("Second")))).Value;
+            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null, new NormalizedBBox(.55, .05, .4, .2),
+                new TextBoxPayload("Second")))).Value;
 
         Result<IReadOnlyList<DocumentBox>> split = await context.Editor.SplitLeafAsync(edit.SessionId,
             new SplitLeafCommand(first.BoxId, new NormalizedBBox(.05, .05, .18, .2),
@@ -502,10 +564,10 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(headId, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.05, .05, .4, .2), new TextBoxPayload("Head text")),
-                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(.55, .05, .4, .2), new TextBoxPayload(""),
+                new DocumentBoxSeed(headId, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.05, .05, .4, .2),
+                    new TextBoxPayload("Head text")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(.55, .05, .4, .2),
+                    new TextBoxPayload(""),
                     ContinuesFromBoxId: headId)
             ],
             DocumentTreeRevisionSource.Import)).Value;
@@ -580,7 +642,6 @@ public sealed class DocumentTreeServiceTests
                 null,
                 DocumentBoxType.Text,
                 null,
-                null,
                 new NormalizedBBox(0.05, 0.05, 0.9, 0.4),
                 new TextBoxPayload("First paragraph.\n\nSecond paragraph.")))).Value;
         DocumentTreeRevision committed = (await context.Trees.CommitPageEditAsync(edit.SessionId)).Value;
@@ -601,8 +662,8 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Working text"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                    new TextBoxPayload("Working text"))
             ],
             DocumentTreeRevisionSource.Import);
 
@@ -669,8 +730,8 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Committed via document commit"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                    new TextBoxPayload("Committed via document commit"))
             ],
             DocumentTreeRevisionSource.ManualEdit);
         working.IsSuccess.Should().BeTrue(working.ErrorMessage);
@@ -687,8 +748,8 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId,
             context.PageId,
             [
-                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Second"))
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                    new TextBoxPayload("Second"))
             ],
             DocumentTreeRevisionSource.ManualEdit);
         secondWorking.IsSuccess.Should().BeTrue(secondWorking.ErrorMessage);
@@ -717,8 +778,8 @@ public sealed class DocumentTreeServiceTests
             context.DocumentId, context.PageId)).Value;
         (await context.Editor.DrawAndInsertLeafAsync(
                 firstEdit.SessionId,
-                new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
-                    new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("First"))))
+                new InsertLeafCommand(null, null, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                    new TextBoxPayload("First"))))
             .IsSuccess.Should().BeTrue();
 
         DocumentTreeRevision first = (await context.Trees.CommitPageEditAsync(firstEdit.SessionId)).Value;
@@ -750,11 +811,11 @@ public sealed class DocumentTreeServiceTests
         PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
         DocumentBox box = (await context.Editor.DrawAndInsertLeafAsync(
             edit.SessionId,
-            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Invalidated")))).Value;
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                new TextBoxPayload("Invalidated")))).Value;
         (await context.Editor.DrawAndInsertLeafAsync(
                 edit.SessionId,
-                new InsertLeafCommand(null, box.BoxId, DocumentBoxType.Text, null, null,
+                new InsertLeafCommand(null, box.BoxId, DocumentBoxType.Text, null,
                     new NormalizedBBox(0.1, 0.3, 0.8, 0.1), new TextBoxPayload("Unreachable"))))
             .IsSuccess.Should().BeTrue();
         await using (SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection())
@@ -854,8 +915,8 @@ public sealed class DocumentTreeServiceTests
 
         DocumentBox box = (await context.Editor.DrawAndInsertLeafAsync(
             edit.SessionId,
-            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
-                new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Draft")))).Value;
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.8, 0.1),
+                new TextBoxPayload("Draft")))).Value;
 
         Result discard = await context.Trees.DiscardPageEditAsync(edit.SessionId);
         discard.IsSuccess.Should().BeTrue();

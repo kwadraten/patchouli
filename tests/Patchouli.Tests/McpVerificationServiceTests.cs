@@ -104,8 +104,8 @@ public sealed class McpVerificationServiceTests
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
                 doc.Value.DocumentInstanceId, page.Value.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("test text"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("test text"))
                 ],
                 DocumentTreeRevisionSource.Import);
             if (working.IsFailure)

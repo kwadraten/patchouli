@@ -75,7 +75,6 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
             null,
             boxType,
             null,
-            null,
             new NormalizedBBox(normX, normY, normW, normH),
             new TextBoxPayload("Test content"),
             null,

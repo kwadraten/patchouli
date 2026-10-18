@@ -50,7 +50,8 @@ public static class HeadlessRuntimeHost
                 lease.DatabasePath,
                 settingsPath: settingsPath,
                 reportUnexpectedException: ReportUnexpected,
-                activityTracker: activityTracker);
+                activityTracker: activityTracker,
+                runtimeHostLease: lease);
 
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
             if (library.IsFailure)

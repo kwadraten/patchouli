@@ -20,6 +20,7 @@ namespace Patchouli.Tests;
 public sealed class FileImportServiceTests : IDisposable
 {
     private const string PdfBytes = "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n";
+
     private const string CslBytes =
         "<style xmlns=\"http://purl.org/net/xbiblio/csl\"><info>" +
         "<title>T</title><id>http://example.org/styles/t</id></info></style>";
@@ -47,17 +48,17 @@ public sealed class FileImportServiceTests : IDisposable
         Func<string, PdfImportResult>? pdfImport = null,
         Func<string, Result<CslLocalInstallResult>>? cslInstall = null)
     {
-        var pdf = new FakePdfWorkflow(pdfImport ?? (_ => PdfImportResultFactory.Imported()));
-        var csl = new FakeCslInstall(cslInstall ?? (_ =>
+        FakePdfWorkflow pdf = new(pdfImport ?? (_ => PdfImportResultFactory.Imported()));
+        FakeCslInstall csl = new(cslInstall ?? (_ =>
             Result<CslLocalInstallResult>.Success(new CslLocalInstallResult(
                 true, "t", "patchouli://csl-styles/t.csl", "T",
                 [], false, false, true, null, null))));
-        var behavior = new FakeBehaviorSettings(
+        FakeBehaviorSettings behavior = new(
             new FileHandlingBehaviorSettings(mcpBehavior, dragBehavior));
-        var resolution = new FakeFileResolution(roots ?? []);
-        var fingerprints = new FakeFingerprints();
-        var recovery = new FakeRecoveryStore();
-        var service = new FileImportService(pdf, csl, behavior, resolution, fingerprints,
+        FakeFileResolution resolution = new(roots ?? []);
+        FakeFingerprints fingerprints = new();
+        FakeRecoveryStore recovery = new();
+        FileImportService service = new(pdf, csl, behavior, resolution, fingerprints,
             recovery, new SystemClock());
         return new Harness(service, pdf, csl, behavior, resolution, recovery);
     }
@@ -225,8 +226,8 @@ public sealed class FileImportServiceTests : IDisposable
     {
         // Even with move behavior configured, scan keeps the existing contract.
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
-            dragBehavior: FileHandlingBehavior.MoveToFirstSearchRoot);
+            FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot);
         string path = WriteFile("scan.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -241,7 +242,7 @@ public sealed class FileImportServiceTests : IDisposable
     public async Task Import_csl_never_moves_even_with_move_behavior()
     {
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
             roots: [SearchRoot("first")]);
         string path = WriteFile("style.csl", CslBytes);
 
@@ -260,7 +261,7 @@ public sealed class FileImportServiceTests : IDisposable
     public async Task Import_authorization_failure_happens_before_any_move()
     {
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
             roots: [SearchRoot("first")]);
         string path = WriteFile("auth.pdf", PdfBytes);
 
@@ -287,7 +288,7 @@ public sealed class FileImportServiceTests : IDisposable
     public async Task Import_move_fails_explicitly_with_no_search_root()
     {
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: []);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: []);
         string path = WriteFile("mv.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -304,10 +305,10 @@ public sealed class FileImportServiceTests : IDisposable
         // The "root" is a file, not a directory: not available, never silently
         // replaced by another root or by in-place registration.
         string fileAsRoot = WriteFile("notadir", "x");
-        var root = new FileSearchRoot(FileSearchRootId.New(), LibraryId.New(), fileAsRoot, true,
+        FileSearchRoot root = new(FileSearchRootId.New(), LibraryId.New(), fileAsRoot, true,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: [root]);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: [root]);
         string path = WriteFile("mv2.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -322,10 +323,10 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_move_uses_only_the_first_root_in_order()
     {
-        var first = SearchRoot("first");
-        var second = SearchRoot("second");
+        FileSearchRoot first = SearchRoot("first");
+        FileSearchRoot second = SearchRoot("second");
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first, second]);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first, second]);
         string path = WriteFile("order.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -341,9 +342,9 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_move_skips_file_already_inside_target_root()
     {
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
         string path = Path.Combine(first.RootPath, "inside.pdf");
         File.WriteAllText(path, PdfBytes, Encoding.ASCII);
 
@@ -358,11 +359,11 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_move_reuses_identical_content_at_target_name()
     {
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         // Same bytes already occupy the target name: no physical move, dedup decides.
         File.WriteAllText(Path.Combine(first.RootPath, "same.pdf"), PdfBytes, Encoding.ASCII);
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
             roots: [first],
             pdfImport: _ => PdfImportResultFactory.Duplicate());
         string path = WriteFile("same.pdf", PdfBytes);
@@ -380,10 +381,10 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_move_same_name_different_content_gets_deterministic_suffix()
     {
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         File.WriteAllText(Path.Combine(first.RootPath, "clash.pdf"), PdfBytes + "different", Encoding.ASCII);
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
         string path = WriteFile("clash.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -401,9 +402,9 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_move_reports_moved_issue()
     {
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
+            FileHandlingBehavior.MoveToFirstSearchRoot, roots: [first]);
         string path = WriteFile("noted.pdf", PdfBytes);
 
         Result<FileImportResult> result = await harness.Service.ImportAsync(
@@ -416,9 +417,9 @@ public sealed class FileImportServiceTests : IDisposable
     [Fact]
     public async Task Import_failure_after_move_restores_original_position()
     {
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
             roots: [first],
             pdfImport: _ => PdfImportResultFactory.Failed("boom"));
         string path = WriteFile("restore.pdf", PdfBytes);
@@ -442,20 +443,23 @@ public sealed class FileImportServiceTests : IDisposable
         // moved (here the PDF import observes the cancellation), the moved file
         // must be restored with a non-cancelled cleanup token and the cancellation
         // rethrown — never swallowed, never leaving the file stranded at the target.
-        var first = SearchRoot("first");
-        using var cts = new CancellationTokenSource();
+        FileSearchRoot first = SearchRoot("first");
+        using CancellationTokenSource cts = new();
+        CancellationToken token = cts.Token;
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
             roots: [first],
             pdfImport: _ =>
             {
+                // ImportAsync and the assertion finish before the source is disposed.
+                // ReSharper disable once AccessToDisposedClosure
                 cts.Cancel();
-                throw new OperationCanceledException(cts.Token);
+                throw new OperationCanceledException(token);
             });
         string path = WriteFile("cancel.pdf", PdfBytes);
 
         Func<Task> act = () => harness.Service.ImportAsync(
-            new FileImportRequest(path, null, FileImportTrigger.McpAdd), cts.Token);
+            new FileImportRequest(path, null, FileImportTrigger.McpAdd), token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         // The file is back where it started; nothing is lost.
@@ -469,11 +473,11 @@ public sealed class FileImportServiceTests : IDisposable
     public async Task Import_drag_drop_uses_its_own_independent_behavior()
     {
         // MCP add keeps in place while drag-drop moves: the two actions are independent.
-        var first = SearchRoot("first");
+        FileSearchRoot first = SearchRoot("first");
         Harness harness = CreateHarness(
-            mcpBehavior: FileHandlingBehavior.KeepInPlace,
-            dragBehavior: FileHandlingBehavior.MoveToFirstSearchRoot,
-            roots: [first]);
+            FileHandlingBehavior.KeepInPlace,
+            FileHandlingBehavior.MoveToFirstSearchRoot,
+            [first]);
         string mcpPath = WriteFile("mcp.pdf", PdfBytes);
         string dragPath = WriteFile("drag.pdf", PdfBytes);
 
@@ -505,19 +509,31 @@ public sealed class FileImportServiceTests : IDisposable
 
     private static class PdfImportResultFactory
     {
-        public static PdfImportResult Imported() => new(true, null, "imported",
-            "item-1", "asset-1", "doc-1", PageCount: 12);
+        public static PdfImportResult Imported()
+        {
+            return new PdfImportResult(true, null, "imported",
+                "item-1", "asset-1", "doc-1", 12);
+        }
 
-        public static PdfImportResult Duplicate() => new(true, null, "already_imported",
-            "item-9", "asset-9", "doc-9", PageCount: 12);
+        public static PdfImportResult Duplicate()
+        {
+            return new PdfImportResult(true, null, "already_imported",
+                "item-9", "asset-9", "doc-9", 12);
+        }
 
-        public static PdfImportResult WithPageFailure() => new(true, null,
-            "imported_with_page_failures", "item-1", "asset-1", "doc-1", PageCount: 12,
-            FailedPageCount: 1,
-            PageFailures: [new PdfImportPageFailure(3, "page image unreadable")]);
+        public static PdfImportResult WithPageFailure()
+        {
+            return new PdfImportResult(true, null,
+                "imported_with_page_failures", "item-1", "asset-1", "doc-1", 12,
+                1,
+                [new PdfImportPageFailure(3, "page image unreadable")]);
+        }
 
-        public static PdfImportResult Failed(string message) => new(false, message, null,
-            null, null, null);
+        public static PdfImportResult Failed(string message)
+        {
+            return new PdfImportResult(false, message, null,
+                null, null, null);
+        }
     }
 
     private sealed class FakePdfWorkflow(Func<string, PdfImportResult> handler) : IPdfImportWorkflow
@@ -538,78 +554,122 @@ public sealed class FileImportServiceTests : IDisposable
         : ICslLocalFileInstallService
     {
         public Task<Result<CslLocalInstallResult>> InstallFromFileAsync(string path,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(handler(path));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(handler(path));
+        }
     }
 
     private sealed class FakeBehaviorSettings(FileHandlingBehaviorSettings settings)
         : IFileHandlingBehaviorSettingsService
     {
         public Task<Result<FileHandlingBehaviorSettings>> GetSettingsAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<FileHandlingBehaviorSettings>.Success(settings));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<FileHandlingBehaviorSettings>.Success(settings));
+        }
 
         public Task<Result<FileHandlingBehaviorSettings>> SaveSettingsAsync(
-            FileHandlingBehaviorSettings value, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<FileHandlingBehaviorSettings>.Success(value));
+            FileHandlingBehaviorSettings value, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<FileHandlingBehaviorSettings>.Success(value));
+        }
     }
 
     private sealed class FakeFileResolution(IReadOnlyList<FileSearchRoot> roots) : IFileResolutionService
     {
         public Task<Result<IReadOnlyList<FileSearchRoot>>> ListSearchRootsAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<IReadOnlyList<FileSearchRoot>>.Success(roots));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<FileSearchRoot>>.Success(roots));
+        }
 
         public Task<Result<FileSearchRoot>> AddSearchRootAsync(SelectedFileSearchRoot selectedRoot,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<FileSearchRoot>> BindSearchRootAsync(FileSearchRootId rootId,
-            SelectedFileSearchRoot selectedRoot, CancellationToken cancellationToken = default) =>
+            SelectedFileSearchRoot selectedRoot, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result> DeleteSearchRootAsync(FileSearchRootId rootId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result> SetSearchRootAvailabilityAsync(FileSearchRootId rootId, bool isAvailable,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result> SetSearchRootOrderAsync(IReadOnlyList<FileSearchRootId> orderedRootIds,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<IReadOnlyList<KnownFileLocation>>> ListKnownLocationsAsync(
-            FileAssetId fileAssetId, CancellationToken cancellationToken = default) =>
+            FileAssetId fileAssetId, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<FileResolutionResult>> ResolveFileAsync(FileAssetId fileAssetId,
-            ResolveFilePurpose purpose, CancellationToken cancellationToken = default) =>
+            ResolveFilePurpose purpose, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<FileAsset>> ConfirmMovedCandidateAsync(FileAssetId fileAssetId,
-            string selectedPath, CancellationToken cancellationToken = default) =>
+            string selectedPath, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<FileAsset>> RebindSourceAsync(FileAssetId fileAssetId, string selectedPath,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<FileAsset>> ConfirmChangedFileAsync(FileAssetId fileAssetId,
-            string selectedPath, CancellationToken cancellationToken = default) =>
+            string selectedPath, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result> ReuseRevisionForNewFingerprintAsync(FileAssetId fileAssetId,
-            string selectedPath, CancellationToken cancellationToken = default) =>
+            string selectedPath, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result> KeepOldEvidenceAsync(FileAssetId fileAssetId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result> MarkFileMissingAsync(FileAssetId fileAssetId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class FakeFingerprints : IFileFingerprintService
     {
         public Task<Result<FileFingerprint>> GetFileMetadataAsync(string path,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<string>> ComputeQuickHashAsync(string path,
             CancellationToken cancellationToken = default)
@@ -640,7 +700,9 @@ public sealed class FileImportServiceTests : IDisposable
         }
 
         public Task<Result<IReadOnlyList<FileImportRecoveryRecord>>> ListRecordsAsync(int limit = 50,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<IReadOnlyList<FileImportRecoveryRecord>>.Success(Records));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<FileImportRecoveryRecord>>.Success(Records));
+        }
     }
 }

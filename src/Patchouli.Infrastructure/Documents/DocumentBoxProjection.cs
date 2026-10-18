@@ -53,9 +53,10 @@ internal static class DocumentBoxProjection
 
     public static string PlainText(DocumentBox box, IMarkdownEngine markdown)
     {
-        return box.Payload switch
+        string plainText = box.Payload switch
         {
             TextBoxPayload text => markdown.ToPlainText(text.Markdown),
+            AlgorithmBoxPayload algorithm => markdown.ToPlainText(algorithm.Markdown),
             EquationBoxPayload equation => equation.Latex,
             ListBoxPayload list => markdown.ToPlainText(list.Markdown),
             TableBoxPayload table => markdown.ToPlainText(table.Markdown),
@@ -64,5 +65,8 @@ internal static class DocumentBoxProjection
                                      (box.BoxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),
             _ => string.Empty
         };
+        return string.Join("\n", new[] { plainText }.Concat((box.Payload?.Annotations ?? [])
+                .Select(annotation => markdown.ToPlainText(annotation.Markdown)))
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 }

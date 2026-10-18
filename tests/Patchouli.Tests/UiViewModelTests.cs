@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO.Compression;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Reactive.Concurrency;
 using System.Text;
 using Avalonia;
 using Avalonia.Headless;
@@ -40,6 +41,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Csl;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
@@ -153,8 +155,14 @@ public sealed class UiViewModelTests : IDisposable
     private MainWindowViewModel CreateMainWindow(IClipboardService? clipboard = null, IAppLogger? logger = null,
         bool autoStartMcpServer = false, int mcpPort = 4536)
     {
+        // Pure VM assertions are synchronous. Preserve the dispatcher only for real window tests;
+        // xUnit's synchronization context is not an application UI scheduler.
+        IScheduler uiScheduler = Application.Current is not null && Dispatcher.UIThread.CheckAccess() &&
+                                 SynchronizationContext.Current is { } context
+            ? new SynchronizationContextScheduler(context)
+            : ImmediateScheduler.Instance;
         return new MainWindowViewModel(clipboard, logger, autoStartMcpServer: autoStartMcpServer, mcpPort: mcpPort,
-            settingsPath: _settings.Path);
+            settingsPath: _settings.Path, uiScheduler: uiScheduler);
     }
 
     private MainWindow CreateMainWindowShell(IClipboardService? clipboard = null, bool autoStartMcpServer = false,
@@ -403,11 +411,20 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_uses_seven_groups_and_keeps_csl_about_outside()
+    public void Settings_page_groups_csl_styles_with_localization_and_keeps_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "同步与快照");
+            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "引用与题录", "同步与快照");
+        vm.Settings.Categories.Select(category => category.Content)
+            .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
+            .Where(content => content is AboutViewModel)
+            .Should()
+            .BeEmpty("About remains a workspace tab");
+        vm.Settings.SectionEntries.Single(entry => entry.Id == "csl_installed").Content
+            .Should().BeSameAs(vm.Settings.CslStyleManager);
+        vm.OpenCslStyleManagerCommand.Should().NotBeNull();
+        vm.ShowAboutCommand.Should().NotBeNull();
         vm.Settings.SectionEntries.Select(entry => entry.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
@@ -415,7 +432,7 @@ public sealed class UiViewModelTests : IDisposable
         // 「本地文件」and「工作流」own their commands instead of the shared settings draft pipeline:
         // workflow edits are committed and compile-checked one at a time.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "workflows"))
+            .Where(entry => entry.Id is not ("local_files" or "workflows" or "csl_installed" or "csl_online"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
@@ -3260,7 +3277,7 @@ public sealed class UiViewModelTests : IDisposable
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await using MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             HostServices services = await vm.ServicesAsync();
@@ -3500,7 +3517,7 @@ public sealed class UiViewModelTests : IDisposable
             await mcp.LoadAsync();
             mcp.Port = 4567;
             mcp.PermissionRows.Should().HaveCount(8);
-            mcp.PermissionRows.Should().OnlyContain(row => row.Cells.Count == 5);
+            mcp.PermissionRows.Should().OnlyContain(row => row.Cells.Count == McpPermissionPolicy.Verbs.Count);
             mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[1].Enabled = false;
             mcp.IsDirty.Should().BeTrue();
             mcp.SaveState.Should().Be(SettingsSaveState.Dirty);
@@ -4124,7 +4141,7 @@ public sealed class UiViewModelTests : IDisposable
                 boxes =
                 [
                     new DocumentBox(_currentRevision.TreeRevisionId, LogicalPageBoxId, _documentInstanceId, _pageId,
-                        null, null, DocumentBoxType.LogicalPage, null, null, new NormalizedBBox(0, 0, 1, 1), null,
+                        null, null, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 1, 1), null,
                         null, null, null, false)
                 ];
             }
@@ -4133,7 +4150,7 @@ public sealed class UiViewModelTests : IDisposable
                 boxes =
                 [
                     new DocumentBox(RegionRevisionId, DocumentBoxId.New(), _documentInstanceId, _pageId,
-                        LogicalPageBoxId, null, DocumentBoxType.Text, null, null, new NormalizedBBox(.1, .2, .3, .4),
+                        LogicalPageBoxId, null, DocumentBoxType.Text, null, new NormalizedBBox(.1, .2, .3, .4),
                         new TextBoxPayload("queued region text"), null, null, null, false)
                 ];
             }

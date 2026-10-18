@@ -122,8 +122,8 @@ public sealed class McpSourceValidationTests
             Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
                 document.DocumentInstanceId, page.PageId,
                 [
-                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
-                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("source text"))
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                        new TextBoxPayload("source text"))
                 ],
                 DocumentTreeRevisionSource.Import);
             if (working.IsFailure)

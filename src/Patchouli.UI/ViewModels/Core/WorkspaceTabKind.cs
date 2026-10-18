@@ -31,7 +31,8 @@ public enum WorkspaceTabKind
     OcrQueue,
     AgentChat,
     ItemEditor,
-    CslStyleManager,
-    About,
+
+    // Value 8 belonged to the retired standalone CSL manager.
+    About = 9,
     Changelog
 }

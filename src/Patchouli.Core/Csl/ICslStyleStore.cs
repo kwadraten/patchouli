@@ -20,4 +20,19 @@ public interface ICslStyleStore
 
     Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
         CancellationToken cancellationToken = default);
+
+    Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CslSettings>> SaveLanguageLocaleMappingsAsync(
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CslSettings>> SaveDefaultStyleAsync(string? defaultStyleId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CslSettings>> SaveLocalizationAsync(string? locale,
+        IReadOnlyDictionary<string, string>? languageLocaleMappings,
+        CancellationToken cancellationToken = default);
 }

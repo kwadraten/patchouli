@@ -781,6 +781,9 @@ public sealed class ReadingView : Control, ICustomHitTest
                     block.Text, MonoTypeface(), bodySize, _foreground, contentWidth - 2 * CodePadding);
                 layout.Height = layout.Text.Height + 2 * CodePadding;
                 break;
+            case "equation" when block.Image is not null:
+                layout = BuildMedia(block, contentWidth, bodySize);
+                break;
             case "equation":
                 layout.Text = BuildRawLayout(
                     block.Text, BodyTypeface(), bodySize, _foreground, contentWidth - 2 * EquationPadding,
@@ -1106,15 +1109,17 @@ public sealed class ReadingView : Control, ICustomHitTest
             // Media blocks are built here rather than by BuildBlock's initializer, so the block
             // width has to be carried over: DrawMedia centres the image with (Width - DestWidth)/2.
             Width = Math.Max(1, width),
-            PlainText = string.IsNullOrWhiteSpace(block.Text)
-                ? block.MediaLabel ?? string.Empty
-                : $"{block.MediaLabel ?? string.Empty}\n{block.Text}"
+            PlainText = block.Kind == "equation"
+                ? block.Text
+                : string.IsNullOrWhiteSpace(block.Text)
+                    ? block.MediaLabel ?? string.Empty
+                    : $"{block.MediaLabel ?? string.Empty}\n{block.Text}"
         };
         double innerWidth = Math.Max(1, width - 2 * MediaPadding);
         layout.MediaLabel = BuildRawLayout(
             block.MediaLabel ?? "媒体", BodyBoldTypeface(), bodySize, _foreground, innerWidth,
             TextAlignment.Center);
-        layout.Text = string.IsNullOrWhiteSpace(block.Text)
+        layout.Text = block.Kind == "equation" || string.IsNullOrWhiteSpace(block.Text)
             ? null
             : BuildRawLayout(block.Text, BodyTypeface(), bodySize, _muted, innerWidth, TextAlignment.Center);
         double captionHeight = layout.MediaLabel.Height + (layout.Text is null ? 0 : 4 + layout.Text.Height);
@@ -1233,6 +1238,9 @@ public sealed class ReadingView : Control, ICustomHitTest
                 context.FillRectangle(_surfaceHigh,
                     new Rect(layout.Left, layout.Top, width, layout.Height), 4);
                 layout.Text?.Draw(context, new Point(layout.Left + CodePadding, layout.Top + CodePadding));
+                break;
+            case "equation" when layout.Source.Image is not null:
+                DrawMedia(context, layout);
                 break;
             case "equation":
                 context.FillRectangle(_surfaceHigh,

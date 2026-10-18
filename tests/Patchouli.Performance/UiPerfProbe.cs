@@ -14,6 +14,7 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Credentials;
+using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -93,27 +94,29 @@ public static class UiPerfProbe
             await PerformanceFixture.SeedAsync(
                 seedDatabase, migrationsDirectory, options.Seed, options.Items, 1, 1,
                 cancellationToken);
-            SqliteConnection.ClearAllPools();
+            seedDatabase.ClearPools();
             WriteSettings(settingsPath, databasePath, root);
             await CompleteUiFixtureSetupAsync(seedDatabase, settingsPath, root, cancellationToken);
-            SqliteConnection.ClearAllPools();
+            seedDatabase.ClearPools();
 
-            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-            Trace(!options.Quiet, $"[ui-perf] session ready");
+            UiPerfResult result;
+            await using (HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp)))
+            {
+                Trace(!options.Quiet, $"[ui-perf] session ready");
+                result = await session.Dispatch(
+                    async () => await MeasureOnUiThreadAsync(options, databasePath, settingsPath, cancellationToken),
+                    cancellationToken);
+                Trace(!options.Quiet, $"[ui-perf] dispatch complete");
+            }
 
-            UiPerfResult result = await session.Dispatch(
-                async () => await MeasureOnUiThreadAsync(options, databasePath, settingsPath, cancellationToken),
-                cancellationToken);
-            Trace(!options.Quiet, $"[ui-perf] dispatch complete");
-            await session.DisposeAsync();
             Trace(!options.Quiet, $"[ui-perf] session disposed");
 
-            SqliteConnection.ClearAllPools();
+            seedDatabase.ClearPools();
             return result;
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            new SqliteConnectionFactory(databasePath).ClearPools();
             TryDeleteDirectory(root);
         }
     }
@@ -230,7 +233,7 @@ public static class UiPerfProbe
         finally
         {
             timer.Stop();
-            SqliteConnection.ClearAllPools();
+            heartbeatDatabase.ClearPools();
         }
 
         long[] stamps = ticks.ToArray();
@@ -269,7 +272,7 @@ public static class UiPerfProbe
         {
             double top = 0.04 + 0.9 * boxIndex / Math.Max(1, boxCount);
             seeds[boxIndex] = new DocumentBoxSeed(
-                null, null, boxIndex, DocumentBoxType.Text, null, null,
+                null, null, boxIndex, DocumentBoxType.Text, null,
                 new NormalizedBBox(0.04, top, 0.92, Math.Max(0.004, 0.88 / boxCount)),
                 new TextBoxPayload($"ui heartbeat commit box {boxIndex:000000}"), null);
         }
@@ -413,24 +416,7 @@ public static class UiPerfProbe
 
     private static async Task StopServicesAsync(MainWindowViewModel viewModel)
     {
-        try
-        {
-            await viewModel.StopMcpServerAsync();
-        }
-        catch
-        {
-            // The probe never starts the MCP server; stopping it is best-effort.
-        }
-
-        try
-        {
-            HostServices services = await viewModel.ServicesAsync();
-            await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StopAsync();
-        }
-        catch
-        {
-            // The OCR queue is best-effort to release the database file for cleanup.
-        }
+        await viewModel.DisposeAsync();
     }
 
     private static bool SafeIsUiThread(Dispatcher dispatcher)

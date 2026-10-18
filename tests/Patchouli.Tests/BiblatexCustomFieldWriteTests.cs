@@ -188,7 +188,7 @@ public sealed class BiblatexCustomFieldWriteTests : IAsyncLifetime
         item.PublicationTitle.Should().Be("テスト誌");
         item.Note.Should().Contain("中文备注");
         item.AbstractText.Should().Contain("摘要");
-        item.Language.Should().Be("chinese");
+        item.Language.Should().Be("zh");
         item.Tags.Should().Contain("汉字");
         item.Creators.Should().ContainSingle(creator => creator.Family == "山田" && creator.Given == "太郎");
         item.Dates.Should().ContainSingle(date => date.Role == ItemDateRoles.Issued);

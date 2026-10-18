@@ -52,6 +52,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
 using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Workflows;
 using Patchouli.UI;
 using Patchouli.Workflows;
@@ -70,6 +71,9 @@ public sealed class HostServices
     private readonly OnnxDocumentLayoutDetector _documentLayoutDetector = new();
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly object _shutdownGate = new();
+    private Task? _shutdownTask;
+    private Task _sessionResumeTask = Task.CompletedTask;
     private LlmAppSettings _llmSettings;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
@@ -133,7 +137,8 @@ public sealed class HostServices
             settings.FileScanning.ExclusionPatterns);
         AppSettingsDeviceRootBindingStore rootBindings = new(settingsPath);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
-            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings);
+            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings,
+            revisions: LibraryRevisions);
         BiblatexHelper = new BiblatexHelperClient();
         BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents, activityTracker,
             LifetimeToken);
@@ -547,10 +552,12 @@ public sealed class HostServices
     public static async Task<HostServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
         string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
-        IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null)
+        IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null,
+        RuntimeHostLease? runtimeHostLease = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
+        runtimeHostLease?.ValidateOwnership(path);
         settingsPath ??= PatchouliAppSettings.ResolvePath();
         settings ??= PatchouliAppSettings.Load(settingsPath);
         startupProgress?.Report(StartupStage.ValidatingPaths);
@@ -576,6 +583,19 @@ public sealed class HostServices
         {
             startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+            if (runtimeHostLease is not null)
+            {
+                try
+                {
+                    await PageEditSessionRecovery.RecoverAsync(services.ConnectionFactory, runtimeHostLease, path);
+                }
+                catch
+                {
+                    await services.ShutdownAsync();
+                    throw;
+                }
+            }
+
             await services.HostWorkflows.Configuration.MigrateLegacyAsync(CancellationToken.None);
 
             Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
@@ -669,11 +689,21 @@ public sealed class HostServices
     }
 
     /// <summary>Quiesces background work before a runtime-host ownership lease is released.</summary>
-    public async Task ShutdownAsync()
+    public Task ShutdownAsync()
+    {
+        lock (_shutdownGate)
+        {
+            return _shutdownTask ??= ShutdownCoreAsync();
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
     {
         _lifetimeCancellation.Cancel();
-        LibraryRevisionMonitor.Stop();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        await _sessionResumeTask;
+        await AgentSessions.DisposeAsync();
+        await LibraryRevisionMonitor.DisposeAsync();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
         ConnectionFactory.ClearPools();
@@ -686,12 +716,20 @@ public sealed class HostServices
     /// </summary>
     private void StartInterruptedSessionResume(IAppLogger logger)
     {
-        Task resume = Task.Run(() =>
-            AgentSessionAutoResume.ResumeInterruptedAsync(AgentSessions, HostWorkflows, logger, LifetimeToken));
-        _ = resume.ContinueWith(
-            task => _reportUnexpectedException(
-                task.Exception?.GetBaseException() ?? new InvalidOperationException("Session auto-resume failed."),
-                "host.composition", "session-auto-resume"),
-            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        _sessionResumeTask = Task.Run(async () =>
+        {
+            try
+            {
+                await AgentSessionAutoResume.ResumeInterruptedAsync(AgentSessions, HostWorkflows, logger,
+                    LifetimeToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (LifetimeToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                _reportUnexpectedException(exception, "host.composition", "session-auto-resume");
+            }
+        });
     }
 }

@@ -14,11 +14,11 @@ namespace Patchouli.Tests;
 public sealed class CslLocalFileInstallServiceTests : IDisposable
 {
     private const string StyleXmlTemplate = """
-        <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0">
-          <info><title>{0}</title><id>http://www.zotero.org/styles/{1}</id>{2}</info>
-          <citation><layout/></citation>
-        </style>
-        """;
+                                            <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0">
+                                              <info><title>{0}</title><id>http://www.zotero.org/styles/{1}</id>{2}</info>
+                                              <citation><layout/></citation>
+                                            </style>
+                                            """;
 
     private readonly string _root = Directory.CreateDirectory(
         Path.Combine(Path.GetTempPath(), $"patchouli-csl-{Guid.NewGuid():N}")).FullName;
@@ -35,14 +35,16 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
         return path;
     }
 
-    private static string StyleXml(string id, string title, string extraInfo = "") =>
-        string.Format(StyleXmlTemplate, title, id, extraInfo);
+    private static string StyleXml(string id, string title, string extraInfo = "")
+    {
+        return string.Format(StyleXmlTemplate, title, id, extraInfo);
+    }
 
     [Fact]
     public async Task Install_new_id_returns_canonical_style_uri()
     {
-        var store = new InMemoryCslStyleStore();
-        var service = new CslLocalFileInstallService(store);
+        InMemoryCslStyleStore store = new();
+        CslLocalFileInstallService service = new(store);
         string path = WriteStyleFile("fresh.csl", StyleXml("fresh-style", "Fresh Style"));
 
         Result<CslLocalInstallResult> result = await service.InstallFromFileAsync(path);
@@ -59,8 +61,8 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_same_id_same_content_reuses()
     {
-        var store = new InMemoryCslStyleStore();
-        var service = new CslLocalFileInstallService(store);
+        InMemoryCslStyleStore store = new();
+        CslLocalFileInstallService service = new(store);
         string path = WriteStyleFile("dup.csl", StyleXml("dup-style", "Dup Style"));
 
         Result<CslLocalInstallResult> first = await service.InstallFromFileAsync(path);
@@ -76,8 +78,8 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_same_id_different_content_is_conflict_not_silent_overwrite()
     {
-        var store = new InMemoryCslStyleStore();
-        var service = new CslLocalFileInstallService(store);
+        InMemoryCslStyleStore store = new();
+        CslLocalFileInstallService service = new(store);
         string pathA = WriteStyleFile("a.csl", StyleXml("clash", "Title A"));
         string pathB = WriteStyleFile("b.csl", StyleXml("clash", "Title B"));
 
@@ -94,8 +96,8 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_dependent_style_with_missing_parent_reports_not_silent_download()
     {
-        var store = new InMemoryCslStyleStore();
-        var service = new CslLocalFileInstallService(store);
+        InMemoryCslStyleStore store = new();
+        CslLocalFileInstallService service = new(store);
         string xml = StyleXml("child-style", "Child Style",
             "<link href=\"http://www.zotero.org/styles/ghost-parent\" rel=\"independent-parent\"/>");
         string path = WriteStyleFile("child.csl", xml);
@@ -113,8 +115,8 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_dependent_style_with_present_parent_is_renderable()
     {
-        var store = new InMemoryCslStyleStore();
-        var service = new CslLocalFileInstallService(store);
+        InMemoryCslStyleStore store = new();
+        CslLocalFileInstallService service = new(store);
         await service.InstallFromFileAsync(WriteStyleFile("parent.csl", StyleXml("base-parent", "Base")));
         string xml = StyleXml("child2", "Child 2",
             "<link href=\"http://www.zotero.org/styles/base-parent\" rel=\"independent-parent\"/>");
@@ -130,7 +132,7 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_invalid_xml_fails()
     {
-        var service = new CslLocalFileInstallService(new InMemoryCslStyleStore());
+        CslLocalFileInstallService service = new(new InMemoryCslStyleStore());
         string path = WriteStyleFile("bad.csl", "<style><info>");
 
         Result<CslLocalInstallResult> result = await service.InstallFromFileAsync(path);
@@ -141,7 +143,7 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
     [Fact]
     public async Task Install_missing_file_fails_with_not_found()
     {
-        var service = new CslLocalFileInstallService(new InMemoryCslStyleStore());
+        CslLocalFileInstallService service = new(new InMemoryCslStyleStore());
 
         Result<CslLocalInstallResult> result =
             await service.InstallFromFileAsync(Path.Combine(_root, "nope.csl"));
@@ -156,18 +158,24 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
         public int InstallCallCount { get; private set; }
 
         public Task<Result<IReadOnlyList<CslStyle>>> ListInstalledStylesAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<IReadOnlyList<CslStyle>>.Success(Styles.Values.ToArray()));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<CslStyle>>.Success(Styles.Values.ToArray()));
+        }
 
         public Task<Result<CslStyle>> GetStyleAsync(string styleId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Styles.TryGetValue(styleId, out CslStyle? style)
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Styles.TryGetValue(styleId, out CslStyle? style)
                 ? Result<CslStyle>.Success(style)
                 : Result<CslStyle>.Failure(AppErrorCodes.NotFound, "Style not found."));
+        }
 
         public Task<Result<string>> GetStyleContentAsync(string styleId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<string>.Failure(AppErrorCodes.NotFound, "Style not found."));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<string>.Failure(AppErrorCodes.NotFound, "Style not found."));
+        }
 
         public Task<Result<CslStyle>> InstallStyleAsync(CslCatalogStyle catalogStyle, string contentXml,
             CancellationToken cancellationToken = default)
@@ -176,7 +184,7 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
             string hash = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(
                     System.Text.Encoding.UTF8.GetBytes(contentXml))).ToLowerInvariant();
-            var style = new CslStyle(catalogStyle.StyleId, catalogStyle.DisplayName,
+            CslStyle style = new(catalogStyle.StyleId, catalogStyle.DisplayName,
                 catalogStyle.DefaultLocale, catalogStyle.SourceUrl, catalogStyle.SourceKind,
                 hash, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, true, false);
             Styles[catalogStyle.StyleId] = style;
@@ -184,23 +192,60 @@ public sealed class CslLocalFileInstallServiceTests : IDisposable
         }
 
         public Task<Result<CslStyle>> ReplaceStyleAsync(string styleId, string contentXml,
-            string expectedRevision, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<CslStyle>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+            string expectedRevision, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CslStyle>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+        }
 
         public Task<Result<CslStyle>> DisableStyleAsync(string styleId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<CslStyle>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CslStyle>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+        }
 
         public Task<Result> RemoveStyleAsync(string styleId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+        }
 
         public Task<Result<CslSettings>> GetSettingsAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<CslSettings>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CslSettings>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+        }
 
         public Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<CslSettings>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CslSettings>.Failure(AppErrorCodes.UnsupportedOperation, "n/a"));
+        }
+
+        public Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
+            IReadOnlyDictionary<string, string>? languageLocaleMappings,
+            CancellationToken cancellationToken = default)
+        {
+            return GetSettingsAsync(cancellationToken);
+        }
+
+        public Task<Result<CslSettings>> SaveLanguageLocaleMappingsAsync(
+            IReadOnlyDictionary<string, string>? languageLocaleMappings,
+            CancellationToken cancellationToken = default)
+        {
+            return GetSettingsAsync(cancellationToken);
+        }
+
+        public Task<Result<CslSettings>> SaveDefaultStyleAsync(string? defaultStyleId,
+            CancellationToken cancellationToken = default)
+        {
+            return GetSettingsAsync(cancellationToken);
+        }
+
+        public Task<Result<CslSettings>> SaveLocalizationAsync(string? locale,
+            IReadOnlyDictionary<string, string>? languageLocaleMappings,
+            CancellationToken cancellationToken = default)
+        {
+            return GetSettingsAsync(cancellationToken);
+        }
     }
 }

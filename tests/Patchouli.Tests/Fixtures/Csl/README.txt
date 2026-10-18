@@ -1,0 +1,2 @@
+Source: https://github.com/redleafnew/Chinese-STD-GB-T-7714-related-csl/blob/master/src/GB-T-7714%E2%80%942015%EF%BC%88%E9%A1%BA%E5%BA%8F%E7%BC%96%E7%A0%81%EF%BC%8C%E5%8F%8C%E8%AF%AD%EF%BC%89/GB-T-7714%E2%80%942015%EF%BC%88%E9%A1%BA%E5%BA%8F%E7%BC%96%E7%A0%81%EF%BC%8C%E5%8F%8C%E8%AF%AD%EF%BC%89.csl
+License: Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0), as declared in the style metadata.

@@ -60,7 +60,12 @@ public sealed class McpServerSettingsTests
         loaded.IsSuccess.Should().BeTrue();
         loaded.Value.Port.Should().Be(4540);
         File.ReadAllText(settingsPath).Should().Contain("redacted-token");
-        loaded.Value.ToolOverrides.Should().ContainSingle();
+        loaded.Value.ToolOverrides.Should().BeEquivalentTo(new[]
+        {
+            new McpToolOverride("search_library", false, "disabled for tests"),
+            new McpToolOverride("patchouli.add", false, "Added by migration: explicitly enable to use this tool."),
+            new McpToolOverride("patchouli.view", false, "Added by migration: explicitly enable to use this tool.")
+        });
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
         loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false));
     }

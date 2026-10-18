@@ -208,18 +208,23 @@ public sealed class VersionedEvidenceReader : IVersionedEvidenceReader
 
     private static string BoxMarkdown(DocumentBox box)
     {
-        return box.Payload switch
+        string fragment = box.Payload switch
         {
             TextBoxPayload text when box.BoxType == DocumentBoxType.Title =>
                 $"{new string('#', box.HeadingLevel ?? 1)} {text.Markdown.Trim()}",
             TextBoxPayload text => text.Markdown,
-            EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
+            EquationBoxPayload equation => string.IsNullOrWhiteSpace(equation.Latex)
+                ? "[Equation image]"
+                : $"$$\n{equation.Latex.Trim()}\n$$",
             ListBoxPayload list => list.Markdown,
             TableBoxPayload table => table.Markdown,
             CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
             MediaBoxPayload media => CompileMedia(box.BoxType, media),
             _ => string.Empty
         };
+        return string.Join("\n\n", new[] { fragment }.Concat((box.Payload?.Annotations ?? [])
+            .Select(annotation => annotation.Markdown)).Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 
     private static string CompileCode(string code, string? language)

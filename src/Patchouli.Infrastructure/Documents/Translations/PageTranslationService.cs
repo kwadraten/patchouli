@@ -409,15 +409,7 @@ public sealed class PageTranslationService : IPageTranslationService
             return BoxPayloadFailure(source.BoxId, "The replacement payload type must match the source payload type.");
         }
 
-        string validationType = DocumentBoxType.IsKnown(source.BoxType)
-            ? source.BoxType
-            : source.BaseType switch
-            {
-                "image" => DocumentBoxType.Image,
-                "table" => DocumentBoxType.Table,
-                "code" => DocumentBoxType.Code,
-                _ => DocumentBoxType.Text
-            };
+        string validationType = source.BoxType;
         Result leafValidation = _markdown.ValidateLeaf(validationType, replacement);
         if (leafValidation.IsFailure)
         {
@@ -436,8 +428,18 @@ public sealed class PageTranslationService : IPageTranslationService
             return BoxPayloadFailure(source.BoxId, "The replacement cannot change its media asset id.");
         }
 
-        DocumentBox renderSource = source with { ParentBoxId = null, NextSiblingBoxId = null };
-        DocumentBox changed = renderSource with { Payload = replacement };
+        if (source.Payload is EquationBoxPayload equation && replacement is EquationBoxPayload changedEquation &&
+            equation.HasImage != changedEquation.HasImage)
+        {
+            return BoxPayloadFailure(source.BoxId, "The formula image region cannot be changed by translation.");
+        }
+
+        DocumentBox renderSource = source with
+        {
+            ParentBoxId = null, NextSiblingBoxId = null,
+            Payload = source.Payload with { Annotations = null }
+        };
+        DocumentBox changed = renderSource with { Payload = replacement with { Annotations = null } };
         CompiledMarkdown original = DocumentMarkdownRenderer.Render([renderSource], _markdown, true, false, null);
         string fragment = DocumentMarkdownRenderer.CompileBoxFragment(changed, false) ?? string.Empty;
         TranslationValidationResult validation = _validator.Validate(original, fragment, [renderSource]);
@@ -451,7 +453,7 @@ public sealed class PageTranslationService : IPageTranslationService
             return BoxPayloadFailure(source.BoxId, "The translation has no valid payload fragment.");
         }
 
-        return Result<string>.Success(storage);
+        return Result<string>.Success(replacement is MediaBoxPayload ? storage : PayloadText(replacement));
     }
 
     private static Result<string> BoxPayloadFailure(DocumentBoxId boxId, string message)
@@ -479,6 +481,7 @@ public sealed class PageTranslationService : IPageTranslationService
             TextBoxPayload text => text.Markdown,
             ListBoxPayload list => list.Markdown,
             TableBoxPayload table => table.Markdown,
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
             EquationBoxPayload equation => equation.Latex,
             CodeBoxPayload code => code.Code,
             MediaBoxPayload media => media.Description ?? string.Empty,

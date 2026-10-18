@@ -21,6 +21,38 @@ namespace Patchouli.Tests;
 public sealed class OcrLifecycleBoxTreeTests
 {
     [Fact]
+    public async Task Shared_importer_escapes_text_and_lists_without_rewriting_typed_code_or_latex()
+    {
+        await using Context context = await Context.CreateAsync();
+
+        OcrBoxCandidate Box(string type, DocumentBoxPayload payload, int order)
+        {
+            return new OcrBoxCandidate(type, null, order, payload, new NormalizedBBox(0, order * .2, 1, .15),
+                null, null, false);
+        }
+
+        CodeBoxPayload code = new("<option> &lt;option&gt;");
+        EquationBoxPayload equation = new("x < y");
+        OcrDocumentTreeCandidate candidate = new([
+            new OcrPageCandidate(context.Pages[0].PageId, 0, [
+                Box(DocumentBoxType.Text, new TextBoxPayload("Option <option>"), 0),
+                Box(DocumentBoxType.List, new ListBoxPayload("- <option>"), 1),
+                Box(DocumentBoxType.Code, code, 2),
+                Box(DocumentBoxType.Equation, equation, 3)
+            ])
+        ], []);
+
+        Result<OcrDocumentTreeImportResult> result = await new OcrDocumentTreeImporter(context.Trees)
+            .BeginWorkingAsync(new OcrDocumentTreeImportRequest(context.Document.DocumentInstanceId, candidate));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        IReadOnlyList<DocumentBox> boxes =
+            (await context.Trees.ListBoxesAsync(result.Value.WorkingRevisionIds.Single())).Value;
+        boxes.Select(box => box.Payload).Should().Equal(
+            new TextBoxPayload("Option &lt;option>"), new ListBoxPayload("- &lt;option>"), code, equation);
+    }
+
+    [Fact]
     public async Task Working_page_ocr_overrides_auto_apply_for_the_local_engine()
     {
         await using Context context = await Context.CreateAsync();

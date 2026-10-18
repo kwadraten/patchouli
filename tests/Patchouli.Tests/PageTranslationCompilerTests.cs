@@ -121,15 +121,15 @@ public sealed class PageTranslationCompilerTests
     {
         DocumentBoxId logical = DocumentBoxId.New();
         return await context.CommitAsync(
-            new DocumentBoxSeed(logical, null, 0, DocumentBoxType.LogicalPage, null, null,
-                new NormalizedBBox(0, 0, 1, 1), null),
-            new DocumentBoxSeed(DocumentBoxId.New(), logical, 0, DocumentBoxType.Title, null, null,
+            new DocumentBoxSeed(logical, null, 0, DocumentBoxType.LogicalPage, null, new NormalizedBBox(0, 0, 1, 1),
+                null),
+            new DocumentBoxSeed(DocumentBoxId.New(), logical, 0, DocumentBoxType.Title, null,
                 new NormalizedBBox(.1, .05, .8, .05), new TextBoxPayload("Original title"), 1),
-            new DocumentBoxSeed(DocumentBoxId.New(), logical, 1, DocumentBoxType.Text, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logical, 1, DocumentBoxType.Text, null,
                 new NormalizedBBox(.1, .15, .8, .05), new TextBoxPayload("Original paragraph")),
-            new DocumentBoxSeed(DocumentBoxId.New(), logical, 2, DocumentBoxType.Equation, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logical, 2, DocumentBoxType.Equation, null,
                 new NormalizedBBox(.1, .25, .8, .05), new EquationBoxPayload("E = mc^2")),
-            new DocumentBoxSeed(DocumentBoxId.New(), logical, 3, DocumentBoxType.Code, null, null,
+            new DocumentBoxSeed(DocumentBoxId.New(), logical, 3, DocumentBoxType.Code, null,
                 new NormalizedBBox(.1, .35, .8, .05), new CodeBoxPayload("int x = 1;"), CodeLanguage: "csharp"));
     }
 

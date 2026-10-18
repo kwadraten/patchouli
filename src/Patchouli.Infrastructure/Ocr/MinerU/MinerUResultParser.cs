@@ -11,21 +11,13 @@ internal sealed class MinerUResultParser
     {
         try
         {
-            using MinerUZipReader reader = MinerUZipReader.Open(prepared.ZipPath);
-            string? contentListJson = reader.ReadFileContent("_content_list.json");
-            if (string.IsNullOrWhiteSpace(contentListJson))
+            Result<MinerUContentListDocument> parsed = ReadContentList(prepared.ZipPath);
+            if (parsed.IsFailure)
             {
-                return Result<string>.Failure(MinerUProviderStatus.Failed,
-                    "MinerU result zip did not contain a content list.");
+                return Result<string>.Failure(parsed.ErrorCode!, parsed.ErrorMessage!);
             }
 
-            MinerUContentListDocument? document = new MinerUContentListParser().Parse(contentListJson);
-            if (document is null)
-            {
-                return Result<string>.Failure(MinerUProviderStatus.Failed,
-                    "MinerU content list could not be parsed.");
-            }
-
+            MinerUContentListDocument document = parsed.Value;
             string[] lines = document.Pages
                 .SelectMany(page => page.Blocks)
                 .Select(block => block.Text)
@@ -87,6 +79,12 @@ internal sealed class MinerUResultParser
         try
         {
             using MinerUZipReader reader = MinerUZipReader.Open(zipPath);
+            string? middleJson = reader.ReadFileContent("middle_json.json");
+            if (middleJson is not null)
+            {
+                return Result<MinerUContentListDocument>.Success(MinerUMiddleJsonParser.Parse(middleJson));
+            }
+
             string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
                                       ?? reader.ReadFileContent("_content_list.json");
             if (contentListJson is null)

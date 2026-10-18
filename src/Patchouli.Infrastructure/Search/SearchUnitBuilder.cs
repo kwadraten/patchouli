@@ -202,7 +202,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         DocumentBoxRow[] rows = (await connection.QueryAsync<DocumentBoxRow>(
             """
             select box_id as BoxId, parent_box_id as ParentBoxId, next_sibling_box_id as NextSiblingBoxId,
-                box_type as BoxType, base_type as BaseType, payload_json as PayloadJson,
+                box_type as BoxType, sub_type as SubType, payload_json as PayloadJson,
                 bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
                 suppressed as Suppressed
             from document_boxes where tree_revision_id = @RevisionId;
@@ -555,7 +555,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         public string? ParentBoxId { get; set; }
         public string? NextSiblingBoxId { get; set; }
         public string BoxType { get; set; } = string.Empty;
-        public string? BaseType { get; set; }
+        public string? SubType { get; set; }
         public string? PayloadJson { get; set; }
         public double BBoxX { get; set; }
         public double BBoxY { get; set; }
@@ -568,9 +568,9 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         {
             return new DocumentBox(revisionId, DocumentBoxId.Parse(BoxId), documentInstanceId, pageId,
                 ParentBoxId is null ? null : DocumentBoxId.Parse(ParentBoxId),
-                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, null, BaseType,
+                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, SubType,
                 new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
-                DocumentBoxPayloadSerializer.Deserialize(BoxType, BaseType, PayloadJson), null, null, null,
+                DocumentBoxPayloadSerializer.Deserialize(BoxType, SubType, PayloadJson), null, null, null,
                 Suppressed == 1);
         }
     }

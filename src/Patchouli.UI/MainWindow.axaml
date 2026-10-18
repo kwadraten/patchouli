@@ -5,7 +5,6 @@
         xmlns:local="using:Patchouli.UI.ViewModels"
         xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
-        xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
         xmlns:agentchat="using:Patchouli.UI.ViewModels.AgentChat"
         xmlns:controls="using:Patchouli.UI.Controls"
@@ -24,9 +23,6 @@
     <DataTemplate DataType="{x:Type editor:ItemEditorViewModel}">
       <!-- DataType="{x:Type local:ItemEditorViewModel}" -->
       <views:ItemEditorPage />
-    </DataTemplate>
-    <DataTemplate DataType="{x:Type csl:CslStyleManagerViewModel}">
-      <views:CslStyleManagerPage />
     </DataTemplate>
     <DataTemplate DataType="{x:Type settings:SettingsViewModel}">
       <views:SettingsPage />

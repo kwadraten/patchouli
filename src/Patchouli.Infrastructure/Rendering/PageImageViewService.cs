@@ -323,12 +323,12 @@ public sealed class PageImageViewService : IPageImageViewService
         {
             SKBitmap scaled = new(scaledWidth, scaledHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
             using (SKCanvas canvas = new(scaled))
-            using (SKPaint paint = new() { FilterQuality = SKFilterQuality.High })
+            using (SKImage cropImage = SKImage.FromBitmap(crop))
             {
-                canvas.DrawBitmap(crop,
+                canvas.DrawImage(cropImage,
                     SKRect.Create(0, 0, crop.Width, crop.Height),
                     SKRect.Create(0, 0, scaledWidth, scaledHeight),
-                    paint);
+                    new SKSamplingOptions(SKCubicResampler.Mitchell), null);
                 canvas.Flush();
             }
 
@@ -370,7 +370,7 @@ public sealed class PageImageViewService : IPageImageViewService
     private static string MapSourceError(string? errorCode, string? message)
     {
         if (string.Equals(errorCode, AppErrorCodes.NotFound, StringComparison.Ordinal) ||
-            (message?.Contains("unavailable", StringComparison.OrdinalIgnoreCase) == true))
+            message?.Contains("unavailable", StringComparison.OrdinalIgnoreCase) == true)
         {
             return PageImageViewErrorCodes.SourceMissing;
         }

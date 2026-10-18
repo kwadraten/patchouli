@@ -78,6 +78,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             UnexpectedExceptions.Sink.Report(exception, boundary, operation);
 
     private HostServices? _services;
+    private readonly object _shutdownGate = new();
+    private Task? _shutdownTask;
     private ILibraryRevisionService? _observedLibraryRevisions;
     private McpServerHost? _mcpHost;
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
@@ -1497,17 +1499,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         if (changeSet.StyleIds.Count > 0)
         {
-            foreach (CslStyleManagerViewModel manager in OpenTabs.Select(tab => tab.Content)
-                         .OfType<CslStyleManagerViewModel>())
+            if (_settingsViewModel is { } settings)
             {
-                await manager.RefreshInstalledStylesAsync();
+                await settings.CslStyleManager.RefreshIfLoadedAsync();
             }
 
-            foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
-                         .OfType<ItemEditorViewModel>())
-            {
-                await editor.RefreshStylePreviewAsync();
-            }
+            await RefreshCslPreviewsAsync();
         }
 
         if (gen != LibraryGeneration)
@@ -1953,8 +1950,22 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await ShutdownAsync();
     }
 
-    public async Task ShutdownAsync()
+    public Task ShutdownAsync()
     {
+        lock (_shutdownGate)
+        {
+            return _shutdownTask ??= ShutdownCoreAsync();
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
+    {
+        foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
+                     .ToArray())
+        {
+            await pdf.StopAsync();
+        }
+
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         Shell.Dispose();
@@ -2074,6 +2085,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
+        foreach (WorkspaceTabViewModel tab in Layout.Tabs.Where(tab => tab.Kind == WorkspaceTabKind.PdfWorkspace)
+                     .ToArray())
+        {
+            if (!await Workspace.CloseAsync(tab.TabId))
+            {
+                throw new InvalidOperationException("页面草稿清理失败，无法切换书库。");
+            }
+        }
+
         Interlocked.Increment(ref _libraryGeneration);
         Raise(nameof(LibraryGeneration));
         DetachLibraryChangeNotifications();
@@ -2182,7 +2202,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             CreateMigrationProgress(),
             reportUnexpectedException: ReportUnexpectedException,
             startupProgress: CreateStartupStageProgress(),
-            activityTracker: _activityTracker);
+            activityTracker: _activityTracker,
+            runtimeHostLease: _runtimeHostLease);
     }
 
     private async Task StopHostServicesAsync()
@@ -2768,14 +2789,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             : title[..(maxLength - suffix.Length)] + suffix;
     }
 
-    private async Task OpenCslStyleManagerAsync()
+    internal async Task RefreshCslPreviewsAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.CslStyleManager, "CslStyleManager", "CSL 样式", "Quote", true,
-            () => new CslStyleManagerViewModel(this));
-        if (ActiveTab?.Content is CslStyleManagerViewModel csl)
+        foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
+                     .OfType<ItemEditorViewModel>().ToArray())
         {
-            await csl.InitializeAsync();
+            await editor.RefreshStylePreviewAsync();
         }
+    }
+
+    private Task OpenCslStyleManagerAsync()
+    {
+        return OpenSettingsAsync("csl_installed");
     }
 
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)
@@ -3467,10 +3492,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return Task.CompletedTask;
     }
 
-    private Task CloseTabAsync(WorkspaceTabKind kind)
+    private async Task CloseTabAsync(WorkspaceTabKind kind)
     {
-        Workspace.CloseKind(kind);
-        return Task.CompletedTask;
+        await Workspace.CloseKindAsync(kind);
     }
 
     private Task CloseSettingsTabAsync()
@@ -3485,10 +3509,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return Task.CompletedTask;
     }
 
-    private Task CloseTabAsync(string tabId)
+    private async Task CloseTabAsync(string tabId)
     {
-        Workspace.Close(tabId);
-        return Task.CompletedTask;
+        await Workspace.CloseAsync(tabId);
     }
 
     public async Task ExportEvidenceMarkdownToFileAsync(string versionedUri, string targetPath)

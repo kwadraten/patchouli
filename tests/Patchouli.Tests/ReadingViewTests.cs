@@ -11,12 +11,98 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Reading;
 using Xunit;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Patchouli.Tests;
 
 [Collection("Avalonia")]
 public sealed class ReadingViewTests
 {
+    [Theory]
+    [InlineData("current-page")]
+    [InlineData("page:2")]
+    public async Task Equation_draws_its_crop_from_the_page_buffer_and_keeps_latex_copyable(string imageKey)
+    {
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            using WriteableBitmap page = new(new PixelSize(1000, 1000), new Vector(96, 96),
+                PixelFormat.Bgra8888, AlphaFormat.Premul);
+            using (ILockedFramebuffer pixels = page.Lock())
+            {
+                byte[] data = new byte[pixels.RowBytes * 1000];
+                for (int y = 0; y < 1000; y++)
+                for (int x = 0; x < 1000; x++)
+                {
+                    bool inFormula = x >= 279 && x < 717 && y >= 513 && y < 549;
+                    int offset = y * pixels.RowBytes + x * 4;
+                    data[offset + 1] = inFormula ? (byte)255 : (byte)0;
+                    data[offset + 2] = inFormula ? (byte)0 : (byte)255;
+                    data[offset + 3] = 255;
+                }
+
+                Marshal.Copy(data, 0, pixels.Address, data.Length);
+            }
+
+            const string latex = @"\mathrm{BI}=1-|r_{pb}(p,y)|";
+            ReadingView view = new()
+            {
+                SourceScene = new ReadingScene([
+                    new ReadingBlock(DocumentBoxId.New(), "equation", 0, latex,
+                        MediaLabel: "公式",
+                        Image: new ReadingImageRegion(imageKey, new NormalizedBBox(.279, .513, .438, .036)))
+                ]),
+                ImageSource = new FixedImageSource(page)
+            };
+            Window window = new() { Content = view, Width = 800, Height = 300 };
+            window.Show();
+            try
+            {
+                using RenderTargetBitmap output = new(new PixelSize(800, 300), new Vector(96, 96));
+                for (int frame = 0; frame < 2; frame++)
+                {
+                    view.InvalidateMeasure();
+                    view.Measure(new Size(800, 300));
+                    view.Arrange(new Rect(0, 0, 800, 300));
+                    output.Render(view);
+                }
+
+                object layout = ((System.Collections.IEnumerable)typeof(ReadingView)
+                        .GetField("_sourceBlocks", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(view)!)
+                    .Cast<object>().Single();
+                Type layoutType = layout.GetType();
+                ((Rect)layoutType.GetField("MediaSourceRect")!.GetValue(layout)!)
+                    .Should().Be(new Rect(279, 513, 438, 36));
+                layoutType.GetField("MediaImage")!.GetValue(layout).Should().BeSameAs(page);
+                double top = (double)layoutType.GetField("Top")!.GetValue(layout)!;
+                double height = (double)layoutType.GetField("MediaDestHeight")!.GetValue(layout)!;
+                IntPtr pixel = Marshal.AllocHGlobal(4);
+                try
+                {
+                    output.CopyPixels(new PixelRect(400, (int)(top + 12 + height / 2), 1, 1), pixel, 4, 4);
+                    byte[] actual = new byte[4];
+                    Marshal.Copy(pixel, actual, 0, 4);
+                    actual.Should().Equal(0, 255, 0, 255);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(pixel);
+                }
+
+                view.BeginSelection(ReadingColumnRole.Source, 0, 0);
+                view.ExtendSelection(ReadingColumnRole.Source, 0, int.MaxValue);
+                view.GetSelectedText().Should().Be(latex);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
     [Fact]
     public async Task Empty_scene_returns_zero_height()
     {

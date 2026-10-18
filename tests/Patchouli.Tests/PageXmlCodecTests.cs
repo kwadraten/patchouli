@@ -94,6 +94,6 @@ public sealed class PageXmlCodecTests
         PageId pageId = new(Guid.Empty);
         return new DocumentBox(
             new DocumentTreeRevisionId(Guid.Empty), id, documentId, pageId, parent, null,
-            type, null, null, new NormalizedBBox(0, 0, 0.2, 0.2), payload, null, null, null, suppressed);
+            type, null, new NormalizedBBox(0, 0, 0.2, 0.2), payload, null, null, null, suppressed);
     }
 }

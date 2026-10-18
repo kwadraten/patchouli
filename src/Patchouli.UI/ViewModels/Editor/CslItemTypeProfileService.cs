@@ -27,6 +27,8 @@ public static class CslItemTypeProfileService
         ["editor"] = new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"),
         ["issued"] = new ItemFieldDefinition("IssuedDate", "日期", "Date"),
         ["title-short"] = new ItemFieldDefinition("TitleShort", "短标题", "String"),
+        ["subtitle"] = new ItemFieldDefinition("Subtitle", "副标题", "String"),
+        ["note"] = new ItemFieldDefinition("Note", "附注", "Note"),
         ["publisher"] = new ItemFieldDefinition("Publisher", "出版社/机构", "String"),
         ["publisher-place"] = new ItemFieldDefinition("Place", "地点", "String"),
         ["edition"] = new ItemFieldDefinition("Edition", "版次", "String"),
@@ -38,7 +40,7 @@ public static class CslItemTypeProfileService
         ["pages"] = new ItemFieldDefinition("Pages", "页码", "String"),
         ["chapter-number"] = new ItemFieldDefinition("ChapterNumber", "章节号", "String"),
         ["status"] = new ItemFieldDefinition("Status", "状态", "String"),
-        ["language"] = new ItemFieldDefinition("Language", "语言", "String"),
+        ["language"] = new ItemFieldDefinition("Language", "语言", "Language"),
         ["abstract"] = new ItemFieldDefinition("AbstractText", "摘要", "MultilineString"),
         ["collection-title"] = new ItemFieldDefinition("CollectionTitle", "丛书/文集", "String"),
         ["genre"] = new ItemFieldDefinition("Genre", "体裁/类型", "String"),
@@ -61,9 +63,8 @@ public static class CslItemTypeProfileService
         new("Volume", "卷", "String"),
         new("Issue", "期", "String"),
         new("Pages", "页码", "String"),
-        new("Language", "语言", "String"),
-        new("AbstractText", "摘要", "MultilineString"),
-        new("TagsText", "标签 (逗号分隔)", "String")
+        new("Language", "语言", "Language"),
+        new("AbstractText", "摘要", "MultilineString")
     ];
 
     public static ItemEditorFieldSet GetProfile(CslItemTypeProfile? profile)
@@ -77,9 +78,9 @@ public static class CslItemTypeProfileService
                 IdentifierBackedFieldType,
                 BuiltInIdentifierSchemes.URL);
             ItemFieldDefinition[] generalVisible = GeneralVisibleFields
-                .Take(GeneralVisibleFields.Length - 2)
+                .Take(GeneralVisibleFields.Length - 1)
                 .Append(urlProjection)
-                .Concat(GeneralVisibleFields.TakeLast(2))
+                .Concat(GeneralVisibleFields.TakeLast(1))
                 .ToArray();
             return new ItemEditorFieldSet(generalVisible, []);
         }
@@ -115,9 +116,11 @@ public static class CslItemTypeProfileService
         }
 
         visible.Add(new ItemFieldDefinition("AbstractText", "摘要", "MultilineString"));
-        visible.Add(new ItemFieldDefinition("TagsText", "标签 (逗号分隔)", "String"));
 
-        ItemFieldDefinition[] visibleDistinct = visible.DistinctBy(field => field.Key).ToArray();
+        ItemFieldDefinition[] visibleDistinct = visible
+            .Where(field => field.Key is not "Note" and not "Subtitle")
+            .DistinctBy(field => field.Key)
+            .ToArray();
         HashSet<string> visibleKeys = new(visibleDistinct.Select(field => field.Key), StringComparer.Ordinal);
 
         ItemFieldDefinition[] more = profile.AdvancedFields

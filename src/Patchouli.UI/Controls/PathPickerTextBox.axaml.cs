@@ -93,11 +93,12 @@ public sealed partial class PathPickerTextBox : UserControl
         private set => SetValue(IconDataProperty, value);
     }
 
-    private static readonly StreamGeometry _folderIcon =
+    // Geometries belong to the creating dispatcher; independent UI sessions cannot share them.
+    private readonly StreamGeometry _folderIcon =
         StreamGeometry.Parse(
             "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z");
 
-    private static readonly StreamGeometry _fileIcon =
+    private readonly StreamGeometry _fileIcon =
         StreamGeometry.Parse(
             "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8V4h5v5h5v11z");
 
