@@ -65,6 +65,64 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
     private bool _bookReadingScenesDirty;
     private bool _needsReadingReplay;
     private bool _isReconcilingReadingReplay;
+    private ChapterTreeNodeViewModel? _chapterDragNode;
+    private Point _chapterDragStart;
+    private bool _isChapterDragging;
+
+    private void OnChapterPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed &&
+            sender is Control { DataContext: ChapterTreeNodeViewModel node } &&
+            _workspace?.ChapterEditor.CanStartOperation == true)
+        {
+            _chapterDragNode = node;
+            _chapterDragStart = e.GetPosition(this);
+            _isChapterDragging = false;
+            e.Pointer.Capture(sender as Control);
+            e.Handled = true;
+        }
+    }
+
+    private void OnChapterPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_chapterDragNode is null || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        Vector distance = e.GetPosition(this) - _chapterDragStart;
+        if (Math.Abs(distance.X) + Math.Abs(distance.Y) > 8)
+        {
+            _isChapterDragging = true;
+        }
+    }
+
+    private void OnChapterPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        ChapterTreeNodeViewModel? source = _chapterDragNode;
+        bool wasDragging = _isChapterDragging;
+        _chapterDragNode = null;
+        e.Pointer.Capture(null);
+        ChapterTreeNodeViewModel? target = this.GetVisualsAt(e.GetPosition(this))
+            .OfType<Control>().Select(control => control.DataContext).OfType<ChapterTreeNodeViewModel>()
+            .FirstOrDefault();
+        if (!wasDragging || source is null || target is null || _workspace is not { } workspace)
+        {
+            return;
+        }
+
+        _isChapterDragging = false;
+        e.Handled = true;
+        bool asChild = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        workspace.ChapterEditor.DropAsync(source.ChapterId, target.ChapterId, asChild)
+            .Observe(nameof(PdfWorkspacePage), "chapter-drop");
+    }
+
+    private void OnChapterPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
+    {
+        _chapterDragNode = null;
+        _isChapterDragging = false;
+    }
 
     public PdfWorkspacePage()
     {
@@ -118,6 +176,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
+        _chapterDragNode = null;
+        _isChapterDragging = false;
         if (!ReferenceEquals(_workspace, DataContext))
         {
             _bookReadingImages?.Dispose();

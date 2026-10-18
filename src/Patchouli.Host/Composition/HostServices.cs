@@ -249,6 +249,7 @@ public sealed class HostServices
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
             LibraryRevisions);
+        ChapterScanner = new ChapterScanService(Pages, DocumentTrees, DocumentMarkdown, Markdown);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
@@ -427,6 +428,7 @@ public sealed class HostServices
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public IDocumentPageMapService DocumentPageMaps { get; }
+    public IChapterScanService ChapterScanner { get; }
     public ISearchUnitBuilder SearchUnits { get; }
     public ISearchIndexRebuilder SearchIndex { get; }
     public ISearchService Search { get; }

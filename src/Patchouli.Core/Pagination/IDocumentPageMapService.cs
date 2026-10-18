@@ -5,12 +5,22 @@ namespace Patchouli.Core.Pagination;
 
 /// <summary>
 /// Owns the authoritative structured page map of each document instance: chapter structure
-/// and printed page-number rules. Writes replace the whole map atomically; an empty map
-/// clears it. The MCP <c>map.yml</c> resource is a virtual-file projection of the stored
+/// and printed page-number rules. Chapter edits preserve pagination; YAML writes replace
+/// the whole map atomically. An empty map clears it. The MCP <c>map.yml</c> resource is a virtual-file projection of the stored
 /// definition.
 /// </summary>
 public interface IDocumentPageMapService
 {
+    Task<Result<ChapterEditingSnapshot>> GetChapterEditingSnapshotAsync(
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Atomically replaces chapters while preserving pagination and unchanged stale targets.</summary>
+    Task<Result<ChapterEditingSnapshot>> SaveChaptersAsync(
+        DocumentInstanceId documentInstanceId,
+        ChapterSaveRequest request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Returns the resolved map, or null when the document has no stored map. Resolution
     /// never throws the whole map away: rules needing repair pause computation locally and

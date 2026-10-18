@@ -86,6 +86,15 @@ Incomplete provider connections persist with an explicit `IsAdded` flag; API key
 
 Settings writes preserve their ownership boundaries: ordinary preferences use `AppSettingsStore` field-level saves; device-root bindings and snapshot checkpoints update only their target entry under the shared settings-file write gate. Sync form edits use the explicit target-binding path, while unrelated saves preserve the latest persisted bindings and checkpoints. The full settings writer is internal fixture initialization only. Successful commits notify the Host of changed LLM, metadata-lookup, and file-scanning preferences; credentials and Library-synced metadata retain their own update paths. Other startup settings keep their existing application timing, and MCP listener changes retain their explicit restart flow.
 
+**Chapter navigation editing**:
+PDF chapter controls live inside the chapters sidebar and work independently of OCR text
+edit mode. Users can add, rename, retarget, reorder and nest chapters, or explicitly scan
+committed OCR/manual Markdown headings into an editable preview. Scans do not run OCR.
+Applying a preview appends by default or explicitly replaces chapters; it preserves printed
+pagination rules and labels. Physical pages remain the fallback for stale logical targets.
+Map tokens and scanned page revision expectations reject concurrent changes. See the
+chapter-map ADR `0045` for ownership and consistency rules.
+
 ## Language
 
 **Library**:

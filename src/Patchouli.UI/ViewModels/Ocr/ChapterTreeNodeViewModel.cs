@@ -22,7 +22,8 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
         bool hasChildren,
         bool isExpanded,
         Func<ChapterTreeNodeViewModel, Task> navigate,
-        Action<ChapterTreeNodeViewModel>? expandedChanged = null)
+        Action<ChapterTreeNodeViewModel>? expandedChanged = null,
+        ChapterSidebarViewModel? editor = null)
     {
         ChapterId = node.ChapterId;
         Title = node.Title;
@@ -37,6 +38,16 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
         _navigate = navigate;
         _expandedChanged = expandedChanged;
         NavigateCommand = new AsyncCommand(() => _navigate(this));
+        EditCommand = new AsyncCommand(() => editor?.BeginEditAsync(ChapterId) ?? Task.CompletedTask);
+        AddSiblingCommand = new AsyncCommand(() => editor?.BeginAddAsync(ChapterId, false) ?? Task.CompletedTask);
+        AddChildCommand = new AsyncCommand(() => editor?.BeginAddAsync(ChapterId, true) ?? Task.CompletedTask);
+        SetCurrentPositionCommand =
+            new AsyncCommand(() => editor?.SetCurrentPositionAsync(ChapterId) ?? Task.CompletedTask);
+        DeleteCommand = new RelayCommand(_ => editor?.RequestDelete(ChapterId));
+        MoveUpCommand = new AsyncCommand(() => editor?.MoveAsync(ChapterId, -1) ?? Task.CompletedTask);
+        MoveDownCommand = new AsyncCommand(() => editor?.MoveAsync(ChapterId, 1) ?? Task.CompletedTask);
+        IndentCommand = new AsyncCommand(() => editor?.IndentAsync(ChapterId) ?? Task.CompletedTask);
+        OutdentCommand = new AsyncCommand(() => editor?.OutdentAsync(ChapterId) ?? Task.CompletedTask);
         // Assign via the property so ExpanderGlyph stays consistent; the expansion callback
         // fires but the parent re-applies visibility once after the full list is built.
         IsExpanded = isExpanded;
@@ -66,6 +77,15 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
     public string DiagnosticText { get; }
 
     public AsyncCommand NavigateCommand { get; }
+    public AsyncCommand EditCommand { get; }
+    public AsyncCommand AddSiblingCommand { get; }
+    public AsyncCommand AddChildCommand { get; }
+    public AsyncCommand SetCurrentPositionCommand { get; }
+    public RelayCommand DeleteCommand { get; }
+    public AsyncCommand MoveUpCommand { get; }
+    public AsyncCommand MoveDownCommand { get; }
+    public AsyncCommand IndentCommand { get; }
+    public AsyncCommand OutdentCommand { get; }
 
     /// <summary>Left indentation for the tree depth.</summary>
     public Thickness Indent => new(Depth * 16, 0, 0, 0);
@@ -86,8 +106,7 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
         }
     }
 
-    [ObservableProperty]
-    public partial bool IsExpanded { get; set; }
+    [ObservableProperty] public partial bool IsExpanded { get; set; }
 
     partial void OnIsExpandedChanged(bool value)
     {
@@ -95,16 +114,16 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
         _expandedChanged?.Invoke(this);
     }
 
-    [ObservableProperty]
-    public partial bool IsVisible { get; set; } = true;
+    [ObservableProperty] public partial bool IsVisible { get; set; } = true;
 
-    [ObservableProperty]
-    public partial bool IsSelected { get; set; }
+    [ObservableProperty] public partial bool IsSelected { get; set; }
 
     partial void OnIsSelectedChanged(bool value)
     {
         Raise(nameof(TitleFontWeight));
     }
 
-    public FontWeight TitleFontWeight => IsSelected ? FontWeight.Bold : FontWeight.Normal;
+    [ObservableProperty] public partial bool IsCurrentPage { get; set; }
+
+    public FontWeight TitleFontWeight => IsCurrentPage ? FontWeight.Bold : FontWeight.Normal;
 }

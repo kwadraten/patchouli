@@ -2,6 +2,8 @@
 
 Status: accepted by user direction, 2026-10-17.
 
+Amended by user direction, 2026-10-18: independent sidebar editing and explicit heading scanning.
+
 ## Decision
 
 Each document instance may carry one authoritative structured page map: pagination rules
@@ -67,8 +69,34 @@ region after confirming the landing page; draft-blocking aborts before any highl
 Navigation commits publish changesets carrying the DocumentInstanceId so open
 workspaces reload navigation preserving page, tab, and expansion.
 
-Out of scope: auto-generating map candidates from heading boxes or the TOC (revisit
-later), and any independent map history mechanism.
+The chapters sidebar also owns direct editing, independently of OCR text edit mode.
+Add, scan, rename, retarget, move, indent/outdent and delete controls belong inside the
+sidebar, never the PDF toolbar. Add and Scan are icon buttons in the chapter sidebar header. Manual edits change only the chapter tree; pagination
+rules, explicit labels, OCR content and working revisions stay intact. Existing stale
+references remain visible and do not block unrelated title or ordering edits. Newly
+created or changed targets must reference physical pages or current committed logical
+pages. Selected editing nodes are independent of the current reading position.
+
+An explicit Scan Chapters action immediately scans the whole document and all H1–H6 levels,
+without a range/options form. It reads committed OCR/manual Markdown in physical page
+and established box reading order. Markdown heading levels (including Setext headings)
+form a cross-page hierarchy by the nearest preceding lower-level heading; skipped
+levels do not generate empty parents. Source maps identify physical and enclosing
+logical page targets. Code, quoted text, annotations and suppressed subtrees do not
+generate chapters. Missing-text pages are reported and never implicitly OCRed.
+
+Scanning is read-only, cancellable and followed by a selectable, editable sidebar
+preview. Applying appends by default; replacing the entire chapter tree requires an
+explicit confirmation. Deselected parents promote retained descendants to the nearest
+retained ancestor. Stable source IDs avoid duplicate imports of the same version and
+preserve already edited chapter entries. Page revision expectations and a map version
+token reject stale application rather than overwrite concurrent OCR or map changes.
+When prior scan IDs cannot be matched to the current candidates, new candidates require
+explicit duplicate review, including after OCR changes.
+Successful edits publish the same document-scoped Library revision as MCP writes.
+
+Out of scope: inferred TOC/AI chapter detection, PDF-embedded outline import/export,
+automatic printed pagination inference, and any independent map history mechanism.
 
 ## Superseded constraints
 

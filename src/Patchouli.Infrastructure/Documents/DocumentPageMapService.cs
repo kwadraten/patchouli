@@ -21,7 +21,7 @@ namespace Patchouli.Infrastructure.Documents;
 /// document state. The MCP <c>map.yml</c> resource is a virtual-file projection of the stored
 /// definition; full per-page maps are never persisted.
 /// </summary>
-public sealed class DocumentPageMapService : IDocumentPageMapService
+public sealed partial class DocumentPageMapService : IDocumentPageMapService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -79,7 +79,7 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
                 return Result<ResolvedDocumentPageMap?>.Failure(AppErrorCodes.DatabaseError,
                     $"The stored page map for document '{documentInstanceId}' is corrupt: {ex.Message}");
             }
-            catch (System.Text.Json.JsonException ex)
+            catch (JsonException ex)
             {
                 return Result<ResolvedDocumentPageMap?>.Failure(AppErrorCodes.DatabaseError,
                     $"The stored page map for document '{documentInstanceId}' is corrupt: {ex.Message}");
@@ -309,11 +309,12 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
         return null;
     }
 
-    private async Task<Result<Dictionary<(int PdfPage, DocumentBoxId BoxId), DocumentBox>>> LoadReferencedLogicalBoxesAsync(
-        DocumentInstanceId documentInstanceId,
-        IReadOnlyList<Page> pages,
-        DocumentPageMap map,
-        CancellationToken cancellationToken)
+    private async Task<Result<Dictionary<(int PdfPage, DocumentBoxId BoxId), DocumentBox>>>
+        LoadReferencedLogicalBoxesAsync(
+            DocumentInstanceId documentInstanceId,
+            IReadOnlyList<Page> pages,
+            DocumentPageMap map,
+            CancellationToken cancellationToken)
     {
         // Every referenced logical page: its box, keyed by (physical page, box id).
         HashSet<(int PdfPage, DocumentBoxId BoxId)> references = [];
@@ -477,7 +478,7 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
             {
                 CheckBox(entry.PdfPage, entry.BoxId,
                     $"logical_page rule [{rule.StartPdfPage}, {rule.EndPdfPage}]",
-                    allowRelocation: false);
+                    false);
             }
         }
 
@@ -486,7 +487,7 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
             if (pageLabel.Target.LogicalPage.HasValue)
             {
                 CheckBox(pageLabel.Target.PdfPage ?? 0, pageLabel.Target.LogicalPage.Value, "page_labels",
-                    allowRelocation: true);
+                    true);
             }
         }
 
@@ -650,7 +651,7 @@ public sealed class DocumentPageMapService : IDocumentPageMapService
         public static DocumentPageMap Deserialize(DocumentInstanceId documentInstanceId, string json)
         {
             JsonObject root = JsonNode.Parse(json)?.AsObject()
-                ?? throw new FormatException("The stored page map is not a JSON object.");
+                              ?? throw new FormatException("The stored page map is not a JSON object.");
 
             List<PhysicalPaginationRule> physical = [];
             foreach (JsonNode? node in root["physical_rules"]?.AsArray() ?? [])

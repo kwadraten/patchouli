@@ -188,6 +188,11 @@ map 本身不可被 `cite` 引用。`put` 接收完整 YAML，做全量解析与
 rule 标记为待修复——该 rule 的计算暂停但保留原定义，map 其余部分继续解析，单个坏引用不会让整个
 map 不可读；逻辑目标失效的章节保留章节并退化到物理页 + 诊断。
 
+桌面章节侧栏直接编辑和 Markdown 标题扫描预览与此资源共享同一份数据。侧栏写入仅替换章节树，
+保留页码规则、标签及未修改的失效引用；新建或改变的目标仍需严格校验。映射版本冲突或扫描来源
+页面版本变化会阻止应用。扫描只读取已提交的文本，不触发 OCR；MCP `put` 仍遵守完整 YAML
+替换与严格校验契约，不受桌面章节编辑的局部更新语义影响。
+
 **`runs/` 是 VFS 首个易失运行时资源树**：`patchouli://runs/` 只投影运行时任务与会话的实时状态与事件，不进任何快照、不可 `put`、不属 canonical 资源——`meta.library_revision` 不因其变化，宿主的资源变更通知也不因它发布。它在宿主进程生命周期内有效，宿主退出或重启后其中的运行时投影不承诺保留，也不属于 `cite.refs` 可引用对象。OCR 运行与 agent 会话运行是两个不同的运行时投影，各自有各自的 status/events 语义，**不强行统一为一个通用 run 模型**：`runs/ocr/{task-id}/status` 只承载 OCR 任务的阶段与进度，`runs/agent/{session-id}/status` 与 `runs/agent/{session-id}/events` 只承载会话状态与事件流。`workflows/` 则是只读的持久化元数据树，与 `runs/` 的易失运行时投影分离。
 
 `patchouli://runs/ocr/{task-id}/status` 是单个 OCR 任务的运行状态投影；`patchouli://runs/agent/{session-id}/status` 是单个 agent 会话的状态投影。二者都是只读的最终状态快照，`fetch` 返回当前值。`patchouli://runs/agent/{session-id}/events` 是该会话的事件流投影，事件按宿主分配的**单调递增序号**（从 1 开始的正整数）排序；默认 `fetch` 返回自上一次读取以来的**增量事件**，URI 查询参数 `?after={sequence}` 显式指定只返回序号大于 `sequence` 的事件（增量读取），`?after=0` 表示从头读取全部已存事件。响应必须给出 `last_sequence` 与 `next_after`，调用方据此持续拉取而不重放旧事件。事件流是易失的：不进快照、不被 `put`、不属于 canonical 资源，也不参与 `meta.library_revision`；它只在宿主运行期间保留。
