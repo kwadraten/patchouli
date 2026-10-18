@@ -128,10 +128,22 @@ fi
 dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configuration" \
   --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUUploadPreparerTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
 
+# MacOS is a nested-code location: managed DLLs and data must be resources.
+# Relative symlinks preserve .NET's expected layout next to the apphost.
+for payload in "$macos_dir"/*; do
+  if [[ -f "$payload" && "$(file -b "$payload")" == *"Mach-O"* ]]; then
+    continue
+  fi
+  payload_name="$(basename "$payload")"
+  mv "$payload" "$resources_dir/$payload_name"
+  ln -s "../Resources/$payload_name" "$payload"
+done
+
 # Sign native code explicitly from the inside out; --deep is for verification only.
 # Preserve any runtime entitlements carried by the published native dependencies.
+# Signing the main executable can implicitly sign the bundle, so leave it until last.
 while IFS= read -r -d '' binary; do
-  if [[ "$(file -b "$binary")" == *"Mach-O"* ]]; then
+  if [[ "$binary" != "$macos_dir/Patchouli.UI" && "$(file -b "$binary")" == *"Mach-O"* ]]; then
     codesign --force --sign - --preserve-metadata=entitlements "$binary"
   fi
 done < <(find "$macos_dir" -type f -print0)
