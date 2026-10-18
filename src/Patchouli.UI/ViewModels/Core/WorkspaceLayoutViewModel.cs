@@ -4,13 +4,61 @@ using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels;
 
 public sealed partial class WorkspaceLayoutViewModel : ViewModelBase
 {
-    [ObservableProperty] public partial WorkspaceTabViewModel? ActiveTab { get; set; }
+    private WorkspaceTabViewModel? _activeTab;
+    private Task _navigationTask = Task.CompletedTask;
+    private bool _isNavigating;
+
+    internal Func<WorkspaceTabViewModel?, Task<bool>>? ConfirmNavigationAsync { get; set; }
+
+    public WorkspaceTabViewModel? ActiveTab
+    {
+        get => _activeTab;
+        set
+        {
+            if (ReferenceEquals(value, _activeTab))
+            {
+                return;
+            }
+
+            _navigationTask = SelectTabAsync(value);
+            _navigationTask.Observe(nameof(WorkspaceLayoutViewModel), nameof(SelectTabAsync));
+        }
+    }
+
+    public Task WaitForNavigationAsync()
+    {
+        return _navigationTask;
+    }
+
+    private async Task SelectTabAsync(WorkspaceTabViewModel? target)
+    {
+        if (_isNavigating)
+        {
+            Raise(nameof(ActiveTab));
+            return;
+        }
+
+        _isNavigating = true;
+        try
+        {
+            if (ConfirmNavigationAsync is null || await ConfirmNavigationAsync(target))
+            {
+                _activeTab = target;
+            }
+        }
+        finally
+        {
+            _isNavigating = false;
+            Raise(nameof(ActiveTab));
+        }
+    }
 
     [ObservableProperty] public partial bool ShowInspectorPane { get; set; } = true;
 

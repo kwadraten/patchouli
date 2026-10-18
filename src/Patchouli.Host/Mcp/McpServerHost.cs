@@ -49,6 +49,7 @@ public sealed class McpServerHost : IAsyncDisposable
     public McpHttpServer? Server => _server;
     public bool IsRunning => _server?.IsRunning == true;
     public long? RunningSettingsRevision { get; private set; }
+    public McpServerSettings? RunningSettings { get; private set; }
     public string Endpoint { get; private set; } = $"http://localhost:{McpHttpServer.DefaultPort}/mcp";
     public McpServerHostStatus Status { get; private set; } = McpServerHostStatus.Stopped;
     public string StatusDetail { get; private set; } = "MCP HTTP 服务未启动。";
@@ -247,6 +248,7 @@ public sealed class McpServerHost : IAsyncDisposable
             await server.StartAsync(cancellationToken);
             _server = server;
             RunningSettingsRevision = serverSettings.Revision;
+            RunningSettings = serverSettings;
             Endpoint = server.Endpoint;
             SetStatus(McpServerHostStatus.Running, BuildConnectionDetail());
             if (operationId is not null)
@@ -289,6 +291,7 @@ public sealed class McpServerHost : IAsyncDisposable
         }
 
         RunningSettingsRevision = null;
+        RunningSettings = null;
         SetStatus(McpServerHostStatus.Stopped, detail);
     }
 

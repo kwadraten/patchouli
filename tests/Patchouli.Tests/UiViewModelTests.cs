@@ -3544,6 +3544,95 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Mcp_add_and_view_domain_grants_survive_save_and_reload()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-domain-permissions-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            McpSettingsViewModel mcp = vm.Settings.McpSettings;
+            await mcp.LoadAsync();
+
+            int addIndex = McpPermissionPolicy.Verbs.ToList().IndexOf("add");
+            int viewIndex = McpPermissionPolicy.Verbs.ToList().IndexOf("view");
+            mcp.PermissionRows.Single(row => row.Domain == "items").Cells[addIndex].Enabled = true;
+            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[viewIndex].Enabled = true;
+
+            await mcp.SaveAsync();
+
+            Result<McpServerSettings> loaded = await (await vm.ServicesAsync()).McpSettings.GetSettingsAsync();
+            loaded.IsSuccess.Should().BeTrue(loaded.ErrorMessage);
+            foreach (string domain in McpPermissionPolicy.Domains.Where(domain =>
+                         McpPermissionPolicy.Supports(domain, "add")))
+            {
+                string uri = domain == "/" ? "patchouli://" : $"patchouli://{domain}/";
+                McpPermissionPolicy.Allows(loaded.Value, "add", uri).Should().Be(domain == "items");
+            }
+
+            foreach (string domain in McpPermissionPolicy.Domains.Where(domain =>
+                         McpPermissionPolicy.Supports(domain, "view")))
+            {
+                string uri = domain == "/" ? "patchouli://" : $"patchouli://{domain}/";
+                McpPermissionPolicy.Allows(loaded.Value, "view", uri).Should().Be(domain == "texts");
+            }
+
+            await mcp.LoadAsync();
+            mcp.PermissionRows.Single(row => row.Domain == "items").Cells[addIndex].Enabled.Should().BeTrue();
+            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[viewIndex].Enabled.Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Mcp_global_add_opt_in_survives_save_and_reload()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-global-permission-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            PatchouliAppSettings initial = PatchouliAppSettings.Load(_settings.Path);
+            (initial with
+            {
+                Mcp = initial.Mcp with
+                {
+                    ToolOverrides = [new McpToolOverride("patchouli.add", false, "legacy deny")]
+                }
+            }).Save(_settings.Path).IsSuccess.Should().BeTrue();
+
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            McpSettingsViewModel mcp = vm.Settings.McpSettings;
+            await mcp.LoadAsync();
+            mcp.ToolOverrides.Single(item => item.ToolName == "patchouli.add").Enabled = true;
+
+            await mcp.SaveAsync();
+
+            Result<McpServerSettings> loaded = await (await vm.ServicesAsync()).McpSettings.GetSettingsAsync();
+            loaded.IsSuccess.Should().BeTrue(loaded.ErrorMessage);
+            loaded.Value.ToolOverrides.Should().Contain(item => item.ToolName == "patchouli.add" && item.Enabled);
+            McpPermissionPolicy.Allows(loaded.Value, "add", "patchouli://items/").Should().BeTrue();
+            McpPermissionPolicy.Allows(loaded.Value, "add", "patchouli://texts/").Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Mcp_settings_discard_during_save_cancels_persistence_and_reverts_state()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-discard-save-{Guid.NewGuid():N}.sqlite");

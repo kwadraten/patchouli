@@ -70,6 +70,8 @@ MCP is a first-class human-machine collaboration interface, not a read-only insp
 
 MCP capability settings use a VFS domain × verb matrix (ADR [0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md)); every shared command checks its requested domain, including restored cursor scopes. Built-in chat and workflow sessions always have a session-local FSI REPL, started lazily on first execution; the chat page has no enable/disable control. FSI is a trusted .NET execution surface with full host privileges and is independent of the MCP matrix. Its interpreter bindings are process-local; its completed results remain in durable history.
 
+MCP settings are excluded from the settings page's automatic-save pipeline. Leaving the MCP subpage, changing workspace tabs, closing settings, or exiting with pending MCP changes requires an explicit choice to discard or save and restart the listener. Dismissing the dialog, invalid settings, or a failed restart keeps the user on the current page. Discard restores the running listener's configuration when a previous save has not yet been applied. Reload detection compares configuration values rather than persistence revision numbers.
+
 
 **Snapshot branches**:
 Snapshot divergence creates a Snapshot Branch. Branches are inspected and imported explicitly; v1 does not perform automatic object-level merge or silent last-writer-wins conflict resolution.

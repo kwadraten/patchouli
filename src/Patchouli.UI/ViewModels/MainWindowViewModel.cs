@@ -162,6 +162,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ExcludeFromDerivedGeneration] public string ToggleMcpServerLabel => McpServerRunning ? "关闭 MCP" : "开启 MCP";
 
     [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
+    [ExcludeFromDerivedGeneration] internal McpServerSettings? McpRunningSettings => _mcpHost?.RunningSettings;
 
     [ObservableProperty] public partial string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
 
@@ -197,6 +198,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settingsViewModel ??= CreateSettingsViewModel();
 
     [ExcludeFromDerivedGeneration] public bool HasDirtySettings => _settingsViewModel?.HasDirtySections == true;
+
+    [ExcludeFromDerivedGeneration]
+    public bool HasPendingMcpSettings => _settingsViewModel?.McpSettings.HasPendingLeaveDecision == true;
 
     [ObservableProperty] public partial FirstRunViewModel FirstRun { get; private set; }
 
@@ -805,6 +809,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
+        Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
 
@@ -2129,11 +2134,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         await _mcpHost.StopAsync(detail);
-        await StartMcpServerAsync(_services!);
+        // Applying an explicit configuration must not silently substitute another port.
+        await _mcpHost.StartAsync();
         if (!_mcpHost.IsRunning)
         {
             throw new InvalidOperationException("MCP Server 未能重启。请检查状态栏中的错误详情。");
         }
+
+        await PublishRuntimeHostAsync(_services!);
     }
 
     /// <summary>
@@ -3542,11 +3550,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Report($"已导出 {itemDesc} HTML 到剪贴板：{rendered.Value.StyleDisplayName}");
     }
 
-    private Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable,
+    private async Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName,
+        bool isClosable,
         Func<ViewModelBase> contentFactory)
     {
         Workspace.OpenOrActivate(kind, tabId, title, iconName, isClosable, contentFactory);
-        return Task.CompletedTask;
+        await Layout.WaitForNavigationAsync();
     }
 
     private async Task CloseTabAsync(WorkspaceTabKind kind)
@@ -3554,16 +3563,32 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await Workspace.CloseKindAsync(kind);
     }
 
-    private Task CloseSettingsTabAsync()
+    private async Task CloseSettingsTabAsync()
     {
+        if (_settingsViewModel is not null && !await _settingsViewModel.ConfirmLeaveMcpAsync())
+        {
+            return;
+        }
+
         if (_settingsViewModel?.HasDirtySections == true)
         {
             _settingsViewModel.GlobalStatus = "设置有未保存的更改；请先保存或放弃后再关闭设置。";
-            return Task.CompletedTask;
+            return;
         }
 
-        Workspace.CloseKind(WorkspaceTabKind.Settings);
-        return Task.CompletedTask;
+        await Workspace.CloseKindAsync(WorkspaceTabKind.Settings);
+    }
+
+    private Task<bool> ConfirmWorkspaceNavigationAsync(WorkspaceTabViewModel? target)
+    {
+        return Layout.ActiveTab?.Content is SettingsViewModel settings && target?.Content != settings
+            ? settings.ConfirmLeaveMcpAsync()
+            : Task.FromResult(true);
+    }
+
+    internal Task<bool> ConfirmMcpSettingsBeforeExitAsync()
+    {
+        return _settingsViewModel?.ConfirmLeaveMcpAsync() ?? Task.FromResult(true);
     }
 
     private async Task CloseTabAsync(string tabId)

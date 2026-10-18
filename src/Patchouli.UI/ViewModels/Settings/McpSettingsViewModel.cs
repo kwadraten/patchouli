@@ -19,6 +19,7 @@ using Patchouli.Mcp;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -46,6 +47,9 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     private CancellationTokenSource? _activeSaveCancellation;
     private int _previewGeneration;
     private CliInstallation _cliInstallation = new(null, null, false);
+    private McpServerSettings? _discardBaseline;
+    private bool _isConfirmingLeave;
+    private bool _restartFailed;
 
     public McpSettingsViewModel(MainWindowViewModel main)
         : this(
@@ -352,6 +356,94 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
     [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty;
 
+    [ExcludeFromDerivedGeneration]
+    public bool HasPendingLeaveDecision => IsDirty || RequiresReload || _isConfirmingLeave;
+
+    public async Task<bool> ConfirmLeaveAsync()
+    {
+        if (_isConfirmingLeave)
+        {
+            return false;
+        }
+
+        if (!HasPendingLeaveDecision)
+        {
+            return true;
+        }
+
+        _isConfirmingLeave = true;
+        try
+        {
+            _discardBaseline = _main.McpRunningSettings ?? _discardBaseline ?? _persistedSettings;
+            ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+                new ConfirmDialogViewModel("应用 MCP 设置？",
+                    "MCP 设置已更改，需要保存并重启服务后才能生效。请选择放弃更改，或保存并重启后离开。",
+                    "保存并重启", "放弃更改"));
+            if (choice == ConfirmDialogResult.Discard)
+            {
+                return await DiscardPendingChangesAsync();
+            }
+
+            if (choice != ConfirmDialogResult.Confirm)
+            {
+                return false;
+            }
+
+            IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
+            Result validation = await service.ValidateSettingsAsync(_settings);
+            if (validation.IsFailure)
+            {
+                LastError = validation.ErrorMessage;
+                ValidationState = SettingsValidationState.Invalid;
+                SetStatus($"无法保存并重启 MCP：{validation.ErrorMessage}");
+                return false;
+            }
+
+            try
+            {
+                await SaveAndRestartAsync();
+                return !IsDirty && !RequiresReload && _main.McpServerRunning;
+            }
+            catch (InvalidOperationException exception)
+            {
+                LastError = exception.Message;
+                SetStatus($"MCP 重启失败：{exception.Message}");
+                // The draft was persisted, but it has not been applied to a running listener.
+                RequiresReload = true;
+                _restartFailed = true;
+                return false;
+            }
+        }
+        finally
+        {
+            _isConfirmingLeave = false;
+        }
+    }
+
+    private async Task<bool> DiscardPendingChangesAsync()
+    {
+        McpServerSettings baseline = _discardBaseline ?? _persistedSettings;
+        if (!SameConfiguration(baseline, _persistedSettings))
+        {
+            IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
+            Result<McpServerSettings> restored = await service.SaveDraftSettingsAsync(baseline,
+                _persistedSettings.Revision);
+            if (restored.IsFailure)
+            {
+                LastError = restored.ErrorMessage;
+                SetStatus($"无法放弃 MCP 更改：{restored.ErrorMessage}");
+                return false;
+            }
+
+            _persistedSettings = restored.Value;
+        }
+
+        await DiscardAsync();
+        _restartFailed = false;
+        RefreshRequiresReload();
+        return !IsDirty && !RequiresReload;
+    }
+
     public override async Task DiscardAsync()
     {
         _activeSaveCancellation?.Cancel();
@@ -484,6 +576,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         }
 
         RequiresReload = false;
+        _restartFailed = false;
+        _discardBaseline = _persistedSettings;
     }
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
@@ -494,6 +588,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        bool hadPendingApplication = RequiresReload;
         long loadGeneration = ++_loadGeneration;
         long editRevision = _editRevision;
         IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
@@ -514,6 +609,11 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         }
 
         _persistedSettings = result.Value;
+        if (_discardBaseline is null || !hadPendingApplication)
+        {
+            _discardBaseline = _main.McpRunningSettings ?? result.Value;
+        }
+
         SyncFromSettings(result.Value);
         _isDirty = false;
         SaveState = SettingsSaveState.Clean;
@@ -610,6 +710,12 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         {
             overrides.Add(new McpToolOverride(toolName, false, "Disabled in Patchouli settings."));
         }
+        else if (toolName is "patchouli.add" or "patchouli.view")
+        {
+            // The settings reader adds a deny for these tools when their override is absent.
+            // Keep an explicit allow marker so a user can opt in globally and survive reload.
+            overrides.Add(new McpToolOverride(toolName, true, null));
+        }
 
         _settings = _settings with
         {
@@ -650,9 +756,21 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private void RefreshRequiresReload()
     {
-        RequiresReload = _main.McpRunningSettingsRevision is long runningRevision &&
-                         runningRevision != _persistedSettings.Revision;
+        RequiresReload = _restartFailed || (_main.McpRunningSettings is { } running &&
+                                            !SameConfiguration(running, _persistedSettings));
         Raise(nameof(LibraryPreviewHint));
+    }
+
+    private static bool SameConfiguration(McpServerSettings first, McpServerSettings second)
+    {
+        return first.Port == second.Port && first.BindAddress == second.BindAddress &&
+               first.CorsEnabled == second.CorsEnabled && first.AuthRequired == second.AuthRequired &&
+               first.Token == second.Token && first.ShellCommandTimeoutSeconds == second.ShellCommandTimeoutSeconds &&
+               first.ExposeLibraryTags == second.ExposeLibraryTags &&
+               first.ExposeLibraryCollections == second.ExposeLibraryCollections &&
+               first.AllowedOrigins.SequenceEqual(second.AllowedOrigins) &&
+               first.ToolOverrides.SequenceEqual(second.ToolOverrides) &&
+               first.DomainPermissions.SequenceEqual(second.DomainPermissions);
     }
 
     [ExcludeFromDerivedGeneration]
@@ -666,9 +784,11 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         }
 
         List<McpDomainPermission> permissions = _settings.DomainPermissions.ToList();
+        string toolName = "patchouli." + verb;
+        bool legacyGlobalDeny = _settings.ToolOverrides.Any(value => value.ToolName == toolName && !value.Enabled);
         // Materialize the legacy global deny before removing it, so granting one cell cannot
         // accidentally grant every other domain for that verb.
-        if (_settings.ToolOverrides.Any(value => value.ToolName == "patchouli." + verb && !value.Enabled))
+        if (legacyGlobalDeny)
         {
             permissions.RemoveAll(value => value.Verb == verb);
             permissions.AddRange(
@@ -677,10 +797,18 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         permissions.RemoveAll(value => value.Domain == domain && value.Verb == verb);
         permissions.Add(new McpDomainPermission(domain, verb, enabled));
+        List<McpToolOverride> overrides = _settings.ToolOverrides.Where(value => value.ToolName != toolName).ToList();
+        if (verb is "add" or "view")
+        {
+            // Preserve the user's opt-in across the legacy migration on the next load. The
+            // per-domain deny rows above continue to restrict the other domains.
+            overrides.Add(new McpToolOverride(toolName, true, null));
+        }
+
         _settings = _settings with
         {
             DomainPermissions = permissions.ToArray(),
-            ToolOverrides = _settings.ToolOverrides.Where(value => value.ToolName != "patchouli." + verb).ToArray()
+            ToolOverrides = overrides.OrderBy(value => value.ToolName, StringComparer.Ordinal).ToArray()
         };
         MarkDirty();
     }

@@ -1,3 +1,5 @@
+using Patchouli.UI.ViewModels.Settings;
+
 namespace Patchouli.UI.ViewModels;
 
 public sealed class WorkspaceManager
@@ -72,6 +74,11 @@ public sealed class WorkspaceManager
             return false;
         }
 
+        if (tab.Content is SettingsViewModel { McpSettings.HasPendingLeaveDecision: true })
+        {
+            return false;
+        }
+
         bool wasActive = Layout.ActiveTab == tab;
         Layout.Tabs.Remove(tab);
         Cleanup(tab);
@@ -113,6 +120,11 @@ public sealed class WorkspaceManager
     {
         WorkspaceTabViewModel? tab = Find(tabId);
         if (tab is null || !tab.IsClosable)
+        {
+            return false;
+        }
+
+        if (tab.Content is SettingsViewModel settings && !await settings.ConfirmLeaveMcpAsync())
         {
             return false;
         }
