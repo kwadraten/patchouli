@@ -2,6 +2,8 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Patchouli.UI;
 
@@ -15,7 +17,6 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
     private readonly string _runtimeDatabasePath;
     private readonly string _settingsPath;
     private readonly string _stagingRoot;
-    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public SnapshotSyncSettingsStore(string runtimeDatabasePath, string settingsPath, string stagingRoot)
     {
@@ -52,38 +53,77 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
         SnapshotSyncLocalState state,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        Result<LibraryId> libraryId = await ReadCurrentLibraryIdAsync(cancellationToken);
+        if (libraryId.IsFailure)
+        {
+            return Result.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
+        }
+
+        string? deviceId = null;
+        bool updated = false;
+        SettingsSaveResult saved = await PatchouliAppSettings.UpdateSyncJsonAsync(_settingsPath, sync =>
+        {
+            deviceId = TryReadString(sync, nameof(SyncAppSettings.DeviceId));
+            if (sync["DeviceBindings"] is not JsonArray bindings)
+            {
+                return false;
+            }
+
+            JsonObject? selectedRow = null;
+            foreach (JsonNode? item in bindings)
+            {
+                if (item is not JsonObject row || DeserializeBinding(row) is not { } binding ||
+                    !binding.Matches(libraryId.Value.ToString(), LogicalRootKinds.SyncRoot, deviceId?.Trim() ?? ""))
+                {
+                    continue;
+                }
+
+                selectedRow = row;
+                break;
+            }
+
+            if (selectedRow is not null)
+            {
+                selectedRow[nameof(DeviceRootBindingAppSettings.SnapshotState)] = JsonSerializer.SerializeToNode(state);
+                updated = true;
+                return true;
+            }
+
+            return false;
+        }, cancellationToken);
+
+        if (!saved.IsSuccess)
+        {
+            return Result.Failure(saved.ErrorCode ?? "settings_save_failed",
+                saved.ErrorMessage ?? "Unable to save snapshot sync state.");
+        }
+
+        return updated
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.MappingRequired,
+                $"sync_root for library '{libraryId.Value}' is not mapped by this device.",
+                details: new MappingRequiredDetails(LogicalRootKinds.SyncRoot, "", libraryId.Value.ToString(),
+                    deviceId ?? "", LogicalRootRecoveryActions.ChooseLocalSyncRoot));
+    }
+
+    private static DeviceRootBindingAppSettings? DeserializeBinding(JsonObject node)
+    {
         try
         {
-            PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
-            Result<LibraryId> libraryId = await ReadCurrentLibraryIdAsync(cancellationToken);
-            if (libraryId.IsFailure)
-            {
-                return Result.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
-            }
-
-            DeviceRootBindingAppSettings? syncRoot = settings.Sync.CurrentSyncRootBinding(libraryId.Value);
-            if (syncRoot is null)
-            {
-                return Result.Failure(AppErrorCodes.MappingRequired,
-                    $"sync_root for library '{libraryId.Value}' is not mapped by this device.",
-                    details: new MappingRequiredDetails(LogicalRootKinds.SyncRoot, "", libraryId.Value.ToString(),
-                        settings.Sync.DeviceId, LogicalRootRecoveryActions.ChooseLocalSyncRoot));
-            }
-
-            SettingsSaveResult saved = (settings with
-            {
-                Sync = settings.Sync.WithDeviceBinding(syncRoot with { SnapshotState = state })
-            }).Save(_settingsPath);
-            return saved.IsSuccess
-                ? Result.Success()
-                : Result.Failure(saved.ErrorCode ?? "settings_save_failed",
-                    saved.ErrorMessage ?? "Unable to save snapshot sync state.");
+            return node.Deserialize<DeviceRootBindingAppSettings>();
         }
-        finally
+        catch (JsonException)
         {
-            _gate.Release();
+            return null;
         }
+    }
+
+    private static string? TryReadString(JsonObject node, string name)
+    {
+        return node.TryGetPropertyValue(name, out JsonNode? value) && value is JsonValue jsonValue &&
+               jsonValue.TryGetValue(out string? result)
+            ? result
+            : null;
     }
 
     private async Task<Result<LibraryId>> ReadCurrentLibraryIdAsync(CancellationToken cancellationToken)

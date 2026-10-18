@@ -1,4 +1,3 @@
-using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -16,9 +15,41 @@ public sealed partial class SettingsSectionGroupViewModel : ViewModelBase
 
     public IReadOnlyList<SettingsSectionEntryViewModel> Entries { get; }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(SelectedTab))]
-    public partial SettingsSectionEntryViewModel ActiveEntry { get; set; }
+    private SettingsSectionEntryViewModel _activeEntry = null!;
+    internal Action<SettingsSectionEntryViewModel>? SelectionRequested { get; set; }
+
+    public SettingsSectionEntryViewModel ActiveEntry
+    {
+        get => _activeEntry;
+        set
+        {
+            if (value is null || ReferenceEquals(value, _activeEntry))
+            {
+                return;
+            }
+
+            if (SelectionRequested is { } request)
+            {
+                request(value);
+            }
+            else
+            {
+                SetActiveEntry(value);
+            }
+        }
+    }
+
+    internal void SetActiveEntry(SettingsSectionEntryViewModel value)
+    {
+        _activeEntry = value;
+        Raise(nameof(ActiveEntry));
+        Raise(nameof(SelectedTab));
+    }
+
+    internal void RefreshSelection()
+    {
+        Raise(nameof(SelectedTab));
+    }
 
     public SettingsSectionEntryViewModel? SelectedTab
     {

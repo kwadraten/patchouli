@@ -8,7 +8,7 @@ public static class McpPermissionPolicy
     public static IReadOnlyList<string> Domains { get; } =
         ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "library.yml"];
 
-    public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send"];
+    public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send", "add", "view"];
 
     /// <summary>Resource capabilities, independent of the user's authorization choices.</summary>
     public static bool Supports(string domain, string verb)
@@ -16,9 +16,10 @@ public static class McpPermissionPolicy
         return domain switch
         {
             "/" => verb == "find",
-            "items" => verb is "find" or "fetch" or "put" or "cite",
-            "texts" => verb is "find" or "fetch" or "cite" or "put",
-            "translations" or "csl-styles" => verb is "find" or "fetch" or "put",
+            "items" => verb is "find" or "fetch" or "put" or "cite" or "add",
+            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view",
+            "translations" => verb is "find" or "fetch" or "put" or "view",
+            "csl-styles" => verb is "find" or "fetch" or "put" or "add",
             "runs" or "workflows" => verb is "find" or "fetch" or "send",
             "library.yml" => verb is "find" or "fetch",
             _ => false

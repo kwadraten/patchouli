@@ -943,6 +943,10 @@ public sealed partial class AgentSessionService : IAsyncDisposable
             ContextId = session.SessionId,
             ActivationId = session.MainActivationId,
             SessionDirectory = _store.ResolveSessionDirectory(session.SessionId),
+            // Issue #11: tool-returned images (the view tool) resolve from the
+            // session-managed persistent media area by media id.
+            ResolveSessionImage = mediaId => AgentSessionMediaStore.TryLoadImage(
+                _store.ResolveSessionDirectory(session.SessionId), mediaId),
             RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt),
             RequestRetryAttempt = session.Context.Retry.Attempts,
             ModelSelection = modelSelection

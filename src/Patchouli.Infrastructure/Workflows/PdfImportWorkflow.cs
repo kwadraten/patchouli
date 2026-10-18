@@ -14,7 +14,7 @@ using Patchouli.Infrastructure.Import;
 
 namespace Patchouli.Infrastructure.Workflows;
 
-public sealed class PdfImportWorkflow
+public sealed class PdfImportWorkflow : IPdfImportWorkflow
 {
     internal const double DefaultMaxFailedPageRatio = 0.2;
 

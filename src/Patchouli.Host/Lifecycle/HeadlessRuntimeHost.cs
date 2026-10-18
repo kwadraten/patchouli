@@ -60,7 +60,7 @@ public static class HeadlessRuntimeHost
                 return 1;
             }
 
-            McpServerSettings settings = services.Settings.Mcp;
+            McpServerSettings settings = services.StartupSettings.Mcp;
             if (portOverride is not null)
             {
                 settings = settings with { Port = portOverride.Value };

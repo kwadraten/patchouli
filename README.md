@@ -34,7 +34,7 @@
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持 box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
+- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`add`、`view`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持本地文件导入、原件图像读取、box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
 - [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
@@ -43,6 +43,7 @@
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL古典籍OCR-Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
 - [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、可配置推理强度、上下文压缩、历史检索和会话内 F# REPL。
 - [x] F# 工作流：脚本编辑、运行检查点、菜单启动、独立的聊天模型与推理强度设置，以及工作流与会话的快照同步。
+- [ ] 下一版：[MCP / CLI 显式 OCR 任务入口](https://github.com/kwadraten/patchouli/issues/16)，复用现有 OCR 队列并支持任务状态查询；当前 `add` 仅负责入库，不自动启动 OCR。
 
 ## 开发指南
 
@@ -67,7 +68,7 @@ CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一�
 cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
 ```
 
-Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
+Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`add`、`view`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
 
 ### 运行单元测试
 

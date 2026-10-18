@@ -26,6 +26,15 @@ public interface IFileResolutionService
         bool isAvailable,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Issue #11: persists the user-defined search root order. The first root in the
+    /// persisted order is the move target of the move-to-first-search-root file
+    /// handling behavior.
+    /// </summary>
+    Task<Result> SetSearchRootOrderAsync(
+        IReadOnlyList<FileSearchRootId> orderedRootIds,
+        CancellationToken cancellationToken = default);
+
     Task<Result<IReadOnlyList<KnownFileLocation>>> ListKnownLocationsAsync(
         FileAssetId fileAssetId,
         CancellationToken cancellationToken = default);

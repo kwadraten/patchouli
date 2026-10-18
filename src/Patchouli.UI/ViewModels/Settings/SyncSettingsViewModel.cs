@@ -261,7 +261,7 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         bool syncMetadataLookup = savedDraft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
         bool persistedSyncMetadataLookup = _persisted.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
         SettingsSaveResult result = syncMetadataLookup == persistedSyncMetadataLookup
-            ? await _main.UpdateAppOptionsAsync(_main.AppOptions with { Sync = savedDraft }, "Sync")
+            ? await _main.UpdateSyncBindingAsync(savedDraft, binding)
             : await _main.SetMetadataLookupSyncEnabledAsync(syncMetadataLookup, savedDraft);
 
         if (result.IsSuccess)

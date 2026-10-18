@@ -9,9 +9,10 @@ namespace Patchouli.Cli;
 /// A structured tool response: the raw text the host returned (TOON by default, JSON when
 /// the request used <c>format=json</c>), plus the stable exit/error code the process should
 /// report. Clean successes carry <see cref="CliExitCode.Ok"/>; failures carry the matching
-/// PRD error code read from the unified envelope.
+/// PRD error code read from the unified envelope. <see cref="ImageBase64"/> carries the
+/// raw base64 PNG of a <c>view</c> image content block when the host returned one.
 /// </summary>
-internal sealed record CliToolResponse(string Text, bool IsError, int ExitCode);
+internal sealed record CliToolResponse(string Text, bool IsError, int ExitCode, string? ImageBase64 = null);
 
 /// <summary>
 /// Thin local MCP HTTP client. It speaks JSON-RPC over the host's <c>/mcp</c> endpoint and
@@ -117,7 +118,8 @@ internal sealed class McpHttpClient : IDisposable
             bool isError = result.TryGetProperty("isError", out JsonElement isErrorElement) &&
                            isErrorElement.GetBoolean();
             string text = ExtractText(result);
-            return new CliToolResponse(text, isError, ExtractExitCode(text, isError));
+            string? imageBase64 = ExtractImage(result);
+            return new CliToolResponse(text, isError, ExtractExitCode(text, isError), imageBase64);
         }
     }
 
@@ -197,6 +199,37 @@ internal sealed class McpHttpClient : IDisposable
         }
 
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Extracts the raw base64 payload of the first native MCP image content block, or
+    /// null when the response carries no image. The data is returned as-is (no data-URL
+    /// prefix); callers validate and decode it before writing.
+    /// </summary>
+    public static string? ExtractImage(JsonElement result)
+    {
+        if (!result.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (JsonElement item in content.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (item.TryGetProperty("type", out JsonElement type) && type.ValueKind == JsonValueKind.String &&
+                string.Equals(type.GetString(), "image", StringComparison.Ordinal) &&
+                item.TryGetProperty("data", out JsonElement data) && data.ValueKind == JsonValueKind.String)
+            {
+                string? base64 = data.GetString();
+                return string.IsNullOrWhiteSpace(base64) ? null : base64;
+            }
+        }
+
+        return null;
     }
 
     public static int ExtractExitCode(string text, bool isError)

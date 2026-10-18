@@ -141,8 +141,12 @@ public sealed class FileResolutionService : IFileResolutionService
                 await connection.ExecuteAsync(
                     """
                     insert into file_search_root_definitions (
-                        root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
-                    values (@RootId, @LibraryId, @DisplayName, 'file_resolution', 1, @CreatedAt, @UpdatedAt);
+                        root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at,
+                        sort_order)
+                    values (@RootId, @LibraryId, @DisplayName, 'file_resolution', 1, @CreatedAt, @UpdatedAt,
+                        coalesce(
+                            (select max(sort_order) from file_search_root_definitions
+                             where library_id = @LibraryId), -1) + 1);
                     """,
                     new
                     {
@@ -513,6 +517,87 @@ public sealed class FileResolutionService : IFileResolutionService
             return affected == 0
                 ? Result.Failure(AppErrorCodes.NotFound, "Search root was not found.")
                 : Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Issue #11: persists the user-defined search root order. The order is stored in the
+    /// snapshot-eligible definitions table so every device reads the same first root;
+    /// the device-local behavior setting decides whether that first root is used.
+    /// </summary>
+    public async Task<Result> SetSearchRootOrderAsync(
+        IReadOnlyList<FileSearchRootId> orderedRootIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(orderedRootIds);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (libraryResult.IsFailure)
+        {
+            return Result.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
+        }
+
+        string[] distinctIds = orderedRootIds.Select(id => id.ToString()).Distinct(StringComparer.Ordinal).ToArray();
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using SqliteTransaction transaction =
+                (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            HashSet<string> existing = (await connection.QueryAsync<string>(
+                """
+                select root_id from file_search_root_definitions
+                where library_id = @LibraryId and is_enabled = 1;
+                """,
+                new { LibraryId = libraryResult.Value.LibraryId.ToString() },
+                transaction)).ToHashSet(StringComparer.Ordinal);
+            string[] unknown = distinctIds.Where(id => !existing.Contains(id)).ToArray();
+            if (unknown.Length > 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound,
+                    $"Unknown search root id(s): {string.Join(", ", unknown)}.");
+            }
+
+            // Every enabled root must appear exactly once; a partial order would silently
+            // demote the rest.
+            string[] missing = existing.Where(id => !distinctIds.Contains(id, StringComparer.Ordinal)).ToArray();
+            if (missing.Length > 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    $"The order must include every search root; missing: {string.Join(", ", missing)}.");
+            }
+
+            for (int index = 0; index < distinctIds.Length; index++)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    update file_search_root_definitions
+                    set sort_order = @SortOrder, updated_at = @UpdatedAt
+                    where library_id = @LibraryId and root_id = @RootId;
+                    """,
+                    new
+                    {
+                        SortOrder = index,
+                        UpdatedAt = FormatUtc(_clock.UtcNow),
+                        LibraryId = libraryResult.Value.LibraryId.ToString(),
+                        RootId = distinctIds[index]
+                    },
+                    transaction);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
         }
         catch (OperationCanceledException)
         {
@@ -1421,7 +1506,8 @@ public sealed class FileResolutionService : IFileResolutionService
                        binding.authorization_kind as AuthorizationKind,
                        binding.authorization_payload as AuthorizationPayload,
                        binding.authorization_payload_version as AuthorizationPayloadVersion,
-                       binding.authorization_updated_at as AuthorizationUpdatedAt
+                       binding.authorization_updated_at as AuthorizationUpdatedAt,
+                       definition.sort_order as SortOrder
                 from file_search_root_definitions definition
                 left join file_search_root_bindings binding
                   on binding.library_id = definition.library_id
@@ -1429,17 +1515,18 @@ public sealed class FileResolutionService : IFileResolutionService
                  and binding.root_id = definition.root_id
                  and binding.device_id = @DeviceId
                 where definition.library_id = @LibraryId and definition.is_enabled = 1
-                order by binding.root_path, definition.root_id;
+                order by definition.sort_order, definition.created_at, definition.root_id;
                 """,
                 new { LibraryId = libraryId.ToString(), DeviceId = deviceId })).ToArray();
         }
 
         SearchRootDefinitionRow[] definitions = (await connection.QueryAsync<SearchRootDefinitionRow>(
             """
-            select root_id as RootId, library_id as LibraryId, created_at as CreatedAt, updated_at as UpdatedAt
+            select root_id as RootId, library_id as LibraryId, created_at as CreatedAt, updated_at as UpdatedAt,
+                   sort_order as SortOrder
             from file_search_root_definitions
             where library_id = @LibraryId and is_enabled = 1
-            order by root_id;
+            order by sort_order, created_at, root_id;
             """,
             new { LibraryId = libraryId.ToString() })).ToArray();
         Result<IReadOnlyList<DeviceRootBinding>> bindings = await _rootBindings.ListBindingsAsync(
@@ -1476,7 +1563,8 @@ public sealed class FileResolutionService : IFileResolutionService
                 AuthorizationKind = binding?.AuthorizationKind,
                 AuthorizationPayload = binding?.AuthorizationPayload,
                 AuthorizationPayloadVersion = binding?.AuthorizationPayloadVersion,
-                AuthorizationUpdatedAt = binding?.AuthorizationUpdatedAt?.ToUniversalTime().ToString("O")
+                AuthorizationUpdatedAt = binding?.AuthorizationUpdatedAt?.ToUniversalTime().ToString("O"),
+                SortOrder = definition.SortOrder
             };
         }).ToArray();
     }
@@ -1855,6 +1943,7 @@ public sealed class FileResolutionService : IFileResolutionService
         public byte[]? AuthorizationPayload { get; set; }
         public int? AuthorizationPayloadVersion { get; set; }
         public string? AuthorizationUpdatedAt { get; set; }
+        public int SortOrder { get; set; }
 
         public FileSearchRoot ToSearchRoot()
         {
@@ -1868,7 +1957,8 @@ public sealed class FileResolutionService : IFileResolutionService
                 AuthorizationKind,
                 AuthorizationPayload,
                 AuthorizationPayloadVersion,
-                AuthorizationUpdatedAt is null ? null : DateTimeOffset.Parse(AuthorizationUpdatedAt));
+                AuthorizationUpdatedAt is null ? null : DateTimeOffset.Parse(AuthorizationUpdatedAt),
+                SortOrder);
         }
     }
 
@@ -1878,6 +1968,7 @@ public sealed class FileResolutionService : IFileResolutionService
         public string LibraryId { get; set; } = string.Empty;
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
+        public int SortOrder { get; set; }
     }
 
     private sealed class LegacySearchRootBindingRow

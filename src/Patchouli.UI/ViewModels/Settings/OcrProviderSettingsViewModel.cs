@@ -127,7 +127,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     partial void OnSelectedDocumentEngineChanged(string value)
     {
-        if (_isConstructing || _isSyncing)
+        if (_isConstructing || _isSyncing || value is null)
         {
             return;
         }
@@ -145,7 +145,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     partial void OnSelectedPageEngineChanged(string value)
     {
-        if (_isConstructing || _isSyncing)
+        if (_isConstructing || _isSyncing || value is null)
         {
             return;
         }
@@ -163,7 +163,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     partial void OnSelectedRegionEngineChanged(string value)
     {
-        if (_isConstructing || _isSyncing)
+        if (_isConstructing || _isSyncing || value is null)
         {
             return;
         }
@@ -187,6 +187,17 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         long revision = _editRevision;
+        try
+        {
+            HostServices services = await _main.ServicesAsync();
+            IReadOnlyList<OcrEngineCapability> capabilities = services.OcrAdapters.ListCapabilities();
+            ReloadEngineCatalog(capabilities);
+        }
+        catch (Exception exception)
+        {
+            Status = $"加载 OCR 引擎列表失败：{exception.Message}";
+        }
+
         OcrEnginesAppSettings? draft =
             await _draftStore.ReadAsync<OcrEnginesAppSettings>("ocr-engines", cancellationToken);
         if (draft is not null && !IsDirty && revision == _editRevision)
@@ -207,14 +218,6 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
         try
         {
-            HostServices services = await _main.ServicesAsync();
-            IReadOnlyList<OcrEngineCapability> capabilities = services.OcrAdapters.ListCapabilities();
-            AvailableEngines.Clear();
-            foreach (OcrEngineCapability capability in capabilities)
-            {
-                AvailableEngines.Add(new OcrEngineOption(capability.EngineId, capability.DisplayName));
-            }
-
             if (AvailableEngines.Count == 0)
             {
                 Status = "未注册任何 OCR 引擎。";
@@ -374,6 +377,45 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
         _documentOcrEngine = NormalizeEngineId(engines.DocumentOcrEngine);
         _pageOcrEngine = NormalizeEngineId(engines.PageOcrEngine);
         _regionOcrEngine = NormalizeEngineId(engines.RegionOcrEngine);
+    }
+
+    private void ReloadEngineCatalog(IReadOnlyList<OcrEngineCapability> capabilities)
+    {
+        string documentEngine = _documentOcrEngine;
+        string pageEngine = _pageOcrEngine;
+        string regionEngine = _regionOcrEngine;
+        _isSyncing = true;
+        try
+        {
+            // Force Avalonia to clear stale SelectedValue state before the catalog is rebuilt.
+            // Raising the same ID after rebuilding is not enough: ComboBox may retain a null
+            // SelectedItem when the selected value never changed from the binding's perspective.
+            SelectedDocumentEngine = "";
+            SelectedPageEngine = "";
+            SelectedRegionEngine = "";
+
+            // Keep the backing selected IDs stable while clearing the ItemsSource. A ComboBox can
+            // publish SelectedValue=null as its old items disappear; those transient changes must
+            // not be interpreted as user edits.
+            AvailableEngines.Clear();
+            foreach (OcrEngineCapability capability in capabilities)
+            {
+                AvailableEngines.Add(new OcrEngineOption(capability.EngineId, capability.DisplayName));
+            }
+
+            SelectedDocumentEngine = documentEngine;
+            SelectedPageEngine = pageEngine;
+            SelectedRegionEngine = regionEngine;
+            // Re-evaluate SelectedValue after ItemsSource has its final contents, even if the IDs
+            // themselves did not change during the refresh.
+            Raise(nameof(SelectedDocumentEngine));
+            Raise(nameof(SelectedPageEngine));
+            Raise(nameof(SelectedRegionEngine));
+        }
+        finally
+        {
+            _isSyncing = false;
+        }
     }
 
     private string? UnavailableSelectionNotice()

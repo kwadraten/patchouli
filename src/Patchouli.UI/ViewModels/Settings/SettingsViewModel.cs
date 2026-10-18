@@ -33,6 +33,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private bool _isAutoSaving;
     private bool _isRoutingCommand;
     private Task _activeSectionLoad = Task.CompletedTask;
+    private Task _navigationTask = Task.CompletedTask;
+    private NavCategoryViewModel _activeCategory = null!;
     private string _reportedErrorSummary = "";
     private string? _reportedErrorStatus;
     private readonly IReadOnlyList<ISettingsSection> _sections;
@@ -150,6 +152,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             if (category.Content is SettingsSectionGroupViewModel group)
             {
+                group.SelectionRequested = entry => RequestNavigation(category, entry);
                 foreach (SettingsSectionEntryViewModel entry in group.Entries)
                 {
                     _sectionCategories[entry.Id] = category;
@@ -203,7 +206,17 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public ObservableCollection<NavCategoryViewModel> Categories { get; }
     public IReadOnlyList<SettingsSectionEntryViewModel> SectionEntries { get; }
 
-    [ObservableProperty] public partial NavCategoryViewModel ActiveCategory { get; set; } = null!;
+    public NavCategoryViewModel ActiveCategory
+    {
+        get => _activeCategory;
+        set
+        {
+            if (value is not null && !ReferenceEquals(value, _activeCategory))
+            {
+                RequestNavigation(value, null);
+            }
+        }
+    }
 
     [ExcludeFromDerivedGeneration]
     public SettingsSectionGroupViewModel? ActiveTabbedGroup =>
@@ -211,13 +224,56 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public bool HasSectionTabs => ActiveTabbedGroup is not null;
 
-    partial void OnActiveCategoryChanged(NavCategoryViewModel value)
+    private void SetActiveCategory(NavCategoryViewModel value)
     {
+        _activeCategory = value;
+        Raise(nameof(ActiveCategory));
         Raise(nameof(ActiveTabbedGroup));
         Raise(nameof(HasSectionTabs));
-        // Drafts stay in memory while the debounced auto-save drains them; switching sections
-        // never blocks and never discards.
         StartActiveSectionLoad();
+    }
+
+    private void RequestNavigation(NavCategoryViewModel category, SettingsSectionEntryViewModel? entry)
+    {
+        _navigationTask = NavigateAsync(category, entry);
+        _navigationTask.Observe(nameof(SettingsViewModel), nameof(NavigateAsync));
+    }
+
+    private async Task NavigateAsync(NavCategoryViewModel category, SettingsSectionEntryViewModel? entry)
+    {
+        bool leavesMcp = ActiveSections().Contains(McpSettings) &&
+                         (!ReferenceEquals(category, ActiveCategory) ||
+                          (entry is not null && !ReferenceEquals(entry.Content, McpSettings)));
+        if (leavesMcp && !await ConfirmLeaveMcpAsync())
+        {
+            Raise(nameof(ActiveCategory));
+            ActiveTabbedGroup?.RefreshSelection();
+            return;
+        }
+
+        bool subpageChanged = false;
+        if (entry is not null && category.Content is SettingsSectionGroupViewModel group)
+        {
+            subpageChanged = !ReferenceEquals(group.ActiveEntry, entry);
+            if (subpageChanged)
+            {
+                group.SetActiveEntry(entry);
+            }
+        }
+
+        if (!ReferenceEquals(ActiveCategory, category))
+        {
+            SetActiveCategory(category);
+        }
+        else if (!subpageChanged)
+        {
+            StartActiveSectionLoad();
+        }
+    }
+
+    public Task<bool> ConfirmLeaveMcpAsync()
+    {
+        return McpSettings.ConfirmLeaveAsync();
     }
 
     [ObservableProperty] public partial string GlobalStatus { get; set; } = "";
@@ -269,7 +325,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     /// <summary>
     /// Starts the debounced auto-save pipeline (idempotent). The settings page view activates it
-    /// when it attaches, so every edit persists automatically; hosts without the view (tests)
+    /// when it attaches. MCP drafts require explicit discard or save-and-restart on departure;
+    /// other editable sections persist automatically. Hosts without the view (tests)
     /// keep the manual save/discard commands and nothing is persisted implicitly.
     /// </summary>
     public void EnableAutoSave()
@@ -289,15 +346,22 @@ public sealed partial class SettingsViewModel : ViewModelBase
                 nameof(AutoSaveDirtySectionsAsync)));
         Register(_autoSaveSubscription);
 
-        if (HasDirtySections)
+        if (HasAutoSaveChanges)
         {
             _autoSaveTriggers.OnNext(Unit.Default);
         }
     }
 
-    public Task WaitForActiveSectionLoadAsync()
+    public async Task WaitForActiveSectionLoadAsync()
     {
-        return _activeSectionLoad;
+        await _navigationTask;
+        await _activeSectionLoad;
+    }
+
+    internal async Task WaitForAutoSaveAsync()
+    {
+        await _autoSaveGate.WaitAsync();
+        _autoSaveGate.Release();
     }
 
     public async Task ReloadCleanSectionsAsync()
@@ -330,14 +394,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
         return SaveDirtySectionsAsync(new Dictionary<ISettingsSection, string>());
     }
 
-    private async Task<bool> SaveDirtySectionsAsync(Dictionary<ISettingsSection, string> failures)
+    private async Task<bool> SaveDirtySectionsAsync(Dictionary<ISettingsSection, string> failures,
+        bool includeMcp = true)
     {
         List<string> savedTitles = [];
         List<string> warnings = [];
         bool requiresReload = false;
         foreach (ISettingsSection section in _sections)
         {
-            if (!section.SupportsEditing || !section.IsDirty || failures.ContainsKey(section))
+            if (!section.SupportsEditing || !section.IsDirty || failures.ContainsKey(section) ||
+                (!includeMcp && ReferenceEquals(section, McpSettings)))
             {
                 continue;
             }
@@ -389,7 +455,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// edit re-arms the pipeline.</summary>
     private void RequestAutoSave()
     {
-        if (_autoSaveSubscription is not null && !_isAutoSaving && HasDirtySections)
+        if (_autoSaveSubscription is not null && !_isAutoSaving && HasAutoSaveChanges)
         {
             _autoSaveTriggers.OnNext(Unit.Default);
         }
@@ -408,12 +474,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
             _isAutoSaving = true;
             for (int pass = 0;
                  pass < MaxAutoSavePasses && !cancellationToken.IsCancellationRequested &&
-                 _sections.Any(section => section.SupportsEditing && section.IsDirty && !failures.ContainsKey(section));
+                 _sections.Any(section =>
+                     section != McpSettings && section.SupportsEditing && section.IsDirty &&
+                     !failures.ContainsKey(section));
                  pass++)
             {
                 try
                 {
-                    await SaveDirtySectionsAsync(failures);
+                    await SaveDirtySectionsAsync(failures, false);
                 }
                 catch (Exception exception)
                 {
@@ -430,12 +498,18 @@ public sealed partial class SettingsViewModel : ViewModelBase
             _isAutoSaving = false;
             _autoSaveGate.Release();
             if (completed && !cancellationToken.IsCancellationRequested &&
-                _sections.Any(section => section.SupportsEditing && section.IsDirty && !failures.ContainsKey(section)))
+                _sections.Any(section =>
+                    section != McpSettings && section.SupportsEditing && section.IsDirty &&
+                    !failures.ContainsKey(section)))
             {
                 RequestAutoSave();
             }
         }
     }
+
+    [ExcludeFromDerivedGeneration]
+    private bool HasAutoSaveChanges =>
+        _sections.Any(section => section != McpSettings && section.SupportsEditing && section.IsDirty);
 
     private async Task SaveAllSectionsAsync()
     {
@@ -526,27 +600,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
             throw new ArgumentException($"未知设置入口：{id}", nameof(id));
         }
 
-        bool subpageChanged = false;
+        SettingsSectionEntryViewModel? selectedEntry = null;
         if (category.Content is SettingsSectionGroupViewModel group)
         {
-            SettingsSectionEntryViewModel entry =
+            selectedEntry =
                 group.Entries.Single(entry => entry.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
-            subpageChanged = !ReferenceEquals(group.ActiveEntry, entry);
-            group.ActiveEntry = entry;
         }
 
-        if (ReferenceEquals(ActiveCategory, category))
-        {
-            if (!subpageChanged)
-            {
-                StartActiveSectionLoad();
-            }
-        }
-        else
-        {
-            ActiveCategory = category;
-        }
-
+        RequestNavigation(category, selectedEntry);
         await WaitForActiveSectionLoadAsync();
     }
 

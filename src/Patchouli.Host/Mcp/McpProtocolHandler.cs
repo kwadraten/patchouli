@@ -7,10 +7,12 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Core.Documents;
+using Patchouli.Core.View;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
 
@@ -34,12 +36,13 @@ public sealed class McpProtocolHandler
         IHostActivityTracker? activityTracker = null,
         CancellationToken hostLifetime = default,
         IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
-        IMcpOcrRunsApi? ocrRuns = null)
+        IMcpOcrRunsApi? ocrRuns = null,
+        IFileImportService? fileImport = null, IPageImageViewService? pageView = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
         _readApi = api;
-        // The user tool switches gate put/send exactly like every other write capability (D1): a
+        // The user tool switches gate put/send/add/view exactly like every other write capability (D1): a
         // disabled switch surfaces as PERMISSION_DENIED from the command service, while find/fetch/
         // cite stay untouched. The transport additionally hides a fully disabled tool from tools/list.
         _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
@@ -48,7 +51,11 @@ public sealed class McpProtocolHandler
             agentRuns, workflowRuns, ocrRuns,
             !IsSwitchOff(effectiveSettings, "patchouli.put"),
             !IsSwitchOff(effectiveSettings, "patchouli.send"),
-            _ => Task.FromResult(effectiveSettings));
+            _ => Task.FromResult(effectiveSettings),
+            fileImport: fileImport,
+            pageView: pageView,
+            addEnabled: !IsSwitchOff(effectiveSettings, "patchouli.add"),
+            viewEnabled: !IsSwitchOff(effectiveSettings, "patchouli.view"));
         _ = db;
         _settings = effectiveSettings with
         {
@@ -445,6 +452,46 @@ public sealed class McpProtocolHandler
                 },
                 false),
             new ToolDefinition(
+                "patchouli.add",
+                "Import a host-accessible LOCAL file (PDF or CSL) into the Library; returns the new or reused " +
+                "resource URI. Accepts only local paths, never URLs: download the file with your own ability " +
+                "first, then pass its host-local path. The host applies its configured file handling behavior; " +
+                "callers cannot override it per request.",
+                ["path"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["path"] = ToolSchemaProperty.String(
+                        "Host-local file path to import. URLs are rejected."),
+                    ["kind"] = ToolSchemaProperty.String(
+                        "Optional explicit kind: \"pdf\" or \"csl\". When given it must match the actual file " +
+                        "content; omit to content-sniff."),
+                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
+                },
+                false),
+            new ToolDefinition(
+                "patchouli.view",
+                "Return the source image of a library page or box for model text-image collation. Images come " +
+                "from the original PDF, never re-rendered from OCR text. One target, one image per call. " +
+                "Recommended collation flow: fetch (text plus version) to read the text, then view the same " +
+                "revision or box source image, then put with the original source_revision; if the version " +
+                "changed in the meantime the put reports a normal revision conflict instead of overwriting.",
+                ["uri"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["uri"] = ToolSchemaProperty.String(
+                        "Page, box/evidence or translation page/box URI: texts/<document-id>/page-<index>.xml" +
+                        "[?rev=<tree-revision-id>[&box=<box-id>]], or the translations/ mirror for the " +
+                        "corresponding source-document image."),
+                    ["context"] = ToolSchemaProperty.String(
+                        "\"page\" (default) returns the whole page containing the box; \"region\" returns the " +
+                        "bbox crop with a small margin."),
+                    ["max_edge"] = ToolSchemaProperty.Integer(
+                        "Longest-edge pixel cap, from 64 through 8192; default 2048."),
+                    ["format"] = ToolSchemaProperty.String(
+                        "Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the " +
+                        "image is always a native image content block.")
+                }),
+            new ToolDefinition(
                 "patchouli.cite",
                 "Render a bibliography for existing item, document, page, or evidence resource URIs using a CSL style.",
                 ["refs"],
@@ -525,6 +572,8 @@ public sealed class McpProtocolHandler
                 "patchouli.cite" => await CiteAsync(a, ct),
                 "patchouli.put" => await PutAsync(a, ct),
                 "patchouli.send" => await SendAsync(a, ct),
+                "patchouli.add" => await AddAsync(a, ct),
+                "patchouli.view" => await ViewAsync(a, ct),
                 _ => throw new McpArgumentException("Unknown tool.")
             };
         }
@@ -642,6 +691,65 @@ public sealed class McpProtocolHandler
         return await ToToolResponseAsync("cite", result, format, ct);
     }
 
+    private async Task<object> AddAsync(JsonElement arguments, CancellationToken ct)
+    {
+        if (ValidateToolArguments("patchouli.add", arguments) is { } validationError)
+        {
+            throw new McpArgumentException(validationError);
+        }
+
+        RejectUnknownArguments(arguments, AddArgumentKeys);
+        string path = RequiredString(arguments, "path");
+        string? kind = OptionalString(arguments, "kind");
+        string format = ResponseFormat(arguments);
+
+        McpCommandResult<McpAddMeta, McpAddResult> result =
+            await _commands.AddAsync(new McpAddRequest(path, kind), ct);
+        return await ToToolResponseAsync("add", result, format, ct);
+    }
+
+    private async Task<object> ViewAsync(JsonElement arguments, CancellationToken ct)
+    {
+        if (ValidateToolArguments("patchouli.view", arguments) is { } validationError)
+        {
+            throw new McpArgumentException(validationError);
+        }
+
+        RejectUnknownArguments(arguments, ViewArgumentKeys);
+        string uri = RequiredString(arguments, "uri");
+        string? context = OptionalString(arguments, "context");
+        int? maxEdge = arguments.TryGetProperty("max_edge", out JsonElement maxEdgeValue) &&
+                       maxEdgeValue.ValueKind != JsonValueKind.Null
+            ? ParseInteger(maxEdgeValue, "max_edge")
+            : null;
+        string format = ResponseFormat(arguments);
+
+        McpViewCommandResult result = await _commands.ViewAsync(new McpViewRequest(uri, context, maxEdge), ct);
+        bool isError = result.Result.Error is not null;
+        object envelope = result.Result.Envelope ??
+                          McpErrorEnvelope.Build("view", result.Result.Error!, await CurrentLibraryRevisionAsync(ct));
+        string text = RenderText(envelope, format);
+        if (isError || result.PngBytes is null)
+        {
+            // Tool failures use the unified error envelope + isError semantics; never a
+            // fake successful image entry.
+            return ToolData(text, isError);
+        }
+
+        // MCP 2025-06-18 native ImageContent: content[0] is the existing TOON/JSON text
+        // envelope with image metadata, content[1] is the raw base64 PNG (no data-URL
+        // prefix, never duplicated inside the text fields).
+        return new
+        {
+            content = new object[]
+            {
+                new { type = "text", text },
+                new { type = "image", data = Convert.ToBase64String(result.PngBytes), mimeType = "image/png" }
+            },
+            isError
+        };
+    }
+
     private async Task<object> SendAsync(JsonElement arguments, CancellationToken ct)
     {
         RejectUnknownArguments(arguments, SendArgumentKeys);
@@ -718,6 +826,10 @@ public sealed class McpProtocolHandler
         ["uri", "content", "preserve_tags", "source_revision", "translation_version", "boxes", "format"];
 
     private static readonly string[] CiteArgumentKeys = ["refs", "style", "locale", "bibliography", "html", "format"];
+
+    private static readonly string[] AddArgumentKeys = ["path", "kind", "format"];
+
+    private static readonly string[] ViewArgumentKeys = ["uri", "context", "max_edge", "format"];
 
     private static readonly string[] SendArgumentKeys =
         ["instruction", "workflow", "parameters", "session", "message_id", "text", "format"];

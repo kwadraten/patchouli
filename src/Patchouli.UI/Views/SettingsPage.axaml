@@ -253,17 +253,21 @@
                   <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,4">
+                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,4">
                           <TextBlock Text="{Binding RootPath}" FontSize="12"
                                      Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                      TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
-                          <Button Grid.Column="1" Content="移除" Command="{Binding DeleteCommand}" Classes="Danger"
+                          <Button Grid.Column="1" Content="↑" Command="{Binding MoveUpCommand}"
+                                  Padding="10,2" ToolTip.Tip="上移（第一个目录是“移动到第一个文件搜索根”导入的目标）" />
+                          <Button Grid.Column="2" Content="↓" Command="{Binding MoveDownCommand}"
+                                  Padding="10,2" ToolTip.Tip="下移" />
+                          <Button Grid.Column="3" Content="移除" Command="{Binding DeleteCommand}" Classes="Danger"
                                   Padding="10,2" />
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <TextBlock Text="以上操作立即生效。" FontSize="11"
+                  <TextBlock Text="第一个目录是“移动到第一个文件搜索根”导入行为的目标；以上操作立即生效。" FontSize="11"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Border>
@@ -288,6 +292,44 @@
                   </StackPanel>
                   <TextBlock Text="修改会自动保存并实时生效。" FontSize="11"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="文件处理行为" Classes="CardTitle" />
+                  <TextBlock
+                    Text="按触发动作分别配置导入 PDF 时如何处理源文件。这是本机系统设置，不会随文库快照同步。MCP 调用方不能按请求覆盖。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="MCP add 导入 PDF" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding BehaviorOptions}"
+                              SelectedItem="{Binding McpAddBehaviorOption}"
+                              HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:FileHandlingBehaviorOption">
+                          <TextBlock Text="{Binding DisplayName}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock
+                      Text="“移动到第一个文件搜索根”会改变源文件的位置：文件先移动，再计算 BLAKE3 并登记。若无搜索根、或首个搜索根不可写，导入会显式失败，不会悄悄换用其他目录。"
+                      FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="窗口拖放 PDF" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding BehaviorOptions}"
+                              SelectedItem="{Binding PdfDragDropBehaviorOption}"
+                              HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:FileHandlingBehaviorOption">
+                          <TextBlock Text="{Binding DisplayName}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock
+                      Text="拖入主窗口的 PDF 使用与 MCP add 独立的设置；“保留在原位置”是默认行为，不改变源文件位置。"
+                      FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -494,24 +536,26 @@
                   <TextBlock Text="按域分别授权每个动词。授权不改变资源支持的操作；保存后内置 agent 的后续调用立即生效，MCP 服务需重新加载。"
                              FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="520" Spacing="4">
-                      <Grid ColumnDefinitions="160,72,72,72,72,72">
+                    <StackPanel MinWidth="664" Spacing="4">
+                      <Grid ColumnDefinitions="160,72,72,72,72,72,72,72">
                         <TextBlock Text="VFS 域" />
                         <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="3" Text="put" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="4" Text="cite" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="7" Text="view" HorizontalAlignment="Center" />
                       </Grid>
                       <ItemsControl ItemsSource="{Binding PermissionRows}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
-                            <Grid ColumnDefinitions="160,360" Margin="0,3">
+                            <Grid ColumnDefinitions="160,504" Margin="0,3">
                               <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
                               <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
                                 <ItemsControl.ItemsPanel>
                                   <ItemsPanelTemplate>
-                                    <UniformGrid Columns="5" />
+                                    <UniformGrid Columns="7" />
                                   </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>

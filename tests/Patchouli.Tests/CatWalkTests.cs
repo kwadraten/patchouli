@@ -273,8 +273,31 @@ public sealed class CatWalkTests
         public PatchouliAppSettings Current => PatchouliAppSettings.Default();
         public bool IsDirty => false;
 
+        public event EventHandler<AppSettingsCommittedEventArgs>? SettingsCommitted
+        {
+            add { }
+            remove { }
+        }
+
         public void Update(Func<PatchouliAppSettings, PatchouliAppSettings> updater, string? fieldCategory = null)
         {
+        }
+
+        public Task<SettingsSaveResult> UpdateSyncBindingAsync(
+            SyncAppSettings settings,
+            DeviceRootBindingAppSettings binding,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(SettingsSaveResult.Success);
+        }
+
+        public Task<SettingsSaveResult> UpdateSyncBindingAndMetadataLookupAsync(
+            SyncAppSettings settings,
+            DeviceRootBindingAppSettings binding,
+            MetadataLookupAppSettings materializedMetadataLookup,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(SettingsSaveResult.Success);
         }
 
         public Task<SettingsSaveResult> SaveImmediatelyAsync(CancellationToken cancellationToken = default)

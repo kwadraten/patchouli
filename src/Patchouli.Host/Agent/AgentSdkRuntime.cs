@@ -198,7 +198,7 @@ public sealed class AgentSdkRuntime(IAgentMcpGateway gateway)
                 }
             }
 
-            if (name is not ("find" or "fetch" or "put" or "cite" or "send" or "history"))
+            if (name is not ("find" or "fetch" or "put" or "cite" or "send" or "history" or "add" or "view"))
             {
                 return await RejectAsync(name, arguments, parent, "TOOL_NOT_SUPPORTED",
                     "The SDK has no registered tool named '" + name + "'.").ConfigureAwait(false);
@@ -307,10 +307,28 @@ public sealed class AgentSdkRuntime(IAgentMcpGateway gateway)
                     outcome = new AgentToolOutcome(false, error.Message, error.GetType().Name);
                 }
 
+                // P1-2: persist tool images (the view tool) to session media and wrap the
+                // payload with media references BEFORE the SDK boundary. SdkResult only
+                // carries Payload/ErrorCode, so without this the images would be dropped
+                // and the interpreter's persistence branch would never run.
+                string sdkPayload = outcome.Payload;
+                if (outcome.Succeeded && outcome.Images.Count > 0 && _context.SessionDirectory is { } mediaDir)
+                {
+                    IReadOnlyList<AgentSessionImageRef> stored =
+                        await AgentSessionMediaStore.StoreToolImagesAsync(
+                            mediaDir,
+                            operation,
+                            outcome.Images, _token).ConfigureAwait(false);
+                    if (stored.Count > 0)
+                    {
+                        sdkPayload = AgentToolImagePayload.Wrap(outcome.Payload, stored);
+                    }
+                }
+
                 AgentSdkReceipt settled = started with
                 {
                     Status = outcome.Succeeded ? "Succeeded" : "Failed",
-                    Payload = outcome.Payload,
+                    Payload = sdkPayload,
                     ErrorCode = outcome.ErrorCode,
                     ElapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(clock).TotalMilliseconds
                 };
