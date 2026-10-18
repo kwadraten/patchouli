@@ -82,6 +82,8 @@ The settings sidebar has seven groups: 外观与阅读, 书库与本机文件, �
 
 Incomplete provider connections persist with an explicit `IsAdded` flag; API keys remain in the credential store. Invalid library exclusion patterns, OCR engine choices, search rules, and incomplete sync bindings are saved as typed device-local drafts beside the user settings file (`.drafts.json`), with visible completion errors. They do not replace executable configuration until valid. Auto-save isolates failures per section and drains newer edits without falsely clearing their dirty state. Permission cells are disabled for unsupported resource verbs. Workflow menu launches open the chat tab and select the returned session id, including already finished sessions.
 
+Settings writes preserve their ownership boundaries: ordinary preferences use `AppSettingsStore` field-level saves; device-root bindings and snapshot checkpoints update only their target entry under the shared settings-file write gate. Sync form edits use the explicit target-binding path, while unrelated saves preserve the latest persisted bindings and checkpoints. The full settings writer is internal fixture initialization only. Successful commits notify the Host of changed LLM, metadata-lookup, and file-scanning preferences; credentials and Library-synced metadata retain their own update paths. Other startup settings keep their existing application timing, and MCP listener changes retain their explicit restart flow.
+
 ## Language
 
 **Library**:

@@ -54,9 +54,11 @@ using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Workflows;
+using Patchouli.Host.Settings;
 using Patchouli.UI;
 using Patchouli.Workflows;
 using Patchouli.Llm;
+using System.Collections.Generic;
 
 namespace Patchouli.Host.Composition;
 
@@ -72,6 +74,12 @@ public sealed class HostServices
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly object _shutdownGate = new();
+    private readonly object _settingsCommitGate = new();
+
+    private readonly Dictionary<string, long> _appliedSettingsCommitSequences =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private long _metadataLookupApplyGeneration;
     private Task? _shutdownTask;
     private Task _sessionResumeTask = Task.CompletedTask;
     private LlmAppSettings _llmSettings;
@@ -81,6 +89,7 @@ public sealed class HostServices
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
     private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
+    private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
@@ -92,7 +101,7 @@ public sealed class HostServices
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
-        Settings = settings;
+        StartupSettings = settings;
         _llmSettings = settings.Llm;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
@@ -262,7 +271,7 @@ public sealed class HostServices
             ocrQueueScheduler,
             Pages,
             OcrDefaults,
-            () => Settings.OcrEngines.DocumentOcrEngine,
+            () => StartupSettings.OcrEngines.DocumentOcrEngine,
             LifetimeToken);
         AgentSessionStore agentStore = AgentSessionStore.ForLibrary(runtimeDatabasePath);
         AgentWorkspaceStore agentWorkspaces = new(agentStore);
@@ -342,7 +351,9 @@ public sealed class HostServices
     public string RuntimeDatabasePath { get; }
     public IHostActivityTracker? ActivityTracker { get; }
     public CancellationToken LifetimeToken => _lifetimeCancellation.Token;
-    public PatchouliAppSettings Settings { get; }
+
+    /// <summary>Settings whose effects are applied while this host is constructed.</summary>
+    public PatchouliAppSettings StartupSettings { get; }
 
     /// <summary>Live LLM settings shared by chat, workflows and OCR without rebuilding the Library host.</summary>
     public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
@@ -514,6 +525,152 @@ public sealed class HostServices
         FileSearchRootAccess.UpdateExclusionPatterns(settings.ExclusionPatterns);
     }
 
+    public void ObserveSettingsStore(IAppSettingsStore settingsStore)
+    {
+        ArgumentNullException.ThrowIfNull(settingsStore);
+        if (ReferenceEquals(_observedSettingsStore, settingsStore))
+        {
+            return;
+        }
+
+        if (_observedSettingsStore is not null)
+        {
+            _observedSettingsStore.SettingsCommitted -= OnSettingsCommitted;
+        }
+
+        lock (_settingsCommitGate)
+        {
+            _appliedSettingsCommitSequences.Clear();
+            _metadataLookupApplyGeneration++;
+        }
+
+        _observedSettingsStore = settingsStore;
+        settingsStore.SettingsCommitted += OnSettingsCommitted;
+    }
+
+    private void OnSettingsCommitted(object? sender, AppSettingsCommittedEventArgs change)
+    {
+        if (change.Categories.Contains("Sync", StringComparer.OrdinalIgnoreCase))
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("Sync", change.CommitSequence) &&
+                    AcceptMetadataLookupDependencyLocked(change.CommitSequence))
+                {
+                    _ = ApplyCommittedMetadataLookupAsync(change.Snapshot,
+                        ++_metadataLookupApplyGeneration);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("Llm", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("Llm", change.CommitSequence))
+                {
+                    UpdateLlmSettings(change.Snapshot.Llm);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("MetadataLookup", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptMetadataLookupDependencyLocked(change.CommitSequence))
+                {
+                    _ = ApplyCommittedMetadataLookupAsync(change.Snapshot,
+                        ++_metadataLookupApplyGeneration);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("FileScanning", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("FileScanning", change.CommitSequence))
+                {
+                    UpdateFileScanExclusions(change.Snapshot.FileScanning);
+                }
+            }
+        }
+    }
+
+    private bool AcceptSettingsCommitLocked(string category, long commitSequence)
+    {
+        if (_appliedSettingsCommitSequences.TryGetValue(category, out long applied) &&
+            commitSequence <= applied)
+        {
+            return false;
+        }
+
+        _appliedSettingsCommitSequences[category] = commitSequence;
+        return true;
+    }
+
+    private bool AcceptMetadataLookupDependencyLocked(long commitSequence)
+    {
+        if (_appliedSettingsCommitSequences.TryGetValue("MetadataLookup", out long applied) &&
+            commitSequence <= applied)
+        {
+            return false;
+        }
+
+        _appliedSettingsCommitSequences["MetadataLookup"] = commitSequence;
+        return true;
+    }
+
+    private async Task ApplyCommittedMetadataLookupAsync(PatchouliAppSettings settings, long generation)
+    {
+        try
+        {
+            Result<LibraryMetadata> library = await Library.GetCurrentLibraryAsync(LifetimeToken)
+                .ConfigureAwait(false);
+            if (library.IsFailure)
+            {
+                return;
+            }
+
+            if (settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
+            {
+                Result<MetadataLookupAppSettings?> synced = await GetSyncedMetadataLookupAsync(LifetimeToken)
+                    .ConfigureAwait(false);
+                if (synced.IsSuccess && synced.Value is not null)
+                {
+                    lock (_settingsCommitGate)
+                    {
+                        if (_metadataLookupApplyGeneration == generation)
+                        {
+                            UpdateMetadataLookupPreferences(synced.Value);
+                        }
+                    }
+                }
+
+                return;
+            }
+
+            lock (_settingsCommitGate)
+            {
+                if (_metadataLookupApplyGeneration == generation)
+                {
+                    UpdateMetadataLookupPreferences(settings.MetadataLookup);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (LifetimeToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _reportUnexpectedException(exception, "settings-commit", "apply-metadata-lookup");
+        }
+    }
+
     private static IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         ToMetadataLookupPreferences(MetadataLookupAppSettings settings)
     {
@@ -540,8 +697,8 @@ public sealed class HostServices
         return new MinerUClient(new MinerUOptions
         {
             Token = configuration.Token,
-            BaseUrl = configuration.BaseUrl ?? Settings.MinerU.BaseUrl,
-            ModelVersion = configuration.ModelVersion ?? Settings.MinerU.ModelVersion,
+            BaseUrl = configuration.BaseUrl ?? StartupSettings.MinerU.BaseUrl,
+            ModelVersion = configuration.ModelVersion ?? StartupSettings.MinerU.ModelVersion,
             IsOcr = configuration.IsOcr,
             EnableTable = configuration.EnableTable,
             EnableFormula = configuration.EnableFormula,
@@ -699,6 +856,12 @@ public sealed class HostServices
 
     private async Task ShutdownCoreAsync()
     {
+        if (_observedSettingsStore is not null)
+        {
+            _observedSettingsStore.SettingsCommitted -= OnSettingsCommitted;
+            _observedSettingsStore = null;
+        }
+
         _lifetimeCancellation.Cancel();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
         await _sessionResumeTask;

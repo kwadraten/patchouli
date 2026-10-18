@@ -15,5 +15,8 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
         <_Parameter1>Patchouli.Tests</_Parameter1>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+        <_Parameter1>patchouli-perf</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

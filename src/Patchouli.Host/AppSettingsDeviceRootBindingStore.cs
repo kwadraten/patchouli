@@ -1,6 +1,8 @@
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Patchouli.UI;
 
@@ -57,51 +59,66 @@ public sealed class AppSettingsDeviceRootBindingStore : IDeviceRootBindingStore
         return Task.FromResult(Result<IReadOnlyList<DeviceRootBinding>>.Success(bindings));
     }
 
-    public Task<Result<DeviceRootBinding>> SaveBindingAsync(
+    public async Task<Result<DeviceRootBinding>> SaveBindingAsync(
         DeviceRootBinding binding,
         CancellationToken cancellationToken = default)
     {
-        _ = cancellationToken;
         Result valid = ValidateBinding(binding);
         if (valid.IsFailure)
         {
-            return Task.FromResult(Result<DeviceRootBinding>.Failure(valid.ErrorCode!, valid.ErrorMessage!));
+            return Result<DeviceRootBinding>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
         }
 
-        PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
         DeviceRootBindingAppSettings row = DeviceRootBindingAppSettings.FromDeviceRootBinding(binding);
-        SyncAppSettings sync = settings.Sync.WithDeviceBinding(row);
-        SettingsSaveResult saved = (settings with { Sync = sync }).Save(_settingsPath);
-        return Task.FromResult(saved.IsSuccess
+        SettingsSaveResult saved = await PatchouliAppSettings.UpdateSyncJsonAsync(_settingsPath,
+            sync =>
+            {
+                PatchouliAppSettings.UpsertDeviceBindingJson(sync, row);
+                return true;
+            }, cancellationToken);
+        return saved.IsSuccess
             ? Result<DeviceRootBinding>.Success(row.ToDeviceRootBinding())
             : Result<DeviceRootBinding>.Failure(saved.ErrorCode ?? "settings_save_failed",
-                saved.ErrorMessage ?? "Unable to save device root binding."));
+                saved.ErrorMessage ?? "Unable to save device root binding.");
     }
 
-    public Task<Result> DeleteBindingAsync(
+    public async Task<Result> DeleteBindingAsync(
         LibraryId libraryId,
         string rootKind,
         string logicalRootId,
         string deviceId,
         CancellationToken cancellationToken = default)
     {
-        _ = cancellationToken;
         Result valid = ValidateKey(rootKind, logicalRootId, deviceId);
         if (valid.IsFailure)
         {
-            return Task.FromResult(valid);
+            return valid;
         }
 
-        PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
-        SettingsSaveResult saved = (settings with
+        SettingsSaveResult saved = await PatchouliAppSettings.UpdateSyncJsonAsync(_settingsPath, sync =>
         {
-            Sync = settings.Sync.WithoutDeviceBinding(libraryId, rootKind.Trim(), logicalRootId.Trim(),
-                deviceId.Trim())
-        }).Save(_settingsPath);
-        return Task.FromResult(saved.IsSuccess
+            if (sync["DeviceBindings"] is not JsonArray bindings)
+            {
+                return false;
+            }
+
+            bool removed = false;
+            for (int i = bindings.Count - 1; i >= 0; i--)
+            {
+                if (bindings[i] is JsonObject existingNode && DeserializeBinding(existingNode) is { } existing &&
+                    existing.Matches(libraryId.ToString(), rootKind.Trim(), logicalRootId.Trim(), deviceId.Trim()))
+                {
+                    bindings.RemoveAt(i);
+                    removed = true;
+                }
+            }
+
+            return removed;
+        }, cancellationToken);
+        return saved.IsSuccess
             ? Result.Success()
             : Result.Failure(saved.ErrorCode ?? "settings_save_failed",
-                saved.ErrorMessage ?? "Unable to remove device root binding."));
+                saved.ErrorMessage ?? "Unable to remove device root binding.");
     }
 
     private static Result ValidateBinding(DeviceRootBinding binding)
@@ -124,6 +141,18 @@ public sealed class AppSettingsDeviceRootBindingStore : IDeviceRootBindingStore
         }
 
         return Result.Success();
+    }
+
+    private static DeviceRootBindingAppSettings? DeserializeBinding(JsonObject node)
+    {
+        try
+        {
+            return node.Deserialize<DeviceRootBindingAppSettings>();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static Result ValidateKey(string rootKind, string logicalRootId, string deviceId)

@@ -2872,7 +2872,7 @@ public sealed class UiViewModelTests : IDisposable
                 services.ConnectionFactory,
                 services.Clock,
                 services.Credentials.GetActiveSecretForProviderAsync,
-                services.Settings.Runtime.UseMockOcrOnly
+                services.StartupSettings.Runtime.UseMockOcrOnly
                     ? (IOcrEngine)new MockOcrEngine()
                     : new UnavailableOcrEngine(),
                 new SearchUnitBuilder(services.ConnectionFactory, services.Clock, services.Markdown),

@@ -534,19 +534,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string? fieldCategory = "Ui")
     {
         ArgumentNullException.ThrowIfNull(updater);
-        _settings = updater(_settings);
-        _settingsStore.Update(_ => _settings, fieldCategory);
+        _settingsStore.Update(current => updater(current), fieldCategory);
+        _settings = _settingsStore.Current;
     }
 
     public void UpdateAppOptionsDeferred(PatchouliAppSettings settings, string? fieldCategory = "Ui")
     {
-        UpdateAppOptionsDeferred(_ => settings, fieldCategory);
+        UpdateAppOptionsDeferred(current => MergeSettingsCategory(current, settings, fieldCategory), fieldCategory);
     }
 
     public SettingsSaveResult UpdateAppOptions(PatchouliAppSettings settings)
     {
-        ApplyAppOptions(settings);
-        _settingsStore.Update(_ => settings);
+        _settingsStore.Update(current => MergeSettingsCategory(current, settings, null));
+        _settings = _settingsStore.Current;
         return SettingsSaveResult.Success;
     }
 
@@ -555,17 +555,64 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string? fieldCategory = null,
         CancellationToken cancellationToken = default)
     {
-        ApplyAppOptions(settings);
-        _settingsStore.Update(_ => settings, fieldCategory);
-        return await _settingsStore.SaveImmediatelyAsync(cancellationToken);
+        _settingsStore.Update(current => MergeSettingsCategory(current, settings, fieldCategory), fieldCategory);
+        _settings = _settingsStore.Current;
+        SettingsSaveResult result = await _settingsStore.SaveImmediatelyAsync(cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
     }
 
-    private void ApplyAppOptions(PatchouliAppSettings settings)
+    private static PatchouliAppSettings MergeSettingsCategory(PatchouliAppSettings current,
+        PatchouliAppSettings updated, string? fieldCategory)
     {
-        _settings = settings;
-        _services?.UpdateLlmSettings(settings.Llm);
-        _services?.UpdateMetadataLookupPreferences(settings.MetadataLookup);
-        _services?.UpdateFileScanExclusions(settings.FileScanning);
+        return fieldCategory?.ToUpperInvariant() switch
+        {
+            "RUNTIME" => current with { Runtime = updated.Runtime },
+            "MINERU" => current with { MinerU = updated.MinerU },
+            "MCP" => current with { Mcp = updated.Mcp },
+            "UI" => current with { Ui = updated.Ui },
+            "CREDENTIALS" => current with { Credentials = updated.Credentials },
+            "SYNC" => current with { Sync = MergeSyncFields(current.Sync, updated.Sync) },
+            "METADATALOOKUP" => current with { MetadataLookup = updated.MetadataLookup },
+            "FILESCANNING" => current with { FileScanning = updated.FileScanning },
+            "OCRENGINES" => current with { OcrEngines = updated.OcrEngines },
+            "IMPORT" => current with { Import = updated.Import },
+            "LLM" => current with { Llm = updated.Llm },
+            _ => updated with { Sync = MergeSyncFields(current.Sync, updated.Sync) }
+        };
+    }
+
+    private static SyncAppSettings MergeSyncFields(SyncAppSettings current, SyncAppSettings updated)
+    {
+        return updated with
+        {
+            DeviceBindings = current.DeviceBindings,
+            SnapshotState = current.SnapshotState,
+            SyncedSettingKeys = current.SyncedSettingKeys
+        };
+    }
+
+    public async Task<SettingsSaveResult> UpdateSyncBindingAsync(
+        SyncAppSettings settings,
+        DeviceRootBindingAppSettings binding,
+        CancellationToken cancellationToken = default)
+    {
+        SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAsync(
+            settings, binding, cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
+    }
+
+    private async Task<SettingsSaveResult> UpdateSyncBindingAndMetadataLookupAsync(
+        SyncAppSettings settings,
+        DeviceRootBindingAppSettings binding,
+        MetadataLookupAppSettings materializedMetadataLookup,
+        CancellationToken cancellationToken = default)
+    {
+        SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAndMetadataLookupAsync(
+            settings, binding, materializedMetadataLookup, cancellationToken);
+        _settings = _settingsStore.Current;
+        return result;
     }
 
     internal void NotifyLlmCredentialsChanged()
@@ -633,6 +680,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             library.Value.LibraryId,
             LibrarySettingKeys.MetadataLookup,
             enabled);
+        DeviceRootBindingAppSettings? binding = syncOverride is null
+            ? nextSync.CurrentSyncRootBinding(library.Value.LibraryId)
+            : nextSync.Bindings.FirstOrDefault(candidate =>
+                !string.IsNullOrWhiteSpace(nextSync.SyncRootId) &&
+                candidate.Matches(library.Value.LibraryId.ToString(), LogicalRootKinds.SyncRoot,
+                    nextSync.SyncRootId, nextSync.DeviceId));
+        binding ??= nextSync.CurrentSyncRootBinding(library.Value.LibraryId);
+        binding ??= nextSync.EnsureCurrentSyncRootBinding(library.Value.LibraryId);
+
         if (enabled)
         {
             MetadataLookupAppSettings normalized =
@@ -641,7 +697,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 LibrarySettingKeys.MetadataLookup,
                 normalized,
                 _settings.Sync.DeviceId,
-                _ => UpdateAppOptionsAsync(_settings with { Sync = nextSync }, "Sync"),
+                _ => UpdateSyncBindingAsync(nextSync, binding),
                 services.UpdateMetadataLookupPreferences);
         }
 
@@ -649,11 +705,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             LibrarySettingKeys.MetadataLookup,
             currentlyEnabled,
             _settings.MetadataLookup,
-            (materialized, _) => UpdateAppOptionsAsync(_settings with
-            {
-                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
-                Sync = nextSync
-            }, null),
+            (materialized, cancellationToken) => UpdateSyncBindingAndMetadataLookupAsync(
+                nextSync,
+                binding,
+                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
+                cancellationToken),
             materialized => services.UpdateMetadataLookupPreferences(
                 MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources)));
     }
@@ -1340,6 +1396,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     private void AttachHostServices(HostServices services)
     {
+        services.ObserveSettingsStore(_settingsStore);
         McpServerHost mcpHost = new(services, ReportUnexpectedException);
         _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
