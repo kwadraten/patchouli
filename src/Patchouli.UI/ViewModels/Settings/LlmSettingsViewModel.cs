@@ -18,7 +18,7 @@ using Patchouli.UI.ViewModels;
 namespace Patchouli.UI.ViewModels.Settings;
 
 /// <summary>
-/// 「模型连接与聊天」section. The catalog supplies available provider types; the form displays providers with
+/// 「模型与翻译」section. The catalog supplies available provider types; the form displays providers with
 /// stored credentials and the provider currently being added. API keys never enter
 /// the settings file: each provider key is written through the existing
 /// <see cref="ICredentialStore"/> (D2); saved API keys are loaded into masked inputs and tracked separately from edits.
@@ -99,7 +99,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     [ExcludeFromDerivedGeneration] public ObservableCollection<string> OcrModelOptions { get; } = [];
 
     /// <summary>
-    /// Translation provider choices: the blank entry follows the chat model and every other entry is a
+    /// Translation provider choices: the blank entry follows the default model and every other entry is a
     /// configured provider. The translation model picker is only enabled for an explicit provider.
     /// </summary>
     [ExcludeFromDerivedGeneration]
@@ -150,63 +150,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         return $"{name}（未就绪）";
     }
 
-    [ObservableProperty] public partial int AgentMaxRetries { get; set; } = LlmAppSettings.DefaultAgentMaxRetries;
-
-    [ExcludeFromDerivedGeneration]
-    public IReadOnlyList<LlmSelectionOption> AgentReasoningEffortOptions { get; } =
-    [
-        new("", "默认（由供应商决定）"), new("none", "关闭（none）"), new("minimal", "最小（minimal）"),
-        new("low", "低（low）"), new("medium", "中（medium）"), new("high", "高（high）"),
-        new("xhigh", "极高（xhigh）"), new("max", "最高（max）")
-    ];
-
-    [ExcludeFromDerivedGeneration]
-    public LlmSelectionOption? SelectedAgentReasoningEffort
-    {
-        get => AgentReasoningEffortOptions.First(option => option.ProviderId == _current.AgentReasoningEffort);
-        set
-        {
-            if (value is null || IsWaitingForDraftSync() || value.ProviderId == _current.AgentReasoningEffort)
-            {
-                return;
-            }
-
-            _current = _current with { AgentReasoningEffort = value.ProviderId };
-            Raise();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    partial void OnAgentMaxRetriesChanged(int value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with { AgentMaxRetries = Math.Clamp(value, 0, LlmAppSettings.MaxAgentMaxRetries) };
-        MarkDirty("有未保存的更改");
-    }
-
-    [ObservableProperty]
-    public partial int ToolResultMaxCharacters { get; set; } = LlmAppSettings.DefaultToolResultMaxCharacters;
-
-    partial void OnToolResultMaxCharactersChanged(int value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with
-        {
-            ToolResultMaxCharacters = Math.Clamp(value, LlmAppSettings.MinToolResultMaxCharacters,
-                LlmAppSettings.MaxToolResultMaxCharacters)
-        };
-        MarkDirty("有未保存的更改");
-    }
-
-    // ---- Direct translation (issue #20, settings subsection of "模型连接与聊天") ----
+    // ---- Direct translation (issue #20, settings subsection of 「模型与翻译」) ----
     // Numeric inputs are kept as text so an out-of-range or non-numeric draft can show a field-level
     // error next to the input instead of being silently clamped. Only a valid draft reaches _current,
     // and SaveAsync refuses to persist while an error is present.
@@ -276,7 +220,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     [ObservableProperty]
     public partial string? TranslationErrorMessage { get; private set; }
 
-    /// <summary>Provider picker selection; the blank option explicitly means "follow the chat model".</summary>
+    /// <summary>Provider picker selection; the blank option explicitly means "follow the default model".</summary>
     [ExcludeFromDerivedGeneration]
     public LlmSelectionOption? SelectedTranslationProvider
     {
@@ -482,7 +426,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                 _main.AppOptions with { Llm = draft }, LlmProviderCatalog.SectionName);
         if (!saved.IsSuccess)
         {
-            LastError = saved.ErrorMessage ?? "无法保存 模型连接与聊天设置。";
+            LastError = saved.ErrorMessage ?? "无法保存模型与翻译设置。";
             SaveState = SettingsSaveState.Failed;
             Status = "保存失败";
             Raise(nameof(IsDirty));
@@ -875,7 +819,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         try
         {
             _current = _persisted;
-            Raise(nameof(SelectedAgentReasoningEffort));
 
             foreach (LlmProviderSettingsRowViewModel row in Providers)
             {
@@ -895,8 +838,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             Raise(nameof(SelectedOcrReasoning));
             Raise(nameof(SelectedOcrLayoutModel));
             Raise(nameof(OcrLayoutStatus));
-            AgentMaxRetries = _persisted.AgentMaxRetries;
-            ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
             SyncTranslationFromSettings(_persisted.Translation);
             RebuildChatModelOptions();
             RebuildOcrModelOptions();
@@ -962,7 +903,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         FillModelOptions(OcrModelOptions, OcrProviderId, OcrModel);
     }
 
-    /// <summary>The blank translation provider means "follow the chat selection"; see
+    /// <summary>The blank translation provider means "follow the default selection"; see
     /// <see cref="TranslationAppSettings"/>.</summary>
     private void FillTranslationProviderOptions()
     {
@@ -970,7 +911,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             TranslationProviderOptions.ToDictionary(option => option.ProviderId);
         List<LlmSelectionOption> options =
         [
-            existing.GetValueOrDefault("") ?? new LlmSelectionOption("", "跟随聊天模型")
+            existing.GetValueOrDefault("") ?? new LlmSelectionOption("", "跟随默认模型")
         ];
         options.AddRange(Providers.Where(row => row.Readiness?.IsConfigured == true)
             .Select(row => existing.GetValueOrDefault(row.ProviderId) ??
@@ -1246,7 +1187,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             readiness.TryGetValue(ChatProviderId, out LlmProviderReadiness? chat)
             && !chat.IsConfigured)
         {
-            problems.Add($"聊天默认 provider「{chat.DisplayName}」尚未配置完成：{chat.Diagnostic}");
+            problems.Add($"默认 provider「{chat.DisplayName}」尚未配置完成：{chat.Diagnostic}");
         }
 
         if (!string.IsNullOrWhiteSpace(OcrProviderId) &&
@@ -1519,7 +1460,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         if (isUserEdit)
         {
             // A model id belongs to the provider it was typed for; switching provider falls back to
-            // "follow the chat model" instead of silently carrying an unusable id over.
+            // "follow the default model" instead of silently carrying an unusable id over.
             if (!string.IsNullOrEmpty(TranslationModel))
             {
                 TranslationModel = "";

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Patchouli.Core.Translation;
 using Patchouli.Llm;
 using Patchouli.UI;
 
@@ -53,10 +54,7 @@ public sealed class LlmSettingsPersistenceTests
             OcrProviderId = "azure-openai",
             OcrModel = "gpt-4o",
             ChatProviderId = "anthropic",
-            ChatModel = "claude-sonnet",
-            AgentMaxRetries = 0,
-            AgentReasoningEffort = "high",
-            ToolResultMaxCharacters = 8192
+            ChatModel = "claude-sonnet"
         };
         llm = llm.WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
             "resource-a", "deployment-a", "2024-10-21") { ContextWindowTokens = 200000 });
@@ -67,9 +65,6 @@ public sealed class LlmSettingsPersistenceTests
 
         loaded.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
         loaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
-        loaded.Llm.ToolResultMaxCharacters.Should().Be(8192);
-        loaded.Llm.AgentMaxRetries.Should().Be(0);
-        loaded.Llm.AgentReasoningEffort.Should().Be("high");
         LlmProviderAppSettings azure = loaded.Llm.FindProvider("azure-openai")!;
         azure.Subscription.Should().Be("resource-a");
         azure.Deployment.Should().Be("deployment-a");
@@ -170,7 +165,7 @@ public sealed class LlmSettingsPersistenceTests
     }
 
     [Fact]
-    public void Legacy_workflow_values_are_preserved_for_migration_without_becoming_runtime_defaults()
+    public void Legacy_workflow_values_seed_the_translation_subsection_once()
     {
         string root = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), $"patchouli-llm-settings-{Guid.NewGuid():N}")).FullName;
@@ -197,15 +192,18 @@ public sealed class LlmSettingsPersistenceTests
             loaded.Llm.OcrProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
             loaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
             loaded.Llm.FindProvider("openai")!.Model.Should().Be("gpt-4o");
-            loaded.Llm.LegacyWorkflowValues["windowRadius"].Should().Be("900");
-            loaded.Llm.LegacyWorkflowValues["targetLanguage"].Should().Be("   ");
-            loaded.Llm.LegacyWorkflowValues["backfillPreviousWindowTranslation"].Should().Be("true");
-            loaded.Llm.LegacyWorkflowValues["model"].Should().Contain("claude-sonnet");
+            loaded.Llm.Translation.TargetLanguage.Should().Be(TranslationSettings.DefaultTargetLanguage);
+            loaded.Llm.Translation.ProviderId.Should().Be("anthropic");
+            loaded.Llm.Translation.Model.Should().Be("claude-sonnet");
+            loaded.Llm.Translation.WindowRadius.Should().Be(TranslationSettings.MaxWindowRadius);
+            loaded.Llm.Translation.BackfillPreviousWindowTranslation.Should().BeTrue();
             loaded.Save(path).IsSuccess.Should().BeTrue();
-            PatchouliAppSettings.Load(path).Llm.LegacyWorkflowValues["windowRadius"].Should().Be("900");
             using JsonDocument rewritten = JsonDocument.Parse(File.ReadAllText(path));
-            rewritten.RootElement.GetProperty("Llm").TryGetProperty("TranslationWindowRadius", out _)
-                .Should().BeFalse();
+            JsonElement llm = rewritten.RootElement.GetProperty("Llm");
+            llm.TryGetProperty("TranslationWindowRadius", out _).Should().BeFalse();
+            llm.TryGetProperty("PendingWorkflowMigration", out _).Should().BeFalse();
+            PatchouliAppSettings.Load(path).Llm.Translation.WindowRadius.Should()
+                .Be(TranslationSettings.MaxWindowRadius);
             loaded.Llm.Providers.Should().HaveCount(LlmProviderCatalog.All.Count, "one row per provider");
         }
         finally

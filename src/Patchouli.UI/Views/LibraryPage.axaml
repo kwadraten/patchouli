@@ -220,32 +220,12 @@
                 RowBackground="Transparent" BorderThickness="0"
                 Background="{DynamicResource SurfaceContainerLowestBrush}">
         <DataGrid.ContextMenu>
-          <ContextMenu Opened="OnLibraryContextMenuOpened">
+          <ContextMenu>
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
                       IsEnabled="{Binding IsSingleSelectionOrNone}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
-                      x:CompileBindings="False">
-              <MenuItem.IsVisible>
-                <MultiBinding Converter="{x:Static converters:BoolConverters.And}">
-                  <Binding Path="Sidebar.IsActiveSelected" />
-                  <Binding Path="HasWorkflowMenuEntries" />
-                </MultiBinding>
-              </MenuItem.IsVisible>
-              <MenuItem.ItemTemplate>
-                <DataTemplate x:DataType="vm:WorkflowMenuEntryViewModel">
-                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
-                </DataTemplate>
-              </MenuItem.ItemTemplate>
-              <MenuItem.Styles>
-                <Style Selector="MenuItem MenuItem">
-                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
-                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
-                </Style>
-              </MenuItem.Styles>
-            </MenuItem>
             <MenuItem Header="合并题录" Command="{Binding MergeSelectedItemsCommand}"
                       IsEnabled="{Binding CanMergeSelectedItems}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />

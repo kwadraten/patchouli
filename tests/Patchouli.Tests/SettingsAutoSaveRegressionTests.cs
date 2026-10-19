@@ -65,7 +65,7 @@ public sealed class SettingsAutoSaveRegressionTests
     [InlineData("csl-styles", "cite", false)]
     [InlineData("texts", "put", true)]
     [InlineData("translations", "send", false)]
-    [InlineData("runs", "send", true)]
+    [InlineData("runs", "send", false)]
     [InlineData("items", "cite", true)]
     public void Unsupported_permission_cells_remain_off_and_cannot_modify_settings(string domain, string verb,
         bool supported)

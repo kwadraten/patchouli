@@ -3,6 +3,7 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
+using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 
@@ -188,7 +189,7 @@ public sealed class McpServerHost : IAsyncDisposable
         McpServerSettings serverSettings;
         if (explicitSettings is not null)
         {
-            serverSettings = explicitSettings;
+            serverSettings = McpServerSettingsService.NormalizeLegacySettings(explicitSettings);
             Result explicitValidation =
                 await _services.McpSettings.ValidateSettingsAsync(serverSettings, cancellationToken);
             if (explicitValidation.IsFailure)
@@ -237,8 +238,6 @@ public sealed class McpServerHost : IAsyncDisposable
         McpProtocolHandler handler = new(_services.Mcp, _services.McpWrites, _services.BiblatexImport,
             _services.Items, _services.VersionedEvidenceReader, _services.ConnectionFactory, serverSettings,
             ReportMcpException, activityTracker: _services.ActivityTracker, hostLifetime: _services.LifetimeToken,
-            agentRuns: new McpHostAgentRunsApi(_services.AgentSessions),
-            workflowRuns: new McpHostWorkflowRunsApi(_services.HostWorkflows),
             ocrRuns: new McpHostOcrRunsApi(_services.GetOcrQueueRowsAsync),
             fileImport: _services.FileImport, pageView: _services.PageImageView,
             ocrCommands: _services.OcrCommands,

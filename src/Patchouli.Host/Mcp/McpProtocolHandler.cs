@@ -1,8 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using Microsoft.FSharp.Core;
-using Patchouli.Agent;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Diagnostics;
@@ -35,7 +32,6 @@ public sealed class McpProtocolHandler
         Func<object, string>? toonEncoder = null,
         IHostActivityTracker? activityTracker = null,
         CancellationToken hostLifetime = default,
-        IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
         IMcpOcrRunsApi? ocrRuns = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null)
@@ -49,7 +45,7 @@ public sealed class McpProtocolHandler
         _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
             effectiveSettings.ExposeLibraryTags,
             effectiveSettings.ExposeLibraryCollections,
-            agentRuns, workflowRuns, ocrRuns,
+            ocrRuns,
             !IsSwitchOff(effectiveSettings, "patchouli.put"),
             !IsSwitchOff(effectiveSettings, "patchouli.send"),
             _ => Task.FromResult(effectiveSettings),
@@ -212,59 +208,13 @@ public sealed class McpProtocolHandler
                JsonSerializer.Serialize(McpOutputSanitizer.Sanitize(message)) + "}}";
     }
 
-    /// <summary>Validates agent arguments against the same schemas published by tools/list.</summary>
+    /// <summary>Validates tool arguments against the same schemas published by tools/list.</summary>
     public static string? ValidateToolArguments(string name, JsonElement arguments)
     {
         ToolDefinition? tool = Tools().FirstOrDefault(definition => definition.Name == name);
-        if (tool is null)
-        {
-            return $"Unknown tool '{name}'.";
-        }
-
-        Dictionary<string, ToolValueType> fields = tool.Properties
-            .Where(pair => pair.Value.Type != "object" && pair.Value.Items?.Type != "object")
-            .ToDictionary(
-                pair => pair.Key, pair => ArgumentType(pair.Value), StringComparer.Ordinal);
-        HashSet<string> required = tool.Required.Where(key => tool.Properties[key].Type != "object" &&
-                                                              tool.Properties[key].Items?.Type != "object")
-            .ToHashSet(StringComparer.Ordinal);
-        ToolArgumentSchema schema = new(fields, required);
-        JsonObject scalarArguments = new();
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        foreach (JsonProperty property in arguments.EnumerateObject())
-        {
-            if (!seen.Add(property.Name))
-            {
-                return $"Duplicate field '{property.Name}'.";
-            }
-
-            if (fields.ContainsKey(property.Name))
-            {
-                scalarArguments[property.Name] = JsonNode.Parse(property.Value.GetRawText());
-            }
-        }
-
-        FSharpResult<Unit, ToolProtocolError> decoded =
-            ToolProtocolModule.validateArguments(schema, scalarArguments.ToJsonString());
-        if (decoded.IsError)
-        {
-            return ToolProtocolModule.describe(decoded.ErrorValue);
-        }
-
-        return ValidatePublishedArguments(arguments, tool.Properties, tool.Required, name);
-    }
-
-    private static ToolValueType ArgumentType(ToolSchemaProperty schema)
-    {
-        return schema.Type switch
-        {
-            "string" => ToolValueType.Text,
-            "integer" => ToolValueType.Integer,
-            "boolean" => ToolValueType.Boolean,
-            "array" when schema.Items is { Type: not "object" } item =>
-                ToolValueType.NewArray(ArgumentType(item)),
-            _ => throw new InvalidOperationException($"Unsupported published tool type '{schema.Type}'.")
-        };
+        return tool is null
+            ? $"Unknown tool '{name}'."
+            : ValidatePublishedArguments(arguments, tool.Properties, tool.Required, name);
     }
 
     private static string? ValidatePublishedArguments(JsonElement value,
@@ -375,20 +325,11 @@ public sealed class McpProtocolHandler
         return null;
     }
 
-    public static IReadOnlyList<string> AgentToolDefinitions()
+    /// <summary>Returns one published tool's wire schema for the published-contract tests.</summary>
+    internal static JsonElement PublishedToolSchema(string name)
     {
-        return Tools().Where(tool => tool.Name != "patchouli.send").Select(tool =>
-        {
-            JsonObject wire = JsonSerializer.SerializeToNode(tool.ToWire())!.AsObject();
-            return new JsonObject
-            {
-                ["type"] = "function", ["function"] = new JsonObject
-                {
-                    ["name"] = tool.Name["patchouli.".Length..], ["description"] = tool.Description,
-                    ["parameters"] = wire["inputSchema"]!.DeepClone()
-                }
-            }.ToJsonString();
-        }).ToArray();
+        ToolDefinition? tool = Tools().FirstOrDefault(definition => definition.Name == name);
+        return tool is null ? default : JsonSerializer.SerializeToElement(tool.ToWire());
     }
 
     private static ToolDefinition[] Tools()
@@ -761,9 +702,6 @@ public sealed class McpProtocolHandler
         };
     }
 
-    private static readonly string[] LegacySendKeys =
-        ["instruction", "workflow", "parameters", "session", "message_id", "text"];
-
     private static readonly string[] SendArgumentKeys =
         ["target", "action", "args", "format"];
 
@@ -772,15 +710,6 @@ public sealed class McpProtocolHandler
         if (arguments.ValueKind != JsonValueKind.Object)
         {
             throw new McpArgumentException("send requires a target/action/args object.");
-        }
-
-        foreach (string legacyKey in LegacySendKeys)
-        {
-            if (arguments.TryGetProperty(legacyKey, out _))
-            {
-                throw new McpArgumentException(
-                    $"Legacy send argument '{legacyKey}' is rejected. The workflow/agent session send interface has been retired in favor of typed actions; use target, action, and args.");
-            }
         }
 
         string? validation = ValidateToolArguments("patchouli.send", arguments);

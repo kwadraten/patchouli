@@ -34,21 +34,18 @@ using Patchouli.Ocr;
 using Patchouli.Core.Search;
 using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
-using Patchouli.Host.Agent;
 using Patchouli.Host.Settings;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Import;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Watching;
-using Patchouli.Host.Workflows;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Patchouli.UI;
-using Patchouli.Workflows;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -59,10 +56,8 @@ using Core;
 using Dialogs;
 using Views;
 using Services;
-using AgentChat;
 
-public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable, IAgentChatHost,
-    IWorkflowMenuEntryHost
+public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 {
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private readonly IScheduler _timingScheduler;
@@ -103,12 +98,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private BibliographyViewModel? _bibliographyViewModel;
     private FileDocumentViewModel? _fileDocumentViewModel;
     private OcrQueueViewModel? _ocrQueueViewModel;
-    private AgentChatTabViewModel? _agentChatViewModel;
     private SearchEvidenceViewModel? _searchEvidenceViewModel;
-    private readonly IWorkflowMenuService _workflowMenu;
-    private readonly IWorkflowSessionNotifications _workflowNotifications;
-    private readonly IWorkflowSessionStatusLookup? _workflowSessionStatus;
-    private IDisposable? _workflowNotificationSubscription;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -349,26 +339,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public OcrQueueViewModel OcrQueue =>
         _ocrQueueViewModel ??= CreateWithActivityTracker(() => new OcrQueueViewModel(this));
 
-    /// <summary>
-    ///     The chat tab's view model (S3). It is owned by the window rather than by the workspace tab,
-    ///     so closing the tab removes only the front end: the session list, the message flow and the
-    ///     selected session survive a close, and opening the tab again shows the same state (D9).
-    /// </summary>
-    [ExcludeFromDerivedGeneration]
-    public AgentChatTabViewModel AgentChat =>
-        _agentChatViewModel ??=
-            CreateWithActivityTracker(() => new AgentChatTabViewModel(this, ResolveAgentChatSessionsAsync));
-
-    /// <summary>Host services the chat tab's commands are constructed under.</summary>
-    [ExcludeFromDerivedGeneration]
-    public AgentChatCommandContext CommandContext => new(_activityTracker);
-
-    /// <summary>The dialog surface a chat-tab confirmation (e.g. the S5 session purge) is shown through.</summary>
-    public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
-    {
-        return Dialogs.ShowDialogAsync<TResult>(viewModel);
-    }
-
     [ExcludeFromDerivedGeneration]
     public SearchEvidenceViewModel SearchEvidence =>
         _searchEvidenceViewModel ??= CreateSearchEvidenceViewModel();
@@ -431,7 +401,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     public AsyncCommand ToggleMcpServerCommand { get; }
 
-    public AsyncCommand StopAllAgentSessionsCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
     public AsyncCommand ShowLibraryCommand { get; }
     public AsyncCommand ShowReadingCommand { get; }
@@ -441,25 +410,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
-    public AsyncCommand OpenAgentChatCommand { get; }
-    public AsyncCommand RefreshWorkflowMenuCommand { get; }
-
-    /// <summary>Ordered menu-bar entries; the Library context menu shares this one source.</summary>
-    public ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries { get; }
-
-    /// <summary>Ordered reading-toolbar entries; loaded with the open document as the selection.</summary>
-    public ObservableCollection<WorkflowMenuEntryViewModel> ReadingWorkflowMenuEntries { get; }
-
-    /// <summary>True when the Library has at least one workflow that opted into the menus.</summary>
-    public bool HasWorkflowMenuEntries => WorkflowMenuEntries.Count > 0;
-
-    /// <summary>True when the reading view's workflow menu has at least one entry.</summary>
-    public bool HasReadingWorkflowMenuEntries => ReadingWorkflowMenuEntries.Count > 0;
 
     public AsyncCommand ActivateSettingsTabCommand { get; }
     public AsyncCommand ActivateSearchTabCommand { get; }
     public AsyncCommand ActivateOcrQueueTabCommand { get; }
-    public AsyncCommand ActivateAgentChatTabCommand { get; }
     public AsyncCommand ActivateAboutTabCommand { get; }
     public AsyncCommand CheckSyncStateCommand { get; }
     public AsyncCommand CopyCslBibliographyCommand { get; }
@@ -476,7 +430,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand CloseSettingsTabCommand { get; }
     public AsyncCommand CloseSearchTabCommand { get; }
     public AsyncCommand CloseOcrQueueTabCommand { get; }
-    public AsyncCommand CloseAgentChatTabCommand { get; }
     public AsyncCommand CloseItemEditorTabCommand { get; }
     public AsyncCommand CloseAboutTabCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
@@ -746,14 +699,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IFilePickerService? filePicker = null, bool enforceRuntimeHostOwnership = false,
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
-        IHostActivityTracker? activityTracker = null,
-        IWorkflowSessionStatusLookup? workflowSessionStatus = null)
+        IHostActivityTracker? activityTracker = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
             ? new SynchronizationContextScheduler(synchronizationContext)
             : ImmediateScheduler.Instance);
-        _workflowSessionStatus = workflowSessionStatus;
         Register(_revisionSubscription);
         Register(_mcpSubscriptions);
         Register(_watcherSubscriptions);
@@ -812,13 +763,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
-
-        // The workflows live with the opened Library, so the menu source resolves the runner through
-        // the same composition root every other host service comes from.
-        _workflowNotifications = new WorkflowMenuService(_ => Task.FromResult<WorkflowSessionRunner?>(null));
-        _workflowMenu = WorkflowMenuService.ForHost(cancellationToken => ServicesAsync(false));
-        _workflowNotificationSubscription = _workflowNotifications.Subscribe(
-            _activityTracker, ResolveAgentSessionStatus, OnWorkflowNotifications);
 
         Shell.MinerUToken = "";
 
@@ -951,20 +895,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-active-tab"));
         Register(activeTabSub);
 
-        // Closing the chat tab removes the front end only (D9): the tab view model is owned by the
-        // window, so its session and message flow survive and nothing is stopped or cancelled.
-        IDisposable chatTabSub = Observable
-            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
-                handler => OpenTabs.CollectionChanged += handler,
-                handler => OpenTabs.CollectionChanged -= handler)
-            .Where(pattern => pattern.EventArgs.Action == NotifyCollectionChangedAction.Remove &&
-                              pattern.EventArgs.OldItems?.OfType<WorkspaceTabViewModel>()
-                                  .Any(tab => tab.Kind == WorkspaceTabKind.AgentChat) == true)
-            .ObserveOn(_uiScheduler)
-            .Subscribe(_ => _agentChatViewModel?.Deactivate(), exception =>
-                UnexpectedExceptions.Sink.Report(exception, "layout-chat-tab"));
-        Register(chatTabSub);
-
         IDisposable inspectorPaneSub = layoutChanges
             .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.ShowInspectorPane))
             .ObserveOn(_uiScheduler)
@@ -1036,7 +966,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
-        OpenAgentChatCommand = new AsyncCommand(OpenAgentChatAsync);
         OpenOtherLibraryCommand = new AsyncCommand(OpenOtherLibraryAsync);
         ToggleMcpServerCommand = new AsyncCommand(async () =>
         {
@@ -1049,14 +978,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 await StartMcpServerAsync();
             }
         });
-        StopAllAgentSessionsCommand = new AsyncCommand(StopAllAgentSessionsAsync);
-        WorkflowMenuEntries = [];
-        ReadingWorkflowMenuEntries = [];
-        RefreshWorkflowMenuCommand = new AsyncCommand(() => LoadWorkflowMenuAsync(WorkflowMenuEntries));
         ActivateSettingsTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.Settings));
         ActivateSearchTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.SearchResults));
         ActivateOcrQueueTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
-        ActivateAgentChatTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.AgentChat));
         ActivateAboutTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
         CheckSyncStateCommand = new AsyncCommand(OpenSyncCenterAsync);
         CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync, () => Shell.SelectedItem is not null);
@@ -1075,7 +999,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync, () => Layout.HasSettingsTab);
         CloseSearchTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
-        CloseAgentChatTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.AgentChat));
         CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor),
             () => Layout.HasItemEditorTab);
         CloseAboutTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.About));
@@ -1390,8 +1313,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
         RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
-        // A new Library is a new workflow store, so the menu entries are rebuilt from its definitions.
-        RefreshWorkflowMenuCommand?.Execute(null);
     }
 
     /// <summary>
@@ -2066,8 +1987,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private void DisposeActivityTracker()
     {
-        _workflowNotificationSubscription?.Dispose();
-        _workflowNotificationSubscription = null;
         _activitySubscription?.Dispose();
         _activitySubscription = null;
         if (_ownsActivityTracker && _activityTracker is IDisposable trackerDisposable)
@@ -2180,8 +2099,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
         RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
-        WorkflowMenuEntries.Clear();
-        ReadingWorkflowMenuEntries.Clear();
     }
 
     private async Task StartMcpServerAsync(HostServices services)
@@ -2763,7 +2680,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
         service.Register<BiblatexImportPreviewDialogViewModel, BiblatexImportPreviewDialog>();
         service.Register<ConfirmDialogViewModel, ConfirmDialog>();
-        service.Register<WorkflowEditorDialogViewModel, WorkflowEditorDialog>();
         service.Register<PurgeConfirmDialogViewModel, PurgeConfirmDialog>();
         service.Register<TagNamePromptDialogViewModel, TagNamePromptDialog>();
         service.Register<PdfBBoxViewModel, BoxEditorDialog>();
@@ -2910,22 +2826,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             () => new ChangelogViewModel());
     }
 
+    /// <summary>
+    ///     Opens the OCR queue and refreshes its rows.
+    /// </summary>
     private async Task OpenOcrQueueAsync()
     {
         await ActivateTabAsync(WorkspaceTabKind.OcrQueue, "OcrQueue", "OCR 队列", "List", true, () => OcrQueue);
         await OcrQueue.RefreshAsync();
-    }
-
-    /// <summary>
-    ///     Opens the chat tab without starting a session (the menu's manual entry point). Starting a
-    ///     session is always the caller's decision; this only shows the session list and the selected
-    ///     session's message flow.
-    /// </summary>
-    public async Task OpenAgentChatAsync()
-    {
-        await ActivateTabAsync(WorkspaceTabKind.AgentChat, "AgentChat", "聊天", "List", true,
-            () => AgentChat);
-        await AgentChat.ActivateAsync();
     }
 
     private async Task OpenOtherLibraryAsync()
@@ -2949,168 +2856,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             await Shell.RefreshAsync();
             await ShowLibraryAsync();
         }
-    }
-
-    public async Task StopAllAgentSessionsAsync()
-    {
-        HostServices services = await ServicesAsync();
-        int libraryGeneration = LibraryGeneration;
-        IAgentChatSessionService sessions = new AgentChatSessionServiceAdapter(services.AgentSessions);
-        IReadOnlyList<AgentSessionSnapshot> snapshots = await sessions.ListSessionsAsync();
-        if (!IsCurrentLibraryContext(services, libraryGeneration))
-        {
-            return;
-        }
-
-        Task<AgentSessionSnapshot>[] stops = snapshots
-            .Where(snapshot => AgentChatPresentation.IsActive(snapshot.Status))
-            .Select(snapshot => sessions.StopAsync(snapshot.SessionId))
-            .ToArray();
-        await Task.WhenAll(stops);
-        if (!IsCurrentLibraryContext(services, libraryGeneration))
-        {
-            return;
-        }
-
-        if (_agentChatViewModel is not null)
-        {
-            await _agentChatViewModel.RefreshAsync();
-        }
-
-        Report($"已停止 {stops.Length} 个会话；会话保留，可随时恢复。");
-    }
-
-    /// <summary>Resolves the host session service the chat tab talks to (null-free seam for tests).</summary>
-    private async Task<IAgentChatSessionService> ResolveAgentChatSessionsAsync(CancellationToken cancellationToken)
-    {
-        HostServices services = await ServicesAsync().ConfigureAwait(false);
-        return new AgentChatSessionServiceAdapter(services.AgentSessions);
-    }
-
-    /// <summary>
-    ///     Brings the chat tab forward: an open tab refreshes its session list (the launch just added a
-    ///     session), and a closed one is opened through the normal tab path.
-    /// </summary>
-    public async Task OpenChatTabAsync(string? sessionId = null)
-    {
-        await OpenAgentChatAsync().ConfigureAwait(true);
-        if (sessionId is not null && !await AgentChat.OpenSessionByIdAsync(sessionId))
-        {
-            ReportError($"无法打开工作流会话：{sessionId}");
-        }
-    }
-
-    /// <summary>The menu-bar entries, loaded from the same ordered definition source as every menu.</summary>
-    public Task RefreshWorkflowMenuAsync()
-    {
-        return LoadWorkflowMenuAsync(WorkflowMenuEntries);
-    }
-
-    /// <summary>The reading-toolbar entries, captured against the document the reading view shows.</summary>
-    public Task RefreshReadingWorkflowMenuAsync(string documentId, string pageRange = "", string textSelection = "")
-    {
-        return LoadWorkflowMenuAsync(ReadingWorkflowMenuEntries,
-            new WorkflowLaunchSelection(documentId, pageRange) { TextSelection = textSelection });
-    }
-
-    private async Task LoadWorkflowMenuAsync(ObservableCollection<WorkflowMenuEntryViewModel> target,
-        WorkflowLaunchSelection? selection = null)
-    {
-        try
-        {
-            IReadOnlyList<WorkflowDefinition> definitions = await _workflowMenu.ListMenuDefinitionsAsync()
-                .ConfigureAwait(true);
-            WorkflowLaunchSelection effective = selection ?? CurrentLibrarySelection();
-            target.Clear();
-            foreach (WorkflowDefinition definition in definitions)
-            {
-                target.Add(new WorkflowMenuEntryViewModel(definition, _workflowMenu, this, effective));
-            }
-
-            Raise(nameof(HasWorkflowMenuEntries));
-            Raise(nameof(HasReadingWorkflowMenuEntries));
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            UnexpectedExceptions.Sink.Report(exception, "workflow-menu", "load");
-        }
-    }
-
-    private void OnWorkflowNotifications(IReadOnlyList<WorkflowSessionNotification> notifications)
-    {
-        foreach (WorkflowSessionNotification notification in notifications)
-        {
-            if (notification.IsError)
-            {
-                ReportError(notification.Message);
-            }
-            else
-            {
-                Report(notification.Message);
-            }
-        }
-    }
-
-    /// <summary>
-    ///     The authoritative status of one session: the host session service keeps every session it
-    ///     created in memory, and it is the same service the chat tab lists (S1/S3).
-    /// </summary>
-    private AgentSessionSnapshot? ResolveAgentSessionStatus(string sessionId)
-    {
-        return _workflowSessionStatus?.TryGetStatus(sessionId) ??
-               _services?.AgentSessions.TryGetSnapshot(sessionId);
-    }
-
-    /// <summary>Reports one host activity snapshot as status-bar notifications (the test seam).</summary>
-    public IReadOnlyList<WorkflowSessionNotification> ReportWorkflowSessionActivity(HostActivitySnapshot snapshot)
-    {
-        IReadOnlyList<WorkflowSessionNotification> notifications =
-            _workflowNotifications.ReadNotifications(snapshot, ResolveAgentSessionStatus);
-        OnWorkflowNotifications(notifications);
-        return notifications;
-    }
-
-    /// <summary>The Library selection a menu launch carries: the selected row's main document.</summary>
-    public WorkflowLaunchSelection CurrentLibrarySelection()
-    {
-        IReadOnlyList<string> documentIds = Shell.SelectedItems
-            .Select(static item => item.DocumentInstanceId)
-            .OfType<string>()
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (documentIds.Count == 0 && Shell.SelectedItem is { } selected &&
-            !string.IsNullOrWhiteSpace(selected.DocumentInstanceId))
-        {
-            documentIds = [selected.DocumentInstanceId];
-        }
-
-        return documentIds.Count == 0
-            ? WorkflowLaunchSelection.None
-            : new WorkflowLaunchSelection(documentIds[0]) { DocumentIds = documentIds };
-    }
-
-    void IWorkflowMenuEntryHost.Report(string message)
-    {
-        Report(message);
-    }
-
-    void IWorkflowMenuEntryHost.ReportError(string message)
-    {
-        ReportError(message);
-    }
-
-    Task IWorkflowMenuEntryHost.OpenChatTabAsync(string? sessionId)
-    {
-        return OpenChatTabAsync(sessionId);
-    }
-
-    IHostActivityTracker? IWorkflowMenuEntryHost.ActivityTracker => ActivityTracker;
-
-    private Task ShowPlaceholderAsync(string message)
-    {
-        Report(message);
-        return Task.CompletedTask;
     }
 
     private async Task ShowLibraryAsync()
@@ -3137,8 +2882,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string title = BuildItemWorkspaceTabTitle("PDF 工作台", item.Title ?? item.FileName);
         await ActivateTabAsync(WorkspaceTabKind.PdfWorkspace, tabId, title, "FolderOpen", true,
             () => new PdfWorkspaceViewModel(this, item));
-        // The reading toolbar's workflow entries are captured against the document that is now open.
-        await RefreshReadingWorkflowMenuAsync(item.DocumentInstanceId ?? string.Empty);
 
         if (ActiveTab?.Content is PdfWorkspaceViewModel pdf && !pdf.HasImage)
         {

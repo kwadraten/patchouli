@@ -198,7 +198,7 @@ public sealed class AppSettingsWriteCoordinationTests
 
         PatchouliAppSettings withNewLlm = staleUiSnapshot with
         {
-            Llm = staleUiSnapshot.Llm with { ToolResultMaxCharacters = 12345 }
+            Llm = staleUiSnapshot.Llm with { ChatModel = "checkpoint-safe-model" }
         };
         (await withNewLlm.SaveFieldLevelAsync(file.Path, new HashSet<string> { "Llm" })).IsSuccess
             .Should().BeTrue();
@@ -226,7 +226,7 @@ public sealed class AppSettingsWriteCoordinationTests
 
         PatchouliAppSettings persisted = PatchouliAppSettings.Load(file.Path);
         persisted.Ui.ReadingFontFamily.Should().Be("Checkpoint-safe font");
-        persisted.Llm.ToolResultMaxCharacters.Should().Be(12345);
+        persisted.Llm.ChatModel.Should().Be("checkpoint-safe-model");
         persisted.OcrEngines.DocumentOcrEngine.Should().Be("checkpoint-safe-ocr");
         persisted.Sync.Bindings.Should().BeEmpty("a stale Sync form save must not restore a deleted binding");
         persisted.Sync.DeviceName.Should().Be("Updated device name");
@@ -281,7 +281,7 @@ public sealed class AppSettingsWriteCoordinationTests
         PatchouliAppSettings uiEdit = staleUiSnapshot with
         {
             Ui = staleUiSnapshot.Ui with { ReadingFontFamily = "Concurrent-safe font" },
-            Llm = staleUiSnapshot.Llm with { ToolResultMaxCharacters = 54321 },
+            Llm = staleUiSnapshot.Llm with { ChatModel = "concurrent-safe-model" },
             OcrEngines = staleUiSnapshot.OcrEngines with { DocumentOcrEngine = "concurrent-safe-ocr" }
         };
         Task<SettingsSaveResult> uiWrite = uiEdit.SaveFieldLevelAsync(settingsPath,
@@ -304,7 +304,7 @@ public sealed class AppSettingsWriteCoordinationTests
 
         PatchouliAppSettings persisted = PatchouliAppSettings.Load(file.Path);
         persisted.Ui.ReadingFontFamily.Should().Be("Concurrent-safe font");
-        persisted.Llm.ToolResultMaxCharacters.Should().Be(54321);
+        persisted.Llm.ChatModel.Should().Be("concurrent-safe-model");
         persisted.OcrEngines.DocumentOcrEngine.Should().Be("concurrent-safe-ocr");
         persisted.Sync.Bindings.Single().SnapshotState.Should().BeEquivalentTo(checkpoint);
     }

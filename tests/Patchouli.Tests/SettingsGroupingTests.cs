@@ -20,7 +20,7 @@ public sealed class SettingsGroupingTests
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             SettingsViewModel page = main.Settings;
             page.LlmSettings.ReportSaveFailure("Provider 'deepseek' is missing model.");
-            main.Status.Should().Contain("模型连接与聊天").And.Contain("missing model");
+            main.Status.Should().Contain("模型与翻译").And.Contain("missing model");
             main.StatusIsError.Should().BeTrue();
             page.ActiveCategory = page.Categories.Single(category => category.Title == "同步与快照");
             main.Status.Should().Contain("missing model");
@@ -38,8 +38,7 @@ public sealed class SettingsGroupingTests
 
     [Theory]
     [InlineData("mcp", "MCP 服务与权限", "AI集成")]
-    [InlineData("llm", "模型连接与聊天", "AI集成")]
-    [InlineData("workflows", "工作流", "AI集成")]
+    [InlineData("llm", "模型与翻译", "AI集成")]
     [InlineData("import", "导入规则", "导入与识别")]
     [InlineData("ocr", "OCR 引擎", "导入与识别")]
     [InlineData("ocr_model", "多模态 OCR 模型", "导入与识别")]

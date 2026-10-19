@@ -52,15 +52,12 @@ using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
-using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Translation;
-using Patchouli.Host.Workflows;
 using Patchouli.Host.Settings;
 using Patchouli.UI;
-using Patchouli.Workflows;
 using Patchouli.Llm;
 using System.Collections.Generic;
 
@@ -85,7 +82,6 @@ public sealed class HostServices
 
     private long _metadataLookupApplyGeneration;
     private Task? _shutdownTask;
-    private Task _sessionResumeTask = Task.CompletedTask;
     private LlmAppSettings _llmSettings;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
@@ -280,10 +276,8 @@ public sealed class HostServices
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
             DocumentPageMaps);
         CliPath = new CliPathService();
-        // The built-in agent acts through exactly the same MCP command surface as every other MCP
-        // client: identical validation, permissions, atomic write set and error vocabulary. Its OCR
-        // runs go through the OCR queue's own public contract and its run-event wait is satisfied by
-        // the queue's completion notification (ADR 0036, no polling).
+        // Every MCP client acts through the same MCP command surface: identical validation,
+        // permissions, atomic write set and error vocabulary.
         McpCommands = new McpCommandService(Mcp, McpWrites, BiblatexImport, Items, VersionedEvidenceReader,
             permissionSettings: async cancellationToken =>
             {
@@ -295,41 +289,6 @@ public sealed class HostServices
             },
             ocrCommands: OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(TranslationRuns));
-        // The .fsx workflow session reuses exactly that interpreter: a workflow runs through the same
-        // session service and the same effect surface as the built-in agent (ADR 0036).
-        OcrQueueHostPrimitives agentHostPrimitives = new(
-            ocrQueueScheduler,
-            Pages,
-            OcrDefaults,
-            () => StartupSettings.OcrEngines.DocumentOcrEngine,
-            LifetimeToken);
-        AgentSessionStore agentStore = AgentSessionStore.ForLibrary(runtimeDatabasePath);
-        AgentWorkspaceStore agentWorkspaces = new(agentStore);
-        AgentFsiRepl agentFsi = new(agentWorkspaces);
-        AgentEffectInterpreter agentInterpreter = new(
-            new LlmProviderAgentClientProvider(() => LlmSettings, Credentials),
-            new McpCommandServiceAgentGateway(McpCommands),
-            agentHostPrimitives, agentFsi,
-            new AgentContextCompactor(agentStore, () => LlmSettings.ToolResultMaxCharacters),
-            () =>
-            {
-                LlmAppSettings settings = LlmSettings;
-                int capacity = settings.FindProvider(settings.ChatSelection.ProviderId)?.ContextWindowTokens ??
-                               LlmProviderAppSettings.DefaultContextWindowTokens;
-                return Math.Clamp(capacity / 16, 128, 16000);
-            },
-            agentStore);
-        AgentSessions = new AgentSessionService(
-            agentStore,
-            agentInterpreter,
-            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces,
-            maxRequestRetries: () => LlmSettings.AgentMaxRetries);
-        HostWorkflows = new WorkflowSessionRunner(
-            WorkflowStore.ForLibrary(runtimeDatabasePath),
-            AgentSessions,
-            agentInterpreter,
-            () => LlmSettings,
-            agentHostPrimitives);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -372,7 +331,7 @@ public sealed class HostServices
             new FileFingerprintService(),
             new FileImportRecoveryStore(ConnectionFactory),
             Clock);
-        // Issue #11: source-image reading for the view tool and the built-in agent chain.
+        // Issue #11: source-image reading for the view tool.
         PageImageView = new PageImageViewService(Pages, DocumentTrees, PageRenders);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
@@ -385,7 +344,7 @@ public sealed class HostServices
     /// <summary>Settings whose effects are applied while this host is constructed.</summary>
     public PatchouliAppSettings StartupSettings { get; }
 
-    /// <summary>Live LLM settings shared by chat, workflows and OCR without rebuilding the Library host.</summary>
+    /// <summary>Live LLM settings shared by OCR and translation without rebuilding the Library host.</summary>
     public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
 
     public void UpdateLlmSettings(LlmAppSettings settings)
@@ -466,8 +425,6 @@ public sealed class HostServices
     public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
     public McpCommandService McpCommands { get; }
-    public AgentSessionService AgentSessions { get; }
-    public WorkflowSessionRunner HostWorkflows { get; }
     public ICliPathService CliPath { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
@@ -787,8 +744,6 @@ public sealed class HostServices
                 }
             }
 
-            await services.HostWorkflows.Configuration.MigrateLegacyAsync(CancellationToken.None);
-
             Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
             if (ftsCache.IsFailure)
             {
@@ -863,10 +818,6 @@ public sealed class HostServices
         startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
         await services.ApplySyncedMetadataLookupAsync(settings);
 
-        // S5 (ADR 0036 Resume segment): sessions still recorded as running resume in the background
-        // through the workflow runner's replay path. The scan is fire-and-forget, so startup is never
-        // blocked, and a broken session directory never prevents the Library from opening.
-        services.StartInterruptedSessionResume(startupLogger);
         try
         {
             await startupLogger.LogAsync("migration", "Pending migrations completed.");
@@ -903,35 +854,9 @@ public sealed class HostServices
             await translationRuns.DisposeAsync();
         }
 
-        await _sessionResumeTask;
-        await AgentSessions.DisposeAsync();
         await LibraryRevisionMonitor.DisposeAsync();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
         ConnectionFactory.ClearPools();
-    }
-
-    /// <summary>
-    ///     Starts the background scan that auto-resumes sessions still recorded as in flight (S5,
-    ///     ADR 0036 Resume segment). The scan runs on the thread pool and is observed by the
-    ///     unexpected-exception reporter, so it neither blocks startup nor faults unobserved.
-    /// </summary>
-    private void StartInterruptedSessionResume(IAppLogger logger)
-    {
-        _sessionResumeTask = Task.Run(async () =>
-        {
-            try
-            {
-                await AgentSessionAutoResume.ResumeInterruptedAsync(AgentSessions, HostWorkflows, logger,
-                    LifetimeToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (LifetimeToken.IsCancellationRequested)
-            {
-            }
-            catch (Exception exception)
-            {
-                _reportUnexpectedException(exception, "host.composition", "session-auto-resume");
-            }
-        });
     }
 }

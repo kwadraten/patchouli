@@ -429,10 +429,9 @@ public sealed class UiViewModelTests : IDisposable
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
 
-        // 「本地文件」and「工作流」own their commands instead of the shared settings draft pipeline:
-        // workflow edits are committed and compile-checked one at a time.
+        // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "workflows" or "csl_installed" or "csl_online"))
+            .Where(entry => entry.Id is not ("local_files" or "csl_installed" or "csl_online"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);

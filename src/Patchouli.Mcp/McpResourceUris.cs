@@ -25,12 +25,6 @@ public enum McpUriKind
     RunOcrStatus,
     RunsTranslationScope,
     RunTranslationStatus,
-    RunsAgentScope,
-    RunAgentSession,
-    RunAgentStatus,
-    RunAgentEvents,
-    WorkflowsScope,
-    Workflow,
     ActionsScope,
     Action
 }
@@ -44,9 +38,6 @@ public sealed record McpUriParseResult(
     DocumentTreeRevisionId? TreeRevisionId = null,
     DocumentBoxId? BoxId = null,
     string? RunTaskId = null,
-    string? SessionId = null,
-    string? WorkflowId = null,
-    long? AfterSequence = null,
     string CanonicalUri = "",
     bool IsLegacy = false,
     string? ContentType = null,
@@ -140,13 +131,13 @@ public static class McpResourceUris
         return $"{Prefix}csl-styles/{styleId}.csl";
     }
 
-    /// <summary>The single root Library projection resource exposed to agents.</summary>
+    /// <summary>The read-only library projection resource.</summary>
     public static string LibraryUri()
     {
         return $"{Prefix}library.yml";
     }
 
-    /// <summary>The volatile runtime runs root: OCR task and agent session projections live under it.</summary>
+    /// <summary>The volatile runtime runs root: OCR task and translation run projections live under it.</summary>
     public static string RunsScopeUri()
     {
         return $"{Prefix}runs/";
@@ -155,11 +146,6 @@ public static class McpResourceUris
     public static string RunsOcrScopeUri()
     {
         return $"{Prefix}runs/ocr/";
-    }
-
-    public static string RunsAgentScopeUri()
-    {
-        return $"{Prefix}runs/agent/";
     }
 
     /// <summary>The volatile direct translation runs started through the translation Actions.</summary>
@@ -172,24 +158,6 @@ public static class McpResourceUris
     public static string TranslationRunStatusUri(string runId)
     {
         return $"{Prefix}runs/translation/{RequirePathToken(runId, nameof(runId))}/status";
-    }
-
-    /// <summary>The canonical session URI a <c>send start</c> returns and the other send verbs address.</summary>
-    public static string AgentRunUri(string sessionId)
-    {
-        return $"{Prefix}runs/agent/{RequirePathToken(sessionId, nameof(sessionId))}";
-    }
-
-    public static string AgentRunStatusUri(string sessionId)
-    {
-        return $"{AgentRunUri(sessionId)}/status";
-    }
-
-    /// <summary>Builds the canonical agent event-stream URI; an explicit cursor sets <c>?after=</c>.</summary>
-    public static string AgentRunEventsUri(string sessionId, long? afterSequence = null)
-    {
-        string uri = $"{AgentRunUri(sessionId)}/events";
-        return afterSequence is null ? uri : $"{uri}?after={afterSequence.Value}";
     }
 
     public static string OcrRunStatusUri(string taskId)
@@ -209,17 +177,6 @@ public static class McpResourceUris
     public static string MapUri(DocumentInstanceId documentId)
     {
         return $"{Prefix}texts/{documentId}/map.yml";
-    }
-
-    /// <summary>The read-only workflow metadata root.</summary>
-    public static string WorkflowsScopeUri()
-    {
-        return $"{Prefix}workflows/";
-    }
-
-    public static string WorkflowUri(string workflowId)
-    {
-        return $"{Prefix}workflows/{RequirePathToken(workflowId, nameof(workflowId))}";
     }
 
     private static string RequirePathToken(string value, string name)
@@ -325,12 +282,6 @@ public static class McpResourceUris
             McpUriKind.RunOcrStatus => OcrRunStatusUri(target.RunTaskId!),
             McpUriKind.RunsTranslationScope => RunsTranslationScopeUri(),
             McpUriKind.RunTranslationStatus => TranslationRunStatusUri(target.RunTaskId!),
-            McpUriKind.RunsAgentScope => RunsAgentScopeUri(),
-            McpUriKind.RunAgentSession => AgentRunUri(target.SessionId!),
-            McpUriKind.RunAgentStatus => AgentRunStatusUri(target.SessionId!),
-            McpUriKind.RunAgentEvents => AgentRunEventsUri(target.SessionId!, target.AfterSequence),
-            McpUriKind.WorkflowsScope => WorkflowsScopeUri(),
-            McpUriKind.Workflow => WorkflowUri(target.WorkflowId!),
             _ => throw new InvalidOperationException("Unknown VFS resource kind.")
         };
     }
@@ -380,7 +331,6 @@ public static class McpResourceUris
             "translations" => ParseTranslationsUri(uri, segments, query),
             "csl-styles" => ParseCslStylesUri(uri, segments, query),
             "runs" => ParseRunsUri(uri, segments, query),
-            "workflows" => ParseWorkflowsUri(uri, segments, query),
             "documents" or "styles" or "evidence" => Invalid(uri,
                 $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
@@ -414,8 +364,7 @@ public static class McpResourceUris
     {
         // patchouli://runs/ or
         // patchouli://runs/ocr/ or patchouli://runs/ocr/{task-id}/status or
-        // patchouli://runs/translation/ or patchouli://runs/translation/{run-id}/status or
-        // patchouli://runs/agent/ or patchouli://runs/agent/{session-id}[/status|/events[?after=N]]
+        // patchouli://runs/translation/ or patchouli://runs/translation/{run-id}/status.
         if (segments.Length == 2 && segments[0] == "runs" && segments[1].Length == 0)
         {
             return query is null
@@ -426,18 +375,15 @@ public static class McpResourceUris
         if (segments.Length < 2 || segments[1].Length == 0)
         {
             return Invalid(uri,
-                "Run URIs must be patchouli://runs/ocr/{task-id}/status, " +
-                "patchouli://runs/translation/{run-id}/status, " +
-                "patchouli://runs/agent/{session-id}/status, or " +
-                "patchouli://runs/agent/{session-id}/events[?after={sequence}].");
+                "Run URIs must be patchouli://runs/ocr/{task-id}/status or " +
+                "patchouli://runs/translation/{run-id}/status.");
         }
 
         return segments[1] switch
         {
             "ocr" => ParseRunsOcrUri(uri, segments, query),
             "translation" => ParseRunsTranslationUri(uri, segments, query),
-            "agent" => ParseRunsAgentUri(uri, segments, query),
-            _ => Invalid(uri, "The runs scope exposes only the 'ocr', 'translation' and 'agent' subtrees.")
+            _ => Invalid(uri, "The runs scope exposes only the 'ocr' and 'translation' subtrees.")
         };
     }
 
@@ -497,98 +443,10 @@ public static class McpResourceUris
             "OCR run URIs must be patchouli://runs/ocr/{task-id}/status or patchouli://runs/ocr/{task-id}/.");
     }
 
-    private static Result<McpUriParseResult> ParseRunsAgentUri(string uri, string[] segments, string? query)
-    {
-        // runs/agent/ (scope), runs/agent/{session-id}, runs/agent/{session-id}/status, or
-        // runs/agent/{session-id}/events[?after={sequence}].
-        if (segments.Length == 3 && segments[2].Length == 0)
-        {
-            return query is null
-                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunsAgentScope))
-                : Invalid(uri, "The runs/agent scope does not accept query parameters.");
-        }
-
-        if (segments.Length < 3 || !IsPathToken(segments[2]))
-        {
-            return Invalid(uri,
-                "Agent run URIs must be patchouli://runs/agent/{session-id}[/status|/events[?after={sequence}]].");
-        }
-
-        string sessionId = segments[2];
-        if (segments.Length == 3)
-        {
-            return query is null
-                ? Result<McpUriParseResult>.Success(
-                    new McpUriParseResult(McpUriKind.RunAgentSession, SessionId: sessionId))
-                : Invalid(uri, "The agent session URI does not accept query parameters.");
-        }
-
-        if (segments.Length == 4 && segments[3] == "status")
-        {
-            return query is null
-                ? Result<McpUriParseResult>.Success(
-                    new McpUriParseResult(McpUriKind.RunAgentStatus, SessionId: sessionId))
-                : Invalid(uri, "Agent run status URIs do not accept query parameters.");
-        }
-
-        if (segments.Length == 4 && segments[3] == "events")
-        {
-            if (query is null)
-            {
-                return Result<McpUriParseResult>.Success(
-                    new McpUriParseResult(McpUriKind.RunAgentEvents, SessionId: sessionId));
-            }
-
-            if (TryParseAfterQuery(query, out long afterSequence))
-            {
-                return Result<McpUriParseResult>.Success(new McpUriParseResult(
-                    McpUriKind.RunAgentEvents, SessionId: sessionId, AfterSequence: afterSequence));
-            }
-
-            return Invalid(uri, "Agent event URIs accept only the ?after={sequence} query parameter.");
-        }
-
-        return Invalid(uri,
-            "Agent run URIs must be patchouli://runs/agent/{session-id}[/status|/events[?after={sequence}]].");
-    }
-
-    private static Result<McpUriParseResult> ParseWorkflowsUri(string uri, string[] segments, string? query)
-    {
-        // patchouli://workflows/ or patchouli://workflows/{workflow-id}.
-        if (segments.Length == 2 && segments[0] == "workflows" && segments[1].Length == 0)
-        {
-            return query is null
-                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.WorkflowsScope))
-                : Invalid(uri, "The workflows scope does not accept query parameters.");
-        }
-
-        if (segments.Length != 2 || !IsPathToken(segments[1]))
-        {
-            return Invalid(uri, "Workflow URIs must be patchouli://workflows/{workflow-id}.");
-        }
-
-        return query is null
-            ? Result<McpUriParseResult>.Success(
-                new McpUriParseResult(McpUriKind.Workflow, WorkflowId: segments[1]))
-            : Invalid(uri, "Workflow URIs do not accept query parameters.");
-    }
-
     private static bool IsPathToken(string segment)
     {
         return segment.Length is > 0 and <= 64 && segment.All(character =>
             char.IsLetterOrDigit(character) || character is '-' or '_' or '.');
-    }
-
-    private static bool TryParseAfterQuery(string query, out long afterSequence)
-    {
-        afterSequence = 0;
-        const string prefix = "after=";
-        if (!query.StartsWith(prefix, StringComparison.Ordinal) || query.Length == prefix.Length)
-        {
-            return false;
-        }
-
-        return long.TryParse(query[prefix.Length..], out afterSequence) && afterSequence >= 0;
     }
 
     private static Result<McpUriParseResult> ParseItemUri(string uri, string[] segments)

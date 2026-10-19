@@ -160,7 +160,7 @@ public sealed class McpOcrProtocolIndependentTests
     [InlineData("ocr.start", TaskUri)]
     [InlineData("ocr.start", "patchouli://texts/11111111-1111-1111-1111-111111111111/page-1.xml")]
     [InlineData("ocr.cancel", DocumentUri)]
-    [InlineData("ocr.retry", "patchouli://runs/agent/22222222-2222-2222-2222-222222222222/")]
+    [InlineData("ocr.retry", "patchouli://runs/translation/22222222-2222-2222-2222-222222222222/status")]
     public async Task Registry_rejects_wrong_action_target_before_domain_handler(string action, string target)
     {
         Harness harness = new();
@@ -201,11 +201,12 @@ public sealed class McpOcrProtocolIndependentTests
     }
 
     [Theory]
-    [InlineData("""{"instruction":"start","workflow":"patchouli://workflows/wf"}""")]
-    [InlineData("""{"instruction":"message","session":"patchouli://runs/agent/s/","message_id":"m","text":"go"}""")]
+    [InlineData("""{"instruction":"start","workflow":"patchouli://library.yml"}""", "target")]
+    [InlineData("""{"instruction":"message","session":"s","message_id":"m","text":"go"}""", "target")]
     [InlineData(
-        """{"target":"patchouli://texts/11111111-1111-1111-1111-111111111111/","action":"ocr.start","args":{},"parameters":{}}""")]
-    public async Task Old_send_fields_are_rejected_with_migration_diagnostic(string legacy)
+        """{"target":"patchouli://texts/11111111-1111-1111-1111-111111111111/","action":"ocr.start","args":{},"parameters":{}}""",
+        "unknown field")]
+    public async Task Old_send_fields_are_rejected_as_unknown_or_missing(string legacy, string expected)
     {
         Harness harness = new();
         using JsonDocument parsed = JsonDocument.Parse(legacy);
@@ -216,7 +217,7 @@ public sealed class McpOcrProtocolIndependentTests
         ErrorName(response).Should().Be("INVALID_ARGUMENT");
         using JsonDocument envelope = Envelope(response);
         envelope.RootElement.GetProperty("message").GetProperty("error").GetString()!.ToLowerInvariant()
-            .Should().Contain("target").And.Contain("action");
+            .Should().Contain(expected);
         harness.Calls.Should().BeEmpty();
     }
 

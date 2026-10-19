@@ -454,23 +454,6 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     [ExcludeFromDerivedGeneration]
     public AsyncCommand StartFullTranslationCommand => _main.StartFullTranslationCommand;
 
-    /// <summary>
-    ///     The workflow entries of the Library context menu: the very collection the menu bar shows, so
-    ///     both surfaces list the same <c>WorkflowStore</c> definitions in the same order (plan §3.8).
-    /// </summary>
-    [ExcludeFromDerivedGeneration]
-    public ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries => _main.WorkflowMenuEntries;
-
-    /// <summary>True when at least one workflow opted into the menus.</summary>
-    [ExcludeFromDerivedGeneration]
-    public bool HasWorkflowMenuEntries => _main.HasWorkflowMenuEntries;
-
-    /// <summary>Rebuilds the context-menu entries against the current selection (called as it opens).</summary>
-    public Task RefreshWorkflowMenuAsync()
-    {
-        return _main.RefreshWorkflowMenuAsync();
-    }
-
     [ExcludeFromDerivedGeneration]
     public UiCommandDescriptor CopyCslBibliographyDescriptor => _main.CopyCslBibliographyDescriptor;
 

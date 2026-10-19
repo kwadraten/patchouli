@@ -26,8 +26,6 @@ public sealed partial class McpCommandService
     private readonly IBiblatexImportService _biblatex;
     private readonly IItemService _items;
     private readonly IVersionedEvidenceReader _evidenceReader;
-    private readonly IMcpAgentRunsApi? _agentRuns;
-    private readonly IMcpWorkflowRunsApi? _workflowRuns;
     private readonly IMcpOcrRunsApi? _ocrRuns;
     private readonly bool _exposeLibraryTags;
     private readonly bool _exposeLibraryCollections;
@@ -44,7 +42,6 @@ public sealed partial class McpCommandService
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
         IItemService items, IVersionedEvidenceReader evidenceReader,
         bool exposeLibraryTags = true, bool exposeLibraryCollections = true,
-        IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
         IMcpOcrRunsApi? ocrRuns = null, bool putEnabled = true, bool sendEnabled = true,
         Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
@@ -56,8 +53,6 @@ public sealed partial class McpCommandService
         _biblatex = biblatex;
         _items = items;
         _evidenceReader = evidenceReader;
-        _agentRuns = agentRuns;
-        _workflowRuns = workflowRuns;
         _ocrRuns = ocrRuns;
         _exposeLibraryTags = exposeLibraryTags;
         _exposeLibraryCollections = exposeLibraryCollections;
@@ -151,14 +146,6 @@ public sealed partial class McpCommandService
         CancellationToken cancellationToken = default)
     {
         return ViewCoreAsync(request, cancellationToken);
-    }
-
-    public Task<McpCommandResult<McpSendMeta, McpSendResult>> SendAsync(McpSendRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-            McpErrorCode.InvalidArgument,
-            "Legacy Agent send is removed; use send target/action/args with a registered domain Action."));
     }
 
     private async Task<McpCommandResult<McpAddMeta, McpAddResult>> AddCoreAsync(McpAddRequest request,
@@ -687,9 +674,7 @@ public sealed partial class McpCommandService
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
-            or McpUriKind.RunsAgentScope or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-            or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow or McpUriKind.ActionsScope
-            or McpUriKind.Action)
+            or McpUriKind.ActionsScope or McpUriKind.Action)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
@@ -1028,12 +1013,6 @@ public sealed partial class McpCommandService
                 cancellationToken),
             McpUriKind.RunTranslationStatus => await FetchTranslationRunStatusAsync(parsed.Value, range, limitBytes,
                 state, cancellationToken),
-            McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus => await FetchAgentRunStatusAsync(
-                parsed.Value, range, limitBytes, state, cancellationToken),
-            McpUriKind.RunAgentEvents => await FetchAgentRunEventsAsync(parsed.Value, range, limitBytes, state,
-                cancellationToken),
-            McpUriKind.Workflow => await FetchWorkflowAsync(parsed.Value, range, limitBytes, state,
-                cancellationToken),
             _ => FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument,
                 "Scopes cannot be fetched; use find to browse a scope."), limitBytes)
         };
@@ -1217,96 +1196,6 @@ public sealed partial class McpCommandService
 
         string content = ApplyLines(DefaultToonEncoder(run.Value), range, "lines");
         return FitTextEntry(uri, "run_status", null, content, limitBytes, state.LibraryRevision);
-    }
-
-    private async Task<McpFetchResult> FetchAgentRunStatusAsync(McpUriParseResult target, string? range,
-        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
-    {
-        string sessionUri = McpResourceUris.AgentRunUri(target.SessionId!);
-        if (_agentRuns is null)
-        {
-            return FailedFetch(sessionUri, McpToolError.From(McpErrorCode.Unavailable,
-                "Agent run projections are unavailable on this host."), limitBytes);
-        }
-
-        Result<McpAgentSessionStatusProjection> session =
-            await _agentRuns.TryGetSessionAsync(target.SessionId!, cancellationToken);
-        if (session.IsFailure)
-        {
-            return FailedFetch(sessionUri, McpToolError.From(McpErrorMappings.ToReadError(session.ErrorCode),
-                session.ErrorMessage ?? "Agent session was not found."), limitBytes);
-        }
-
-        string? rangeError = ValidateRange(range, "lines");
-        if (rangeError is not null)
-        {
-            return FailedFetch(sessionUri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError),
-                limitBytes);
-        }
-
-        string content = ApplyLines(DefaultToonEncoder(session.Value), range, "lines");
-        return FitTextEntry(sessionUri, "run_status", null, content, limitBytes, state.LibraryRevision);
-    }
-
-    private async Task<McpFetchResult> FetchAgentRunEventsAsync(McpUriParseResult target, string? range,
-        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
-    {
-        string uri = McpResourceUris.AgentRunEventsUri(target.SessionId!, target.AfterSequence);
-        if (_agentRuns is null)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorCode.Unavailable,
-                "Agent run projections are unavailable on this host."), limitBytes);
-        }
-
-        Result<IReadOnlyList<McpAgentSessionEvent>> events =
-            await _agentRuns.ReadSessionEventsAsync(target.SessionId!, cancellationToken);
-        if (events.IsFailure)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorMappings.ToReadError(events.ErrorCode),
-                events.ErrorMessage ?? "Agent session was not found."), limitBytes);
-        }
-
-        long after = target.AfterSequence ?? 0;
-        IReadOnlyList<McpAgentSessionEvent> selected = events.Value.Where(entry => entry.Seq > after).ToArray();
-        long lastSequence = events.Value.Count == 0 ? 0 : events.Value.Max(entry => entry.Seq);
-        McpAgentEventsProjection projection = new(target.SessionId!, selected, lastSequence, lastSequence);
-
-        string? rangeError = ValidateRange(range, "lines");
-        if (rangeError is not null)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
-        }
-
-        string content = ApplyLines(DefaultToonEncoder(projection), range, "lines");
-        return FitTextEntry(uri, "run_events", null, content, limitBytes, state.LibraryRevision);
-    }
-
-    private async Task<McpFetchResult> FetchWorkflowAsync(McpUriParseResult target, string? range,
-        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
-    {
-        string uri = McpResourceUris.WorkflowUri(target.WorkflowId!);
-        if (_workflowRuns is null)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorCode.Unavailable,
-                "Workflow metadata is unavailable on this host."), limitBytes);
-        }
-
-        Result<McpWorkflowDetail> workflow =
-            await _workflowRuns.TryGetWorkflowAsync(target.WorkflowId!, cancellationToken);
-        if (workflow.IsFailure)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorMappings.ToReadError(workflow.ErrorCode),
-                workflow.ErrorMessage ?? "Workflow was not found."), limitBytes);
-        }
-
-        string? rangeError = ValidateRange(range, "lines");
-        if (rangeError is not null)
-        {
-            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
-        }
-
-        string content = ApplyLines(DefaultToonEncoder(workflow.Value), range, "lines");
-        return FitTextEntry(uri, "workflow", null, content, limitBytes, state.LibraryRevision);
     }
 
     private async Task<McpFetchResult> FetchLibraryAsync(string? range, int limitBytes,
@@ -1961,49 +1850,19 @@ public sealed partial class McpCommandService
 
             case McpUriKind.RunsScope:
             {
-                // The volatile runs root exposes its three independent runtime subtrees: OCR tasks,
-                // direct translation runs and agent sessions. Their status vocabularies stay separate
-                // and are never unified (D7).
+                // The volatile runs root exposes its two independent runtime subtrees: OCR tasks
+                // and direct translation runs. Their status vocabularies stay separate and are
+                // never unified.
                 object[] runRoots =
                 [
                     new McpFindEntry(McpResourceUris.RunsOcrScopeUri(), "/runs/ocr", "directory"),
-                    new McpFindEntry(McpResourceUris.RunsTranslationScopeUri(), "/runs/translation", "directory"),
-                    new McpFindEntry(McpResourceUris.RunsAgentScopeUri(), "/runs/agent", "directory")
+                    new McpFindEntry(McpResourceUris.RunsTranslationScopeUri(), "/runs/translation", "directory")
                 ];
                 object[] page = runRoots.Skip(offset).Take(limit).ToArray();
                 string? continuation = offset + page.Length < runRoots.Length
                     ? EncodeCursor(scopeUri, null, false, where, offset + page.Length, null)
                     : null;
                 return new FindPage(page, continuation, runRoots.Length, runRoots.Length);
-            }
-
-            case McpUriKind.RunsAgentScope:
-            {
-                if (_agentRuns is null)
-                {
-                    return FindPage.Failed(McpErrorCode.Unavailable,
-                        "Agent run projections are unavailable on this host.");
-                }
-
-                Result<IReadOnlyList<McpAgentSessionStatusProjection>> sessions =
-                    await _agentRuns.ListSessionsAsync(cancellationToken);
-                if (sessions.IsFailure)
-                {
-                    return FindPage.Failed(McpErrorMappings.ToReadError(sessions.ErrorCode),
-                        sessions.ErrorMessage ?? sessions.ErrorCode ?? "List agent sessions failed.");
-                }
-
-                object[] all = sessions.Value
-                    .Select(session => (object)new McpFindEntry(
-                        McpResourceUris.AgentRunStatusUri(session.SessionId),
-                        session.SessionId,
-                        "file"))
-                    .ToArray();
-                object[] page = all.Skip(offset).Take(limit).ToArray();
-                string? continuation = offset + page.Length < all.Length
-                    ? EncodeCursor(scopeUri, null, false, where, offset + page.Length, null)
-                    : null;
-                return new FindPage(page, continuation, all.Length, all.Length);
             }
 
             case McpUriKind.RunsOcrScope:
@@ -2055,35 +1914,6 @@ public sealed partial class McpCommandService
                     .Select(run => (object)new McpFindEntry(
                         McpResourceUris.TranslationRunStatusUri(run.TaskId),
                         string.IsNullOrWhiteSpace(run.DocumentId) ? run.TaskId : run.DocumentId,
-                        "file"))
-                    .ToArray();
-                object[] page = all.Skip(offset).Take(limit).ToArray();
-                string? continuation = offset + page.Length < all.Length
-                    ? EncodeCursor(scopeUri, null, false, where, offset + page.Length, null)
-                    : null;
-                return new FindPage(page, continuation, all.Length, all.Length);
-            }
-
-            case McpUriKind.WorkflowsScope:
-            {
-                if (_workflowRuns is null)
-                {
-                    return FindPage.Failed(McpErrorCode.Unavailable,
-                        "Workflow metadata is unavailable on this host.");
-                }
-
-                Result<IReadOnlyList<McpWorkflowSummary>> workflows =
-                    await _workflowRuns.ListWorkflowsAsync(cancellationToken);
-                if (workflows.IsFailure)
-                {
-                    return FindPage.Failed(McpErrorMappings.ToReadError(workflows.ErrorCode),
-                        workflows.ErrorMessage ?? workflows.ErrorCode ?? "List workflows failed.");
-                }
-
-                object[] all = workflows.Value
-                    .Select(workflow => (object)new McpFindEntry(
-                        McpResourceUris.WorkflowUri(workflow.WorkflowId),
-                        string.IsNullOrWhiteSpace(workflow.Name) ? workflow.WorkflowId : workflow.Name,
                         "file"))
                     .ToArray();
                 object[] page = all.Skip(offset).Take(limit).ToArray();
@@ -2519,46 +2349,6 @@ public sealed partial class McpCommandService
                     : null;
             }
 
-            case McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus or McpUriKind.RunAgentEvents:
-            {
-                if (_agentRuns is null)
-                {
-                    return null;
-                }
-
-                Result<McpAgentSessionStatusProjection> session =
-                    await _agentRuns.TryGetSessionAsync(target.SessionId!, cancellationToken);
-                if (session.IsFailure)
-                {
-                    return null;
-                }
-
-                string uri = target.Kind == McpUriKind.RunAgentEvents
-                    ? McpResourceUris.AgentRunEventsUri(target.SessionId!, target.AfterSequence)
-                    : target.Kind == McpUriKind.RunAgentStatus
-                        ? McpResourceUris.AgentRunStatusUri(target.SessionId!)
-                        : McpResourceUris.AgentRunUri(target.SessionId!);
-                return new SingletonResource(uri, session.Value.SessionId, "file", false);
-            }
-
-            case McpUriKind.Workflow:
-            {
-                if (_workflowRuns is null)
-                {
-                    return null;
-                }
-
-                Result<McpWorkflowDetail> workflow =
-                    await _workflowRuns.TryGetWorkflowAsync(target.WorkflowId!, cancellationToken);
-                return workflow.IsSuccess
-                    ? new SingletonResource(
-                        McpResourceUris.WorkflowUri(target.WorkflowId!),
-                        string.IsNullOrWhiteSpace(workflow.Value.Name) ? target.WorkflowId! : workflow.Value.Name,
-                        "file",
-                        false)
-                    : null;
-            }
-
             default:
                 return null;
         }
@@ -2878,7 +2668,6 @@ public sealed partial class McpCommandService
             new("patchouli://translations/", "/translations", "directory"),
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
-            new(McpResourceUris.WorkflowsScopeUri(), "/workflows", "directory"),
             new(McpResourceUris.LibraryUri(), "/library.yml", "file"),
             new(McpResourceUris.ActionsScopeUri(), "/actions", "directory")
         ];
@@ -2990,9 +2779,7 @@ public sealed partial class McpCommandService
                     "citable"
                 },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
-            McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunsTranslationScope
-                or McpUriKind.RunsAgentScope
-                or McpUriKind.WorkflowsScope => [],
+            McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunsTranslationScope => [],
             _ => null
         };
         if (allowed is null)
@@ -3016,8 +2803,7 @@ public sealed partial class McpCommandService
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
             or McpUriKind.RunOcrStatus or McpUriKind.RunTranslationStatus
-            or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-            or McpUriKind.RunAgentEvents or McpUriKind.Workflow or McpUriKind.DocumentMap or McpUriKind.Action;
+            or McpUriKind.DocumentMap or McpUriKind.Action;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,

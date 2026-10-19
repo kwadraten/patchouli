@@ -237,6 +237,17 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     }
 
     /// <summary>
+    /// Applies the same legacy permission migration used when settings load. Callers that supply an
+    /// already-deserialized settings object (the headless host and the standalone server) use this so
+    /// retired domains and verbs never fail validation during startup.
+    /// </summary>
+    public static McpServerSettings NormalizeLegacySettings(McpServerSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return MigrateAddViewDefaults(settings);
+    }
+
+    /// <summary>
     /// Issue #11 §11 & Issue #16: old settings files predate patchouli.add/patchouli.view/ocr action verbs.
     /// The permission model is deny-list based (missing entry = allowed) for legacy verbs, while
     /// ocr action verbs (ocr.start, ocr.cancel, ocr.retry) require explicit grants.
@@ -261,7 +272,9 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         }
 
         List<McpDomainPermission> permissions = settings.DomainPermissions
-            .Where(value => !string.Equals(value.Verb, "ocr", StringComparison.Ordinal))
+            .Where(value => !string.Equals(value.Verb, "ocr", StringComparison.Ordinal) &&
+                            McpPermissionPolicy.Domains.Contains(value.Domain) &&
+                            McpPermissionPolicy.Verbs.Contains(value.Verb))
             .ToList();
         if (permissions.Count != settings.DomainPermissions.Count)
         {

@@ -159,27 +159,11 @@ public sealed record SyncAppSettings(
     string SyncRootId = "",
     SnapshotSyncLocalState? SnapshotState = null,
     IReadOnlyList<string>? SyncedSettingKeys = null,
-    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null,
-    bool SyncAgentSessions = false,
-    bool SyncWorkflowDefinitions = false)
+    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
         return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
-    }
-
-    /// <summary>
-    /// Two independent snapshot switches (ADR 0036 §Persistence): whether agent session directories and
-    /// whether workflow definitions enter a Library snapshot. Both default to off — session history is
-    /// never pulled into a snapshot unless the user opts in.
-    /// </summary>
-    public SyncAppSettings WithAgentWorkflowSync(bool syncAgentSessions, bool syncWorkflowDefinitions)
-    {
-        return this with
-        {
-            SyncAgentSessions = syncAgentSessions,
-            SyncWorkflowDefinitions = syncWorkflowDefinitions
-        };
     }
 
     [JsonIgnore]
@@ -942,8 +926,6 @@ public sealed record PatchouliAppSettings(
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRoot));
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncMetadataLookup));
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRootId));
-                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncAgentSessions));
-                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncWorkflowDefinitions));
                 }
 
                 if (existingSyncNode is null)
@@ -1190,8 +1172,6 @@ public sealed record PatchouliAppSettings(
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncMetadataLookup));
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncRootId));
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncedSettingKeys));
-                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncAgentSessions));
-                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncWorkflowDefinitions));
             }
 
             UpsertDeviceBindingJson(sync, targetBinding);
@@ -1446,11 +1426,7 @@ public sealed record PatchouliAppSettings(
                 OcrLayoutModel = ReadString(element, "OcrLayoutModel", fallback.OcrLayoutModel),
                 OcrReasoningEffort = ReadString(element, "OcrReasoningEffort", fallback.OcrReasoningEffort),
                 OcrConcurrency = ReadInt(element, "OcrConcurrency", fallback.OcrConcurrency),
-                AgentMaxRetries = ReadInt(element, "AgentMaxRetries", fallback.AgentMaxRetries),
-                AgentReasoningEffort = ReadString(element, "AgentReasoningEffort", fallback.AgentReasoningEffort),
-                ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
-                Translation = translation,
-                LegacyWorkflowValues = legacyValues.Count == 0 ? fallback.LegacyWorkflowValues : legacyValues
+                Translation = translation
             }
             .Normalize();
     }
@@ -1550,17 +1526,8 @@ public sealed record PatchouliAppSettings(
             normalized.OcrConcurrency,
             normalized.ChatProviderId,
             normalized.ChatModel,
-            normalized.AgentMaxRetries,
-            normalized.AgentReasoningEffort,
-            normalized.ToolResultMaxCharacters,
             normalized.Translation
         }) as JsonObject ?? new JsonObject();
-        // Retain pending values until workflow storage has consumed them, even if settings save first.
-        if (normalized.LegacyWorkflowValues.Count > 0)
-        {
-            result["PendingWorkflowMigration"] = JsonSerializer.SerializeToNode(normalized.LegacyWorkflowValues);
-        }
-
         return result;
     }
 

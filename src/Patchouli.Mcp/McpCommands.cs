@@ -171,45 +171,6 @@ public sealed record McpPutMeta(
     [property: JsonPropertyName("library_revision")]
     string LibraryRevision);
 
-/// <summary>One typed <c>send</c> instruction; which fields are required depends on the verb.</summary>
-public sealed record McpSendRequest(
-    string Instruction,
-    string? Workflow = null,
-    IReadOnlyList<McpSendParameter>? Parameters = null,
-    string? Session = null,
-    string? MessageId = null,
-    string? Text = null);
-
-/// <summary>One launch parameter supplied with a <c>send start</c> instruction.</summary>
-public sealed record McpSendParameter(string Name, string Value);
-
-public sealed record McpSendMeta(
-    [property: JsonPropertyName("library_revision")]
-    string LibraryRevision,
-    [property: JsonPropertyName("instruction")]
-    string Instruction,
-    [property: JsonPropertyName("accepted")]
-    bool Accepted,
-    [property: JsonPropertyName("processed")]
-    string Processed);
-
-public sealed record McpSendResult(
-    [property: JsonPropertyName("instruction")]
-    string Instruction,
-    [property: JsonPropertyName("session_uri")]
-    string? SessionUri,
-    [property: JsonPropertyName("message_id")]
-    string? MessageId,
-    [property: JsonPropertyName("accepted")]
-    bool Accepted,
-    [property: JsonPropertyName("processed")]
-    string Processed,
-    [property: JsonPropertyName("duplicate")]
-    bool Duplicate,
-    [property: JsonPropertyName("validation_errors")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<McpWorkflowValidationIssue>? ValidationErrors = null);
-
 public sealed record McpPutResult(
     [property: JsonPropertyName("uri")] string Uri,
     [property: JsonPropertyName("resource_type")]
@@ -250,14 +211,11 @@ public static class McpWarningCodes
     public const string WhereValueContainsEquals = "WHERE_VALUE_CONTAINS_EQUALS";
     public const string DuplicateWhereKeyLastWins = "DUPLICATE_WHERE_KEY_LAST_WINS";
     public const string LibraryChangedSinceLastResponse = "LIBRARY_CHANGED_SINCE_LAST_RESPONSE";
-    public const string DuplicateMessageId = "DUPLICATE_MESSAGE_ID";
 
     public static string ToTerminalLine(string warning)
     {
         return warning switch
         {
-            DuplicateMessageId =>
-                "DUPLICATE_MESSAGE_ID: this message_id was already accepted; the message was not appended again.",
             WhitespaceQueryTreatedAsBrowse =>
                 "WHITESPACE_QUERY_TREATED_AS_BROWSE: query contained only whitespace; browsing the selected scope.",
             CursorContextRestored =>
@@ -372,7 +330,7 @@ public sealed record McpOcrResult(
     string PresetVersionId,
     [property: JsonPropertyName("reused")] bool Reused = false);
 
-/// <summary>Invoke one typed domain Action; legacy Agent send fields do not belong here.</summary>
+/// <summary>Invoke one typed domain Action.</summary>
 public sealed record McpActionSendRequest(string Target, string Action, JsonElement Args);
 
 public sealed record McpActionSendMeta(

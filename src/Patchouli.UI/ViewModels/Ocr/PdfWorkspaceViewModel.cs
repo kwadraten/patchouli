@@ -322,22 +322,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     [ObservableProperty] public partial Bitmap? Image { get; private set; }
     public LibraryItemViewModel Item { get; }
 
-    /// <summary>The reading toolbar's workflow entries: the window's shared, ordered menu source.</summary>
-    [ExcludeFromDerivedGeneration]
-    public System.Collections.ObjectModel.ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries =>
-        _main.ReadingWorkflowMenuEntries;
-
-    /// <summary>True when at least one workflow opted into the menus.</summary>
-    [ExcludeFromDerivedGeneration]
-    public bool HasReadingWorkflowMenuEntries => _main.HasReadingWorkflowMenuEntries;
-
-    /// <summary>Rebuilds the reading entries against the open document and the current page.</summary>
-    public Task RefreshWorkflowMenuAsync()
-    {
-        string pageRange = PageCount > 0 ? (PageIndex + 1).ToString(CultureInfo.InvariantCulture) : string.Empty;
-        return _main.RefreshReadingWorkflowMenuAsync(Item.DocumentInstanceId ?? string.Empty, pageRange);
-    }
-
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     [ObservableProperty] public partial bool IsBusy { get; private set; }

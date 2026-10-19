@@ -6,7 +6,6 @@
         xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
-        xmlns:agentchat="using:Patchouli.UI.ViewModels.AgentChat"
         xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
@@ -35,9 +34,6 @@
     </DataTemplate>
     <DataTemplate DataType="{x:Type local:OcrQueueViewModel}">
       <views:OcrQueuePage />
-    </DataTemplate>
-    <DataTemplate DataType="{x:Type agentchat:AgentChatTabViewModel}">
-      <views:AgentChatPage />
     </DataTemplate>
     <!-- About tab content is AboutViewModel -->
     <DataTemplate DataType="{x:Type local:AboutViewModel}">
@@ -111,24 +107,8 @@
           </MenuItem>
           <MenuItem Header="题录"
                     DataContext="{Binding $parent[Window].((local:MainWindowViewModel)DataContext).Shell, FallbackValue={x:Null}}"
-                    x:DataType="local:LibraryShellViewModel"
-                    PointerEntered="OnWorkflowMenuPointerEntered">
+                    x:DataType="local:LibraryShellViewModel">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
-            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
-                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
-              <MenuItem.ItemTemplate>
-                <DataTemplate x:DataType="local:WorkflowMenuEntryViewModel">
-                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
-                </DataTemplate>
-              </MenuItem.ItemTemplate>
-              <MenuItem.Styles>
-                <Style Selector="MenuItem MenuItem">
-                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
-                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
-                </Style>
-              </MenuItem.Styles>
-            </MenuItem>
-            <Separator IsVisible="{Binding HasWorkflowMenuEntries}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
                       IsEnabled="{Binding IsSingleSelectionOrNone}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
@@ -256,30 +236,12 @@
             <Separator />
             <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
           </MenuItem>
-          <MenuItem Header="AI集成" x:Name="WorkflowMenu" PointerEntered="OnWorkflowMenuPointerEntered">
+          <MenuItem Header="AI集成">
             <MenuItem Header="{Binding ToggleMcpServerLabel}" Command="{Binding ToggleMcpServerCommand}" />
             <MenuItem Header="AI集成设置" Command="{Binding OpenMcpSettingsCommand}" />
             <Separator />
-            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
-                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
-              <MenuItem.ItemTemplate>
-                <DataTemplate x:DataType="local:WorkflowMenuEntryViewModel">
-                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
-                </DataTemplate>
-              </MenuItem.ItemTemplate>
-              <MenuItem.Styles>
-                <Style Selector="MenuItem MenuItem">
-                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
-                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
-                </Style>
-              </MenuItem.Styles>
-            </MenuItem>
             <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
                       ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
-            <Separator />
-            <!-- Opens the chat tab without starting any session (plan §3.8). -->
-            <MenuItem Header="打开聊天标签页" Command="{Binding OpenAgentChatCommand}" />
-            <MenuItem Header="立刻停止所有会话" Command="{Binding StopAllAgentSessionsCommand}" />
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />

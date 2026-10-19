@@ -29,10 +29,9 @@ public enum WorkspaceTabKind
     SyncCenter,
     SearchResults,
     OcrQueue,
-    AgentChat,
-    ItemEditor,
+    ItemEditor = 7,
 
-    // Value 8 belonged to the retired standalone CSL manager.
+    // Value 8 belonged to the retired standalone CSL manager, and value 6 to the retired chat tab.
     About = 9,
     Changelog
 }

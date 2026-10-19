@@ -6,11 +6,11 @@ public sealed record McpDomainPermission(string Domain, string Verb, bool Enable
 public static class McpPermissionPolicy
 {
     public static IReadOnlyList<string> Domains { get; } =
-        ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "actions", "library.yml"];
+        ["/", "items", "texts", "translations", "csl-styles", "runs", "actions", "library.yml"];
 
     public static IReadOnlyList<string> Verbs { get; } =
     [
-        "find", "fetch", "put", "cite", "send", "add", "view", "ocr.start", "ocr.cancel", "ocr.retry",
+        "find", "fetch", "put", "cite", "add", "view", "ocr.start", "ocr.cancel", "ocr.retry",
         "translation.start", "translation.cancel"
     ];
 
@@ -25,8 +25,7 @@ public static class McpPermissionPolicy
                 or "translation.start",
             "translations" => verb is "find" or "fetch" or "put" or "view",
             "csl-styles" => verb is "find" or "fetch" or "put" or "add",
-            "runs" => verb is "find" or "fetch" or "send" or "ocr.cancel" or "ocr.retry" or "translation.cancel",
-            "workflows" => verb is "find" or "fetch" or "send",
+            "runs" => verb is "find" or "fetch" or "ocr.cancel" or "ocr.retry" or "translation.cancel",
             "actions" => verb is "find" or "fetch",
             "library.yml" => verb is "find" or "fetch",
             _ => false

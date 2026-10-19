@@ -36,9 +36,10 @@ public sealed class SettingsHeaderLayoutTests
             initialPosition.X.Should().BeApproximately(title.TranslatePoint(default, window)!.Value.X, 1);
             initialPosition.Y.Should()
                 .BeApproximately(title.TranslatePoint(default, window)!.Value.Y + title.Bounds.Height, 1);
-            TextBlock agentHeading = window.GetVisualDescendants().OfType<TextBlock>()
-                .Single(block => block.Text == "内置 Agent" && block.IsEffectivelyVisible);
-            ScrollViewer body = agentHeading.GetVisualAncestors().OfType<ScrollViewer>().First();
+            TextBlock modelHeading = window.GetVisualDescendants().OfType<TextBlock>()
+                .Single(block => block.Text == "默认模型" && block.Classes.Contains("CardTitle") &&
+                                 block.IsEffectivelyVisible);
+            ScrollViewer body = modelHeading.GetVisualAncestors().OfType<ScrollViewer>().First();
             body.Offset = new Vector(0, 180);
             Pump(window);
             body.Offset.Y.Should().BeGreaterThan(0);
@@ -51,7 +52,7 @@ public sealed class SettingsHeaderLayoutTests
             tabs.SelectedItem = group.Entries.Single(entry => entry.Id == "llm");
             await main.Settings.WaitForActiveSectionLoadAsync();
             Pump(window);
-            agentHeading.IsEffectivelyVisible.Should().BeTrue("the retained subpage is reused after switching tabs");
+            modelHeading.IsEffectivelyVisible.Should().BeTrue("the retained subpage is reused after switching tabs");
             body.Offset.Y.Should().BeGreaterThan(0);
             body.Offset = default;
             Pump(window);

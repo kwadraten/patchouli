@@ -75,9 +75,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(8);
-        envelope.Meta.DomainTotal.Should().Be(8);
-        envelope.Meta.FilteredTotal.Should().Be(8);
+        envelope.Meta.ShownTotal.Should().Be(7);
+        envelope.Meta.DomainTotal.Should().Be(7);
+        envelope.Meta.FilteredTotal.Should().Be(7);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
@@ -85,7 +85,6 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
-            "patchouli://workflows/",
             "patchouli://actions/",
             "patchouli://library.yml");
         envelope.Entries.Select(Entry).Where(entry => entry.Uri != "patchouli://library.yml")

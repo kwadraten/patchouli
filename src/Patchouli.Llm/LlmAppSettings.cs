@@ -67,14 +67,6 @@ public sealed record LlmAppSettings(
     public string OcrReasoningEffort { get; init; } = "none";
     public int OcrConcurrency { get; init; } = OcrPerformanceSettings.DefaultConcurrency;
 
-    public const int DefaultAgentMaxRetries = 3;
-    public const int MaxAgentMaxRetries = 20;
-
-    public int AgentMaxRetries { get; init; } = DefaultAgentMaxRetries;
-
-    /// <summary>Reasoning effort for built-in chat and workflows; empty uses the provider default.</summary>
-    public string AgentReasoningEffort { get; init; } = "";
-
     /// <summary>
     /// Direct translation engine settings. A blank <see cref="TranslationAppSettings.ProviderId"/> or
     /// <see cref="TranslationAppSettings.Model"/> falls back to the chat selection where it is read; the
@@ -90,18 +82,6 @@ public sealed record LlmAppSettings(
         string normalized = value?.Trim().ToLowerInvariant() ?? "";
         return ReasoningEfforts.Contains(normalized) ? normalized : "";
     }
-
-    public const int DefaultToolResultMaxCharacters = 32768;
-    public const int MinToolResultMaxCharacters = 4096;
-    public const int MaxToolResultMaxCharacters = 1048576;
-
-    /// <summary>Maximum unfolded tool-result length sent to the built-in agent, in UTF-16 characters.</summary>
-    public int ToolResultMaxCharacters { get; init; } = DefaultToolResultMaxCharacters;
-
-    /// <summary>One-time legacy settings payload consumed by workflow configuration migration.</summary>
-    [JsonIgnore]
-    public IReadOnlyDictionary<string, string> LegacyWorkflowValues { get; init; } =
-        System.Collections.Immutable.ImmutableDictionary<string, string>.Empty;
 
     /// <summary>Default model for the default provider, used before the user picks anything.</summary>
     private const string DefaultOpenAiModel = "gpt-4o-mini";
@@ -214,11 +194,7 @@ public sealed record LlmAppSettings(
             OcrConcurrency = Math.Clamp(OcrConcurrency, 1, OcrPerformanceSettings.MaxConcurrency),
             ChatProviderId = chatProviderId,
             ChatModel = chatModel,
-            AgentReasoningEffort = NormalizeReasoningEffort(AgentReasoningEffort),
-            AgentMaxRetries = Math.Clamp(AgentMaxRetries, 0, MaxAgentMaxRetries),
-            Translation = Translation.Normalize(),
-            ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
-                MinToolResultMaxCharacters, MaxToolResultMaxCharacters)
+            Translation = Translation.Normalize()
         };
     }
 

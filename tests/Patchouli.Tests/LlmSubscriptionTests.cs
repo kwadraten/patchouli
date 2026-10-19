@@ -7,7 +7,6 @@ using LlmTornado.Codex;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
-using Patchouli.Host.Agent;
 using Patchouli.Llm;
 using Patchouli.Ocr;
 
@@ -76,22 +75,6 @@ public sealed class LlmSubscriptionTests
     }
 
     [Fact]
-    public async Task Agent_client_refreshes_when_the_selected_provider_changes_to_subscription()
-    {
-        MemoryCredentialStore store = new();
-        await store.SaveAsync("openai", "OpenAI", "api-key");
-        await new LlmCodexCredentialStore(store, SubscriptionProvider).SaveAsync(Credentials());
-        LlmAppSettings[] settings = [LlmAppSettings.Default()];
-        LlmProviderAgentClientProvider clients = new(() => settings[0], store);
-        Result<ILlmChatClient> apiClient = await clients.TryGetAsync(CancellationToken.None);
-        apiClient.Value.Should().BeOfType<LlmChatClient>().Which.ProviderId.Should().Be("openai");
-        settings[0] = SubscriptionSettings();
-        Result<ILlmChatClient> subscriptionClient = await clients.TryGetAsync(CancellationToken.None);
-        subscriptionClient.Value.Should().BeOfType<LlmChatClient>().Which.ProviderId.Should().Be(SubscriptionProvider);
-        subscriptionClient.Value.Should().NotBeSameAs(apiClient.Value);
-    }
-
-    [Fact]
     public async Task Subscription_transport_uses_upstream_protocol_and_preserves_the_full_ordered_transcript()
     {
         MemoryCredentialStore store = new();
@@ -114,8 +97,12 @@ public sealed class LlmSubscriptionTests
             Message(LlmChatRole.Tool, "fetch: document text"),
             Message(LlmChatRole.System, "An appended instruction")
         ];
+        string[] tools =
+        [
+            """{"type":"function","function":{"name":"fetch","description":"Fetch one resource.","parameters":{"type":"object","properties":{"uris":{"type":"array","items":{"type":"string"}}}}}}"""
+        ];
         LlmTransportResult result = await transport.SendAsync(new LlmTransportRequest(resolved.Value, "test-model",
-            messages, AgentNativeTools.Definitions, null, null, true, null, null) { ReasoningEffort = "high" });
+            messages, tools, null, null, true, null, null) { ReasoningEffort = "high" });
         result.IsSuccess.Should().BeTrue(result.ErrorMessage);
         result.Text.Should().Be("translated");
         result.Usage.Should().Be(new LlmUsage(10, 4, 14, 8, null));

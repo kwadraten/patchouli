@@ -43,6 +43,8 @@ public sealed class OcrPermissionMigrationIndependentTests
             .Contain(value => value.Domain == "runs" && value.Verb == "ocr.cancel" && !value.Enabled);
         loaded.Value.DomainPermissions.Should()
             .Contain(value => value.Domain == "runs" && value.Verb == "ocr.retry" && !value.Enabled);
+        loaded.Value.DomainPermissions.Should().NotContain(value => value.Domain == "workflows");
+        loaded.Value.DomainPermissions.Should().NotContain(value => value.Verb == "send");
         loaded.Value.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.ocr");
     }
 
@@ -70,7 +72,7 @@ public sealed class OcrPermissionMigrationIndependentTests
     [InlineData("runs", "ocr.cancel", true)]
     [InlineData("runs", "ocr.retry", true)]
     [InlineData("items", "ocr.start", false)]
-    [InlineData("workflows", "ocr.start", false)]
+    [InlineData("runs", "send", false)]
     [InlineData("translations", "ocr.start", false)]
     [InlineData("csl-styles", "ocr.start", false)]
     [InlineData("texts", "ocr", false)]

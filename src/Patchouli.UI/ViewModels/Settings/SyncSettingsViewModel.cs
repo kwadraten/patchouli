@@ -117,40 +117,6 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
-    [ObservableProperty] public partial bool SyncAgentSessions { get; set; }
-
-    partial void OnSyncAgentSessionsChanged(bool value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
-
-        _draft = _draft with { SyncAgentSessions = value };
-        MarkDirty();
-    }
-
-    [ObservableProperty] public partial bool SyncWorkflowDefinitions { get; set; }
-
-    partial void OnSyncWorkflowDefinitionsChanged(bool value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
-
-        _draft = _draft with { SyncWorkflowDefinitions = value };
-        MarkDirty();
-    }
-
-    [ExcludeFromDerivedGeneration]
-    public string AgentSessionsScopeText =>
-        SyncAgentSessions ? "会话目录随内容快照同步" : "会话历史仅保留在本机";
-
-    [ExcludeFromDerivedGeneration]
-    public string WorkflowDefinitionsScopeText =>
-        SyncWorkflowDefinitions ? "工作流定义随内容快照同步" : "工作流定义仅保留在本机";
-
     public AsyncCommand OpenSyncCenterCommand { get; }
     public AsyncCommand PublishSnapshotCommand { get; }
     public AsyncCommand CheckIncomingSnapshotCommand { get; }
@@ -462,8 +428,6 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         DeviceName = draft.DeviceName;
         SyncRoot = draft.SyncRoot;
         SyncMetadataLookup = draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
-        SyncAgentSessions = draft.SyncAgentSessions;
-        SyncWorkflowDefinitions = draft.SyncWorkflowDefinitions;
         _isSyncing = false;
         Raise(nameof(DeviceId));
         RefreshScopeRows();
