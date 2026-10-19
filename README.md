@@ -84,6 +84,10 @@ dotnet test Patchouli.sln
 
 性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试可运行 `./scripts/run-perf.ps1 -Profile full -Check -FullBudgetCheck`，更多参数见 `tests/Patchouli.Performance` 的 `--help`。
 
+### 更新 Agent 目录
+
+内置 Agent 目录 `src/Patchouli.Core/Agents/AgentCatalog.g.cs` 由 `./scripts/update-agent-catalog.ps1` 根据 ACP registry 与脚本内的 TUI 适配表生成；新增或调整 agent 时修改脚本并重新运行，CI 可用 `-Check` 校验生成物是否为最新。
+
 ### 代码格式化和静态分析
 
 ```pwsh
