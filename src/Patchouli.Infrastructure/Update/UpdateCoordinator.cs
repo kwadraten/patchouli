@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
