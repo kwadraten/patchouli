@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Themes;
 
 namespace Patchouli.UI;
 
@@ -22,12 +23,16 @@ public sealed partial class App : Application
     {
         try
         {
+            PatchouliAppSettings settings = PatchouliAppSettings.Load();
+            ThemePaletteApplier.Apply(settings.Ui.PaletteId, settings.Ui.ThemeMode);
+
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
                 MainWindow mainWindow = new();
                 desktop.MainWindow = mainWindow;
                 SubscribeToActivation(mainWindow);
                 mainWindow.StartStartupAfterFirstFrame();
+                desktop.Exit += OnDesktopExit;
             }
         }
         catch (Exception exception)
@@ -105,5 +110,10 @@ public sealed partial class App : Application
         {
             ActivateWindow(mainWindow);
         }
+    }
+
+    private void OnDesktopExit(object? sender, ControlledApplicationLifetimeExitEventArgs e)
+    {
+        ThemePaletteApplier.DetachWatcher();
     }
 }

@@ -151,22 +151,38 @@
             <StackPanel Spacing="20" MaxWidth="720" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="配色方案" Classes="CardTitle" />
-                  <TextBlock Text="选择界面配色，除默认方案外均取自 Radix Colors 色阶。" FontSize="12"
+                  <TextBlock Text="外观模式与配色" Classes="CardTitle" />
+                  <TextBlock Text="选择明暗模式与界面配色。跟随系统时将随操作系统的深浅模式自动切换。" FontSize="12"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  <ComboBox ItemsSource="{Binding Palettes}" SelectedItem="{Binding SelectedPalette}"
-                            MinWidth="280" HorizontalAlignment="Left">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate DataType="settings:PaletteOption">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                          <Border Width="14" Height="14" CornerRadius="7" VerticalAlignment="Center"
-                                  Background="{Binding AccentBrush}"
-                                  BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" />
+
+                  <StackPanel Spacing="6" Margin="0,4,0,4">
+                    <TextBlock Text="明暗模式" FontSize="13" FontWeight="Medium" />
+                    <ComboBox ItemsSource="{Binding AvailableThemeModes}" SelectedItem="{Binding SelectedThemeMode}"
+                              MinWidth="200" HorizontalAlignment="Left">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:ThemeModeOption">
                           <TextBlock Text="{Binding DisplayName}" FontSize="13" VerticalAlignment="Center" />
-                        </StackPanel>
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </StackPanel>
+
+                  <StackPanel Spacing="6" Margin="0,4,0,0">
+                    <TextBlock Text="配色方案" FontSize="13" FontWeight="Medium" />
+                    <ComboBox ItemsSource="{Binding Palettes}" SelectedItem="{Binding SelectedPalette}"
+                              MinWidth="280" HorizontalAlignment="Left">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:PaletteOption">
+                          <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="14" Height="14" CornerRadius="7" VerticalAlignment="Center"
+                                    Background="{Binding AccentBrush}"
+                                    BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" />
+                            <TextBlock Text="{Binding DisplayName}" FontSize="13" VerticalAlignment="Center" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </StackPanel>
                   <StackPanel Orientation="Horizontal" Spacing="6">
                     <Border Width="40" Height="24" CornerRadius="4"
                             Background="{Binding SelectedPalette.SurfaceBrush}"

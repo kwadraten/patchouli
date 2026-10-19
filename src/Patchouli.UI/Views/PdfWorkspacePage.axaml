@@ -9,12 +9,12 @@
   <UserControl.Resources>
     <ControlTheme x:Key="ChapterExpanderTheme" TargetType="ToggleButton">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="Black" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
       <Setter Property="Padding" Value="4,2" />
       <Setter Property="Template">
         <ControlTemplate>
           <Border Background="Transparent" Padding="{TemplateBinding Padding}">
-            <ContentPresenter Content="{TemplateBinding Content}" Foreground="Black"
+            <ContentPresenter Content="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}"
                               HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
         </ControlTemplate>
@@ -514,7 +514,9 @@
 
                   <StackPanel Spacing="6" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
                               IsVisible="{Binding HasImage}">
-                    <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4">
+                    <Border Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource OutlineVariantBrush}"
+                            BorderThickness="1" Padding="8,4" CornerRadius="4">
                       <TextBlock Text="{Binding PageNumberText}" FontSize="11"
                                  Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     </Border>

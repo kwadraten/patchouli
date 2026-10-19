@@ -22,6 +22,9 @@
       <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
+    <Style Selector="RadioButton">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+    </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="260,*" Background="{DynamicResource SurfaceBrush}">
     <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">

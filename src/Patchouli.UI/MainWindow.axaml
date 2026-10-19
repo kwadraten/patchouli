@@ -48,12 +48,24 @@
     </DataTemplate>
   </Window.DataTemplates>
 
+  <Window.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="StatusErrorBrush" Color="#ffdad6" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Window.Resources>
+
   <Window.Styles>
     <Style Selector="TextBlock.statusBar">
       <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
     </Style>
     <Style Selector="TextBlock.statusBar.error">
-      <Setter Property="Foreground" Value="#ffdad6" />
+      <Setter Property="Foreground" Value="{DynamicResource StatusErrorBrush}" />
     </Style>
 
   </Window.Styles>

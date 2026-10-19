@@ -24,6 +24,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
 
     private readonly MainWindowViewModel _main;
     private string _persistedPaletteId;
+    private string _persistedThemeMode;
     private string _persistedFontFamily;
     private double _persistedFontSize;
     private string _persistedCompareMode;
@@ -31,6 +32,13 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
     private bool _isDirty;
     private bool _isConstructing;
     private bool _isSyncing;
+
+    public static readonly IReadOnlyList<ThemeModeOption> ThemeModes =
+    [
+        new(UiPreferences.ThemeModeSystem, "跟随系统"),
+        new(UiPreferences.ThemeModeLight, "浅色"),
+        new(UiPreferences.ThemeModeDark, "深色")
+    ];
 
     public AppearanceSettingsViewModel(MainWindowViewModel main)
     {
@@ -40,6 +48,8 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             .ToArray());
         _persistedPaletteId = UiColorPalettes.ResolveId(main.AppOptions.Ui.PaletteId);
         SelectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
+        _persistedThemeMode = UiPreferences.NormalizeThemeMode(main.AppOptions.Ui.ThemeMode);
+        SelectedThemeMode = ThemeModes.FirstOrDefault(option => option.Mode == _persistedThemeMode) ?? ThemeModes[0];
         _persistedFontFamily = NormalizeFontFamily(main.AppOptions.Ui.ReadingFontFamily);
         SelectedReadingFontFamily = _persistedFontFamily;
         _persistedFontSize = ClampReadingFontSize(main.AppOptions.Ui.ReadingFontSize);
@@ -50,8 +60,11 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
     }
 
     public ReadOnlyCollection<PaletteOption> Palettes { get; }
+    public IReadOnlyList<ThemeModeOption> AvailableThemeModes => ThemeModes;
 
     [ObservableProperty] public partial PaletteOption SelectedPalette { get; set; } = null!;
+
+    [ObservableProperty] public partial ThemeModeOption SelectedThemeMode { get; set; } = null!;
 
     partial void OnSelectedPaletteChanged(PaletteOption value)
     {
@@ -60,6 +73,19 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             return;
         }
 
+        ThemePaletteApplier.Apply(value.PaletteId, SelectedThemeMode?.Mode);
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
+    }
+
+    partial void OnSelectedThemeModeChanged(ThemeModeOption value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        ThemePaletteApplier.Apply(SelectedPalette?.PaletteId, value.Mode);
         UpdateDirtyState();
         MarkDirty("有未保存的更改");
     }
@@ -191,15 +217,17 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         Status = "正在保存...";
 
         string paletteId = SelectedPalette.PaletteId;
+        string themeMode = SelectedThemeMode.Mode;
         string fontFamily = SelectedReadingFontFamily;
         double fontSize = ReadingFontSize;
         string compareMode = LabelToCompareMode(SelectedReadingCompareMode);
 
         bool paletteChanged = paletteId != _persistedPaletteId;
-        if (paletteChanged)
+        bool modeChanged = themeMode != _persistedThemeMode;
+        if (paletteChanged || modeChanged)
         {
-            bool paletteSaved = await _main.SaveAppearancePaletteAsync(paletteId);
-            if (!paletteSaved)
+            bool themeSaved = await _main.SaveAppearanceThemeAsync(paletteId, themeMode);
+            if (!themeSaved)
             {
                 LastError = "无法保存外观设置。";
                 SaveState = SettingsSaveState.Failed;
@@ -210,6 +238,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             }
 
             _persistedPaletteId = paletteId;
+            _persistedThemeMode = themeMode;
         }
 
         bool fontChanged = !string.Equals(fontFamily, _persistedFontFamily, StringComparison.Ordinal)
@@ -259,6 +288,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
     public override Task DiscardAsync()
     {
         SyncFromPersisted();
+        ThemePaletteApplier.Apply(_persistedPaletteId, _persistedThemeMode);
         SaveState = SettingsSaveState.Clean;
         Status = "";
         return Task.CompletedTask;
@@ -271,6 +301,9 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         {
             _persistedPaletteId = UiColorPalettes.ResolveId(_main.AppOptions.Ui.PaletteId);
             SelectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
+            _persistedThemeMode = UiPreferences.NormalizeThemeMode(_main.AppOptions.Ui.ThemeMode);
+            SelectedThemeMode = ThemeModes.FirstOrDefault(option => option.Mode == _persistedThemeMode) ??
+                                ThemeModes[0];
             _persistedFontFamily = NormalizeFontFamily(_main.AppOptions.Ui.ReadingFontFamily);
             SelectedReadingFontFamily = _persistedFontFamily;
             _persistedFontSize = ClampReadingFontSize(_main.AppOptions.Ui.ReadingFontSize);
@@ -279,6 +312,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             SelectedReadingCompareMode = CompareModeToLabel(_persistedCompareMode);
             _isDirty = false;
             Raise(nameof(SelectedPalette));
+            Raise(nameof(SelectedThemeMode));
             Raise(nameof(SelectedReadingFontFamily));
             Raise(nameof(ReadingFontSize));
             Raise(nameof(SelectedReadingCompareMode));
@@ -294,11 +328,12 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
     private void UpdateDirtyState()
     {
         bool paletteDirty = SelectedPalette.PaletteId != _persistedPaletteId;
+        bool modeDirty = SelectedThemeMode.Mode != _persistedThemeMode;
         bool fontDirty =
             !string.Equals(SelectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal);
         bool sizeDirty = ReadingFontSize != _persistedFontSize;
         bool compareModeDirty = LabelToCompareMode(SelectedReadingCompareMode) != _persistedCompareMode;
-        _isDirty = paletteDirty || fontDirty || sizeDirty || compareModeDirty;
+        _isDirty = paletteDirty || modeDirty || fontDirty || sizeDirty || compareModeDirty;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }
@@ -381,3 +416,6 @@ public sealed class PaletteOption
         return new SolidColorBrush(Color.Parse(palette.Colors[colorKey]));
     }
 }
+
+/// <summary>Selectable option for the application appearance theme mode (system, light, dark).</summary>
+public sealed record ThemeModeOption(string Mode, string DisplayName);

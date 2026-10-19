@@ -369,9 +369,14 @@ public sealed record UiPreferences(
     double ReadingFontSize = 14,
     string LibraryGridSortColumn = "",
     bool LibraryGridSortDescending = false,
-    string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide)
+    string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide,
+    string ThemeMode = UiPreferences.ThemeModeSystem)
 {
     public const double DefaultReadingFontSize = 14;
+
+    public const string ThemeModeSystem = "system";
+    public const string ThemeModeLight = "light";
+    public const string ThemeModeDark = "dark";
 
     // Persisted ids for the whole-book reading compare layout; anything unrecognized reads back
     // as side-by-side so old or hand-edited settings files never break the reading surface.
@@ -383,6 +388,21 @@ public sealed record UiPreferences(
         return string.Equals(value, ReadingCompareModeStacked, StringComparison.Ordinal)
             ? ReadingCompareModeStacked
             : ReadingCompareModeSideBySide;
+    }
+
+    public static string NormalizeThemeMode(string? value)
+    {
+        if (string.Equals(value, ThemeModeLight, StringComparison.OrdinalIgnoreCase))
+        {
+            return ThemeModeLight;
+        }
+
+        if (string.Equals(value, ThemeModeDark, StringComparison.OrdinalIgnoreCase))
+        {
+            return ThemeModeDark;
+        }
+
+        return ThemeModeSystem;
     }
 
     public static UiPreferences Default()
@@ -595,7 +615,9 @@ public sealed record PatchouliAppSettings(
                     ReadBool(ui, "LibraryGridSortDescending",
                         defaults.Ui.LibraryGridSortDescending),
                     UiPreferences.NormalizeReadingCompareMode(
-                        ReadString(ui, "ReadingCompareMode", defaults.Ui.ReadingCompareMode))))
+                        ReadString(ui, "ReadingCompareMode", defaults.Ui.ReadingCompareMode)),
+                    UiPreferences.NormalizeThemeMode(
+                        ReadString(ui, "ThemeMode", defaults.Ui.ThemeMode))))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -769,7 +791,8 @@ public sealed record PatchouliAppSettings(
                 Ui.ReadingFontSize,
                 Ui.LibraryGridSortColumn,
                 Ui.LibraryGridSortDescending,
-                Ui.ReadingCompareMode
+                Ui.ReadingCompareMode,
+                Ui.ThemeMode
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -957,7 +980,8 @@ public sealed record PatchouliAppSettings(
                     Ui.ReadingFontSize,
                     Ui.LibraryGridSortColumn,
                     Ui.LibraryGridSortDescending,
-                    Ui.ReadingCompareMode
+                    Ui.ReadingCompareMode,
+                    Ui.ThemeMode
                 });
             }
 

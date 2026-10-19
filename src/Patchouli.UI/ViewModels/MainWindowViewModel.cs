@@ -795,7 +795,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             _settingsStore.Update(_ => initializedSettings, "Sync");
         }
 
-        ThemePaletteApplier.Apply(_settings.Ui.PaletteId);
+        ThemePaletteApplier.Apply(_settings.Ui.PaletteId, _settings.Ui.ThemeMode);
 
         RuntimeDatabasePath = _settings.Runtime.RememberLastDatabase
             ? _settings.Runtime.RuntimeDatabasePath
@@ -2602,8 +2602,27 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return false;
         }
 
-        ThemePaletteApplier.Apply(resolved);
+        ThemePaletteApplier.Apply(resolved, _settings.Ui.ThemeMode);
         Report("外观配色已保存。");
+        return true;
+    }
+
+
+    /// <summary>Persists both palette and theme mode together.</summary>
+    public async Task<bool> SaveAppearanceThemeAsync(string paletteId, string themeMode)
+    {
+        string resolvedPalette = UiColorPalettes.ResolveId(paletteId);
+        string resolvedMode = UiPreferences.NormalizeThemeMode(themeMode);
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Ui = _settings.Ui with { PaletteId = resolvedPalette, ThemeMode = resolvedMode } }, "Ui");
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存外观设置。");
+            return false;
+        }
+
+        ThemePaletteApplier.Apply(resolvedPalette, resolvedMode);
+        Report("外观设置已保存。");
         return true;
     }
 
