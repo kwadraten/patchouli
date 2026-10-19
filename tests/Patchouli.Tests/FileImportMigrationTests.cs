@@ -134,7 +134,8 @@ public sealed class FileImportMigrationTests : IDisposable
             new AppliedMigration("048", "048_normalize_document_box_types"),
             new AppliedMigration("049", "049_add_csl_language_locale_mappings"),
             new AppliedMigration("050", "050_file_search_root_sort_order"),
-            new AppliedMigration("051", "051_file_import_recovery"));
+            new AppliedMigration("051", "051_file_import_recovery"),
+            new AppliedMigration("052", "052_create_document_page_maps"));
         (await connection.ExecuteScalarAsync<int>(
                 "select count(*) from pragma_table_info('file_search_root_definitions') where name = 'sort_order';"))
             .Should().Be(1);
