@@ -138,12 +138,12 @@ public sealed class AlphaStabilizationTests : IDisposable
     }
 
     [Fact]
-    public void Agent_domain_doc_records_single_context_layout()
+    public void Domain_doc_records_single_context_layout()
     {
         string path = TestPaths.FromRepositoryRoot(".agents", "domain.md");
         File.Exists(path).Should().BeTrue();
         File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And
-            .Contain(".agents/workflow-api.md");
+            .Contain(".agents/mcp-protocol.md");
     }
 
     private sealed class NoopClipboard : IClipboardService
