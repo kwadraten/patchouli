@@ -18,7 +18,10 @@ public sealed record UpdateDownloadProgress(long BytesReceived, long? TotalBytes
 /// A downloaded installer that passed verification and is safe to hand to the
 /// installer launcher. <see cref="Sha256Verified"/> is true when the file was
 /// checked against a SHA256 sidecar; otherwise the file was verified by size
-/// against the release metadata (see ADR 0048 for the policy).
+/// against the release metadata (see ADR 0048 for the policy). The file keeps
+/// the release asset's installer extension (see <see
+/// cref="UpdateDownloader.InstallerExtensionFor"/>) so <see cref="UpdateLauncher"/>
+/// can dispatch on it.
 /// </summary>
 public sealed record VerifiedDownload(string FilePath, bool Sha256Verified);
 
@@ -32,11 +35,75 @@ public sealed class UpdateDownloader
 {
     private const int BufferSize = 81920;
 
+    /// <summary>
+    /// Installer extensions the launcher knows how to start, matched against
+    /// the release asset name (see <see cref="UpdateAssetSelector"/>). Anything
+    /// else falls back to <c>.tmp</c>, which the launcher refuses to execute.
+    /// </summary>
+    private static readonly string[] KnownInstallerExtensions = [".exe", ".dmg", ".AppImage"];
+
+    /// <summary>
+    /// How long a retained installer download ("稍后安装") survives in the temp
+    /// directory before <see cref="CleanupStaleDownloads"/> removes it at
+    /// startup. Long enough to install manually later; bounded so temp files
+    /// cannot accumulate forever.
+    /// </summary>
+    public static readonly TimeSpan StaleDownloadRetention = TimeSpan.FromDays(7);
+
     private readonly HttpClient _httpClient;
 
     public UpdateDownloader(HttpClient httpClient)
     {
         _httpClient = httpClient;
+    }
+
+    /// <summary>
+    /// Returns the temp-file extension for a release asset: the asset's own
+    /// extension when it is a known installer kind, <c>.tmp</c> otherwise.
+    /// The launcher dispatches on the file extension, so a hardcoded
+    /// <c>.tmp</c> would miss every platform branch (Windows would fail with
+    /// ERROR_NO_ASSOCIATION).
+    /// </summary>
+    internal static string InstallerExtensionFor(string? assetName)
+    {
+        string extension = Path.GetExtension(assetName ?? string.Empty);
+        return KnownInstallerExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+            ? extension
+            : ".tmp";
+    }
+
+    /// <summary>
+    /// Deletes installer downloads older than <see cref="StaleDownloadRetention"/>
+    /// from the temp directory. Called once at app startup; covers files the
+    /// user kept via "稍后安装" as well as installers left behind after a
+    /// successful install. Best-effort; never throws.
+    /// </summary>
+    public static void CleanupStaleDownloads()
+    {
+        try
+        {
+            DateTimeOffset cutoff = DateTimeOffset.UtcNow - StaleDownloadRetention;
+            foreach (string path in Directory.EnumerateFiles(
+                         Path.GetTempPath(), "patchouli-update-*"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(path) < cutoff.UtcDateTime)
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch (Exception exception) when (exception is IOException
+                                                      or UnauthorizedAccessException)
+                {
+                    _ = exception;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _ = exception;
+        }
     }
 
     public async Task<Result<VerifiedDownload>> DownloadAsync(
@@ -52,7 +119,7 @@ public sealed class UpdateDownloader
         }
 
         string temporary = Path.Combine(Path.GetTempPath(),
-            $"patchouli-update-{Guid.NewGuid():N}.tmp");
+            $"patchouli-update-{Guid.NewGuid():N}{InstallerExtensionFor(asset.Name)}");
         bool keepFile = false;
         try
         {

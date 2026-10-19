@@ -64,14 +64,54 @@ public sealed class UpdateCheckSettingsService : IUpdateCheckSettingsService
     public async Task<Result<UpdateCheckSettings>> RecordCheckAsync(
         CancellationToken cancellationToken = default)
     {
-        Result<UpdateCheckSettings> current = await GetSettingsAsync(cancellationToken);
-        if (current.IsFailure)
+        try
         {
-            return current;
+            // The whole read-modify-write holds the gate: a concurrent
+            // SaveAutoCheckAsync cannot slip between the read and the write
+            // and have its flag change clobbered (or vice versa).
+            UpdateCheckSettings updated = await RunUnderWriteGateAsync(cancellationToken,
+                async innerToken =>
+                {
+                    UpdateCheckSettings current = await ReadAsync(innerToken);
+                    UpdateCheckSettings next = current with { LastCheckUtc = _clock.UtcNow };
+                    await WriteSectionAsync(next, innerToken);
+                    return next;
+                });
+            return Result<UpdateCheckSettings>.Success(updated);
         }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.update-check-settings"))
+        {
+            return Result<UpdateCheckSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"更新检查设置保存失败：{exception.Message}");
+        }
+    }
 
-        UpdateCheckSettings updated = current.Value with { LastCheckUtc = _clock.UtcNow };
-        return await SaveSettingsAsync(updated, cancellationToken);
+    public async Task<Result<UpdateCheckSettings>> SaveAutoCheckAsync(
+        bool autoCheckEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Same gate as RecordCheckAsync: only the flag is replaced, the
+            // last-check timestamp is preserved, and the read-modify-write is
+            // atomic with respect to concurrent recorders.
+            UpdateCheckSettings updated = await RunUnderWriteGateAsync(cancellationToken,
+                async innerToken =>
+                {
+                    UpdateCheckSettings current = await ReadAsync(innerToken);
+                    UpdateCheckSettings next = current with { AutoCheckEnabled = autoCheckEnabled };
+                    await WriteSectionAsync(next, innerToken);
+                    return next;
+                });
+            return Result<UpdateCheckSettings>.Success(updated);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.update-check-settings"))
+        {
+            return Result<UpdateCheckSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"更新检查设置保存失败：{exception.Message}");
+        }
     }
 
     private async Task<UpdateCheckSettings> ReadAsync(CancellationToken cancellationToken)
@@ -112,28 +152,63 @@ public sealed class UpdateCheckSettingsService : IUpdateCheckSettingsService
 
     private async Task WriteAsync(UpdateCheckSettings settings, CancellationToken cancellationToken)
     {
+        await RunUnderWriteGateAsync(cancellationToken,
+            innerToken => WriteSectionAsync(settings, innerToken));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> with the settings-file write gate held.
+    /// <see cref="SemaphoreSlim"/> is not reentrant, so the gate is acquired
+    /// exactly once here; everything under it (e.g. <see
+    /// cref="WriteSectionAsync"/>) must not acquire it again.
+    /// </summary>
+    private async Task<T> RunUnderWriteGateAsync<T>(
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<T>> action)
+    {
         SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
         await gate.WaitAsync(cancellationToken);
         try
         {
-            JsonObject root = await ReadRootAsync(cancellationToken);
-            JsonObject section = new()
-            {
-                ["AutoCheckEnabled"] = settings.AutoCheckEnabled,
-                ["UpdatedAt"] = _clock.UtcNow.ToUniversalTime().ToString("O"),
-            };
-            if (settings.LastCheckUtc.HasValue)
-            {
-                section["LastCheckUtc"] = settings.LastCheckUtc.Value.ToUniversalTime().ToString("O");
-            }
-
-            root[SectionName] = section;
-            await WriteRootAsync(root, cancellationToken);
+            return await action(cancellationToken);
         }
         finally
         {
             gate.Release();
         }
+    }
+
+    private Task RunUnderWriteGateAsync(
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task> action)
+    {
+        return RunUnderWriteGateAsync<object?>(cancellationToken,
+            async innerToken =>
+            {
+                await action(innerToken);
+                return null;
+            });
+    }
+
+    /// <summary>
+    /// Replaces the <c>UpdateCheck</c> section of the device settings file.
+    /// The caller must hold the <see cref="SettingsFileWriteCoordinator"/> gate.
+    /// </summary>
+    private async Task WriteSectionAsync(UpdateCheckSettings settings, CancellationToken cancellationToken)
+    {
+        JsonObject root = await ReadRootAsync(cancellationToken);
+        JsonObject section = new()
+        {
+            ["AutoCheckEnabled"] = settings.AutoCheckEnabled,
+            ["UpdatedAt"] = _clock.UtcNow.ToUniversalTime().ToString("O"),
+        };
+        if (settings.LastCheckUtc.HasValue)
+        {
+            section["LastCheckUtc"] = settings.LastCheckUtc.Value.ToUniversalTime().ToString("O");
+        }
+
+        root[SectionName] = section;
+        await WriteRootAsync(root, cancellationToken);
     }
 
     private async Task<JsonObject> ReadRootAsync(CancellationToken cancellationToken)

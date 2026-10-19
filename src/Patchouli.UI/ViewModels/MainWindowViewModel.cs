@@ -27,6 +27,7 @@ using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.Infrastructure.Update;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
@@ -1202,6 +1203,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         StartupLoadingStatus = "正在启动…";
         try
         {
+            // Issue #15: sweep installer downloads left in temp (kept via
+            // "稍后安装" or after a successful install) older than the
+            // retention window. Best-effort; never throws.
+            UpdateDownloader.CleanupStaleDownloads();
             if (_settingsStore.IsDirty)
             {
                 SettingsSaveResult pendingSettings = await _settingsStore.SaveImmediatelyAsync();

@@ -920,6 +920,8 @@ public sealed class HostServices
         await LibraryRevisionMonitor.DisposeAsync();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
+        _updateApiHttpClient.Dispose();
+        _updateDownloadHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 }

@@ -1,4 +1,7 @@
 using System.Runtime.InteropServices;
+// Alias the BCL type so it can never resolve to the tests' Patchouli.Tests.Architecture
+// namespace in a consuming compilation unit that also sees that namespace.
+using Architecture = System.Runtime.InteropServices.Architecture;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Core.Update;

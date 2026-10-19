@@ -43,12 +43,14 @@ public sealed class UpdateLauncher
             else if (OperatingSystem.IsMacOS() &&
                      installerPath.EndsWith(".dmg", StringComparison.OrdinalIgnoreCase))
             {
-                startInfo = new ProcessStartInfo("open", $"\"{installerPath}\"")
+                startInfo = new ProcessStartInfo("open")
                 {
                     UseShellExecute = false,
                 };
+                startInfo.ArgumentList.Add(installerPath);
             }
-            else if (installerPath.EndsWith(".AppImage", StringComparison.OrdinalIgnoreCase))
+            else if (OperatingSystem.IsLinux() &&
+                     installerPath.EndsWith(".AppImage", StringComparison.OrdinalIgnoreCase))
             {
                 MakeExecutable(installerPath);
                 startInfo = new ProcessStartInfo

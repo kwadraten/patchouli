@@ -89,11 +89,11 @@ public sealed partial class UpdateSettingsViewModel : SettingsSectionViewModelBa
         try
         {
             HostServices services = await _main.ServicesAsync();
-            Result<UpdateCheckSettings> current =
-                await services.UpdateCheckSettings.GetSettingsAsync();
-            DateTimeOffset? lastCheck = current.IsSuccess ? current.Value.LastCheckUtc : null;
-            Result<UpdateCheckSettings> saved = await services.UpdateCheckSettings.SaveSettingsAsync(
-                new UpdateCheckSettings(AutoCheckEnabled, lastCheck));
+            // SaveAutoCheckAsync holds the settings-file write gate across
+            // the read-modify-write, so a concurrent RecordCheckAsync from an
+            // update check cannot interleave and clobber the flag.
+            Result<UpdateCheckSettings> saved =
+                await services.UpdateCheckSettings.SaveAutoCheckAsync(AutoCheckEnabled);
             if (saved.IsFailure)
             {
                 LastError = saved.ErrorMessage ?? "保存失败。";
