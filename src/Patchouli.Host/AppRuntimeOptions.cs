@@ -1425,6 +1425,14 @@ public sealed record PatchouliAppSettings(
                 ReadBool(element, "BackfillPreviousWindowTranslation", true) ? "true" : "false";
         }
 
+        // One-time migration: a file written before the direct translation engine had no "Translation"
+        // subsection, so seed it from the legacy values a single time. A present subsection always wins.
+        TranslationAppSettings translation = ReadTranslation(element, fallback.Translation);
+        if (!element.TryGetProperty("Translation", out _) && legacyValues.Count > 0)
+        {
+            translation = MigrateLegacyTranslation(legacyValues);
+        }
+
         return new LlmAppSettings(
                 providers,
                 ReadString(element, "OcrProviderId", fallback.OcrProviderId),
@@ -1441,9 +1449,91 @@ public sealed record PatchouliAppSettings(
                 AgentMaxRetries = ReadInt(element, "AgentMaxRetries", fallback.AgentMaxRetries),
                 AgentReasoningEffort = ReadString(element, "AgentReasoningEffort", fallback.AgentReasoningEffort),
                 ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
+                Translation = translation,
                 LegacyWorkflowValues = legacyValues.Count == 0 ? fallback.LegacyWorkflowValues : legacyValues
             }
             .Normalize();
+    }
+
+    /// <summary>
+    /// Reads the "Translation" subsection. A missing or malformed subsection returns the fallback
+    /// (defaults on a fresh load); individual missing fields fall back per field.
+    /// </summary>
+    private static TranslationAppSettings ReadTranslation(JsonElement element, TranslationAppSettings fallback)
+    {
+        if (!element.TryGetProperty("Translation", out JsonElement translation) ||
+            translation.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        int? maxBatchTokens = translation.TryGetProperty("MaxBatchTokens", out _)
+            ? ReadNullableInt(translation, "MaxBatchTokens")
+            : fallback.MaxBatchTokens;
+        return new TranslationAppSettings(
+            ReadString(translation, "TargetLanguage", fallback.TargetLanguage),
+            ReadInt(translation, "BatchSize", fallback.BatchSize),
+            ReadInt(translation, "MaxBatchCharacters", fallback.MaxBatchCharacters),
+            maxBatchTokens,
+            ReadInt(translation, "Concurrency", fallback.Concurrency),
+            ReadInt(translation, "RequestIntervalSeconds", fallback.RequestIntervalSeconds),
+            ReadInt(translation, "RequestTimeoutSeconds", fallback.RequestTimeoutSeconds),
+            ReadInt(translation, "MaxRetries", fallback.MaxRetries),
+            ReadInt(translation, "WindowRadius", fallback.WindowRadius),
+            ReadBool(translation, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation),
+            ReadString(translation, "ProviderId", fallback.ProviderId ?? ""),
+            ReadString(translation, "Model", fallback.Model ?? "")).Normalize();
+    }
+
+    /// <summary>
+    /// Seeds the Translation subsection from the pre-#20 workflow values. Only the values the workflow
+    /// exposed are carried over (target language, provider/model, window radius and backfill); everything
+    /// else keeps its default.
+    /// </summary>
+    private static TranslationAppSettings MigrateLegacyTranslation(
+        IReadOnlyDictionary<string, string> legacyValues)
+    {
+        TranslationAppSettings defaults = new();
+        string targetLanguage = legacyValues.TryGetValue("targetLanguage", out string? legacyLanguage)
+            ? legacyLanguage
+            : defaults.TargetLanguage;
+        string? providerId = defaults.ProviderId;
+        string? model = defaults.Model;
+        if (legacyValues.TryGetValue("model", out string? legacyModelJson) &&
+            !string.IsNullOrWhiteSpace(legacyModelJson))
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(legacyModelJson);
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    providerId = ReadString(document.RootElement, "providerId", "");
+                    model = ReadString(document.RootElement, "model", "");
+                }
+            }
+            catch (JsonException)
+            {
+                // A malformed legacy payload must not prevent settings from loading; keep the defaults.
+            }
+        }
+
+        int windowRadius = legacyValues.TryGetValue("windowRadius", out string? legacyRadius) &&
+                           int.TryParse(legacyRadius, out int parsedRadius)
+            ? parsedRadius
+            : defaults.WindowRadius;
+        bool backfill = legacyValues.TryGetValue("backfillPreviousWindowTranslation", out string? legacyBackfill) &&
+                        bool.TryParse(legacyBackfill, out bool parsedBackfill)
+            ? parsedBackfill
+            : defaults.BackfillPreviousWindowTranslation;
+
+        return (defaults with
+        {
+            TargetLanguage = targetLanguage,
+            ProviderId = providerId,
+            Model = model,
+            WindowRadius = windowRadius,
+            BackfillPreviousWindowTranslation = backfill
+        }).Normalize();
     }
 
     private static JsonObject SerializeLlm(LlmAppSettings llm)
@@ -1462,7 +1552,8 @@ public sealed record PatchouliAppSettings(
             normalized.ChatModel,
             normalized.AgentMaxRetries,
             normalized.AgentReasoningEffort,
-            normalized.ToolResultMaxCharacters
+            normalized.ToolResultMaxCharacters,
+            normalized.Translation
         }) as JsonObject ?? new JsonObject();
         // Retain pending values until workflow storage has consumed them, even if settings save first.
         if (normalized.LegacyWorkflowValues.Count > 0)

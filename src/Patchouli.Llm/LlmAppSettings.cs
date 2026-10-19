@@ -75,6 +75,13 @@ public sealed record LlmAppSettings(
     /// <summary>Reasoning effort for built-in chat and workflows; empty uses the provider default.</summary>
     public string AgentReasoningEffort { get; init; } = "";
 
+    /// <summary>
+    /// Direct translation engine settings. A blank <see cref="TranslationAppSettings.ProviderId"/> or
+    /// <see cref="TranslationAppSettings.Model"/> falls back to the chat selection where it is read; the
+    /// chat values are never copied into this subsection.
+    /// </summary>
+    public TranslationAppSettings Translation { get; init; } = new();
+
     public static IReadOnlyList<string> ReasoningEfforts { get; } =
         ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -209,6 +216,7 @@ public sealed record LlmAppSettings(
             ChatModel = chatModel,
             AgentReasoningEffort = NormalizeReasoningEffort(AgentReasoningEffort),
             AgentMaxRetries = Math.Clamp(AgentMaxRetries, 0, MaxAgentMaxRetries),
+            Translation = Translation.Normalize(),
             ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
                 MinToolResultMaxCharacters, MaxToolResultMaxCharacters)
         };

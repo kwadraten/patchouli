@@ -8,6 +8,8 @@ namespace Patchouli.Core.Documents;
 /// no current translation row, either because they were never translated or because a tree
 /// change expired their translation. A page is current when its stored rows were aligned
 /// against <see cref="SourceTreeRevisionId"/> and that revision is still the page HEAD.
+/// <see cref="TargetLanguage"/> is the language the stored rows were translated into, or
+/// <c>null</c> when the rows predate target-language tracking and their language is unknown.
 /// </summary>
 public sealed record PageTranslationStatus(
     int TranslatedBoxCount,
@@ -15,7 +17,8 @@ public sealed record PageTranslationStatus(
     IReadOnlyList<DocumentBoxId> StaleBoxIds,
     DocumentTreeRevisionId SourceTreeRevisionId,
     bool IsCurrent,
-    int Version = 0);
+    int Version = 0,
+    string? TargetLanguage = null);
 
 /// <summary>
 /// A whole-page translated markdown compiled from the per-box translation rows, together with
@@ -58,20 +61,48 @@ public interface IPageTranslationService
         int pageIndex,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Replaces the page's translation with the boxes of an edited page XML. A non-null
+    /// <paramref name="targetLanguage"/> is stored on the translation header; <c>null</c> keeps
+    /// the language already stored for the page (a new page keeps <c>null</c>).
+    /// </summary>
     Task<Result<PageTranslationStatus>> PutPageXmlAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
         int pageIndex,
         string xml,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null);
 
+    /// <summary>
+    /// Upserts translated payloads for individual boxes. A non-null
+    /// <paramref name="targetLanguage"/> is stored on the translation header; <c>null</c> keeps
+    /// the language already stored for the page (a new page keeps <c>null</c>).
+    /// </summary>
     Task<Result<PageTranslationStatus>> PutBoxPayloadsAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
         DocumentTreeRevisionId expectedRevision,
         int expectedTranslationVersion,
         IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null);
+
+    /// <summary>
+    /// Upserts translated payloads for a whole page in one atomic host-side commit. The semantics are
+    /// identical to <see cref="PutBoxPayloadsAsync"/> (same revision/version checks, realignment,
+    /// structural validation and target-language handling), but the batch limit is widened to 4096
+    /// boxes so the in-process translation engine can commit a page in one call. MCP callers keep
+    /// using <see cref="PutBoxPayloadsAsync"/> and its 1..100 limit.
+    /// </summary>
+    Task<Result<PageTranslationStatus>> PutPageBoxesAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        int expectedTranslationVersion,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null);
 
     /// <summary>
     /// Returns the compiled translation for the page, or <c>null</c> when the page has no
