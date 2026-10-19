@@ -114,7 +114,7 @@ public sealed class TranslationRunEngine
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return CancelRemaining(targets, outcomes, 0, Publish);
+            return CancelRemaining(targets, outcomes, Publish);
         }
 
         TranslationProviderSet? providers = _providerRegistry.Snapshot();
@@ -141,7 +141,7 @@ public sealed class TranslationRunEngine
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return CancelRemaining(targets, outcomes, index, Publish);
+                return CancelRemaining(targets, outcomes, Publish);
             }
 
             PageLoad load;
@@ -156,7 +156,7 @@ public sealed class TranslationRunEngine
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return CancelRemaining(targets, outcomes, index, Publish);
+                return CancelRemaining(targets, outcomes, Publish);
             }
             catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
                                                   exception, "infrastructure.translation-run"))
@@ -258,11 +258,17 @@ public sealed class TranslationRunEngine
     private static TranslationRunResult CancelRemaining(
         TranslationPageTarget[] targets,
         TranslationPageOutcome[] outcomes,
-        int start,
         Action<TranslationPageOutcome> publish)
     {
-        for (int index = start; index < targets.Length; index++)
+        // Pages loaded before cancellation have no outcome yet, and pages after the cancellation
+        // point were never loaded. Every requested page must still receive exactly one outcome.
+        for (int index = 0; index < targets.Length; index++)
         {
+            if (outcomes[index] is not null)
+            {
+                continue;
+            }
+
             TranslationPageOutcome outcome = Cancelled(targets[index]);
             outcomes[index] = outcome;
             publish(outcome);

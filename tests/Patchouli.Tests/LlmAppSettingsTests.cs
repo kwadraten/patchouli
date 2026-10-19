@@ -35,11 +35,14 @@ public sealed class LlmAppSettingsTests
     }
 
     [Fact]
-    public void Shared_settings_do_not_serialize_workflow_business_defaults()
+    public void Shared_settings_serialize_translation_but_not_transient_workflow_values()
     {
+        // Direct translation is a host feature now (#20), so its settings belong to the shared LLM
+        // block and must serialize. LegacyWorkflowValues stays a transient migration payload.
         string json = System.Text.Json.JsonSerializer.Serialize(LlmAppSettings.Default());
-        json.Should().NotContain("Translation").And.NotContain("TargetLanguage")
-            .And.NotContain("WindowRadius").And.NotContain("LegacyWorkflowValues");
+        json.Should().Contain("\"Translation\"").And.Contain("\"TargetLanguage\"")
+            .And.Contain("\"WindowRadius\"");
+        json.Should().NotContain("LegacyWorkflowValues");
     }
 
     [Fact]

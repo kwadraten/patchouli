@@ -1,7 +1,5 @@
 using Patchouli.Core.Ids;
-using Patchouli.Core.Translation;
-
-namespace Patchouli.Infrastructure.Translation;
+namespace Patchouli.Core.Translation;
 
 /// <summary>One page to translate in a direct batch translation run.</summary>
 /// <param name="PageId">The page identifier.</param>
