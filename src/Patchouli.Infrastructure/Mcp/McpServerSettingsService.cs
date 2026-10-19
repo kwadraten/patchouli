@@ -221,7 +221,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
                 ? parsedUpdatedAt.ToUniversalTime()
                 : _clock.UtcNow.ToUniversalTime();
-        McpServerSettings settings = new McpServerSettings(port, bindAddress, cors, origins,
+        McpServerSettings settings = new(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
         {
@@ -237,16 +237,19 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     }
 
     /// <summary>
-    /// Issue #11 §11: old settings files predate patchouli.add/patchouli.view. The permission
-    /// model is deny-list based (missing entry = allowed), so without an explicit migration
-    /// old settings would implicitly grant the new tools — auto-expanding existing put grants.
+    /// Issue #11 §11 & Issue #16: old settings files predate patchouli.add/patchouli.view/ocr action verbs.
+    /// The permission model is deny-list based (missing entry = allowed) for legacy verbs, while
+    /// ocr action verbs (ocr.start, ocr.cancel, ocr.retry) require explicit grants.
     /// The migration writes explicit disabled entries; users opt in via the settings UI.
+    /// Legacy patchouli.ocr and unnamespaced ocr rows are removed.
     /// </summary>
     private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
     {
         string[] newTools = ["patchouli.add", "patchouli.view"];
-        List<McpToolOverride> overrides = settings.ToolOverrides.ToList();
-        bool changed = false;
+        List<McpToolOverride> overrides = settings.ToolOverrides
+            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal))
+            .ToList();
+        bool changed = overrides.Count != settings.ToolOverrides.Count;
         foreach (string tool in newTools)
         {
             if (overrides.All(value => value.ToolName != tool))
@@ -257,7 +260,31 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             }
         }
 
-        return changed ? settings with { ToolOverrides = overrides } : settings;
+        List<McpDomainPermission> permissions = settings.DomainPermissions
+            .Where(value => !string.Equals(value.Verb, "ocr", StringComparison.Ordinal))
+            .ToList();
+        if (permissions.Count != settings.DomainPermissions.Count)
+        {
+            changed = true;
+        }
+
+        (string Domain, string Verb)[] requiredActionRows =
+        [
+            ("texts", "ocr.start"),
+            ("runs", "ocr.cancel"),
+            ("runs", "ocr.retry")
+        ];
+
+        foreach ((string domain, string verb) in requiredActionRows)
+        {
+            if (permissions.All(value => !(value.Domain == domain && value.Verb == verb)))
+            {
+                permissions.Add(new McpDomainPermission(domain, verb, false));
+                changed = true;
+            }
+        }
+
+        return changed ? settings with { ToolOverrides = overrides, DomainPermissions = permissions } : settings;
     }
 
     private async Task WriteAsync(McpServerSettings settings, CancellationToken cancellationToken)

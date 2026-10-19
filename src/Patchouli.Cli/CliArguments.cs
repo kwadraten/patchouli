@@ -49,6 +49,8 @@ internal static class CliArguments
             "send" => BuildSend(args, json),
             "add" => BuildAdd(args, json),
             "view" => BuildView(args, json),
+            "ocr" => throw new CliUsageException(
+                "the top-level 'ocr' command has been removed; use 'send <target> ocr.<action> [--args JSON]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -64,6 +66,8 @@ internal static class CliArguments
             "send" => Send,
             "add" => Add,
             "view" => View,
+            "ocr" => throw new CliUsageException(
+                "the top-level 'ocr' command has been removed; use 'send <target> ocr.<action> [--args JSON]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -318,62 +322,101 @@ internal static class CliArguments
 
     private static CliToolCall BuildSend(IReadOnlyList<string> args, bool json)
     {
-        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
-        string? verb = null;
-        string? text = null;
-        List<string> parameters = [];
+        string? target = null;
+        string? action = null;
+        JsonElement? parsedArgs = null;
+        bool sawArgs = false;
+
         for (int index = 0; index < args.Count; index++)
         {
-            switch (args[index])
+            string current = args[index];
+            switch (current)
             {
-                case "--workflow":
-                    arguments["workflow"] = TakeValue(args, ref index, "--workflow");
-                    break;
-                case "--session":
-                    arguments["session"] = TakeValue(args, ref index, "--session");
-                    break;
-                case "--message-id":
-                    arguments["message_id"] = TakeValue(args, ref index, "--message-id");
-                    break;
-                case "--text":
-                    text = TakeValue(args, ref index, "--text");
-                    break;
-                case "--param":
-                    parameters.Add(TakeValue(args, ref index, "--param"));
-                    break;
-                case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
-                    throw new CliUsageException($"unknown option '{args[index]}' for send.");
-                default:
-                    if (verb is not null)
+                case "--args":
+                    if (sawArgs)
                     {
-                        throw new CliUsageException("send accepts a single VERB argument.");
+                        throw new CliUsageException("duplicate --args option.");
                     }
 
-                    verb = args[index];
+                    string jsonText = TakeValue(args, ref index, "--args");
+                    try
+                    {
+                        using JsonDocument document = JsonDocument.Parse(jsonText);
+                        if (document.RootElement.ValueKind != JsonValueKind.Object)
+                        {
+                            throw new CliUsageException("--args must be a JSON object.");
+                        }
+
+                        parsedArgs = document.RootElement.Clone();
+                    }
+                    catch (JsonException)
+                    {
+                        throw new CliUsageException("--args must be a JSON object.");
+                    }
+
+                    sawArgs = true;
+                    break;
+
+                case "--workflow":
+                case "--session":
+                case "--message-id":
+                case "--text":
+                case "--param":
+                    throw new CliUsageException(
+                        $"option '{current}' is from legacy send; use 'send <target> <action> [--args JSON]' instead.");
+
+                case var _ when current.StartsWith("--", StringComparison.Ordinal):
+                    throw new CliUsageException($"unknown option '{current}' for send.");
+
+                default:
+                    if (target is null)
+                    {
+                        if (string.Equals(current, "start", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(current, "message", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(current, "cancel", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(current, "resume", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new CliUsageException(
+                                $"legacy 'send {current}' has been removed; use 'send <target> <action> [--args JSON]' instead.");
+                        }
+
+                        target = current;
+                    }
+                    else if (action is null)
+                    {
+                        action = current;
+                    }
+                    else
+                    {
+                        throw new CliUsageException($"unexpected positional argument '{current}' for send.");
+                    }
+
                     break;
             }
         }
 
-        if (verb is null)
+        if (target is null)
         {
-            throw new CliUsageException("send requires a VERB argument (start, message, cancel, resume).");
+            throw new CliUsageException("send requires TARGET and ACTION arguments.");
         }
 
-        if (verb is not ("start" or "message" or "cancel" or "resume"))
+        if (action is null)
         {
-            throw new CliUsageException($"unknown send verb '{verb}'.");
+            throw new CliUsageException("send requires an ACTION argument.");
         }
 
-        arguments["instruction"] = verb;
-        if (text is not null)
+        if (!parsedArgs.HasValue)
         {
-            arguments["text"] = text;
+            using JsonDocument defaultDocument = JsonDocument.Parse("{}");
+            parsedArgs = defaultDocument.RootElement.Clone();
         }
 
-        if (parameters.Count > 0)
+        Dictionary<string, object?> arguments = new(StringComparer.Ordinal)
         {
-            arguments["parameters"] = parameters.ToArray();
-        }
+            ["target"] = target,
+            ["action"] = action,
+            ["args"] = parsedArgs.Value
+        };
 
         return new CliToolCall(Send, WithFormat(arguments, json));
     }
@@ -425,7 +468,7 @@ internal static class CliArguments
             absolute = Path.GetFullPath(path);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or
-                                              System.IO.IOException or UnauthorizedAccessException)
+                                              IOException or UnauthorizedAccessException)
         {
             throw new CliUsageException($"the add path is not a valid file path: {path}");
         }

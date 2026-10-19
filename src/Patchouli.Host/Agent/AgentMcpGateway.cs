@@ -102,6 +102,15 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
         try
         {
             using JsonDocument document = JsonDocument.Parse(payload);
+            if (string.Equals(name, "send", StringComparison.OrdinalIgnoreCase) &&
+                document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.EnumerateObject().Any(property => property.Name is
+                    "instruction" or "workflow" or "parameters" or "session" or "message_id" or "text"))
+            {
+                return new AgentToolOutcome(false,
+                    "INVALID_ARGUMENT: Legacy Agent send is removed; use target/action/args.", "INVALID_ARGUMENT");
+            }
+
             if (McpProtocolHandler.ValidateToolArguments("patchouli." + name, document.RootElement) is { } invalid)
             {
                 return new AgentToolOutcome(false, "INVALID_ARGUMENT: " + invalid, "INVALID_ARGUMENT");
@@ -155,31 +164,12 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
 
     private async Task<AgentToolOutcome> SendToolAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        string? Text(string name)
-        {
-            return arguments.TryGetProperty(name, out JsonElement value) ? value.GetString() : null;
-        }
-
-        IReadOnlyList<McpSendParameter>? parameters = null;
-        if (arguments.TryGetProperty("parameters", out JsonElement values))
-        {
-            parameters = values.EnumerateArray().Select(value =>
-            {
-                string text = value.GetString()!;
-                int separator = text.IndexOf('=');
-                if (separator <= 0)
-                {
-                    throw new JsonException("send parameters must use NAME=VALUE.");
-                }
-
-                return new McpSendParameter(text[..separator], text[(separator + 1)..]);
-            }).ToArray();
-        }
-
-        return Render(await _commands
-            .SendAsync(
-                new McpSendRequest(Text("instruction")!, Text("workflow"), parameters, Text("session"),
-                    Text("message_id"), Text("text")), cancellationToken).ConfigureAwait(false));
+        JsonElement args = arguments.TryGetProperty("args", out JsonElement value)
+            ? value
+            : JsonSerializer.SerializeToElement(new { });
+        return Render(await _commands.SendAsync(new McpActionSendRequest(
+                arguments.GetProperty("target").GetString()!, arguments.GetProperty("action").GetString()!, args),
+            cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -334,6 +324,8 @@ public sealed class McpCommandServiceAgentGateway : IAgentMcpGateway
     /// <summary>Arguments of the agent-facing MCP <c>view</c> tool.</summary>
     private sealed record McpViewToolArguments(
         [property: JsonPropertyName("uri")] string Uri,
-        [property: JsonPropertyName("context")] string? Context = null,
-        [property: JsonPropertyName("max_edge")] int? MaxEdge = null);
+        [property: JsonPropertyName("context")]
+        string? Context = null,
+        [property: JsonPropertyName("max_edge")]
+        int? MaxEdge = null);
 }

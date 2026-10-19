@@ -275,6 +275,40 @@ public sealed class OcrRunEngine : IOcrRunEngine
             : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress);
     }
 
+    public async Task<Result<OcrRun>> RunPresetOnPagesWithVersionAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        IReadOnlyList<PageId> pageIds,
+        OcrPresetVersionId presetVersionId,
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
+    {
+        if (pageIds.Count == 0)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "At least one physical page is required.");
+        }
+
+        Result<OcrPresetVersion> pinned = await GetPresetVersionAsync(presetVersionId, cancellationToken);
+        if (pinned.IsFailure)
+        {
+            return Result<OcrRun>.Failure(pinned.ErrorCode!, pinned.ErrorMessage!);
+        }
+
+        if (pinned.Value.PresetId != presetId)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.InvalidArgument,
+                "The pinned preset version does not belong to the requested preset.");
+        }
+
+        // Queued tasks must execute the exact version accepted at enqueue time, even if the
+        // preset's current version changed while the task waited in the queue.
+        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, pageIds, cancellationToken);
+        return pages.IsFailure
+            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress,
+                false, pinned.Value);
+    }
+
     public async Task<Result<OcrRun>> RunPresetOnRegionAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
@@ -649,6 +683,58 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     "Every selected physical page must have a successful working revision.");
             }
 
+            string[] selectedPageIdStrings = selected.Select(r => r.PageId.ToString()).ToArray();
+            DocumentTreeRevisionId[] workingIds =
+                selected.Select(result => result.WorkingTreeRevisionId!.Value).ToArray();
+            int activeDrafts = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from document_tree_revisions
+                where document_instance_id = @DocumentInstanceId and page_id in @PageIds
+                  and status = 'working' and edit_session_id is not null;
+                """,
+                new
+                {
+                    DocumentInstanceId = run.Value.DocumentInstanceId.ToString(),
+                    PageIds = selectedPageIdStrings
+                },
+                transaction);
+            if (activeDrafts > 0)
+            {
+                // A manual draft created after recognition must survive: never adopt OCR over it.
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrCandidateCommit>.Failure(
+                    AppErrorCodes.Conflict,
+                    "A manual edit is in progress for one of the selected pages; " +
+                    "commit or discard the draft before adopting OCR results.");
+            }
+
+            // Basis check: every candidate working revision was built on the page's committed
+            // revision at recognition time. If a newer revision became current since then (a
+            // saved manual edit, or another adopted run), adoption must conflict and the newer
+            // text must be preserved — for a fresh import both sides are simply null.
+            RevisionBasisRow[] bases = (await connection.QueryAsync<RevisionBasisRow>(
+                """
+                select w.tree_revision_id as TreeRevisionId,
+                       w.parent_tree_revision_id as ParentTreeRevisionId,
+                       (select c.tree_revision_id from document_tree_revisions c
+                        where c.page_id = w.page_id and c.is_current = 1) as CurrentTreeRevisionId
+                from document_tree_revisions w
+                where w.tree_revision_id in @WorkingIds;
+                """,
+                new { WorkingIds = workingIds.Select(id => id.ToString()).ToArray() },
+                transaction)).ToArray();
+            bool basisConflict = bases.Length != workingIds.Length || bases.Any(row =>
+                !string.Equals(row.ParentTreeRevisionId ?? string.Empty,
+                    row.CurrentTreeRevisionId ?? string.Empty, StringComparison.Ordinal));
+            if (basisConflict)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrCandidateCommit>.Failure(
+                    AppErrorCodes.Conflict,
+                    "The page text was modified after OCR recognition; the newer text is " +
+                    "preserved and the OCR results were not adopted.");
+            }
+
             Result<DocumentCommit> documentCommit = await transactionalTrees.CreateDocumentCommitInTransactionAsync(
                 connection,
                 transaction,
@@ -663,8 +749,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     documentCommit.ErrorCode!, documentCommit.ErrorMessage!, documentCommit.Conflicts);
             }
 
-            DocumentTreeRevisionId[] workingIds =
-                selected.Select(result => result.WorkingTreeRevisionId!.Value).ToArray();
             Result<IReadOnlyList<DocumentTreeRevision>> committed =
                 await transactionalTrees.CommitWorkingRevisionsInTransactionAsync(
                     connection,
@@ -680,7 +764,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
             }
 
             string now = FormatUtc(_clock.UtcNow);
-            string[] selectedPageIdStrings = selected.Select(r => r.PageId.ToString()).ToArray();
             await connection.ExecuteAsync(
                 """
                 update ocr_page_results
@@ -820,9 +903,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? imagePath,
         CancellationToken cancellationToken,
         IProgress<OcrTaskStageProgress>? progress = null,
-        bool allowAutoCommit = true)
+        bool allowAutoCommit = true,
+        OcrPresetVersion? resolvedVersion = null)
     {
-        Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
+        Result<OcrPresetVersion> version = resolvedVersion is not null
+            ? Result<OcrPresetVersion>.Success(resolvedVersion)
+            : await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
         {
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
@@ -848,6 +934,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        // Capture each page's committed revision baseline before any recognition starts. The
+        // snapshot is propagated onto every candidate working revision so adoption can detect
+        // a manual edit committed while the engine was running; reading it later would
+        // overwrite that concurrent edit instead of conflicting with it.
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(documentInstanceId, pages, cancellationToken);
         int failures = 0;
         int processedPages = 0;
         DocumentTreeRevisionId? firstWorking = null;
@@ -977,7 +1069,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 }
 
                 Result<OcrDocumentTreeImportResult> working = await _treeImporter.BeginWorkingAsync(
-                    new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
+                    new OcrDocumentTreeImportRequest(documentInstanceId, candidate,
+                        ExpectedParentTreeRevisionIds: baselines),
                     cancellationToken);
                 if (working.IsFailure)
                 {
@@ -1173,6 +1266,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        // Capture each selected page's committed revision baseline before the remote upload:
+        // the snapshot is propagated onto every imported working revision so adoption can
+        // conflict with a manual edit committed while MinerU was processing, instead of
+        // re-reading (and silently adopting over) the newer current revision afterwards.
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(documentInstanceId, pages, cancellationToken);
         string downloadDirectory = Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString());
         Directory.CreateDirectory(downloadDirectory);
         try
@@ -1192,7 +1291,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     prepared.Value.ZipPath,
                     documentInstanceId.ToString(),
                     source.LibraryId,
-                    coversAllPages ? null : pages.Select(page => page.PageId).ToArray()),
+                    coversAllPages ? null : pages.Select(page => page.PageId).ToArray(),
+                    baselines),
                 cancellationToken);
             if (imported.IsFailure || !imported.Value.Success)
             {
@@ -1366,6 +1466,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IMinerUClient client,
         CancellationToken cancellationToken)
     {
+        IReadOnlyList<Page> pages = [page];
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(run.DocumentInstanceId, pages, cancellationToken);
         try
         {
             string downloadDirectory = Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString());
@@ -1387,7 +1490,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
             }
 
             Result<OcrDocumentTreeImportResult> working = await _treeImporter.BeginWorkingAsync(
-                new OcrDocumentTreeImportRequest(run.DocumentInstanceId, candidate.Value), cancellationToken);
+                new OcrDocumentTreeImportRequest(run.DocumentInstanceId, candidate.Value,
+                    ExpectedParentTreeRevisionIds: baselines), cancellationToken);
             if (working.IsFailure)
             {
                 return await FailMinerURunAsync(
@@ -1584,11 +1688,20 @@ public sealed class OcrRunEngine : IOcrRunEngine
             return Result<OcrRun>.Success(completed);
         }
 
-        Result<OcrCandidateCommit> commit =
-            await CommitCandidateRunAsync(runId, cancellationToken: cancellationToken);
-        if (commit.IsSuccess)
+        try
         {
-            return Result<OcrRun>.Success(completed);
+            await CommitCandidateRunAsync(runId, cancellationToken: cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Recognition has finished. The queue observes cancellation with the known run ID;
+            // cancellation during adoption must not rewrite completed recognition as failed.
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.ocr-auto-adoption"))
+        {
+            // Adoption can commit before dirty marking throws. Keep the completed recognition
+            // and its identity so the caller can inspect/retry adoption and indexing separately.
         }
 
         // OCR and working revisions succeeded. Commit conflicts leave a previewable candidate for explicit resolution.
@@ -1926,6 +2039,168 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
     }
 
+    private async Task<IReadOnlyDictionary<PageId, DocumentTreeRevisionId>> CapturePageRevisionBaselinesAsync(
+        DocumentInstanceId documentInstanceId,
+        IReadOnlyList<Page> pages,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        RevisionBaselineRow[] rows = (await connection.QueryAsync<RevisionBaselineRow>(
+            """
+            select page_id as PageId, tree_revision_id as TreeRevisionId
+            from document_tree_revisions
+            where document_instance_id = @DocumentInstanceId
+              and page_id in @PageIds and is_current = 1;
+            """,
+            new
+            {
+                DocumentInstanceId = documentInstanceId.ToString(),
+                PageIds = pages.Select(page => page.PageId.ToString()).ToArray()
+            })).ToArray();
+        return rows.ToDictionary(
+            row => PageId.Parse(row.PageId),
+            row => DocumentTreeRevisionId.Parse(row.TreeRevisionId));
+    }
+
+    public async Task<Result<OcrPresetVersion>> GetPresetVersionAsync(
+        OcrPresetVersionId presetVersionId,
+        CancellationToken cancellationToken = default)
+    {
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        PresetVersionRow? row = await connection.QuerySingleOrDefaultAsync<PresetVersionRow>(
+            """
+            select v.preset_version_id as PresetVersionId, v.preset_id as PresetId,
+                v.engine_id as EngineId, v.model_id as ModelId, v.model_path as ModelPath,
+                v.parameters_json as ParametersJson, v.apply_on_success as ApplyOnSuccess,
+                v.created_at as CreatedAt
+            from ocr_preset_versions v
+            where v.preset_version_id = @PresetVersionId;
+            """,
+            new { PresetVersionId = presetVersionId.ToString() });
+        return row is null
+            ? Result<OcrPresetVersion>.Failure(AppErrorCodes.NotFound, "The OCR preset version was not found.")
+            : Result<OcrPresetVersion>.Success(row.ToVersion());
+    }
+
+    public async Task<Result> CheckRunReadinessAsync(DocumentInstanceId documentInstanceId,
+        OcrPresetVersion presetVersion, CancellationToken cancellationToken = default)
+    {
+        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, null, cancellationToken);
+        if (pages.IsFailure)
+        {
+            return Result.Failure(pages.ErrorCode!, pages.ErrorMessage!);
+        }
+
+        if (_adapterRegistry?.GetAdapter(presetVersion.EngineId) is not { } adapter)
+        {
+            return Result.Failure(AppErrorCodes.NotFound,
+                $"OCR engine '{presetVersion.EngineId}' is not registered on this host.");
+        }
+
+        Result preset = await adapter.ValidatePresetAsync(presetVersion, cancellationToken);
+        if (preset.IsFailure)
+        {
+            // Keep the stable code but replace the message: adapter failures can embed local
+            // model paths or endpoint details that must not leave the host.
+            return Result.Failure(preset.ErrorCode ?? AppErrorCodes.InvalidState,
+                $"OCR engine '{presetVersion.EngineId}' rejected its preset configuration.");
+        }
+
+        OcrEnvironmentCheckResult environment =
+            await adapter.CheckEnvironmentAsync(presetVersion, cancellationToken);
+        if (!environment.IsReady)
+        {
+            string diagnostic = string.Concat(environment.Status, " ", environment.RequiredAction);
+            string remedy = diagnostic.Contains("model", StringComparison.OrdinalIgnoreCase)
+                ? "Required OCR models are missing or unavailable; install or configure the models."
+                : diagnostic.Contains("credential", StringComparison.OrdinalIgnoreCase) ||
+                  diagnostic.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                  diagnostic.Contains("api_key", StringComparison.OrdinalIgnoreCase)
+                    ? "Required OCR credentials are missing or unavailable; configure the credentials."
+                    : "The OCR environment is unavailable; check the engine configuration.";
+            return Result.Failure(AppErrorCodes.InvalidState,
+                $"OCR engine '{presetVersion.EngineId}' is not ready. {remedy}");
+        }
+
+        if (presetVersion.EngineId == OcrEngineIds.MinerU && _credentialResolver is not null)
+        {
+            Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
+            if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+            {
+                return Result.Failure(secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                    "The MinerU credential is not configured.");
+            }
+        }
+
+        return await CheckSourceAvailableAsync(documentInstanceId, cancellationToken);
+    }
+
+    private async Task<Result> CheckSourceAvailableAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken)
+    {
+        string? fileAssetId;
+        await using (SqliteConnection connection = _connectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync(cancellationToken);
+            fileAssetId = await connection.ExecuteScalarAsync<string?>(
+                """
+                select d.file_asset_id
+                from document_instances d
+                where d.document_instance_id = @DocumentInstanceId;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+        }
+
+        if (string.IsNullOrWhiteSpace(fileAssetId))
+        {
+            return Result.Failure(OcrFailureCode.SourceFileMissing, "The document source file is missing.");
+        }
+
+        string? sourcePath = null;
+        if (_fileResolution is not null)
+        {
+            Result<FileResolutionResult> resolved = await _fileResolution.ResolveFileAsync(
+                FileAssetId.Parse(fileAssetId), ResolveFilePurpose.RunOcr, cancellationToken);
+            if (resolved.IsFailure || string.IsNullOrWhiteSpace(resolved.Value.ResolvedPath))
+            {
+                // A changed source is reported as source_file_changed with its conflict
+                // descriptors — never downgraded to a plain missing-file diagnostic.
+                bool changed = !resolved.IsFailure &&
+                               string.Equals(resolved.Value.Status, FileAssetStatus.Changed,
+                                   StringComparison.Ordinal);
+                return Result.Failure(
+                    resolved.ErrorCode ??
+                    (changed ? OcrFailureCode.SourceFileChanged : OcrFailureCode.SourceFileMissing),
+                    changed
+                        ? "The document source file changed after import."
+                        : "The document source file is missing or unavailable.",
+                    !resolved.IsFailure ? resolved.Value.Conflicts : null);
+            }
+
+            sourcePath = resolved.Value.ResolvedPath;
+        }
+
+        if (_fileMaterialization is not null && sourcePath is not null)
+        {
+            Result materialized = await _fileMaterialization.EnsureAvailableAsync(sourcePath, cancellationToken);
+            if (materialized.IsFailure)
+            {
+                return Result.Failure(
+                    materialized.ErrorCode ?? OcrFailureCode.SourceFileMissing,
+                    "The document source file is missing or unavailable.");
+            }
+        }
+
+        if (sourcePath is not null && !File.Exists(sourcePath))
+        {
+            return Result.Failure(OcrFailureCode.SourceFileMissing, "The document source file is missing.");
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result<OcrPresetVersion>> ResolvePresetVersionAsync(
         OcrPresetId presetId,
         CancellationToken cancellationToken = default)
@@ -2202,6 +2477,19 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 DateTimeOffset.Parse(CreatedAt),
                 DateTimeOffset.Parse(UpdatedAt));
         }
+    }
+
+    private sealed class RevisionBasisRow
+    {
+        public string TreeRevisionId { get; set; } = "";
+        public string? ParentTreeRevisionId { get; set; }
+        public string? CurrentTreeRevisionId { get; set; }
+    }
+
+    private sealed class RevisionBaselineRow
+    {
+        public string PageId { get; set; } = string.Empty;
+        public string TreeRevisionId { get; set; } = string.Empty;
     }
 
     private sealed class MinerUSourceRow

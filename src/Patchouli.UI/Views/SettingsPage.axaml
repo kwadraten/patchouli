@@ -552,8 +552,8 @@
                   <TextBlock Text="按域分别授权每个动词。授权不改变资源支持的操作；保存后内置 agent 的后续调用立即生效，MCP 服务需重新加载。"
                              FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="664" Spacing="4">
-                      <Grid ColumnDefinitions="160,72,72,72,72,72,72,72">
+                    <StackPanel MinWidth="880" Spacing="4">
+                      <Grid ColumnDefinitions="160,64,64,64,64,64,64,64,80,80,80">
                         <TextBlock Text="VFS 域" />
                         <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
@@ -562,16 +562,19 @@
                         <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="7" Text="view" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="8" Text="ocr.start" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="9" Text="ocr.cancel" HorizontalAlignment="Center" />
+                        <TextBlock Grid.Column="10" Text="ocr.retry" HorizontalAlignment="Center" />
                       </Grid>
                       <ItemsControl ItemsSource="{Binding PermissionRows}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
-                            <Grid ColumnDefinitions="160,504" Margin="0,3">
+                            <Grid ColumnDefinitions="160,688" Margin="0,3">
                               <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
                               <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
                                 <ItemsControl.ItemsPanel>
                                   <ItemsPanelTemplate>
-                                    <UniformGrid Columns="7" />
+                                    <UniformGrid Columns="10" />
                                   </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>

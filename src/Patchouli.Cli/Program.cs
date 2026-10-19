@@ -311,11 +311,21 @@ static void PrintUsage()
     Console.Error.WriteLine("  view <uri> --output <image.png> [--overwrite] [--context page|region] [--max-edge <n>]");
     Console.Error.WriteLine(
         "    Saves the source image PNG and prints the host metadata plus the client-side output_path.");
-    Console.Error.WriteLine("  send <start|message|cancel|resume> [OPTIONS]");
+    Console.Error.WriteLine("  send <target> <action> [--args <json-object>]");
     Console.Error.WriteLine(
-        "    start --workflow <uri> [--param NAME=VALUE]...; message --session <uri> --message-id <id> [--text <text>]; cancel|resume --session <uri>");
+        "    Dispatches an action against a target URI; --args defaults to {}.");
     Console.Error.WriteLine(
-        "    Sessions and workflows are observed at patchouli://runs/agent/{session-id}/status|/events and patchouli://workflows/.");
+        "    Available actions are discovered via find --in patchouli://actions/ or fetch patchouli://actions/<action-id>.");
+    Console.Error.WriteLine(
+        "    Examples:");
+    Console.Error.WriteLine(
+        "      send patchouli://texts/<document-id>/ ocr.start --args '{\"pages\":\"1,3-5\",\"engine\":\"default\",\"request_id\":\"r1\"}'");
+    Console.Error.WriteLine(
+        "      send patchouli://runs/ocr/<task-id>/status ocr.cancel");
+    Console.Error.WriteLine(
+        "      send patchouli://runs/ocr/<task-id>/status ocr.retry --args '{\"request_id\":\"r2\"}'");
+    Console.Error.WriteLine(
+        "      send patchouli://items/<item-id>.yml cite.render");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(

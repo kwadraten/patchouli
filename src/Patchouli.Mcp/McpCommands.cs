@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Patchouli.Mcp;
@@ -292,7 +293,8 @@ public sealed record McpAddMeta(
 
 public sealed record McpAddIssue(
     [property: JsonPropertyName("code")] string Code,
-    [property: JsonPropertyName("message")] string Message);
+    [property: JsonPropertyName("message")]
+    string Message);
 
 public sealed record McpAddResult(
     [property: JsonPropertyName("kind")] string Kind,
@@ -307,11 +309,13 @@ public sealed record McpAddResult(
     [property: JsonPropertyName("style_uri")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? StyleUri = null,
-    [property: JsonPropertyName("page_count")] int PageCount = 0,
+    [property: JsonPropertyName("page_count")]
+    int PageCount = 0,
     [property: JsonPropertyName("import_status")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ImportStatus = null,
-    [property: JsonPropertyName("body_status")] string BodyStatus = "ingested",
+    [property: JsonPropertyName("body_status")]
+    string BodyStatus = "ingested",
     [property: JsonPropertyName("issues")] IReadOnlyList<McpAddIssue>? Issues = null);
 
 /// <summary>Issue #11: request to read one source image for text-image collation.</summary>
@@ -334,13 +338,15 @@ public sealed record McpViewMeta(
 /// </summary>
 public sealed record McpViewImageMetadata(
     [property: JsonPropertyName("uri")] string Uri,
-    [property: JsonPropertyName("view_type")] string ViewType,
-    [property: JsonPropertyName("mime_type")] string MimeType,
+    [property: JsonPropertyName("view_type")]
+    string ViewType,
+    [property: JsonPropertyName("mime_type")]
+    string MimeType,
     [property: JsonPropertyName("width")] int Width,
     [property: JsonPropertyName("height")] int Height,
-    [property: JsonPropertyName("crop")]
-    IReadOnlyList<double> Crop,
-    [property: JsonPropertyName("image_index")] int ImageIndex);
+    [property: JsonPropertyName("crop")] IReadOnlyList<double> Crop,
+    [property: JsonPropertyName("image_index")]
+    int ImageIndex);
 
 /// <summary>
 /// Issue #11: the full outcome of a view command. The envelope carries the text
@@ -350,3 +356,36 @@ public sealed record McpViewImageMetadata(
 public sealed record McpViewCommandResult(
     McpCommandResult<McpViewMeta, McpViewImageMetadata> Result,
     byte[]? PngBytes);
+
+public sealed record McpOcrResult(
+    [property: JsonPropertyName("action")] string Action,
+    [property: JsonPropertyName("task_id")]
+    string TaskId,
+    [property: JsonPropertyName("status_uri")]
+    string StatusUri,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("engine_id")]
+    string EngineId,
+    [property: JsonPropertyName("preset_id")]
+    string PresetId,
+    [property: JsonPropertyName("preset_version_id")]
+    string PresetVersionId,
+    [property: JsonPropertyName("reused")] bool Reused = false);
+
+/// <summary>Invoke one typed domain Action; legacy Agent send fields do not belong here.</summary>
+public sealed record McpActionSendRequest(string Target, string Action, JsonElement Args);
+
+public sealed record McpActionSendMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision,
+    [property: JsonPropertyName("action")] string Action,
+    [property: JsonPropertyName("state")] string State);
+
+public sealed record McpActionSendResult(
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("result")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    object? Result,
+    [property: JsonPropertyName("run_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? RunUri);

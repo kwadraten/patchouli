@@ -33,6 +33,36 @@ namespace Patchouli.Tests;
 /// </summary>
 public sealed class AgentMcpGatewayTests
 {
+    [Fact]
+    public async Task Generic_send_gateway_enforces_exact_action_grants_before_domain_execution()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        IAgentMcpGateway gateway = new McpCommandServiceAgentGateway(fixture.Commands);
+        AgentToolOutcome outcome = await gateway.CallToolAsync("send", JsonSerializer.Serialize(new
+        {
+            target = $"patchouli://texts/{fixture.DocumentId}/", action = "ocr.start", args = new { }
+        }), CancellationToken.None);
+
+        outcome.Succeeded.Should().BeFalse();
+        outcome.ErrorCode.Should().Be("PERMISSION_DENIED");
+        (await fixture.StoredTranslationAsync()).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Legacy_send_gateway_request_is_rejected_with_new_contract_hint()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        IAgentMcpGateway gateway = new McpCommandServiceAgentGateway(fixture.Commands);
+        AgentToolOutcome outcome = await gateway.CallToolAsync("send",
+            """{"instruction":"start","workflow":"patchouli://workflows/translate","parameters":[]}""",
+            CancellationToken.None);
+
+        outcome.Succeeded.Should().BeFalse();
+        outcome.ErrorCode.Should().Be("INVALID_ARGUMENT");
+        outcome.Payload.ToLowerInvariant().Should().Contain("target").And.Contain("action");
+        (await fixture.StoredTranslationAsync()).Should().BeNull();
+    }
+
     [Theory]
     [InlineData("fetch", "{}", "$.arguments.uris")]
     [InlineData("fetch", "{\"uris\":[42]}", "expected string")]

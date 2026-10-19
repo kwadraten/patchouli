@@ -19,7 +19,7 @@ namespace Patchouli.Mcp;
 /// permissions, response shapes and error codes stay isomorphic. All responses use the
 /// closed v3 { meta, continuation, message?, entries } envelope.
 /// </summary>
-public sealed class McpCommandService
+public sealed partial class McpCommandService
 {
     private readonly IMcpReadApi _read;
     private readonly IMcpWriteApi _write;
@@ -37,6 +37,7 @@ public sealed class McpCommandService
     private readonly bool _viewEnabled;
     private readonly IFileImportService? _fileImport;
     private readonly IPageImageViewService? _pageView;
+    private readonly IMcpOcrCommandApi? _ocrCommands;
     private readonly Func<CancellationToken, Task<McpServerSettings>>? _permissionSettings;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
@@ -46,7 +47,8 @@ public sealed class McpCommandService
         IMcpOcrRunsApi? ocrRuns = null, bool putEnabled = true, bool sendEnabled = true,
         Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
-        bool addEnabled = true, bool viewEnabled = true)
+        bool addEnabled = true, bool viewEnabled = true,
+        IMcpOcrCommandApi? ocrCommands = null)
     {
         _read = read;
         _write = write;
@@ -64,7 +66,9 @@ public sealed class McpCommandService
         _viewEnabled = viewEnabled;
         _fileImport = fileImport;
         _pageView = pageView;
+        _ocrCommands = ocrCommands;
         _permissionSettings = permissionSettings;
+        _actions = CreateActionRegistry();
     }
 
     public const int MaxLimit = 50;
@@ -122,7 +126,7 @@ public sealed class McpCommandService
     public async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteAsync(McpCiteRequest request,
         CancellationToken cancellationToken = default)
     {
-        return WithLegacyWarnings(await CiteCoreAsync(request, cancellationToken), request.Refs ?? [],
+        return WithLegacyWarnings(await CiteThroughRegistryAsync(request, cancellationToken), request.Refs ?? [],
             new McpCiteMeta("lib:0", null, null, "text", null));
     }
 
@@ -150,11 +154,9 @@ public sealed class McpCommandService
     public Task<McpCommandResult<McpSendMeta, McpSendResult>> SendAsync(McpSendRequest request,
         CancellationToken cancellationToken = default)
     {
-        return SendCoreAsync(request with
-        {
-            Workflow = request.Workflow is null ? null : McpResourceUris.Normalize(request.Workflow),
-            Session = request.Session is null ? null : McpResourceUris.Normalize(request.Session)
-        }, cancellationToken);
+        return Task.FromResult(McpCommandResult<McpSendMeta, McpSendResult>.Fail(
+            McpErrorCode.InvalidArgument,
+            "Legacy Agent send is removed; use send target/action/args with a registered domain Action."));
     }
 
     private async Task<McpCommandResult<McpAddMeta, McpAddResult>> AddCoreAsync(McpAddRequest request,
@@ -683,7 +685,8 @@ public sealed class McpCommandService
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsAgentScope or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-            or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow)
+            or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow or McpUriKind.ActionsScope
+            or McpUriKind.Action)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
@@ -987,283 +990,6 @@ public sealed class McpCommandService
                 topError);
     }
 
-    /// <summary>
-    ///     The typed session/workflow instruction verb. Every instruction is an explicit write:
-    ///     it is gated by the same user tool switch as <c>put</c>, never reads or writes library
-    ///     resources directly, and distinguishes accepted (persisted by the host) from processed
-    ///     (effective at the session's next Event boundary). Observed results are read back through
-    ///     <c>patchouli://runs/</c>.
-    /// </summary>
-    private async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendCoreAsync(McpSendRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        if (!_sendEnabled || !Allowed(await PermissionSettingsAsync(cancellationToken), "send",
-                request.Instruction == "start" ? request.Workflow : request.Session))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.PermissionDenied,
-                "send is disabled by the host's MCP tool switches.");
-        }
-
-        string instruction = request.Instruction ?? string.Empty;
-        if (instruction is not ("start" or "message" or "cancel" or "resume"))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                $"Unknown send instruction '{instruction}'; expected start, message, cancel or resume.");
-        }
-
-        Result<McpLibraryStateResponse> state = await _read.GetCurrentLibraryStateAsync(cancellationToken);
-        if (state.IsFailure)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-                McpErrorMappings.ToReadError(state.ErrorCode),
-                state.ErrorMessage ?? "Library state is unavailable.");
-        }
-
-        string revision = state.Value.LibraryRevision;
-        return instruction switch
-        {
-            "start" => await SendStartAsync(request, revision, cancellationToken),
-            "message" => await SendMessageAsync(request, revision, cancellationToken),
-            "cancel" => await SendControlAsync(request, revision, true, cancellationToken),
-            _ => await SendControlAsync(request, revision, false, cancellationToken)
-        };
-    }
-
-    private async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendStartAsync(McpSendRequest request,
-        string revision, CancellationToken cancellationToken)
-    {
-        if (_workflowRuns is null)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.Unavailable,
-                "Workflow launches are unavailable on this host.");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.Workflow))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                "start requires a workflow URI (patchouli://workflows/{workflow-id}).");
-        }
-
-        Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Workflow);
-        if (parsed.IsFailure || parsed.Value.Kind != McpUriKind.Workflow)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                parsed.ErrorMessage ?? $"'{request.Workflow}' is not a workflow URI " +
-                "(expected patchouli://workflows/{workflow-id}).");
-        }
-
-        string workflowId = parsed.Value.WorkflowId!;
-        Dictionary<string, string> parameters = new(StringComparer.Ordinal);
-        foreach (McpSendParameter parameter in request.Parameters ?? [])
-        {
-            if (string.IsNullOrWhiteSpace(parameter.Name))
-            {
-                return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                    "start parameters require a non-empty name.");
-            }
-
-            parameters[parameter.Name] = parameter.Value;
-        }
-
-        // Required/default/context validation belongs to the Host, which also knows saved configuration.
-        Result<McpWorkflowStartResult> started =
-            await _workflowRuns.StartAsync(workflowId, parameters, cancellationToken);
-        if (started.IsFailure)
-        {
-            McpErrorCode code = started.ErrorCode switch
-            {
-                AppErrorCodes.NotFound => McpErrorCode.WorkflowNotFound,
-                AppErrorCodes.InvalidArgument or AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
-                _ => McpErrorCode.Internal
-            };
-            string detail = started.ErrorMessage ?? "The workflow launch was rejected.";
-            if (started.Details is McpWorkflowValidationFailureDetails diagnostics)
-            {
-                McpSendResult rejected = new("start", null, null, false, "rejected", false, diagnostics.Issues);
-                McpEnvelope<McpSendMeta, McpSendResult> failed = McpEnvelope<McpSendMeta, McpSendResult>.Create(
-                    new McpSendMeta(revision, "start", false, "rejected"), [rejected],
-                    message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
-                return McpCommandResult<McpSendMeta, McpSendResult>.Partial(failed, code, detail);
-            }
-
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(code, detail);
-        }
-
-        // The session was created and its run started, so the start instruction itself is processed;
-        // the workflow's later progress is observed through patchouli://runs/agent/{session-id}/.
-        const string processed = "done";
-        McpSendResult result = new("start", McpResourceUris.AgentRunUri(started.Value.SessionId), null, true,
-            processed, false);
-        McpEnvelope<McpSendMeta, McpSendResult> envelope = McpEnvelope<McpSendMeta, McpSendResult>.Create(
-            new McpSendMeta(revision, "start", true, processed), [result]);
-        return McpCommandResult<McpSendMeta, McpSendResult>.Ok(envelope);
-    }
-
-    private async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendMessageAsync(McpSendRequest request,
-        string revision, CancellationToken cancellationToken)
-    {
-        if (_agentRuns is null)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.Unavailable,
-                "Agent session support is unavailable on this host.");
-        }
-
-        McpCommandResult<McpSendMeta, McpSendResult>? targetError =
-            ResolveSessionTarget(request, out string sessionId);
-        if (targetError is not null)
-        {
-            return targetError;
-        }
-
-        if (string.IsNullOrWhiteSpace(request.MessageId))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                "message requires a caller-generated message_id used for deduplication.");
-        }
-
-        Result<McpAgentSessionStatusProjection> session =
-            await _agentRuns.TryGetSessionAsync(sessionId, cancellationToken);
-        if (session.IsFailure)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-                string.Equals(session.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
-                    ? McpErrorCode.SessionNotFound
-                    : McpErrorMappings.ToReadError(session.ErrorCode),
-                session.ErrorMessage ?? $"The agent session '{sessionId}' does not exist.");
-        }
-
-        if (session.Value.Status is not ("running" or "awaiting_effect"))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.SessionStateInvalid,
-                $"The session '{sessionId}' is '{session.Value.Status}'; message requires a running session.");
-        }
-
-        Result<McpAgentMessageAck> ack = await _agentRuns.SendSessionMessageAsync(
-            sessionId, request.MessageId, request.Text ?? string.Empty, cancellationToken);
-        if (ack.IsFailure)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-                string.Equals(ack.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
-                    ? McpErrorCode.SessionNotFound
-                    : McpErrorCode.Internal,
-                ack.ErrorMessage ?? "The message could not be accepted.");
-        }
-
-        if (!ack.Value.Accepted)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.SessionStateInvalid,
-                $"The session '{sessionId}' stopped accepting messages.");
-        }
-
-        // The message is persisted in the inbox; it takes effect at the next Event boundary, so the
-        // instruction is accepted but still pending. A retry with a seen message_id is not appended
-        // again: the host returns the original acknowledgement with a DUPLICATE_MESSAGE_ID warning.
-        const string processed = "pending";
-        McpSendResult result = new("message", McpResourceUris.AgentRunUri(sessionId), request.MessageId, true,
-            processed, ack.Value.Deduplicated);
-        List<string> warnings = [];
-        if (ack.Value.Deduplicated)
-        {
-            AddWarning(warnings, McpWarningCodes.DuplicateMessageId);
-        }
-
-        McpEnvelope<McpSendMeta, McpSendResult> envelope = McpEnvelope<McpSendMeta, McpSendResult>.Create(
-            new McpSendMeta(revision, "message", true, processed), [result],
-            message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
-        return McpCommandResult<McpSendMeta, McpSendResult>.Ok(envelope);
-    }
-
-    private async Task<McpCommandResult<McpSendMeta, McpSendResult>> SendControlAsync(McpSendRequest request,
-        string revision, bool cancel, CancellationToken cancellationToken)
-    {
-        if (_agentRuns is null)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.Unavailable,
-                "Agent session support is unavailable on this host.");
-        }
-
-        McpCommandResult<McpSendMeta, McpSendResult>? targetError =
-            ResolveSessionTarget(request, out string sessionId);
-        if (targetError is not null)
-        {
-            return targetError;
-        }
-
-        string instruction = cancel ? "cancel" : "resume";
-        Result<McpAgentSessionStatusProjection> session =
-            await _agentRuns.TryGetSessionAsync(sessionId, cancellationToken);
-        if (session.IsFailure)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-                string.Equals(session.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
-                    ? McpErrorCode.SessionNotFound
-                    : McpErrorMappings.ToReadError(session.ErrorCode),
-                session.ErrorMessage ?? $"The agent session '{sessionId}' does not exist.");
-        }
-
-        if (cancel)
-        {
-            if (session.Value.Status is "cancelled" or "finished" or "failed")
-            {
-                return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.SessionStateInvalid,
-                    $"The session '{sessionId}' is '{session.Value.Status}' and cannot be cancelled.");
-            }
-        }
-        else if (session.Value.Status is "cancelled" or "finished" or "failed")
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.SessionStateInvalid,
-                $"The session '{sessionId}' is '{session.Value.Status}'; a cancelled or completed session " +
-                "cannot be resumed.");
-        }
-
-        Result<McpAgentSessionStatusProjection> updated = cancel
-            ? await _agentRuns.CancelSessionAsync(sessionId, cancellationToken)
-            : await _agentRuns.ResumeSessionAsync(sessionId, cancellationToken);
-        if (updated.IsFailure)
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(
-                string.Equals(updated.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
-                    ? McpErrorCode.SessionNotFound
-                    : McpErrorCode.Internal,
-                updated.ErrorMessage ?? $"The session '{sessionId}' could not be {instruction}d.");
-        }
-
-        // Cancel is an immediate control event and resume drives the session forward now, so both
-        // instructions are processed by the time the host confirms them.
-        const string processed = "done";
-        McpSendResult result = new(instruction, McpResourceUris.AgentRunUri(sessionId), null, true, processed,
-            false);
-        McpEnvelope<McpSendMeta, McpSendResult> envelope = McpEnvelope<McpSendMeta, McpSendResult>.Create(
-            new McpSendMeta(revision, instruction, true, processed), [result]);
-        return McpCommandResult<McpSendMeta, McpSendResult>.Ok(envelope);
-    }
-
-    /// <summary>Resolves the target session URI shared by message/cancel/resume.</summary>
-    private static McpCommandResult<McpSendMeta, McpSendResult>? ResolveSessionTarget(McpSendRequest request,
-        out string sessionId)
-    {
-        sessionId = string.Empty;
-        if (string.IsNullOrWhiteSpace(request.Session))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                "The instruction requires a session URI (patchouli://runs/agent/{session-id}).");
-        }
-
-        Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Session);
-        if (parsed.IsFailure ||
-            parsed.Value.Kind is not (McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-                or McpUriKind.RunAgentEvents) ||
-            string.IsNullOrWhiteSpace(parsed.Value.SessionId))
-        {
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                parsed.ErrorMessage ?? $"'{request.Session}' is not an agent session URI " +
-                "(expected patchouli://runs/agent/{session-id}).");
-        }
-
-        sessionId = parsed.Value.SessionId;
-        return null;
-    }
-
     private async Task<McpFetchResult> FetchSingleAsync(string uri, string? range, int limitBytes,
         McpLibraryStateResponse state, CancellationToken cancellationToken)
     {
@@ -1282,6 +1008,8 @@ public sealed class McpCommandService
 
         McpFetchResult fetched = parsed.Value.Kind switch
         {
+            McpUriKind.Action or McpUriKind.ActionsScope => await FetchActionDescriptionAsync(parsed.Value,
+                range, limitBytes, state, cancellationToken),
             McpUriKind.Item => await FetchItemAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Document => await FetchDocumentAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Page => await FetchPageAsync(parsed.Value, range, limitBytes, state, cancellationToken),
@@ -2087,6 +1815,17 @@ public sealed class McpCommandService
     {
         switch (kind)
         {
+            case McpUriKind.ActionsScope:
+            {
+                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+                object[] all = VisibleActions(permissions).Select(value => (object)new McpFindEntry(
+                    McpResourceUris.ActionUri(value.Id), value.Id, "file")).ToArray();
+                object[] entries = all.Skip(offset).Take(limit).ToArray();
+                string? next = offset + entries.Length < all.Length
+                    ? EncodeCursor(scopeUri, null, false, null, offset + entries.Length, null)
+                    : null;
+                return new FindPage(entries, next, all.Length, all.Length);
+            }
             case McpUriKind.ItemsScope:
             {
                 Result<McpBrowseItemPage> page = await _read.BrowseItemsAsync(offset, limit, where,
@@ -2497,6 +2236,13 @@ public sealed class McpCommandService
     {
         switch (target.Kind)
         {
+            case McpUriKind.Action:
+            {
+                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+                return VisibleActions(permissions).Any(value => value.Id == target.ActionId)
+                    ? new SingletonResource(target.CanonicalUri, target.ActionId!, "file", false)
+                    : null;
+            }
             case McpUriKind.Item:
             {
                 Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(target.ItemId!.Value,
@@ -3041,7 +2787,7 @@ public sealed class McpCommandService
         return true;
     }
 
-    private static FindPage BrowseRoot(int limit, int offset, McpServerSettings? permissions)
+    private FindPage BrowseRoot(int limit, int offset, McpServerSettings? permissions)
     {
         McpFindEntry[] all =
         [
@@ -3051,9 +2797,12 @@ public sealed class McpCommandService
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
             new(McpResourceUris.WorkflowsScopeUri(), "/workflows", "directory"),
-            new(McpResourceUris.LibraryUri(), "/library.yml", "file")
+            new(McpResourceUris.LibraryUri(), "/library.yml", "file"),
+            new(McpResourceUris.ActionsScopeUri(), "/actions", "directory")
         ];
-        all = all.Where(entry => Allowed(permissions, "find", entry.Uri)).ToArray();
+        all = all.Where(entry => Allowed(permissions, "find", entry.Uri) &&
+                                 (entry.Uri != McpResourceUris.ActionsScopeUri() ||
+                                  VisibleActions(permissions).Count > 0)).ToArray();
         int from = Math.Clamp(offset, 0, all.Length);
         object[] page = all.Skip(from).Take(limit).Cast<object>().ToArray();
         string? continuation = from + page.Length < all.Length
@@ -3120,7 +2869,7 @@ public sealed class McpCommandService
             return null;
         }
 
-        if (kind == McpUriKind.Library)
+        if (kind is McpUriKind.Library or McpUriKind.ActionsScope or McpUriKind.Action)
         {
             if (!string.IsNullOrWhiteSpace(query))
             {
@@ -3184,7 +2933,7 @@ public sealed class McpCommandService
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
             or McpUriKind.RunOcrStatus or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
-            or McpUriKind.RunAgentEvents or McpUriKind.Workflow or McpUriKind.DocumentMap;
+            or McpUriKind.RunAgentEvents or McpUriKind.Workflow or McpUriKind.DocumentMap or McpUriKind.Action;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,

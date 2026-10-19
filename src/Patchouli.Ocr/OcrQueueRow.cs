@@ -15,7 +15,20 @@ public sealed record OcrQueueRow(
     int PageCount,
     string? LastErrorCode,
     OcrQueueTask Task,
-    OcrQueueProgress? PageProgress);
+    OcrQueueProgress? PageProgress,
+    OcrQueueOutcome? Outcome = null);
+
+/// <summary>
+///     Durable three-phase outcome of one task's run, projected independently of the volatile
+///     queue state: recognition (the persisted run state), body commit (candidate adoption), and
+///     index readiness (search index status). A task can fail while <see cref="Committed" /> stays
+///     true — e.g. recognition and commit succeeded and only the index rebuild failed.
+/// </summary>
+public sealed record OcrQueueOutcome(
+    string? RecognitionState,
+    bool Committed,
+    int CommittedPageCount,
+    string? IndexState);
 
 public interface IOcrQueueRowService
 {

@@ -16,7 +16,7 @@ namespace Patchouli.Tests;
 /// <summary>
 ///     In-process contract tests for the S4 <c>runs/</c> + <c>workflows/</c> projections and the
 ///     <c>send</c> verb over <see cref="McpCommandService" /> (no network). Covers V3-AC10 root
-///     discovery (six directories plus one file), V3-AC26 (volatile runs/, read-only workflows/,
+///     discovery (domain directories plus one file), V3-AC26 (volatile runs/, read-only workflows/,
 ///     no library_revision advancement), V3-AC27 (monotonic event streams with ?after=,
 ///     last_sequence/next_after, accepted-vs-processed, message_id deduplication) and V3-AC28
 ///     (text-only data boundary, user tool switches returning the surface to read-only).
@@ -50,10 +50,11 @@ public sealed class McpRunsAndSendTests
             .Should().Be("PERMISSION_DENIED");
         (await commands.CiteAsync(new McpCiteRequest(["patchouli://items/item.bib"], null, null, false, false))).Error!
             .Name.Should().Be("PERMISSION_DENIED");
-        (await commands.SendAsync(new McpSendRequest("start", "patchouli://workflows/test"))).Error!.Name.Should()
+        (await commands.SendAsync(new McpActionSendRequest("patchouli://texts/11111111-1111-1111-1111-111111111111/",
+                "ocr.start", JsonSerializer.SerializeToElement(new { })))).Error!.Name.Should()
             .Be("PERMISSION_DENIED");
-        (await commands.SendAsync(new McpSendRequest("message", Session: McpResourceUris.AgentRunUri(SessionId),
-                MessageId: "m", Text: "text")))
+        (await commands.SendAsync(new McpActionSendRequest("patchouli://runs/ocr/22222222-2222-2222-2222-222222222222/",
+                "ocr.cancel", JsonSerializer.SerializeToElement(new { }))))
             .Error!.Name.Should().Be("PERMISSION_DENIED");
         writes.CallCount.Should().Be(0);
         McpCommandResult<McpFindMeta, object> root = await commands.FindAsync(new McpFindRequest(null, null, null));
@@ -85,7 +86,7 @@ public sealed class McpRunsAndSendTests
     }
 
     [Fact]
-    public async Task Root_discovery_lists_six_directories_and_one_file()
+    public async Task Root_discovery_lists_action_and_existing_domain_directories_and_library_file()
     {
         McpCommandService commands = CreateService(new StubReadApi());
 
@@ -96,20 +97,21 @@ public sealed class McpRunsAndSendTests
         result.Envelope!.Continuation.Should().BeNull();
         result.Envelope.Message.Should().BeNull();
         List<McpFindEntry> entries = result.Envelope.Entries.Cast<McpFindEntry>().ToList();
-        entries.Should().HaveCount(7);
-        entries.Count(entry => entry.Type == "directory").Should().Be(6);
+        entries.Should().HaveCount(8);
+        entries.Count(entry => entry.Type == "directory").Should().Be(7);
         entries.Count(entry => entry.Type == "file").Should().Be(1);
-        entries.Select(entry => entry.Uri).Should().Equal(
+        entries.Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
             "patchouli://texts/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
             "patchouli://workflows/",
+            "patchouli://actions/",
             "patchouli://library.yml");
-        result.Envelope.Meta.DomainTotal.Should().Be(7);
-        result.Envelope.Meta.FilteredTotal.Should().Be(7);
-        result.Envelope.Meta.ShownTotal.Should().Be(7);
+        result.Envelope.Meta.DomainTotal.Should().Be(8);
+        result.Envelope.Meta.FilteredTotal.Should().Be(8);
+        result.Envelope.Meta.ShownTotal.Should().Be(8);
     }
 
     [Fact]
@@ -313,199 +315,26 @@ public sealed class McpRunsAndSendTests
         }
     }
 
-    [Fact]
-    public async Task Send_start_returns_the_new_session_uri_and_distinguishes_accepted_processed()
+    [Theory]
+    [InlineData("start")]
+    [InlineData("message")]
+    [InlineData("cancel")]
+    [InlineData("resume")]
+    public async Task Legacy_send_overload_rejects_migration_without_launching_or_messaging_agent(string instruction)
     {
+        StubAgentRunsApi agent = new();
+        agent.SetSession(SessionId, "running");
         StubWorkflowRunsApi workflows = new();
-        workflows.SetWorkflow("wf-1", "Translate",
-            [new McpWorkflowParameter("documentId", "DocumentId", true, "", "")]);
-        McpCommandService commands = CreateService(new StubReadApi(), workflows: workflows);
-
-        McpCommandResult<McpSendMeta, McpSendResult> result = await commands.SendAsync(
-            new McpSendRequest("start", "patchouli://workflows/wf-1",
-                [new McpSendParameter("documentId", "doc-1")]));
-
-        result.IsSuccess.Should().BeTrue();
-        result.Envelope!.Continuation.Should().BeNull();
-        result.Envelope.Message.Should().BeNull();
-        result.Envelope.Meta.Instruction.Should().Be("start");
-        result.Envelope.Meta.Accepted.Should().BeTrue();
-        result.Envelope.Meta.Processed.Should().Be("done");
-        McpSendResult entry = result.Envelope.Entries.Should().ContainSingle().Subject;
-        entry.Accepted.Should().BeTrue();
-        entry.Processed.Should().Be("done");
-        entry.Duplicate.Should().BeFalse();
-        entry.MessageId.Should().BeNull();
-        entry.SessionUri.Should().Be("patchouli://runs/agent/wf-1-session");
-        workflows.Launches.Should().ContainSingle();
-        workflows.Launches[0].WorkflowId.Should().Be("wf-1");
-        workflows.Launches[0].Parameters.Should().ContainKey("documentId").WhoseValue.Should().Be("doc-1");
-    }
-
-    [Fact]
-    public async Task Send_start_unknown_workflow_returns_workflow_not_found()
-    {
-        McpCommandService commands = CreateService(new StubReadApi(), workflows: new StubWorkflowRunsApi());
-
-        McpCommandResult<McpSendMeta, McpSendResult> result = await commands.SendAsync(
-            new McpSendRequest("start", "patchouli://workflows/missing"));
-
-        result.Error.Should().NotBeNull();
-        result.Error!.Code.Should().Be((int)McpErrorCode.WorkflowNotFound);
-        result.Error.Name.Should().Be("WORKFLOW_NOT_FOUND");
-    }
-
-    [Fact]
-    public async Task Send_start_illegal_parameters_return_invalid_argument()
-    {
-        StubWorkflowRunsApi workflows = new();
-        workflows.SetWorkflow("wf-1", "Translate",
-            [new McpWorkflowParameter("documentId", "DocumentId", true, "", "")]);
-        McpCommandService commands = CreateService(new StubReadApi(), workflows: workflows);
-
-        McpCommandResult<McpSendMeta, McpSendResult> missingRequired = await commands.SendAsync(
-            new McpSendRequest("start", "patchouli://workflows/wf-1"));
-        missingRequired.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-        missingRequired.Envelope!.Entries.Single().ValidationErrors.Should().ContainSingle()
-            .Which.Key.Should().Be("documentId");
-
-        McpCommandResult<McpSendMeta, McpSendResult> unknown = await commands.SendAsync(
-            new McpSendRequest("start", "patchouli://workflows/wf-1",
-                [new McpSendParameter("bogus", "x"), new McpSendParameter("documentId", "d")]));
-        unknown.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+        workflows.SetWorkflow("wf-1", "Translate");
+        McpCommandService commands = CreateService(new StubReadApi(), agent, workflows);
+        McpCommandResult<McpSendMeta, McpSendResult> rejected = await commands.SendAsync(
+            new McpSendRequest(instruction, "patchouli://workflows/wf-1",
+                Session: McpResourceUris.AgentRunUri(SessionId), MessageId: "m", Text: "go"));
+        rejected.Error!.Name.Should().Be("INVALID_ARGUMENT");
+        rejected.Error.Detail!.ToLowerInvariant().Should().Contain("target").And.Contain("action");
         workflows.Launches.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task Send_message_accepts_into_inbox_and_reports_pending()
-    {
-        StubAgentRunsApi agent = new();
-        agent.SetSession(SessionId, "running");
-        McpCommandService commands = CreateService(new StubReadApi(), agent);
-
-        McpCommandResult<McpSendMeta, McpSendResult> result = await commands.SendAsync(
-            new McpSendRequest("message", Session: McpResourceUris.AgentRunUri(SessionId),
-                MessageId: "m-1", Text: "please continue"));
-
-        result.IsSuccess.Should().BeTrue();
-        result.Envelope!.Meta.Processed.Should().Be("pending");
-        McpSendResult entry = result.Envelope.Entries.Should().ContainSingle().Subject;
-        entry.Accepted.Should().BeTrue();
-        entry.Processed.Should().Be("pending");
-        entry.Duplicate.Should().BeFalse();
-        entry.MessageId.Should().Be("m-1");
-        entry.SessionUri.Should().Be(McpResourceUris.AgentRunUri(SessionId));
-        agent.Messages.Should().ContainSingle()
-            .Which.Should().Be((SessionId, "m-1", "please continue"));
-    }
-
-    [Fact]
-    public async Task Send_message_deduplicates_message_id_without_appending_twice()
-    {
-        StubAgentRunsApi agent = new();
-        agent.SetSession(SessionId, "running");
-        McpCommandService commands = CreateService(new StubReadApi(), agent);
-        McpSendRequest request = new("message", Session: McpResourceUris.AgentRunStatusUri(SessionId),
-            MessageId: "m-1", Text: "hello");
-
-        McpCommandResult<McpSendMeta, McpSendResult> first = await commands.SendAsync(request);
-        first.IsSuccess.Should().BeTrue();
-        McpCommandResult<McpSendMeta, McpSendResult> retry = await commands.SendAsync(request);
-
-        retry.IsSuccess.Should().BeTrue();
-        retry.Envelope!.Message.Should().NotBeNull();
-        retry.Envelope.Message!.Error.Should().BeNull();
-        retry.Envelope.Message.Warnings.Should().ContainSingle()
-            .Which.Should().StartWith("DUPLICATE_MESSAGE_ID:");
-        McpSendResult entry = retry.Envelope.Entries.Should().ContainSingle().Subject;
-        entry.Duplicate.Should().BeTrue();
-        entry.Accepted.Should().BeTrue();
-        entry.Processed.Should().Be("pending");
-        agent.Messages.Should().ContainSingle();
-    }
-
-    [Fact]
-    public async Task Send_message_unknown_session_returns_session_not_found()
-    {
-        McpCommandService commands = CreateService(new StubReadApi(), new StubAgentRunsApi());
-
-        McpCommandResult<McpSendMeta, McpSendResult> result = await commands.SendAsync(
-            new McpSendRequest("message", Session: McpResourceUris.AgentRunUri("missing"),
-                MessageId: "m-1", Text: "x"));
-
-        result.Error.Should().NotBeNull();
-        result.Error!.Code.Should().Be((int)McpErrorCode.SessionNotFound);
-        result.Error.Name.Should().Be("SESSION_NOT_FOUND");
-    }
-
-    [Fact]
-    public async Task Send_message_to_non_running_session_returns_session_state_invalid()
-    {
-        StubAgentRunsApi agent = new();
-        agent.SetSession(SessionId, "finished");
-        McpCommandService commands = CreateService(new StubReadApi(), agent);
-
-        McpCommandResult<McpSendMeta, McpSendResult> result = await commands.SendAsync(
-            new McpSendRequest("message", Session: McpResourceUris.AgentRunUri(SessionId),
-                MessageId: "m-1", Text: "x"));
-
-        result.Error.Should().NotBeNull();
-        result.Error!.Code.Should().Be((int)McpErrorCode.SessionStateInvalid);
         agent.Messages.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task Send_cancel_is_processed_immediately_and_rejects_terminal_sessions()
-    {
-        StubAgentRunsApi agent = new();
-        agent.SetSession(SessionId, "running");
-        McpCommandService commands = CreateService(new StubReadApi(), agent);
-
-        McpCommandResult<McpSendMeta, McpSendResult> cancelled = await commands.SendAsync(
-            new McpSendRequest("cancel", Session: McpResourceUris.AgentRunUri(SessionId)));
-        cancelled.IsSuccess.Should().BeTrue();
-        cancelled.Envelope!.Meta.Processed.Should().Be("done");
-        cancelled.Envelope.Entries[0].Processed.Should().Be("done");
-        agent.Sessions[SessionId].Status.Should().Be("cancelled");
-
-        McpCommandResult<McpSendMeta, McpSendResult> again = await commands.SendAsync(
-            new McpSendRequest("cancel", Session: McpResourceUris.AgentRunUri(SessionId)));
-        again.Error!.Code.Should().Be((int)McpErrorCode.SessionStateInvalid);
-    }
-
-    [Fact]
-    public async Task Send_resume_continues_stopped_sessions_and_rejects_cancelled_or_finished()
-    {
-        StubAgentRunsApi agent = new();
-        agent.SetSession(SessionId, "stopped");
-        McpCommandService commands = CreateService(new StubReadApi(), agent);
-
-        McpCommandResult<McpSendMeta, McpSendResult> resumed = await commands.SendAsync(
-            new McpSendRequest("resume", Session: McpResourceUris.AgentRunUri(SessionId)));
-        resumed.IsSuccess.Should().BeTrue();
-        resumed.Envelope!.Meta.Processed.Should().Be("done");
-        agent.Sessions[SessionId].Status.Should().Be("running");
-
-        agent.SetSession(SessionId, "cancelled");
-        McpCommandResult<McpSendMeta, McpSendResult> cancelled = await commands.SendAsync(
-            new McpSendRequest("resume", Session: McpResourceUris.AgentRunUri(SessionId)));
-        cancelled.Error!.Code.Should().Be((int)McpErrorCode.SessionStateInvalid);
-
-        agent.SetSession(SessionId, "finished");
-        McpCommandResult<McpSendMeta, McpSendResult> finished = await commands.SendAsync(
-            new McpSendRequest("resume", Session: McpResourceUris.AgentRunUri(SessionId)));
-        finished.Error!.Code.Should().Be((int)McpErrorCode.SessionStateInvalid);
-    }
-
-    [Fact]
-    public async Task Send_unknown_verb_returns_invalid_argument()
-    {
-        McpCommandService commands = CreateService(new StubReadApi());
-
-        McpCommandResult<McpSendMeta, McpSendResult> result =
-            await commands.SendAsync(new McpSendRequest("restart"));
-
-        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+        agent.Sessions[SessionId].Item1.Should().Be("running");
     }
 
     [Fact]
@@ -518,15 +347,16 @@ public sealed class McpRunsAndSendTests
         McpCommandService commands = CreateService(new StubReadApi(), agent, workflows,
             sendEnabled: false);
 
-        McpCommandResult<McpSendMeta, McpSendResult> denied = await commands.SendAsync(
-            new McpSendRequest("cancel", Session: McpResourceUris.AgentRunUri(SessionId)));
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> denied = await commands.SendAsync(
+            new McpActionSendRequest("patchouli://runs/ocr/22222222-2222-2222-2222-222222222222/", "ocr.cancel",
+                JsonSerializer.SerializeToElement(new { })));
         denied.Error.Should().NotBeNull();
         denied.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
         denied.Error.Name.Should().Be("PERMISSION_DENIED");
 
         McpCommandResult<McpFindMeta, object> find = await commands.FindAsync(new McpFindRequest(null, null, null));
         find.IsSuccess.Should().BeTrue();
-        find.Envelope!.Entries.Should().HaveCount(7);
+        find.Envelope!.Entries.Should().HaveCount(8);
 
         McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.AgentRunStatusUri(SessionId)], null, null));
@@ -549,49 +379,16 @@ public sealed class McpRunsAndSendTests
         denied.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
     }
 
-    [Fact]
-    public void Cli_send_start_maps_to_the_send_tool_request()
+    [Theory]
+    [InlineData("start")]
+    [InlineData("message")]
+    [InlineData("cancel")]
+    [InlineData("resume")]
+    public void Legacy_cli_agent_send_is_rejected_with_migration_hint(string instruction)
     {
-        CliToolCall call = CliArguments.BuildToolCall("send",
-            ["start", "--workflow", "patchouli://workflows/wf-1", "--param", "documentId=doc-1"], true);
-
-        call.Tool.Should().Be(CliArguments.Send);
-        call.Arguments["instruction"].Should().Be("start");
-        call.Arguments["workflow"].Should().Be("patchouli://workflows/wf-1");
-        call.Arguments["parameters"].Should().BeEquivalentTo((object)new[] { "documentId=doc-1" });
-        call.Arguments["format"].Should().Be("json");
-        call.Arguments.Should().NotContainKey("message_id").And.NotContainKey("session");
-    }
-
-    [Fact]
-    public void Cli_send_message_cancel_resume_map_their_arguments()
-    {
-        CliToolCall message = CliArguments.BuildToolCall("send",
-            ["message", "--session", "patchouli://runs/agent/s-1", "--message-id", "m-1", "--text", "go on"],
-            false);
-        message.Tool.Should().Be(CliArguments.Send);
-        message.Arguments["instruction"].Should().Be("message");
-        message.Arguments["session"].Should().Be("patchouli://runs/agent/s-1");
-        message.Arguments["message_id"].Should().Be("m-1");
-        message.Arguments["text"].Should().Be("go on");
-
-        CliToolCall cancel = CliArguments.BuildToolCall("send",
-            ["cancel", "--session", "patchouli://runs/agent/s-1"], false);
-        cancel.Arguments["instruction"].Should().Be("cancel");
-
-        CliToolCall resume = CliArguments.BuildToolCall("send",
-            ["resume", "--session", "patchouli://runs/agent/s-1/status"], false);
-        resume.Arguments["instruction"].Should().Be("resume");
-    }
-
-    [Fact]
-    public void Cli_send_rejects_missing_or_unknown_verbs()
-    {
-        Action missing = () => CliArguments.BuildToolCall("send", [], false);
-        missing.Should().Throw<CliUsageException>();
-
-        Action unknown = () => CliArguments.BuildToolCall("send", ["restart"], false);
-        unknown.Should().Throw<CliUsageException>();
+        Action parse = () => CliArguments.BuildToolCall("send",
+            [instruction, "--session", "patchouli://runs/agent/s-1"], false);
+        parse.Should().Throw<CliUsageException>().Which.Message.ToLowerInvariant().Should().Contain("target");
     }
 
     private static McpCommandService CreateService(StubReadApi read, StubAgentRunsApi? agent = null,

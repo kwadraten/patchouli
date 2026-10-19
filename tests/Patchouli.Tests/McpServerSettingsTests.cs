@@ -67,7 +67,9 @@ public sealed class McpServerSettingsTests
             new McpToolOverride("patchouli.view", false, "Added by migration: explicitly enable to use this tool.")
         });
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
-        loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false));
+        loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false),
+            new McpDomainPermission("texts", "ocr.start", false), new McpDomainPermission("runs", "ocr.cancel", false),
+            new McpDomainPermission("runs", "ocr.retry", false));
     }
 
     [Fact]

@@ -80,4 +80,19 @@ public static class McpErrorMappings
             _ => McpErrorCode.Internal
         };
     }
+
+    /// <summary>Maps domain failures surfaced by OCR operations.</summary>
+    public static McpErrorCode ToOcrError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument or AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound or "source_file_missing" => McpErrorCode.NotFound,
+            AppErrorCodes.Conflict or "source_file_changed" => McpErrorCode.RevisionConflict,
+            AppErrorCodes.UnsupportedOperation or AppErrorCodes.InvalidState => McpErrorCode.Unavailable,
+            "permission_denied" => McpErrorCode.PermissionDenied,
+            "cancelled" or "operation_cancelled" => McpErrorCode.Cancelled,
+            _ => McpErrorCode.Internal
+        };
+    }
 }

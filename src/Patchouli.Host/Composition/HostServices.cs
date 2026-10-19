@@ -246,6 +246,16 @@ public sealed class HostServices
                 _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
             activityTracker: activityTracker);
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine, () => LlmSettings.OcrSelection.ProviderId);
+        // The public start/cancel/retry orchestration behind send OCR Actions (issue #16): page
+        // ranges, engine/preset resolution with pinned versions, readiness preflight and atomic
+        // request dedup all live here; transports only speak IMcpOcrCommandApi.
+        OcrCommands = new OcrCommandService(
+            ocrQueueScheduler,
+            _ocrEngine,
+            OcrPresets,
+            OcrDefaults,
+            adapterRegistry,
+            () => StartupSettings.OcrEngines.DocumentOcrEngine);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
             LibraryRevisions);
@@ -269,7 +279,8 @@ public sealed class HostServices
                 return permissions.IsSuccess
                     ? permissions.Value
                     : throw new InvalidOperationException(permissions.ErrorMessage);
-            });
+            },
+            ocrCommands: OcrCommands);
         // The .fsx workflow session reuses exactly that interpreter: a workflow runs through the same
         // session service and the same effect surface as the built-in agent (ADR 0036).
         OcrQueueHostPrimitives agentHostPrimitives = new(
@@ -425,6 +436,7 @@ public sealed class HostServices
     public IPageCoordinateService PageCoordinates { get; }
     public ISourceFingerprintValidationService SourceFingerprintValidation { get; }
     public IOcrRunCoordinator Ocr { get; }
+    public IMcpOcrCommandApi OcrCommands { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public IDocumentPageMapService DocumentPageMaps { get; }

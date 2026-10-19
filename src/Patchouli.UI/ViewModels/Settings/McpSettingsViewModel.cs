@@ -826,7 +826,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         ToolOverrides.Clear();
         foreach (string tool in KnownTools)
         {
-            ToolOverrides.Add(new McpToolOverrideViewModel(this, tool, !disabled.Contains(tool)));
+            bool isEnabled = !disabled.Contains(tool);
+            ToolOverrides.Add(new McpToolOverrideViewModel(this, tool, isEnabled));
         }
     }
 
@@ -892,9 +893,12 @@ public sealed class McpDomainPermissionRowViewModel
     public McpDomainPermissionRowViewModel(McpSettingsViewModel parent, string domain, McpServerSettings settings)
     {
         Domain = domain == "/" ? "根目录 /" : domain;
-        Cells = McpPermissionPolicy.Verbs.Select(verb => new McpDomainPermissionCellViewModel(parent, domain, verb,
-                McpPermissionPolicy.Allows(settings, verb,
-                    domain == "/" ? "patchouli://" : "patchouli://" + domain + "/")))
+        Cells = McpPermissionPolicy.Verbs.Select(verb =>
+            {
+                bool enabled = McpPermissionPolicy.Allows(settings, verb,
+                    domain == "/" ? "patchouli://" : "patchouli://" + domain + "/");
+                return new McpDomainPermissionCellViewModel(parent, domain, verb, enabled);
+            })
             .ToArray();
     }
 

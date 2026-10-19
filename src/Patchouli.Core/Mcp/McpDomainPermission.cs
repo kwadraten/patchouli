@@ -6,9 +6,10 @@ public sealed record McpDomainPermission(string Domain, string Verb, bool Enable
 public static class McpPermissionPolicy
 {
     public static IReadOnlyList<string> Domains { get; } =
-        ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "library.yml"];
+        ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "actions", "library.yml"];
 
-    public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send", "add", "view"];
+    public static IReadOnlyList<string> Verbs { get; } =
+        ["find", "fetch", "put", "cite", "send", "add", "view", "ocr.start", "ocr.cancel", "ocr.retry"];
 
     /// <summary>Resource capabilities, independent of the user's authorization choices.</summary>
     public static bool Supports(string domain, string verb)
@@ -17,10 +18,12 @@ public static class McpPermissionPolicy
         {
             "/" => verb == "find",
             "items" => verb is "find" or "fetch" or "put" or "cite" or "add",
-            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view",
+            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view" or "ocr.start",
             "translations" => verb is "find" or "fetch" or "put" or "view",
             "csl-styles" => verb is "find" or "fetch" or "put" or "add",
-            "runs" or "workflows" => verb is "find" or "fetch" or "send",
+            "runs" => verb is "find" or "fetch" or "send" or "ocr.cancel" or "ocr.retry",
+            "workflows" => verb is "find" or "fetch" or "send",
+            "actions" => verb is "find" or "fetch",
             "library.yml" => verb is "find" or "fetch",
             _ => false
         };
@@ -45,14 +48,45 @@ public static class McpPermissionPolicy
 
     public static bool Allows(McpServerSettings settings, string verb, string? uri)
     {
+        string domain = DomainOf(uri);
+
+        if (verb is "ocr.start" or "ocr.cancel" or "ocr.retry")
+        {
+            if (!Supports(domain, verb))
+            {
+                return false;
+            }
+
+            bool sendAllowed =
+                !settings.ToolOverrides.Any(value => value.ToolName == "patchouli.send" && !value.Enabled);
+            if (!sendAllowed)
+            {
+                return false;
+            }
+
+            if (settings.DomainPermissions.Any(value => value.Domain == domain && value.Verb == verb && !value.Enabled))
+            {
+                return false;
+            }
+
+            bool domainAllowed = settings.DomainPermissions.Any(value =>
+                (value.Domain == domain || (domain == "library.yml" && value.Domain == "library.toon")) &&
+                value.Verb == verb && value.Enabled);
+            return domainAllowed;
+        }
+
         if (settings.ToolOverrides.Any(value => value.ToolName == "patchouli." + verb && !value.Enabled))
         {
             return false;
         }
 
-        string domain = DomainOf(uri);
-        return !settings.DomainPermissions.Any(value =>
-            (value.Domain == domain || (domain == "library.yml" && value.Domain == "library.toon")) &&
-            value.Verb == verb && !value.Enabled);
+        if (settings.DomainPermissions.Any(value =>
+                (value.Domain == domain || (domain == "library.yml" && value.Domain == "library.toon")) &&
+                value.Verb == verb && !value.Enabled))
+        {
+            return false;
+        }
+
+        return true;
     }
 }

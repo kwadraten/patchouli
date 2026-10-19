@@ -316,6 +316,10 @@ public sealed class McpHostOcrRunsApi(
             row.PageProgress is { } progress
                 ? new McpOcrPageProgress(progress.Succeeded, progress.Failed, progress.Processing, progress.Total)
                 : null,
-            row.LastErrorCode);
+            row.LastErrorCode,
+            row.Outcome?.RecognitionState,
+            row.Outcome?.Committed,
+            row.Outcome?.CommittedPageCount,
+            row.Outcome?.IndexState);
     }
 }

@@ -173,7 +173,14 @@ public sealed record McpWorkflowMenuPlacement(
 /// <summary>The successful result of one <c>send start</c>: the minted agent session.</summary>
 public sealed record McpWorkflowStartResult(string SessionId);
 
-/// <summary>One OCR task's live status projection; OCR keeps its own state vocabulary (D7).</summary>
+/// <summary>
+///     One OCR task's live status projection; OCR keeps its own state vocabulary (D7). The volatile
+///     queue <c>state</c> is accompanied by the durable three-phase outcome when a run exists:
+///     <c>recognition_state</c> (persisted run state), <c>committed</c>/<c>committed_page_count</c>
+///     (candidate adoption), and <c>index_state</c> (search index readiness). A failed task can still
+///     report <c>committed: true</c> with <c>index_state: "not_indexed"</c> when recognition and
+///     body commit succeeded and only the index rebuild failed.
+/// </summary>
 public sealed record McpOcrTaskStatusProjection(
     [property: JsonPropertyName("task_id")]
     string TaskId,
@@ -191,7 +198,19 @@ public sealed record McpOcrTaskStatusProjection(
     McpOcrPageProgress? PageProgress,
     [property: JsonPropertyName("last_error_code")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? LastErrorCode);
+    string? LastErrorCode,
+    [property: JsonPropertyName("recognition_state")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? RecognitionState = null,
+    [property: JsonPropertyName("committed")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Committed = null,
+    [property: JsonPropertyName("committed_page_count")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? CommittedPageCount = null,
+    [property: JsonPropertyName("index_state")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? IndexState = null);
 
 public sealed record McpOcrPageProgress(
     [property: JsonPropertyName("succeeded")]

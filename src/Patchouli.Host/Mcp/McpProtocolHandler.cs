@@ -37,7 +37,8 @@ public sealed class McpProtocolHandler
         CancellationToken hostLifetime = default,
         IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
         IMcpOcrRunsApi? ocrRuns = null,
-        IFileImportService? fileImport = null, IPageImageViewService? pageView = null)
+        IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
+        IMcpOcrCommandApi? ocrCommands = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
@@ -52,10 +53,11 @@ public sealed class McpProtocolHandler
             !IsSwitchOff(effectiveSettings, "patchouli.put"),
             !IsSwitchOff(effectiveSettings, "patchouli.send"),
             _ => Task.FromResult(effectiveSettings),
-            fileImport: fileImport,
-            pageView: pageView,
-            addEnabled: !IsSwitchOff(effectiveSettings, "patchouli.add"),
-            viewEnabled: !IsSwitchOff(effectiveSettings, "patchouli.view"));
+            fileImport,
+            pageView,
+            !IsSwitchOff(effectiveSettings, "patchouli.add"),
+            !IsSwitchOff(effectiveSettings, "patchouli.view"),
+            ocrCommands);
         _ = db;
         _settings = effectiveSettings with
         {
@@ -69,8 +71,14 @@ public sealed class McpProtocolHandler
 
     private static bool IsSwitchOff(McpServerSettings settings, string toolName)
     {
-        return settings.ToolOverrides.Any(value =>
-            string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled);
+        McpToolOverride? match = settings.ToolOverrides.FirstOrDefault(value =>
+            string.Equals(value.ToolName, toolName, StringComparison.Ordinal));
+        if (match is not null)
+        {
+            return !match.Enabled;
+        }
+
+        return false;
     }
 
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
@@ -354,7 +362,7 @@ public sealed class McpProtocolHandler
                 }
             }
         }
-        else if (schema.Type == "object")
+        else if (schema.Type == "object" && schema.Properties is not null)
         {
             string? error = ValidatePublishedArguments(value, schema.Properties!, schema.Required!, path);
             if (error is not null)
@@ -510,22 +518,15 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.send",
-                "Drive agent sessions and workflows with a typed instruction; observed results are read back through patchouli://runs/.",
-                ["instruction"],
+                "Execute a typed action against a Library resource (e.g. ocr.start, ocr.cancel, ocr.retry, cite.render).",
+                ["target", "action", "args"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["instruction"] = ToolSchemaProperty.String(
-                        "Instruction verb: \"start\", \"message\", \"cancel\" or \"resume\"."),
-                    ["workflow"] = ToolSchemaProperty.String(
-                        "start: workflow URI (patchouli://workflows/{workflow-id})."),
-                    ["parameters"] = ToolSchemaProperty.Array(
-                        "start: launch parameters as NAME=VALUE entries.",
-                        ToolSchemaProperty.String("NAME=VALUE launch parameter.")),
-                    ["session"] = ToolSchemaProperty.String(
-                        "message/cancel/resume: target session URI (patchouli://runs/agent/{session-id})."),
-                    ["message_id"] = ToolSchemaProperty.String(
-                        "message: caller-generated id used to deduplicate retries."),
-                    ["text"] = ToolSchemaProperty.String("message: the user message text."),
+                    ["target"] = ToolSchemaProperty.String(
+                        "Target resource URI (e.g. texts/<document-id>/ for ocr.start; runs/ocr/<task-id>/status for ocr.cancel/retry)."),
+                    ["action"] = ToolSchemaProperty.String(
+                        "Action identifier (e.g. \"ocr.start\", \"ocr.cancel\", \"ocr.retry\", \"cite.render\")."),
+                    ["args"] = ToolSchemaProperty.Object("Action arguments object."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 },
                 false)
@@ -552,10 +553,16 @@ public sealed class McpProtocolHandler
             name = nameElement.GetString()!;
             JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
             format = ResponseFormat(a);
+            if (!Tools().Any(tool => string.Equals(tool.Name, name, StringComparison.Ordinal)))
+            {
+                throw new McpArgumentException("Unknown tool; use the published tools/list contract.");
+            }
+
             if (!IsToolEnabled(name))
             {
                 string? disabledReason = ToolDisabledReason(name);
-                McpToolError error = McpToolError.From(McpErrorCode.Unavailable,
+                McpToolError error = McpToolError.From(
+                    name == "patchouli.send" ? McpErrorCode.PermissionDenied : McpErrorCode.Unavailable,
                     $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
                 return await ToolErrorAsync(name, error, ct, format);
             }
@@ -750,71 +757,54 @@ public sealed class McpProtocolHandler
         };
     }
 
+    private static readonly string[] LegacySendKeys =
+        ["instruction", "workflow", "parameters", "session", "message_id", "text"];
+
+    private static readonly string[] SendArgumentKeys =
+        ["target", "action", "args", "format"];
+
     private async Task<object> SendAsync(JsonElement arguments, CancellationToken ct)
     {
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            throw new McpArgumentException("send requires a target/action/args object.");
+        }
+
+        foreach (string legacyKey in LegacySendKeys)
+        {
+            if (arguments.TryGetProperty(legacyKey, out _))
+            {
+                throw new McpArgumentException(
+                    $"Legacy send argument '{legacyKey}' is rejected. The workflow/agent session send interface has been retired in favor of typed actions; use target, action, and args.");
+            }
+        }
+
+        string? validation = ValidateToolArguments("patchouli.send", arguments);
+        if (validation is not null)
+        {
+            throw new McpArgumentException(validation);
+        }
+
         RejectUnknownArguments(arguments, SendArgumentKeys);
-        string instruction = RequiredString(arguments, "instruction");
-        string? workflow = OptionalString(arguments, "workflow");
-        string? session = OptionalString(arguments, "session");
-        string? messageId = OptionalString(arguments, "message_id");
-        string? text = OptionalString(arguments, "text");
-        IReadOnlyList<McpSendParameter>? parameters = ParseSendParameters(arguments);
+        string target = RequiredString(arguments, "target");
+        string action = RequiredString(arguments, "action");
+        JsonElement args = arguments.GetProperty("args");
+
         string format = ResponseFormat(arguments);
 
-        McpCommandResult<McpSendMeta, McpSendResult> result = await _commands.SendAsync(
-            new McpSendRequest(instruction, workflow, parameters, session, messageId, text), ct);
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> result = await _commands.SendAsync(
+            new McpActionSendRequest(target, action, args), ct);
+
         if (result.Envelope is null && result.Error is not null)
         {
-            // Failures carry no command envelope of their own; rebuild one with the actual verb so
-            // the send meta stays schema-shaped instead of falling back to a foreign meta variant.
             string revision = await CurrentLibraryRevisionAsync(ct);
-            object envelope = McpEnvelope<McpSendMeta, object>.Create(
-                new McpSendMeta(revision, NormalizeInstruction(instruction), false, "pending"),
+            object envelope = McpEnvelope<McpActionSendMeta, object>.Create(
+                new McpActionSendMeta(revision, action, "rejected"),
                 [], message: new McpMessage(result.Error.ToTerminalLine(), []));
             return ToolData(RenderText(envelope, format), true);
         }
 
         return await ToToolResponseAsync("send", result, format, ct);
-    }
-
-    private static string NormalizeInstruction(string instruction)
-    {
-        return instruction is "start" or "message" or "cancel" or "resume" ? instruction : "start";
-    }
-
-    private static IReadOnlyList<McpSendParameter>? ParseSendParameters(JsonElement arguments)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object ||
-            !arguments.TryGetProperty("parameters", out JsonElement value) ||
-            value.ValueKind == JsonValueKind.Null)
-        {
-            return null;
-        }
-
-        if (value.ValueKind != JsonValueKind.Array)
-        {
-            throw new McpArgumentException("parameters must be an array of NAME=VALUE strings.");
-        }
-
-        List<McpSendParameter> parsed = [];
-        foreach (JsonElement item in value.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.String)
-            {
-                throw new McpArgumentException("parameters must contain NAME=VALUE strings.");
-            }
-
-            string clause = item.GetString()!;
-            int separator = clause.IndexOf('=');
-            if (separator <= 0)
-            {
-                throw new McpArgumentException("parameters must use the NAME=VALUE form.");
-            }
-
-            parsed.Add(new McpSendParameter(clause[..separator], clause[(separator + 1)..]));
-        }
-
-        return parsed;
     }
 
     private static readonly string[] FindArgumentKeys =
@@ -830,9 +820,6 @@ public sealed class McpProtocolHandler
     private static readonly string[] AddArgumentKeys = ["path", "kind", "format"];
 
     private static readonly string[] ViewArgumentKeys = ["uri", "context", "max_edge", "format"];
-
-    private static readonly string[] SendArgumentKeys =
-        ["instruction", "workflow", "parameters", "session", "message_id", "text", "format"];
 
     private static void RejectUnknownArguments(JsonElement arguments, IReadOnlyCollection<string> allowed)
     {
@@ -1102,8 +1089,14 @@ public sealed class McpProtocolHandler
 
     private bool IsToolEnabled(string toolName)
     {
-        return !_settings.ToolOverrides.Any(value =>
-            string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled);
+        McpToolOverride? match = _settings.ToolOverrides.FirstOrDefault(value =>
+            string.Equals(value.ToolName, toolName, StringComparison.Ordinal));
+        if (match is not null)
+        {
+            return match.Enabled;
+        }
+
+        return true;
     }
 
     private string? ToolDisabledReason(string toolName)
@@ -1149,9 +1142,9 @@ public sealed class McpProtocolHandler
                 annotations = new
                 {
                     readOnlyHint = ReadOnly,
-                    destructiveHint = false,
-                    idempotentHint = true,
-                    openWorldHint = false
+                    destructiveHint = Name == "patchouli.send",
+                    idempotentHint = Name != "patchouli.send",
+                    openWorldHint = Name == "patchouli.send"
                 }
             };
         }
@@ -1370,6 +1363,11 @@ public sealed class McpProtocolHandler
     {
         public object ToWire()
         {
+            if (Type == "object" && Properties is null)
+            {
+                return new { type = Type, description = Description, additionalProperties = true };
+            }
+
             if (Type == "object")
             {
                 return new
@@ -1429,6 +1427,11 @@ public sealed class McpProtocolHandler
             return new ToolSchemaProperty("array", description, items, MinItems: minItems, MaxItems: maxItems);
         }
 
+        public static ToolSchemaProperty Object(string description)
+        {
+            return new ToolSchemaProperty("object", description);
+        }
+
         public static ToolSchemaProperty Object(string description,
             IReadOnlyDictionary<string, ToolSchemaProperty> properties, string[] required)
         {
@@ -1456,8 +1459,8 @@ public static class McpErrorEnvelope
             "cite" => McpEnvelope<McpCiteMeta, object>.Create(
                 new McpCiteMeta(libraryRevision, null, null, "text", null), [],
                 message: new McpMessage(error.ToTerminalLine(), [])),
-            "send" => McpEnvelope<McpSendMeta, object>.Create(
-                new McpSendMeta(libraryRevision, "start", false, "pending"), [],
+            "send" => McpEnvelope<McpActionSendMeta, object>.Create(
+                new McpActionSendMeta(libraryRevision, "", "rejected"), [],
                 message: new McpMessage(error.ToTerminalLine(), [])),
             _ => McpEnvelope<McpPutMeta, object>.Create(
                 new McpPutMeta(libraryRevision), [], message: new McpMessage(error.ToTerminalLine(), []))

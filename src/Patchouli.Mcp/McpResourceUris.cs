@@ -28,7 +28,9 @@ public enum McpUriKind
     RunAgentStatus,
     RunAgentEvents,
     WorkflowsScope,
-    Workflow
+    Workflow,
+    ActionsScope,
+    Action
 }
 
 public sealed record McpUriParseResult(
@@ -45,7 +47,8 @@ public sealed record McpUriParseResult(
     long? AfterSequence = null,
     string CanonicalUri = "",
     bool IsLegacy = false,
-    string? ContentType = null);
+    string? ContentType = null,
+    string? ActionId = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
@@ -58,6 +61,16 @@ public sealed record McpUriParseResult(
 public static class McpResourceUris
 {
     private const string Prefix = "patchouli://";
+
+    public static string ActionsScopeUri()
+    {
+        return Prefix + "actions/";
+    }
+
+    public static string ActionUri(string actionId)
+    {
+        return Prefix + "actions/" + actionId;
+    }
 
     public static string ItemUri(ItemId itemId)
     {
@@ -170,6 +183,11 @@ public static class McpResourceUris
         return $"{Prefix}runs/ocr/{RequirePathToken(taskId, nameof(taskId))}/status";
     }
 
+    public static string OcrRunTaskUri(string taskId)
+    {
+        return $"{Prefix}runs/ocr/{RequirePathToken(taskId, nameof(taskId))}/";
+    }
+
     /// <summary>
     /// Builds the canonical page-map URI. The filename is fixed: every document's chapter and
     /// pagination map lives at <c>texts/{document-id}/map.yml</c>.
@@ -254,6 +272,7 @@ public static class McpResourceUris
             return result;
         }
 
+        contentType ??= result.Value.ContentType;
         contentType ??= path.EndsWith(".yml", StringComparison.Ordinal)
             ? "application/yaml"
             : path.EndsWith(".xml", StringComparison.Ordinal) || path.EndsWith(".csl", StringComparison.Ordinal)
@@ -270,6 +289,8 @@ public static class McpResourceUris
         return target.Kind switch
         {
             McpUriKind.Root => Prefix,
+            McpUriKind.ActionsScope => ActionsScopeUri(),
+            McpUriKind.Action => ActionUri(target.ActionId!),
             McpUriKind.ItemsScope => Prefix + "items/",
             McpUriKind.TextsScope => Prefix + "texts/",
             McpUriKind.StylesScope => Prefix + "csl-styles/",
@@ -337,6 +358,7 @@ public static class McpResourceUris
 
         return segments[0] switch
         {
+            "actions" => ParseActionUri(uri, segments, query),
             "items" => query is null ? ParseItemUri(uri, segments) : Invalid(uri, "Item URIs do not accept queries."),
             "texts" => ParseTextsUri(uri, segments, query),
             "translations" => ParseTranslationsUri(uri, segments, query),
@@ -347,6 +369,29 @@ public static class McpResourceUris
                 $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
+    }
+
+    private static Result<McpUriParseResult> ParseActionUri(string uri, string[] segments, string? query)
+    {
+        if (query is not null || segments.Length != 2)
+        {
+            return Invalid(uri, "Action URIs do not accept nested paths or queries.");
+        }
+
+        if (segments[1].Length == 0)
+        {
+            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.ActionsScope,
+                ContentType: "application/json"));
+        }
+
+        if (segments[1].Length > 64 ||
+            segments[1].Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
+        {
+            return Invalid(uri, "Invalid Action identity.");
+        }
+
+        return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Action,
+            ContentType: "application/json", ActionId: segments[1]));
     }
 
     private static Result<McpUriParseResult> ParseRunsUri(string uri, string[] segments, string? query)
@@ -396,7 +441,18 @@ public static class McpResourceUris
                 : Invalid(uri, "OCR run status URIs do not accept query parameters.");
         }
 
-        return Invalid(uri, "OCR run URIs must be patchouli://runs/ocr/{task-id}/status.");
+        if (((segments.Length == 3 && segments[2].Length > 0) ||
+             (segments.Length == 4 && segments[2].Length > 0 && segments[3].Length == 0)) &&
+            IsPathToken(segments[2]))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(
+                    new McpUriParseResult(McpUriKind.RunOcrStatus, RunTaskId: segments[2]))
+                : Invalid(uri, "OCR run task URIs do not accept query parameters.");
+        }
+
+        return Invalid(uri,
+            "OCR run URIs must be patchouli://runs/ocr/{task-id}/status or patchouli://runs/ocr/{task-id}/.");
     }
 
     private static Result<McpUriParseResult> ParseRunsAgentUri(string uri, string[] segments, string? query)

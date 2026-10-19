@@ -33,7 +33,8 @@ public sealed record MinerUImportRequest(
     string ZipPath,
     string DocumentInstanceId,
     string? LibraryId,
-    IReadOnlyList<PageId>? RequestedPageIds = null);
+    IReadOnlyList<PageId>? RequestedPageIds = null,
+    IReadOnlyDictionary<PageId, DocumentTreeRevisionId>? ExpectedParentTreeRevisionIds = null);
 
 public sealed record MinerUImportResult(
     bool Success,
