@@ -25,6 +25,7 @@
     <ProjectReference Include="..\Patchouli.McpServer\Patchouli.McpServer.csproj" />
     <ProjectReference Include="..\Patchouli.Host\Patchouli.Host.csproj" />
     <ProjectReference Include="..\Patchouli.Reading\Patchouli.Reading.csproj" />
+    <ProjectReference Include="..\Patchouli.Terminal\Patchouli.Terminal.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
