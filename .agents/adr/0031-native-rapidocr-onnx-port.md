@@ -51,7 +51,7 @@ already present for the NDL Koten port.
 
 ## Consequences
 
-- The `tools/rapidocr-runner` Python bridge, `RapidOcrRunner` process plumbing and the
+- The `sidecar/rapidocr-runner` Python bridge, `RapidOcrRunner` process plumbing and the
   corresponding `.csproj` copy rules are removed. No Python runtime is required.
 - Model downloads are ~32 MB and are pinned to a specific upstream release instead of
   following whatever the package index currently ships.

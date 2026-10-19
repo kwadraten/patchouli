@@ -1,6 +1,6 @@
-# Rust tools
+# Sidecar helpers
 
-Patchouli keeps Rust/Cargo as a supported repository toolchain for native or format-conversion helpers. Each helper belongs under `tools/<tool-name>`; Cargo build output is ignored through `tools/**/target/`.
+Patchouli keeps Rust/Cargo as a supported repository toolchain for native or format-conversion helpers. Each helper belongs under `sidecar/<helper-name>`; Cargo build output is ignored through `sidecar/**/target/`.
 
 ## biblatex-helper
 
@@ -9,7 +9,7 @@ Locked dependency: [`biblatex` 0.12.0](https://crates.io/crates/biblatex) (`typs
 Build:
 
 ```pwsh
-cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
+cargo build --release --manifest-path sidecar/biblatex-helper/Cargo.toml
 ```
 
 Protocol: one JSON request on UTF-8 stdin, one JSON response on UTF-8 stdout. stderr is diagnostics only.
