@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Agents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Mcp;
@@ -67,7 +68,8 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     private readonly MainWindowViewModel _main;
     private readonly TerminalSessionManager _sessions = new();
     private readonly List<AgentItemReferenceViewModel> _allItems = [];
-    private readonly string _mcpToken = Guid.NewGuid().ToString("N");
+    private string _mcpToken = CreatePlaceholderMcpToken();
+    private bool _mcpTokenFromSettings;
     private HostServices? _services;
     private AgentLaunchSpec? _launchSpec;
     private EmbeddedTerminal? _terminal;
@@ -542,8 +544,40 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             libraryId = library.Value.LibraryId.ToString();
         }
 
+        await ResolveMcpTokenAsync(services);
         Uri? endpoint = Uri.TryCreate(_main.McpEndpoint, UriKind.Absolute, out Uri? parsed) ? parsed : null;
         return new AgentLaunchContext(libraryId, endpoint, _mcpToken);
+    }
+
+    /// <summary>
+    /// Reuses the issued MCP bearer token when the listener requires authentication, so the token
+    /// exported to the Agent process and the one referenced by the generated config agree with the
+    /// running server. Without authentication there is no issued token to reuse.
+    /// </summary>
+    private async Task ResolveMcpTokenAsync(HostServices services)
+    {
+        Result<McpServerSettings> configured = await services.McpSettings.GetSettingsAsync();
+        if (configured.IsSuccess && configured.Value.AuthRequired &&
+            !string.IsNullOrWhiteSpace(configured.Value.Token))
+        {
+            _mcpToken = configured.Value.Token.Trim();
+            _mcpTokenFromSettings = true;
+            return;
+        }
+
+        if (_mcpTokenFromSettings)
+        {
+            _mcpToken = CreatePlaceholderMcpToken();
+            _mcpTokenFromSettings = false;
+        }
+    }
+
+    private static string CreatePlaceholderMcpToken()
+    {
+        // Placeholder only for a listener without authentication: a generated config still references
+        // PATCHOULI_MCP_TOKEN, and the random value keeps that environment variable well-formed. It
+        // is never accepted when authentication is enabled; that case reuses the issued token above.
+        return Guid.NewGuid().ToString("N");
     }
 
     private static TerminalSessionOptions CreateTerminalOptions(AgentLaunchSpec spec)
@@ -893,9 +927,11 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             }
 
             notes.Add("写入后需要重启 Agent（可用工具栏的重启按钮）才会加载此配置。");
-            string environmentNote =
-                $"PATCHOULI_MCP_TOKEN 由 Patchouli 以随机 GUID 占位写入本次 Agent 进程环境（{MaskToken(_mcpToken)}）；" +
-                "token 值不写入配置文件。Host 尚未提供正式的 token 颁发与轮换接口，因此这是临时占位方案。";
+            string environmentNote = _mcpTokenFromSettings
+                ? $"PATCHOULI_MCP_TOKEN 使用 MCP 服务设置中已启用的 Bearer token（{MaskToken(_mcpToken)}），" +
+                  "只在本次 Agent 进程环境中提供；token 值不写入配置文件。"
+                : $"PATCHOULI_MCP_TOKEN 由 Patchouli 以随机 GUID 占位写入本次 Agent 进程环境（{MaskToken(_mcpToken)}）；" +
+                  "当前 MCP 设置未启用鉴权，占位值不会被监听器校验。token 值不写入配置文件。";
             AgentMcpConfigDialogViewModel dialog = new(
                 entry.DisplayName, document.RelativePath, preview, notes, environmentNote);
             bool confirmed = await _main.Dialogs.ShowDialogAsync<bool>(dialog);

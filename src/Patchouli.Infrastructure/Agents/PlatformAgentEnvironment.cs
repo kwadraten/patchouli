@@ -20,8 +20,10 @@ public sealed class PlatformAgentEnvironment : IAgentPlatformEnvironment
             ["PROGRAMFILES(X86)"] = Environment.SpecialFolder.ProgramFilesX86
         };
 
+    private readonly bool _homeDirectoryInjected;
+
     public PlatformAgentEnvironment()
-        : this(DetectPlatform(), DetectArchitecture(), DetectHomeDirectory())
+        : this(DetectPlatform(), DetectArchitecture(), DetectHomeDirectory(), false)
     {
     }
 
@@ -29,12 +31,22 @@ public sealed class PlatformAgentEnvironment : IAgentPlatformEnvironment
         AgentPlatform platform,
         AgentArchitecture architecture,
         string homeDirectory)
+        : this(platform, architecture, homeDirectory, true)
+    {
+    }
+
+    private PlatformAgentEnvironment(
+        AgentPlatform platform,
+        AgentArchitecture architecture,
+        string? homeDirectory,
+        bool homeDirectoryInjected)
     {
         Platform = platform;
         Architecture = architecture;
         HomeDirectory = string.IsNullOrWhiteSpace(homeDirectory)
             ? AppContext.BaseDirectory
             : Path.GetFullPath(homeDirectory);
+        _homeDirectoryInjected = homeDirectoryInjected;
     }
 
     public AgentPlatform Platform { get; }
@@ -48,6 +60,14 @@ public sealed class PlatformAgentEnvironment : IAgentPlatformEnvironment
             !WellKnownDirectories.TryGetValue(name.Trim(), out Environment.SpecialFolder folder))
         {
             return false;
+        }
+
+        // An injected home directory is authoritative for USERPROFILE/HOME so tests and alternate
+        // environments never silently mix the real user profile with their isolated home.
+        if (_homeDirectoryInjected && folder == Environment.SpecialFolder.UserProfile)
+        {
+            value = HomeDirectory;
+            return true;
         }
 
         string resolved = Environment.GetFolderPath(folder);

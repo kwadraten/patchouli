@@ -98,8 +98,10 @@ public sealed class SystemProcessRunner : IProcessRunner
         using CancellationTokenSource
             timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
-        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
-        Task<string> standardError = process.StandardError.ReadToEndAsync();
+        // The reads share the timeout token. Without it, a grandchild process that inherited the
+        // stdout/stderr pipes keeps ReadToEndAsync pending long after WaitForExitAsync returned.
+        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(timeoutSource.Token);
+        Task<string> standardError = process.StandardError.ReadToEndAsync(timeoutSource.Token);
         try
         {
             await process.WaitForExitAsync(timeoutSource.Token).ConfigureAwait(false);
@@ -110,6 +112,8 @@ public sealed class SystemProcessRunner : IProcessRunner
         catch (OperationCanceledException)
         {
             Kill(process);
+            // The timeout token already cancelled both reads; observe them so a detached descendant
+            // holding the pipes cannot extend the call past the deadline.
             string output = await SafeReadAsync(standardOutput).ConfigureAwait(false);
             string error = await SafeReadAsync(standardError).ConfigureAwait(false);
             if (cancellationToken.IsCancellationRequested)
@@ -137,6 +141,10 @@ public sealed class SystemProcessRunner : IProcessRunner
             return string.Empty;
         }
         catch (IOException)
+        {
+            return string.Empty;
+        }
+        catch (OperationCanceledException)
         {
             return string.Empty;
         }

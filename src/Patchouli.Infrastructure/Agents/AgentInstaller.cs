@@ -48,6 +48,13 @@ public sealed class AgentInstaller
     // A guard against an unexpected endless response; official Agent archives are far smaller.
     private const long MaxArchiveBytes = 512L * 1024 * 1024;
 
+    // A guard against a decompression bomb: the downloaded archive is capped, but a highly
+    // compressed archive can still expand to an unbounded amount of data on disk.
+    private const long MaxExtractedBytes = 2L * 1024 * 1024 * 1024;
+
+    // Ordinary Unix permission bits (rwx for owner, group and others); special bits are not restored.
+    private const UnixFileMode UnixPermissionMask = (UnixFileMode)0x1FF;
+
     private readonly HttpClient _httpClient;
     private readonly string _installRoot;
 
@@ -161,8 +168,10 @@ public sealed class AgentInstaller
                 "当前平台没有可用的官方安装包。");
         }
 
+        // Official install sources must be encrypted. Plain http is rejected even for loopback hosts:
+        // an archive fetched over an unauthenticated plaintext channel can be replaced in transit.
         if (!Uri.TryCreate(offer.DownloadUrl?.Trim(), UriKind.Absolute, out Uri? downloadUri) ||
-            (downloadUri.Scheme != Uri.UriSchemeHttps && downloadUri.Scheme != Uri.UriSchemeHttp))
+            !string.Equals(downloadUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
         {
             return Result<AgentInstallResult>.Failure(AppErrorCodes.ValidationFailed,
                 "安装包下载地址无效。");
@@ -283,6 +292,7 @@ public sealed class AgentInstaller
         CancellationToken cancellationToken)
     {
         using ZipArchive archive = ZipFile.OpenRead(archivePath);
+        long extractedBytes = 0;
         foreach (ZipArchiveEntry zipEntry in archive.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -294,7 +304,10 @@ public sealed class AgentInstaller
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            zipEntry.ExtractToFile(destination, true);
+            EnsureExtractionFits(extractedBytes, zipEntry.Length);
+            using Stream source = zipEntry.Open();
+            extractedBytes = ExtractEntry(source, destination, extractedBytes, cancellationToken);
+            ApplyExtractedMetadata(destination, GetZipUnixMode(zipEntry), zipEntry.LastWriteTime);
         }
     }
 
@@ -304,6 +317,7 @@ public sealed class AgentInstaller
         using FileStream archiveStream = File.OpenRead(archivePath);
         using GZipStream gzipStream = new(archiveStream, CompressionMode.Decompress);
         using TarReader reader = new(gzipStream);
+        long extractedBytes = 0;
         TarEntry? entry;
         while ((entry = reader.GetNextEntry()) is not null)
         {
@@ -327,7 +341,92 @@ public sealed class AgentInstaller
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            entry.ExtractToFile(destination, true);
+            EnsureExtractionFits(extractedBytes, entry.Length);
+            extractedBytes = ExtractEntry(entry.DataStream, destination, extractedBytes, cancellationToken);
+            ApplyExtractedMetadata(destination, entry.Mode, entry.ModificationTime);
+        }
+    }
+
+    /// <summary>
+    /// Rejects an archive whose metadata already claims more expanded data than the remaining budget,
+    /// before the entry is written. The streaming count in <see cref="ExtractEntry"/> still guards
+    /// against metadata that understates the real decompressed size.
+    /// </summary>
+    private static void EnsureExtractionFits(long extractedBytes, long declaredEntryBytes)
+    {
+        if (declaredEntryBytes > MaxExtractedBytes - extractedBytes)
+        {
+            throw new InvalidDataException("解压后的安装包超过允许的大小上限。");
+        }
+    }
+
+    /// <summary>
+    /// Copies one archive entry while enforcing the expanded-size cap. The byte count is taken from
+    /// the decompressed stream rather than the archive metadata so a forged entry size cannot bypass it.
+    /// </summary>
+    private static long ExtractEntry(Stream? source, string destination, long extractedBytes,
+        CancellationToken cancellationToken)
+    {
+        using FileStream target = new(destination, FileMode.Create, FileAccess.Write, FileShare.None);
+        if (source is null)
+        {
+            return extractedBytes;
+        }
+
+        byte[] buffer = new byte[81920];
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            target.Write(buffer, 0, read);
+            extractedBytes += read;
+            if (extractedBytes > MaxExtractedBytes)
+            {
+                throw new InvalidDataException("解压后的安装包超过允许的大小上限。");
+            }
+        }
+
+        return extractedBytes;
+    }
+
+    private static UnixFileMode GetZipUnixMode(ZipArchiveEntry entry)
+    {
+        return (UnixFileMode)((entry.ExternalAttributes >> 16) & (int)UnixPermissionMask);
+    }
+
+    /// <summary>
+    /// Restores the Unix permission bits and modification time that the archive recorded. The
+    /// extraction itself is streamed manually to enforce the size cap, so these two pieces of
+    /// metadata are applied explicitly instead of relying on <c>ExtractToFile</c>.
+    /// </summary>
+    private static void ApplyExtractedMetadata(string path, UnixFileMode unixMode, DateTimeOffset lastWriteTime)
+    {
+        if (!OperatingSystem.IsWindows() && unixMode != UnixFileMode.None)
+        {
+            try
+            {
+                File.SetUnixFileMode(path, unixMode & UnixPermissionMask);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                                  PlatformNotSupportedException)
+            {
+                // Permission restoration is advisory; a filesystem without Unix modes is still usable.
+                _ = exception;
+            }
+        }
+
+        if (lastWriteTime != default)
+        {
+            try
+            {
+                File.SetLastWriteTimeUtc(path, lastWriteTime.UtcDateTime);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                                  PlatformNotSupportedException or ArgumentOutOfRangeException)
+            {
+                // Timestamp preservation is advisory and must not fail an otherwise valid extraction.
+                _ = exception;
+            }
         }
     }
 
