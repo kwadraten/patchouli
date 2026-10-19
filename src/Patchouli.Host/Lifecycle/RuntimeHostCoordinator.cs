@@ -145,10 +145,16 @@ public static class RuntimeHostCoordinator
         string recordPath = Path.Combine(Path.GetFullPath(directory ?? GetDefaultDirectory()), pathKey + ".json");
         try
         {
-            await using FileStream stream = new(recordPath, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
-            RuntimeHostDiscoveryRecord? record = await JsonSerializer.DeserializeAsync<RuntimeHostDiscoveryRecord>(
-                stream, JsonOptions, cancellationToken);
+            RuntimeHostDiscoveryRecord? record;
+            await using (FileStream stream = new(recordPath, FileMode.Open, FileAccess.Read,
+                             FileShare.ReadWrite | FileShare.Delete))
+            {
+                record = await JsonSerializer.DeserializeAsync<RuntimeHostDiscoveryRecord>(
+                    stream, JsonOptions, cancellationToken);
+            }
+
+            // A stale host's health probe can take seconds. Release the discovery file first
+            // so that the new lifetime owner can publish its record during that probe.
             if (record is null || record.Version != DiscoveryVersion ||
                 !string.Equals(record.ProtocolVersion, ProtocolVersion, StringComparison.Ordinal) ||
                 record.PathKey != pathKey ||
@@ -605,7 +611,18 @@ public sealed class RuntimeHostLease : IAsyncDisposable
         }
 
         TryRestrictFile(temporaryPath);
-        File.Move(temporaryPath, _recordPath, true);
+        if (OperatingSystem.IsWindows() && File.Exists(_recordPath))
+        {
+            // MoveFileEx replacement fails with ERROR_ACCESS_DENIED while a discovery reader
+            // holds the old file, even with FileShare.Delete. ReplaceFile supports those readers.
+            // The lifetime lock prevents another owner from publishing or removing this record.
+            File.Replace(temporaryPath, _recordPath, null);
+        }
+        else
+        {
+            File.Move(temporaryPath, _recordPath, true);
+        }
+
         return record;
     }
 
