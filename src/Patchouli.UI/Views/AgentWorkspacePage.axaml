@@ -1,0 +1,257 @@
+<UserControl x:Class="Patchouli.UI.Views.AgentWorkspacePage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:agents="using:Patchouli.UI.ViewModels.Agents"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+             x:DataType="agents:AgentWorkspaceViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="Button.IconButton">
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Button.IconButton:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighestBrush}" />
+    </Style>
+    <Style Selector="Button.IconButton:disabled">
+      <Setter Property="Opacity" Value="0.35" />
+    </Style>
+    <Style Selector="TextBlock.StatusPill">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid Margin="24" RowDefinitions="Auto,*,Auto" RowSpacing="12">
+    <!-- Header: identity, connection status and icon-only lifecycle actions. -->
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+      <StackPanel Orientation="Horizontal" Spacing="12">
+        <Border Width="40" Height="40" CornerRadius="10" VerticalAlignment="Center"
+                Background="{DynamicResource SurfaceContainerHighestBrush}">
+          <lucide:Lucide Icon="Terminal" Width="21" Height="21"
+                         StrokeBrush="{DynamicResource PrimaryBrush}"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
+        <StackPanel Spacing="4" VerticalAlignment="Center">
+          <TextBlock Text="Agent 集成" FontSize="22" FontWeight="SemiBold"
+                     Foreground="{DynamicResource OnSurfaceBrush}" />
+          <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <TextBlock Text="{Binding AgentDisplayName}" FontSize="12" FontWeight="SemiBold"
+                       Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+            <TextBlock Text="{Binding AgentVersionText}" FontSize="12"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4" Padding="7,1"
+                    VerticalAlignment="Center">
+              <TextBlock Text="{Binding ConnectionStatusText}" Classes="StatusPill" />
+            </Border>
+          </StackPanel>
+        </StackPanel>
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
+        <Button Classes="IconButton" ToolTip.Tip="启动 Agent" Command="{Binding StartCommand}"
+                IsEnabled="{Binding CanStart}">
+          <lucide:Lucide Icon="Play" Width="17" Height="17"
+                         StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+        </Button>
+        <Button Classes="IconButton" ToolTip.Tip="停止 Agent" Command="{Binding StopCommand}"
+                IsEnabled="{Binding CanStop}">
+          <lucide:Lucide Icon="Square" Width="16" Height="16"
+                         StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+        </Button>
+        <Button Classes="IconButton" ToolTip.Tip="重启 Agent" Command="{Binding RestartCommand}"
+                IsEnabled="{Binding CanRestart}">
+          <lucide:Lucide Icon="RefreshCw" Width="16" Height="16"
+                         StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+        </Button>
+        <Border Width="1" Height="22" Margin="4,0" VerticalAlignment="Center"
+                Background="{DynamicResource OutlineVariantBrush}" />
+        <Button Classes="IconButton" ToolTip.Tip="写入 Patchouli MCP 连接配置"
+                Command="{Binding WriteMcpConfigCommand}" IsEnabled="{Binding CanWriteMcpConfig}">
+          <lucide:Lucide Icon="Server" Width="16" Height="16"
+                         StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+        </Button>
+        <Button Classes="IconButton" ToolTip.Tip="重新检测 Agent" Command="{Binding RefreshAgentCommand}"
+                IsEnabled="{Binding ShowRetryShortcut}">
+          <lucide:Lucide Icon="RefreshCw" Width="16" Height="16"
+                         StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+        </Button>
+      </StackPanel>
+    </Grid>
+
+    <!-- Main body: the embedded terminal, with a state overlay before the first successful launch. -->
+    <Border Grid.Row="1" Background="#101014" CornerRadius="8" ClipToBounds="True"
+            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1">
+      <Grid>
+        <ContentControl x:Name="TerminalHost" Content="{Binding Terminal}" />
+        <Border IsVisible="{Binding ShowEmptyState}" Background="{DynamicResource SurfaceContainerLowestBrush}">
+          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="620" Spacing="12"
+                      Margin="32">
+            <lucide:Lucide Icon="Terminal" Width="30" Height="30"
+                           StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                           HorizontalAlignment="Center" />
+            <TextBlock Text="{Binding EmptyStateTitle}" FontSize="18" FontWeight="SemiBold"
+                       Foreground="{DynamicResource OnSurfaceBrush}"
+                       HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding EmptyStateMessage}" FontSize="13" TextWrapping="Wrap"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                       HorizontalAlignment="Center" TextAlignment="Center" />
+            <ProgressBar IsIndeterminate="True" Width="200" Height="4" IsVisible="{Binding IsBusy}" />
+            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,0">
+              <Button Classes="Primary" Command="{Binding StartCommand}" IsVisible="{Binding ShowStartShortcut}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <lucide:Lucide Icon="Play" Width="14" Height="14" StrokeBrush="{DynamicResource OnPrimaryBrush}" />
+                  <TextBlock Text="启动 Agent" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Command="{Binding RefreshAgentCommand}" IsVisible="{Binding ShowRetryShortcut}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <lucide:Lucide Icon="RefreshCw" Width="14" Height="14"
+                                 StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="重新检测" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Command="{Binding OpenAgentSettingsCommand}" IsVisible="{Binding ShowSettingsShortcut}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <lucide:Lucide Icon="Menu" Width="14" Height="14"
+                                 StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="前往设置" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Border>
+
+    <!-- Composer: @-references, editable presets, copy and terminal injection. Never auto-sends. -->
+    <Border Grid.Row="2" Classes="Card" Padding="10">
+      <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+          <StackPanel Orientation="Horizontal" Spacing="2">
+            <Button x:Name="ItemPickerButton" Classes="IconButton"
+                    ToolTip.Tip="插入题录引用（@ 引用）" Command="{Binding OpenItemPickerCommand}">
+              <lucide:Lucide Icon="AtSign" Width="17" Height="17"
+                             StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+            </Button>
+            <Button Classes="IconButton" ToolTip.Tip="预置提示词">
+              <Button.Flyout>
+                <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                  <MenuItem Header="整理题录" Tag="organize" Click="OnPresetMenuClick">
+                    <MenuItem.Icon>
+                      <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    </MenuItem.Icon>
+                  </MenuItem>
+                  <MenuItem Header="调查主题" Tag="investigate" Click="OnPresetMenuClick">
+                    <MenuItem.Icon>
+                      <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    </MenuItem.Icon>
+                  </MenuItem>
+                  <MenuItem Header="梳理文献" Tag="outline" Click="OnPresetMenuClick">
+                    <MenuItem.Icon>
+                      <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    </MenuItem.Icon>
+                  </MenuItem>
+                  <MenuItem Header="反向提问" Tag="socratic" Click="OnPresetMenuClick">
+                    <MenuItem.Icon>
+                      <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    </MenuItem.Icon>
+                  </MenuItem>
+                </MenuFlyout>
+              </Button.Flyout>
+              <lucide:Lucide Icon="Sparkles" Width="17" Height="17"
+                             StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+            </Button>
+            <Button Classes="IconButton" ToolTip.Tip="复制输入到剪贴板" Command="{Binding CopyInputCommand}"
+                    IsEnabled="{Binding CanCopyInput}">
+              <lucide:Lucide Icon="Copy" Width="16" Height="16"
+                             StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+            </Button>
+            <Button Classes="IconButton" ToolTip.Tip="注入终端（不按回车）" Command="{Binding InjectInputCommand}"
+                    IsEnabled="{Binding CanInjectInput}">
+              <lucide:Lucide Icon="SendHorizontal" Width="16" Height="16"
+                             StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+            </Button>
+          </StackPanel>
+          <TextBlock Grid.Column="1" Text="输入不会自动发送；预置提示词只填入模板，注入终端时也不附加回车。"
+                     FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Column="2" Text="{Binding McpStatusText}" FontSize="11"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center"
+                     MaxWidth="360" TextTrimming="CharacterEllipsis"
+                     ToolTip.Tip="{Binding McpStatusText}"
+                     IsVisible="{Binding McpStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        </Grid>
+        <TextBox x:Name="InputBox" Grid.Row="1"
+                 Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 AcceptsReturn="True" TextWrapping="Wrap" MinHeight="96" MaxHeight="150"
+                 VerticalContentAlignment="Top" FontSize="13"
+                 PlaceholderText="在此编辑要交给 Agent 的提示词；可用 @ 图标插入题录引用（标题、Item ID、规范 URI）。" />
+      </Grid>
+    </Border>
+
+    <!-- Zed-style @-reference picker: searchable popup with keyboard navigation. -->
+    <Popup x:Name="ItemPickerPopup" IsOpen="{Binding IsItemPickerOpen, Mode=TwoWay}"
+           Placement="TopEdgeAlignedLeft" IsLightDismissEnabled="True">
+      <Border x:Name="ItemPickerPanel" Width="580" MaxHeight="440" Padding="10" CornerRadius="8"
+              Background="{DynamicResource SurfaceContainerLowestBrush}"
+              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+              BoxShadow="0 6 24 #55000000">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
+          <TextBox x:Name="ItemSearchBox"
+                   Text="{Binding ItemSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                   PlaceholderText="搜索标题、作者、Item ID 或规范 URI…" Height="34">
+            <TextBox.InnerLeftContent>
+              <lucide:Lucide Icon="Search" Width="14" Height="14"
+                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                             Margin="8,0,0,0" VerticalAlignment="Center" />
+            </TextBox.InnerLeftContent>
+          </TextBox>
+          <ListBox x:Name="ItemPickerList" Grid.Row="1" ItemsSource="{Binding FilteredItems}"
+                   SelectedItem="{Binding SelectedItem, Mode=TwoWay}" Background="Transparent"
+                   SelectionChanged="OnItemPickerSelectionChanged"
+                   DoubleTapped="OnItemPickerDoubleTapped">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="agents:AgentItemReferenceViewModel">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" Margin="6,4">
+                  <lucide:Lucide Icon="BookOpen" Width="16" Height="16"
+                                 StrokeBrush="{DynamicResource PrimaryBrush}"
+                                 VerticalAlignment="Center" />
+                  <StackPanel Grid.Column="1" Spacing="2">
+                    <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{DynamicResource OnSurfaceBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding CanonicalUri}" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                  </StackPanel>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+            <TextBlock Text="{Binding ItemPickerStatusText}" FontSize="11"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="↑↓ 选择 · Enter 插入 · Esc 关闭" FontSize="11"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            <Button Grid.Column="2" Classes="IconButton" Width="24" Height="24"
+                    ToolTip.Tip="刷新题录" Command="{Binding RefreshItemsCommand}">
+              <lucide:Lucide Icon="RefreshCw" Width="13" Height="13"
+                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+            </Button>
+          </Grid>
+        </Grid>
+      </Border>
+    </Popup>
+  </Grid>
+</UserControl>

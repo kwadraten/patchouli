@@ -1,3 +1,4 @@
+using Patchouli.UI.ViewModels.Agents;
 using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.UI.ViewModels;
@@ -79,6 +80,13 @@ public sealed class WorkspaceManager
             return false;
         }
 
+        if (tab.Content is AgentWorkspaceViewModel { HasActiveSession: true } agent && !agent.CloseApproved)
+        {
+            // The sync close path cannot prompt. A running session must be confirmed through
+            // CloseAsync first (terminate or keep in the background).
+            return false;
+        }
+
         bool wasActive = Layout.ActiveTab == tab;
         Layout.Tabs.Remove(tab);
         Cleanup(tab);
@@ -120,6 +128,11 @@ public sealed class WorkspaceManager
     {
         WorkspaceTabViewModel? tab = Find(tabId);
         if (tab is null || !tab.IsClosable)
+        {
+            return false;
+        }
+
+        if (tab.Content is AgentWorkspaceViewModel agent && !await agent.ConfirmCloseAsync())
         {
             return false;
         }

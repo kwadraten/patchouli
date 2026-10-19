@@ -54,6 +54,7 @@ using Editor;
 using Csl;
 using Core;
 using Dialogs;
+using Agents;
 using Views;
 using Services;
 
@@ -99,6 +100,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private FileDocumentViewModel? _fileDocumentViewModel;
     private OcrQueueViewModel? _ocrQueueViewModel;
     private SearchEvidenceViewModel? _searchEvidenceViewModel;
+    private AgentWorkspaceViewModel? _agentWorkspace;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -343,6 +345,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public SearchEvidenceViewModel SearchEvidence =>
         _searchEvidenceViewModel ??= CreateSearchEvidenceViewModel();
 
+    /// <summary>
+    /// The cached Agent integration page. It is cached, not recreated, so a session the user chose to
+    /// leave running in the background can be reattached when the tab is reopened.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public AgentWorkspaceViewModel AgentWorkspace =>
+        _agentWorkspace ??= CreateWithActivityTracker(() => new AgentWorkspaceViewModel(this));
+
     [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchEvidenceViewModel.AvailableModeOptions;
 
@@ -410,6 +420,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
+    public AsyncCommand OpenAgentTabCommand { get; }
 
     public AsyncCommand ActivateSettingsTabCommand { get; }
     public AsyncCommand ActivateSearchTabCommand { get; }
@@ -966,6 +977,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
+        OpenAgentTabCommand = new AsyncCommand(OpenAgentTabAsync);
         OpenOtherLibraryCommand = new AsyncCommand(OpenOtherLibraryAsync);
         ToggleMcpServerCommand = new AsyncCommand(async () =>
         {
@@ -1952,6 +1964,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         Shell.Dispose();
+        if (_agentWorkspace is not null)
+        {
+            await _agentWorkspace.ShutdownAsync();
+        }
+
         await StopMcpServerAsync();
         StopLibraryRevisionMonitor();
         await StopHostServicesAsync();
@@ -2686,6 +2703,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<PdfWorkspaceViewModel, NewBoxDialog>();
         service.Register<ItemMergePreviewDialogViewModel, ItemMergePreviewDialog>();
         service.Register<DuplicateItemsDialogViewModel, DuplicateItemsDialog>();
+        service.Register<AgentMcpConfigDialogViewModel, AgentMcpConfigDialog>();
         return service;
     }
 
@@ -2833,6 +2851,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         await ActivateTabAsync(WorkspaceTabKind.OcrQueue, "OcrQueue", "OCR 队列", "List", true, () => OcrQueue);
         await OcrQueue.RefreshAsync();
+    }
+
+    /// <summary>
+    /// Opens the Agent integration page. The entry stays available without a database and with the
+    /// integration disabled; the page itself renders the corresponding empty state.
+    /// </summary>
+    public async Task OpenAgentTabAsync()
+    {
+        await ActivateTabAsync(WorkspaceTabKind.Agent, "Agent", "Agent 集成", "Terminal", true,
+            () => AgentWorkspace);
+        await AgentWorkspace.RefreshAsync(false);
     }
 
     private async Task OpenOtherLibraryAsync()

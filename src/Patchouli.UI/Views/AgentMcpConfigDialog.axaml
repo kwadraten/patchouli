@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        x:Class="Patchouli.UI.Views.AgentMcpConfigDialog"
+        x:DataType="vm:AgentMcpConfigDialogViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/AppIcon.ico"
+        Width="780" Height="660"
+        MinWidth="620" MinHeight="480"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8">
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" RowSpacing="12">
+      <StackPanel Spacing="4">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <lucide:Lucide Icon="Server" Width="18" Height="18"
+                         StrokeBrush="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
+          <TextBlock Text="Patchouli MCP 连接配置" FontSize="17" FontWeight="SemiBold"
+                     Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+        </StackPanel>
+        <TextBlock Text="{Binding FileName, StringFormat='目标文件：{0}（仅写入当前 Library 的 Agent 工作目录）'}"
+                   FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <TextBlock Text="写入后需要重启 Agent 才会加载此配置。Patchouli 不会修改你的全局 Agent 配置。"
+                   FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+      </StackPanel>
+
+      <TextBlock Grid.Row="1" Text="配置内容（只读预览）" FontSize="13" FontWeight="SemiBold"
+                 Foreground="{DynamicResource OnSurfaceBrush}" />
+      <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+              CornerRadius="6" Background="{DynamicResource SurfaceContainerLowestBrush}" Padding="1">
+        <TextBox Text="{Binding Preview}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                 FontFamily="Cascadia Mono,Consolas,Menlo,monospace" FontSize="12" BorderThickness="0"
+                 Background="Transparent" VerticalContentAlignment="Top" Padding="10" />
+      </Border>
+
+      <StackPanel Grid.Row="3" Spacing="6">
+        <TextBlock Text="权限与撤销说明" FontSize="13" FontWeight="SemiBold"
+                   Foreground="{DynamicResource OnSurfaceBrush}" />
+        <ItemsControl ItemsSource="{Binding PermissionNotes}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="x:String">
+              <Grid ColumnDefinitions="Auto,*" Margin="0,1">
+                <TextBlock Text="•" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Grid.Column="1" Text="{Binding}" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
+      <Border Grid.Row="4" Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="10">
+        <StackPanel Spacing="4">
+          <TextBlock Text="临时 Token 说明" FontSize="12" FontWeight="SemiBold"
+                     Foreground="{DynamicResource OnSurfaceBrush}" />
+          <TextBlock Text="{Binding EnvironmentNote}" FontSize="12" TextWrapping="Wrap"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        </StackPanel>
+      </Border>
+
+      <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+        <Button Content="取消" Command="{Binding CancelCommand}" />
+        <Button Content="写入配置" Classes="Primary" Command="{Binding ConfirmCommand}" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

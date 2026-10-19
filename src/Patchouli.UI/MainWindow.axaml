@@ -5,6 +5,7 @@
         xmlns:local="using:Patchouli.UI.ViewModels"
         xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
+        xmlns:agents="using:Patchouli.UI.ViewModels.Agents"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
         xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
@@ -34,6 +35,9 @@
     </DataTemplate>
     <DataTemplate DataType="{x:Type local:OcrQueueViewModel}">
       <views:OcrQueuePage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type agents:AgentWorkspaceViewModel}">
+      <views:AgentWorkspacePage />
     </DataTemplate>
     <!-- About tab content is AboutViewModel -->
     <DataTemplate DataType="{x:Type local:AboutViewModel}">
@@ -239,6 +243,17 @@
           <MenuItem Header="AI集成">
             <MenuItem Header="{Binding ToggleMcpServerLabel}" Command="{Binding ToggleMcpServerCommand}" />
             <MenuItem Header="AI集成设置" Command="{Binding OpenMcpSettingsCommand}" />
+            <Separator />
+            <MenuItem Command="{Binding OpenAgentTabCommand}">
+              <MenuItem.Header>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <lucide:Lucide Icon="Terminal" Width="14" Height="14"
+                                 StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                                 VerticalAlignment="Center" />
+                  <TextBlock Text="Agent 集成" VerticalAlignment="Center" />
+                </StackPanel>
+              </MenuItem.Header>
+            </MenuItem>
             <Separator />
             <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
                       ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
