@@ -491,6 +491,9 @@ public sealed class AppSettingsStore : IAppSettingsStore
             categories.Add("Llm");
         }
 
+        AddChangedCategory(categories, "Agents", previous.Agents.Normalize(), committed.Agents.Normalize(),
+            sectionsToPersist);
+
         if (IsSectionPersisted("MetadataLookup", sectionsToPersist) &&
             !previous.MetadataLookup.Sources.SequenceEqual(committed.MetadataLookup.Sources))
         {
@@ -561,6 +564,7 @@ public sealed class AppSettingsStore : IAppSettingsStore
             "OcrEngines" => current with { OcrEngines = persisted.OcrEngines },
             "Import" => current with { Import = persisted.Import },
             "Llm" => current with { Llm = persisted.Llm },
+            "Agents" => current with { Agents = persisted.Agents },
             "MetadataLookup" => current with { MetadataLookup = persisted.MetadataLookup },
             "FileScanning" => current with { FileScanning = persisted.FileScanning },
             "Sync" => current with { Sync = persisted.Sync },

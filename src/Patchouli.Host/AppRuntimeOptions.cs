@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Patchouli.Core.Agents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Ids;
@@ -503,6 +504,13 @@ public sealed record PatchouliAppSettings(
     /// </summary>
     public LlmAppSettings Llm { get; init; } = LlmAppSettings.Default();
 
+    /// <summary>
+    /// External Agent integration settings, persisted in the JSON "Agents" section. The section only
+    /// selects an agent and optional executable overrides; authentication and sessions stay in the agent
+    /// CLI's own configuration.
+    /// </summary>
+    public AgentIntegrationAppSettings Agents { get; init; } = AgentIntegrationAppSettings.Default();
+
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
         return new PatchouliAppSettings(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(),
@@ -567,6 +575,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? ocrEngines = GetSection(root, "OcrEngines");
             JsonElement? import = GetSection(root, "Import");
             JsonElement? llm = GetSection(root, "Llm");
+            JsonElement? agents = GetSection(root, "Agents") ?? GetSection(root, "AgentIntegration");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -609,6 +618,7 @@ public sealed record PatchouliAppSettings(
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Import = ReadImport(import, defaults.Import),
                 Llm = ReadLlm(llm, defaults.Llm),
+                Agents = ReadAgents(agents, defaults.Agents),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
                 Sync = new SyncAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
@@ -795,6 +805,7 @@ public sealed record PatchouliAppSettings(
                 OcrEngines.RegionOcrEngine
             });
             root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
+            root["Agents"] = SerializeAgents(Agents);
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -1005,6 +1016,11 @@ public sealed record PatchouliAppSettings(
             if (saveAll || dirtyFields!.Contains(LlmProviderCatalog.SectionName))
             {
                 root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
+            }
+
+            if (saveAll || dirtyFields!.Contains("Agents"))
+            {
+                root["Agents"] = SerializeAgents(Agents);
             }
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
@@ -1512,6 +1528,44 @@ public sealed record PatchouliAppSettings(
         }).Normalize();
     }
 
+    /// <summary>
+    /// Reads the "Agents" section (with "AgentIntegration" accepted as a legacy alias). A missing or
+    /// malformed section returns the fallback; individual missing fields fall back per field.
+    /// </summary>
+    private static AgentIntegrationAppSettings ReadAgents(
+        JsonElement? section,
+        AgentIntegrationAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        Dictionary<string, string> customPaths = new(StringComparer.Ordinal);
+        if (element.TryGetProperty("CustomPaths", out JsonElement paths) &&
+            paths.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in paths.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                string? value = property.Value.GetString();
+                if (!string.IsNullOrWhiteSpace(property.Name) && !string.IsNullOrWhiteSpace(value))
+                {
+                    customPaths[property.Name.Trim()] = value.Trim();
+                }
+            }
+        }
+
+        return new AgentIntegrationAppSettings(
+            ReadBool(element, "Enabled", fallback.Enabled),
+            ReadString(element, "SelectedAgentId", fallback.SelectedAgentId),
+            customPaths).Normalize();
+    }
+
     private static JsonObject SerializeLlm(LlmAppSettings llm)
     {
         LlmAppSettings normalized = llm.Normalize();
@@ -1529,6 +1583,17 @@ public sealed record PatchouliAppSettings(
             normalized.Translation
         }) as JsonObject ?? new JsonObject();
         return result;
+    }
+
+    private static JsonObject SerializeAgents(AgentIntegrationAppSettings agents)
+    {
+        AgentIntegrationAppSettings normalized = agents.Normalize();
+        return new JsonObject
+        {
+            ["Enabled"] = normalized.Enabled,
+            ["SelectedAgentId"] = normalized.SelectedAgentId,
+            ["CustomPaths"] = JsonSerializer.SerializeToNode(normalized.CustomPaths) ?? new JsonObject()
+        };
     }
 
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)

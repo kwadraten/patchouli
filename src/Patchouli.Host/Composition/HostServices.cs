@@ -1,4 +1,5 @@
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Agents;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Cli;
 using Patchouli.Core.Credentials;
@@ -21,6 +22,7 @@ using Patchouli.Core.Translation;
 using Patchouli.Core.View;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Agents;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Cli;
@@ -53,6 +55,7 @@ using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Translation;
@@ -83,6 +86,7 @@ public sealed class HostServices
     private long _metadataLookupApplyGeneration;
     private Task? _shutdownTask;
     private LlmAppSettings _llmSettings;
+    private AgentIntegrationAppSettings _agentSettings;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
@@ -103,6 +107,15 @@ public sealed class HostServices
         RuntimeDatabasePath = runtimeDatabasePath;
         StartupSettings = settings;
         _llmSettings = settings.Llm;
+        _agentSettings = settings.Agents;
+        AgentPlatformEnvironment = new PlatformAgentEnvironment();
+        AgentProcessRunner = new SystemProcessRunner();
+        AgentInstallOffers = new AgentRegistryInstallOfferProvider(AgentRegistryLocations.Resolve(),
+            AgentPlatformEnvironment);
+        AgentDetection = new AgentDetectionService(AgentProcessRunner, AgentPlatformEnvironment, AgentInstallOffers);
+        AgentWorkspace = AgentWorkspaceLocator.FromRuntimeDatabase(runtimeDatabasePath);
+        AgentLauncher = new AgentLaunchService(AgentDetection, AgentWorkspace);
+        AgentMcpConfig = new AgentMcpConfigService();
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
         LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
@@ -353,6 +366,24 @@ public sealed class HostServices
         Volatile.Write(ref _llmSettings, settings);
     }
 
+    /// <summary>Live Agent integration settings shared by detection, launch and the settings UI.</summary>
+    public AgentIntegrationAppSettings AgentSettings => Volatile.Read(ref _agentSettings);
+
+    public void UpdateAgentSettings(AgentIntegrationAppSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        Volatile.Write(ref _agentSettings, settings);
+        AgentDetection.InvalidateCache();
+    }
+
+    public PlatformAgentEnvironment AgentPlatformEnvironment { get; }
+    public IProcessRunner AgentProcessRunner { get; }
+    public IAgentInstallOfferProvider AgentInstallOffers { get; }
+    public AgentDetectionService AgentDetection { get; }
+    public AgentWorkspaceLocator AgentWorkspace { get; }
+    public AgentLaunchService AgentLauncher { get; }
+    public AgentMcpConfigService AgentMcpConfig { get; }
+
     public SqliteConnectionFactory ConnectionFactory { get; }
     public IClock Clock { get; }
     public IBlockingOperationService BlockingOperations { get; }
@@ -562,6 +593,18 @@ public sealed class HostServices
                 if (AcceptSettingsCommitLocked("Llm", change.CommitSequence))
                 {
                     UpdateLlmSettings(change.Snapshot.Llm);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("Agents", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("Agents", change.CommitSequence))
+                {
+                    UpdateAgentSettings(change.Snapshot.Agents);
                 }
             }
         }
