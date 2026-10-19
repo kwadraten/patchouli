@@ -193,7 +193,8 @@ public sealed class McpHttpServer : IAsyncDisposable
 
             return Results.Json(new { status = "ok" });
         });
-        app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
+        app.MapGet("/mcp", (HttpContext context, CancellationToken ct) =>
+            HandleMcpSseAsync(context, _settings, app.Lifetime.ApplicationStopping, ct));
         app.MapPost("/mcp",
             (HttpContext context, CancellationToken ct) =>
                 HandleMcpRequestAsync(context, _handler, _settings, _sessions, _maxRequestBytes, ct));
@@ -339,6 +340,7 @@ public sealed class McpHttpServer : IAsyncDisposable
     private static async Task HandleMcpSseAsync(
         HttpContext context,
         McpServerSettings settings,
+        CancellationToken applicationStopping,
         CancellationToken cancellationToken)
     {
         if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
@@ -365,16 +367,21 @@ public sealed class McpHttpServer : IAsyncDisposable
         context.Response.Headers.CacheControl = "no-cache";
         context.Response.Headers.Connection = "keep-alive";
 
+        // Kestrel drains requests during graceful shutdown before aborting them. An idle SSE
+        // request must finish when the host stops, not wait for its client or the drain timeout.
+        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, applicationStopping);
+        CancellationToken streamCancellation = lifetime.Token;
         try
         {
-            await WriteSseCommentAsync(context, "connected", cancellationToken);
+            await WriteSseCommentAsync(context, "connected", streamCancellation);
             using PeriodicTimer timer = new(TimeSpan.FromSeconds(30));
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            while (await timer.WaitForNextTickAsync(streamCancellation))
             {
-                await WriteSseCommentAsync(context, "keepalive", cancellationToken);
+                await WriteSseCommentAsync(context, "keepalive", streamCancellation);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
         {
         }
     }
