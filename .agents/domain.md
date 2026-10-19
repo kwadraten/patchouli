@@ -16,7 +16,6 @@ Before exploring, read these when they exist:
 
 - `.agents/CONTEXT.md` for project domain language and glossary.
 - `.agents/adr/` for architectural decision records relevant to the area being changed.
-- `.agents/workflow-api.md` for agent workflow authoring and recovery contracts.
 - `.agents/issue-tracker.md` for issue-driven product work; there is no dedicated PRD document.
 - `.agents/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations.
 - `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
@@ -30,7 +29,6 @@ If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do
 ├── AGENTS.md
 ├── .agents/
 │   ├── CONTEXT.md
-│   ├── workflow-api.md
 │   ├── mcp-protocol.md
 │   ├── domain.md
 │   ├── issue-tracker.md
@@ -87,20 +85,29 @@ additionally raise `ExternalChangeDetected` so the UI can tell cross-process edi
 own commits.
 
 
-## Agent runtime ownership
+## External agent and translation runtime ownership
 
-Patchouli.Agent owns the pure Event/Effect core and semantic SDK types; Patchouli.Llm owns
-provider transports. Patchouli.Workflows builds cold typed control plans and node codecs.
-Patchouli.Host owns the shared AgentDriver, session inbox/lifecycle/persistence, independent
-FSI worker and SDK invoker. Native calls and FSI typed RPC use the same capability checks,
-validation and operation journal. The UI merges SDK start/end activity by operation ID,
-retaining parent ID, input, output/error and duration.
+The built-in Agent, workflow, chat and FSI runtime has been removed (ADR `0047`).
+`Patchouli.Core/Agents` owns the compiled catalog (`AgentCatalog.g.cs`), detection, launch
+and integration-settings contracts. `Patchouli.Terminal` owns the PTY session and embedded
+terminal host. `Patchouli.Host/Agents` owns workspace location, launch preparation and
+restricted MCP configuration generation; `Patchouli.Infrastructure/Agents` owns the OpenCode
+archive installer. The UI's Agent workspace page is a terminal client, preset composer and
+item-reference picker; it owns no agent runtime, session store or workflow engine. External
+agents own their conversations, credentials and history, and keep their native configuration;
+Patchouli supplies detection, a per-library workspace, a terminal and a revocable MCP
+connection.
 
-Current authoring and recovery contracts are in [workflow-api](workflow-api.md), with rationale
-in ADR [0039](adr/0039-typed-functional-agent-harness-workflows.md). Session sync/purge and
-MCP runtime roots follow ADR 0036 and mcp-protocol. Closing a chat tab leaves the session running;
-workflow menus start a session and open its chat tab, while opening the chat surface alone starts none.
-Settings check workflow types without evaluation; locked built-ins are copied to author custom workflows.
+Direct translation is owned by the four extension contracts in `Patchouli.Core/Translation`,
+the default segment/batch/model/merge implementations and `TranslationRunEngine` in
+`Patchouli.Infrastructure/Translation`, and the volatile `TranslationRunService` in
+`Patchouli.Host/Translation`. MCP exposes `translation.start`, `translation.cancel` and
+`runs/translation/{id}/status`; the settings card and modeless progress window are thin
+clients. Runs are in-memory only; committed translations follow ADR `0034`/`0044`.
+
+MCP/CLI parameters, runtime roots and regression obligations are in
+[mcp-protocol](mcp-protocol.md). Agent integration rationale is ADR `0047`; direct
+translation rationale is ADR `0046`.
 Code/contract delivery does not establish real-device end-to-end acceptance or full-scale performance budgets.
 
 ## UI Layer
@@ -112,6 +119,6 @@ Code/contract delivery does not establish real-device end-to-end acceptance or f
 
 ## Document ownership and remaining implementation gaps
 
-Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in mcp-protocol, workflow authoring in workflow-api, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
+Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in mcp-protocol, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
 
 The shared composition layer and ADR `0024` one-host-per-Library target are implemented. A device-local lifetime lock keyed before SQLite open by the canonical database path elects exactly one Desktop or Headless owner; an atomic discovery record publishes the live process identity, Library ID and MCP endpoint, and the authenticated local lifecycle channel performs Desktop takeover. Normal UI, CLI and MCP writes therefore share the in-process revision event path. `LibraryRevisionMonitor` remains available for explicit abnormal external-write recovery, but the Desktop no longer starts its polling loop during normal operation. Full incremental cache invalidation remains V3-T7 work.

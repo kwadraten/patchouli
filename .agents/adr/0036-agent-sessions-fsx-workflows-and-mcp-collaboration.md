@@ -4,6 +4,11 @@ Date: 2026-10-05
 
 ## Status
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): the built-in Agent
+and F# workflow system has been removed. The MCP collaboration surface — user-controlled
+capability switches, narrow atomic writes, the text-only data boundary and volatile `runs/` —
+remains in force; its `runs/agent/` and `workflows/` resource roots are removed.
+
 [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md) scopes stable execution
 contracts and provider prefixes to loop activations within a Session, and introduces
 explicit main, bound and anonymous conversation contexts.

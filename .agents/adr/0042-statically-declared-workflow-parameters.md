@@ -1,5 +1,10 @@
 # ADR 0042: Statically declared workflow parameters
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): the F# workflow
+parameter system, static declaration extractor and workflow editor have been removed. The
+principle that translation settings are declared and validated independently survives in the
+direct translation settings card (ADR 0046).
+
 Status: accepted, 2026-10-10. Amends the definition and translation-default portions of ADR 0036 and the workflow authoring contract of ADR 0039.
 
 ## Decision

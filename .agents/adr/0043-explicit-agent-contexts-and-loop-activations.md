@@ -1,9 +1,14 @@
 # ADR 0043: Explicit agent contexts and loop activations
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): the built-in agent
+session, conversation contexts and loop activations have been removed. No context handoff,
+activation-scoped replay or worker isolation path remains.
+
 Date: 2026-10-13
 
 Status: accepted. Amends the Session-wide single-loop and provider-prefix decisions in
-ADRs 0036, 0039 and 0040. The cold typed workflow and shared AgentDriver remain in force.
+ADRs 0036, 0039 and 0040. The cold typed workflow and shared AgentDriver described below were
+removed by ADR 0047.
 
 ## Decision
 

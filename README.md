@@ -13,7 +13,7 @@
 
 ## 下载与更新日志
 
-当前版本：**0.3.12**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon 和 Linux 安装包。
+当前版本：**0.3.13**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon 和 Linux 安装包。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
@@ -22,7 +22,7 @@
 - 不再有卡到爆的webview和来自前端项目的屎山代码，本项目尽可能使用.NET或Rust等原生轮子实现功能，保证性能。
 - 不会擅自移动、重命名或接管PDF源文件，本项目用文件哈希追踪PDF文件位置，文件爱放哪就放哪。
 - OCR 识别错了也不浪费，文本、表格、类型、顺序和 bbox 进入页级不可变边界框树，PDF 工作台可在草稿中持续校正后再提交。
-- 带有虚拟文件系统和结构化工具的MCP服务器，允许AI Agent像探索代码库一样渐进式地探索和维护你的文献库。
+- 带有虚拟文件系统和结构化工具的MCP服务器，允许外部 AI Agent 像探索代码库一样渐进式地探索和维护你的文献库。
 - 首屏、OCR入库、MCP读取和PDF查看都有共享缓存、批处理、惰性校验与性能回归基线，避免大文献库越用越卡。
 
 ## 功能列表 / 路线图
@@ -41,8 +41,8 @@
 - [x] PDF 导入容错：整本原子提交、坏页诊断占位、可配置失败阈值，以及历史导入残留清理
 - [x] 较为完备的题录组织系统：具备集合和标签功能，提供回收站、重复题录检测、题录合并与永久清除
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL古典籍OCR-Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
-- [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、可配置推理强度、上下文压缩、历史检索和会话内 F# REPL。
-- [x] F# 工作流：脚本编辑、运行检查点、菜单启动、独立的聊天模型与推理强度设置，以及工作流与会话的快照同步。
+- [x] 外部 Agent 集成：编译态 Agent 目录、分层可执行文件检测与自定义路径、嵌入式终端、四个可编辑预置提示词、Zed 式可搜索题录引用面板，以及受限、可撤销的 MCP 连接配置。
+- [x] 直接全文翻译：不依赖 Agent，按 Box 分段批量调用模型，支持目标语言、并发、请求间隔、超时与重试；逐页原子提交，冲突自动重读重试，取消时保留已提交页面。
 - [ ] 下一版：[MCP / CLI 显式 OCR 任务入口](https://github.com/kwadraten/patchouli/issues/16)，复用现有 OCR 队列并支持任务状态查询；当前 `add` 仅负责入库，不自动启动 OCR。
 
 ## 开发指南
@@ -86,7 +86,7 @@ dotnet test Patchouli.sln
 
 ### 更新 Agent 目录
 
-内置 Agent 目录 `src/Patchouli.Core/Agents/AgentCatalog.g.cs` 由 `./scripts/update-agent-catalog.ps1` 根据 ACP registry 与脚本内的 TUI 适配表生成；新增或调整 agent 时修改脚本并重新运行，CI 可用 `-Check` 校验生成物是否为最新。
+编译态 Agent 目录 `src/Patchouli.Core/Agents/AgentCatalog.g.cs` 由 `./scripts/update-agent-catalog.ps1` 根据 ACP registry 与脚本内的 TUI 适配表生成；新增或调整 agent 时修改脚本并重新运行，CI 可用 `-Check` 校验生成物是否为最新。
 
 ### 代码格式化和静态分析
 
