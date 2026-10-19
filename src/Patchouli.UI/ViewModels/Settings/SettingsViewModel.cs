@@ -78,12 +78,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
         ImportSettings = new ImportSettingsViewModel(main);
+        UpdateSettings = new UpdateSettingsViewModel(main);
 
         ISettingsSection[] sections =
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
-            LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles
+            LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
+            UpdateSettings
         ];
 
         _sections = sections;
@@ -119,7 +121,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("csl_installed", "已安装样式", CslStyleManager),
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
-            new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings)
+            new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
+            new SettingsSectionEntryViewModel("update", "更新", UpdateSettings)
         ];
         foreach (SettingsSectionEntryViewModel entry in SectionEntries)
         {
@@ -146,7 +149,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
-            new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings)
+            new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
+            new NavCategoryViewModel("应用更新", "Download", UpdateSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
         {
@@ -202,6 +206,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
     public ImportSettingsViewModel ImportSettings { get; }
+    public UpdateSettingsViewModel UpdateSettings { get; }
 
     public ObservableCollection<NavCategoryViewModel> Categories { get; }
     public IReadOnlyList<SettingsSectionEntryViewModel> SectionEntries { get; }

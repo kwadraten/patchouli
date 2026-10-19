@@ -260,6 +260,7 @@
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />
+            <MenuItem Header="检查更新" Command="{Binding CheckForUpdatesCommand}" />
             <MenuItem Header="更新日志" Command="{Binding ShowChangelogCommand}" />
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
           </MenuItem>

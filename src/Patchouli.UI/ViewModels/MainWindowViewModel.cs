@@ -182,6 +182,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
     public IModalOperationRunner ModalOperations { get; }
+    public UpdateFlowService UpdateFlow { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
 
@@ -448,6 +449,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand ShowChangelogCommand { get; }
+    public AsyncCommand CheckForUpdatesCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
     public UiCommandDescriptor CheckSyncStateDescriptor { get; }
     public UiCommandDescriptor PublishSnapshotDescriptor { get; }
@@ -769,6 +771,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         FilePicker = filePicker ?? new AvaloniaFilePickerService();
         Dialogs = dialogs ?? CreateDialogService();
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
+        UpdateFlow = new UpdateFlowService(this);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
         Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
@@ -1024,6 +1027,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         ShowChangelogCommand = new AsyncCommand(OpenChangelogAsync);
+        CheckForUpdatesCommand = new AsyncCommand(() => UpdateFlow.CheckForUpdatesManualAsync());
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
 
         IDisposable commandInvalidationSub = layoutChanges.ObserveOn(_uiScheduler).Subscribe(_ =>
@@ -1261,6 +1265,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     await Shell.RefreshAsync();
                 }
             }
+
+            // Issue #15: fire-and-forget automatic update check — never blocks
+            // startup and never throws; stays silent unless an update is found.
+            UpdateFlow.StartAutomaticCheckOnStartup();
         }
         finally
         {
@@ -2704,6 +2712,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<ItemMergePreviewDialogViewModel, ItemMergePreviewDialog>();
         service.Register<DuplicateItemsDialogViewModel, DuplicateItemsDialog>();
         service.Register<AgentMcpConfigDialogViewModel, AgentMcpConfigDialog>();
+        service.Register<UpdateAvailableDialogViewModel, UpdateAvailableDialog>();
+        service.Register<InfoDialogViewModel, InfoDialog>();
         return service;
     }
 

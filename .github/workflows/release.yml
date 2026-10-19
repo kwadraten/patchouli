@@ -143,10 +143,19 @@ jobs:
           mapfile -d '' assets < <(find .tmp/release-assets -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.flatpak' \) -print0)
           test "${#assets[@]}" -eq 6
 
+          # Issue #15: publish a "<asset>.sha256" sidecar next to every installer
+          # so the in-app updater can verify downloads against SHA256.
+          checksums=()
+          for asset in "${assets[@]}"; do
+            checksum="$asset.sha256"
+            ( cd "$(dirname "$asset")" && sha256sum "$(basename "$asset")" > "$(basename "$checksum")" )
+            checksums+=("$checksum")
+          done
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" "${checksums[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" "${checksums[@]}" \
               --title "Patchouli.NET $GITHUB_REF_NAME" \
               --generate-notes
           fi
