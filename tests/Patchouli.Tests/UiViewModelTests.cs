@@ -3516,7 +3516,7 @@ public sealed class UiViewModelTests : IDisposable
             McpSettingsViewModel mcp = vm.Settings.McpSettings;
             await mcp.LoadAsync();
             mcp.Port = 4567;
-            mcp.PermissionRows.Should().HaveCount(8);
+            mcp.PermissionRows.Should().HaveCount(McpPermissionPolicy.Domains.Count);
             mcp.PermissionRows.Should().OnlyContain(row => row.Cells.Count == McpPermissionPolicy.Verbs.Count);
             mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[1].Enabled = false;
             mcp.IsDirty.Should().BeTrue();

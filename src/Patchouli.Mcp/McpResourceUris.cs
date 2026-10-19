@@ -23,6 +23,8 @@ public enum McpUriKind
     RunsScope,
     RunsOcrScope,
     RunOcrStatus,
+    RunsTranslationScope,
+    RunTranslationStatus,
     RunsAgentScope,
     RunAgentSession,
     RunAgentStatus,
@@ -158,6 +160,18 @@ public static class McpResourceUris
     public static string RunsAgentScopeUri()
     {
         return $"{Prefix}runs/agent/";
+    }
+
+    /// <summary>The volatile direct translation runs started through the translation Actions.</summary>
+    public static string RunsTranslationScopeUri()
+    {
+        return $"{Prefix}runs/translation/";
+    }
+
+    /// <summary>The canonical status URI a <c>translation.start</c> returns and the other verbs address.</summary>
+    public static string TranslationRunStatusUri(string runId)
+    {
+        return $"{Prefix}runs/translation/{RequirePathToken(runId, nameof(runId))}/status";
     }
 
     /// <summary>The canonical session URI a <c>send start</c> returns and the other send verbs address.</summary>
@@ -309,6 +323,8 @@ public static class McpResourceUris
             McpUriKind.RunsScope => RunsScopeUri(),
             McpUriKind.RunsOcrScope => RunsOcrScopeUri(),
             McpUriKind.RunOcrStatus => OcrRunStatusUri(target.RunTaskId!),
+            McpUriKind.RunsTranslationScope => RunsTranslationScopeUri(),
+            McpUriKind.RunTranslationStatus => TranslationRunStatusUri(target.RunTaskId!),
             McpUriKind.RunsAgentScope => RunsAgentScopeUri(),
             McpUriKind.RunAgentSession => AgentRunUri(target.SessionId!),
             McpUriKind.RunAgentStatus => AgentRunStatusUri(target.SessionId!),
@@ -398,6 +414,7 @@ public static class McpResourceUris
     {
         // patchouli://runs/ or
         // patchouli://runs/ocr/ or patchouli://runs/ocr/{task-id}/status or
+        // patchouli://runs/translation/ or patchouli://runs/translation/{run-id}/status or
         // patchouli://runs/agent/ or patchouli://runs/agent/{session-id}[/status|/events[?after=N]]
         if (segments.Length == 2 && segments[0] == "runs" && segments[1].Length == 0)
         {
@@ -410,6 +427,7 @@ public static class McpResourceUris
         {
             return Invalid(uri,
                 "Run URIs must be patchouli://runs/ocr/{task-id}/status, " +
+                "patchouli://runs/translation/{run-id}/status, " +
                 "patchouli://runs/agent/{session-id}/status, or " +
                 "patchouli://runs/agent/{session-id}/events[?after={sequence}].");
         }
@@ -417,9 +435,33 @@ public static class McpResourceUris
         return segments[1] switch
         {
             "ocr" => ParseRunsOcrUri(uri, segments, query),
+            "translation" => ParseRunsTranslationUri(uri, segments, query),
             "agent" => ParseRunsAgentUri(uri, segments, query),
-            _ => Invalid(uri, "The runs scope exposes only the 'ocr' and 'agent' subtrees.")
+            _ => Invalid(uri, "The runs scope exposes only the 'ocr', 'translation' and 'agent' subtrees.")
         };
+    }
+
+    private static Result<McpUriParseResult> ParseRunsTranslationUri(string uri, string[] segments, string? query)
+    {
+        // runs/translation/ (scope) or runs/translation/{run-id}/status.
+        if (segments.Length == 3 && segments[2].Length == 0)
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunsTranslationScope))
+                : Invalid(uri, "The runs/translation scope does not accept query parameters.");
+        }
+
+        if (segments.Length == 4 && segments[3] == "status" && TryParseGuid(segments[2], out _))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(
+                    new McpUriParseResult(McpUriKind.RunTranslationStatus, RunTaskId: segments[2]))
+                : Invalid(uri, "Translation run status URIs do not accept query parameters.");
+        }
+
+        return Invalid(uri,
+            "Translation run URIs must be patchouli://runs/translation/ or " +
+            "patchouli://runs/translation/{run-id}/status.");
     }
 
     private static Result<McpUriParseResult> ParseRunsOcrUri(string uri, string[] segments, string? query)

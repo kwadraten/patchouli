@@ -756,6 +756,138 @@
                 </StackPanel>
               </Border>
 
+              <!-- Direct translation (issue #20): the persisted "Translation" subsection. -->
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="翻译" Classes="CardTitle" />
+                  <TextBlock
+                    Text="「全文翻译」按页批量调用模型。此处的修改会自动保存，对之后启动的翻译生效；聊天与工作流请求不受影响。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+                  <TextBlock Text="目标语言" FontSize="13" FontWeight="Medium" />
+                  <TextBox Text="{Binding TranslationTargetLanguage}" Width="240" HorizontalAlignment="Left"
+                           PlaceholderText="语言代码，如 en、zh-CN" />
+                  <TextBlock Text="{Binding TranslationTargetLanguageError}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource ErrorBrush}"
+                             IsVisible="{Binding TranslationTargetLanguageError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <TextBlock Text="使用 BCP 47 语言代码，默认 en；模型会把页面文本翻译成该语言。" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+                  <Separator />
+                  <TextBlock Text="批处理" FontWeight="SemiBold" FontSize="13" />
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                    <StackPanel Grid.Column="0" Spacing="4">
+                      <TextBlock Text="批量大小（1–64）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationBatchSizeText}" Width="160" HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationBatchSizeError}" FontSize="12" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationBatchSizeError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="4">
+                      <TextBlock Text="单请求最大字符（1000–200000）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationMaxBatchCharactersText}" Width="180"
+                               HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationMaxBatchCharactersError}" FontSize="12"
+                                 TextWrapping="Wrap" Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationMaxBatchCharactersError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                  </Grid>
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                    <StackPanel Grid.Column="0" Spacing="4">
+                      <TextBlock Text="Token 上限（可空，正整数）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationMaxBatchTokensText}" Width="160"
+                               HorizontalAlignment="Left" PlaceholderText="留空表示不限制" />
+                      <TextBlock Text="{Binding TranslationMaxBatchTokensError}" FontSize="12" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationMaxBatchTokensError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="4">
+                      <TextBlock Text="并发数（1–16）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationConcurrencyText}" Width="160" HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationConcurrencyError}" FontSize="12" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationConcurrencyError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                  </Grid>
+                  <TextBlock Text="单批请求的页数与字符上限决定一次发送多少内容；Token 上限用于同时约束模型输入预算。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+                  <Separator />
+                  <TextBlock Text="请求与重试" FontWeight="SemiBold" FontSize="13" />
+                  <Grid ColumnDefinitions="*,*,*" ColumnSpacing="16">
+                    <StackPanel Grid.Column="0" Spacing="4">
+                      <TextBlock Text="请求间隔（秒，0–600）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationRequestIntervalSecondsText}" Width="140"
+                               HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationRequestIntervalSecondsError}" FontSize="12"
+                                 TextWrapping="Wrap" Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationRequestIntervalSecondsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="4">
+                      <TextBlock Text="超时（秒，1–3600）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationRequestTimeoutSecondsText}" Width="140"
+                               HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationRequestTimeoutSecondsError}" FontSize="12"
+                                 TextWrapping="Wrap" Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationRequestTimeoutSecondsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Spacing="4">
+                      <TextBlock Text="重试次数（0–10）" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBox Text="{Binding TranslationMaxRetriesText}" Width="140" HorizontalAlignment="Left" />
+                      <TextBlock Text="{Binding TranslationMaxRetriesError}" FontSize="12" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource ErrorBrush}"
+                                 IsVisible="{Binding TranslationMaxRetriesError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                  </Grid>
+                  <TextBlock Text="请求间隔用于限制相邻批次的发送频率，0 表示不限制；超时只作用于一次模型请求，重试仅针对临时失败。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+                  <Separator />
+                  <TextBlock Text="上下文" FontWeight="SemiBold" FontSize="13" />
+                  <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                    <TextBlock Text="上下文窗口半径（0–5）" VerticalAlignment="Center" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBox Grid.Column="1" Text="{Binding TranslationWindowRadiusText}" Width="140"
+                             HorizontalAlignment="Left" />
+                  </Grid>
+                  <TextBlock Text="{Binding TranslationWindowRadiusError}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource ErrorBrush}"
+                             IsVisible="{Binding TranslationWindowRadiusError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <CheckBox Content="回填前窗译文（把上一窗口的译文作为术语上下文）"
+                            IsChecked="{Binding TranslationBackfillPreviousWindowTranslation}" />
+                  <TextBlock Text="窗口半径决定每页携带多少相邻页作为上下文；回填会把上一窗口已经生成的译文放入提示词，帮助保持术语一致。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+                  <Separator />
+                  <TextBlock Text="模型覆盖" FontWeight="SemiBold" FontSize="13" />
+                  <TextBlock Text="留空时跟随聊天模型；可以只覆盖模型，也可以同时指定 provider 与模型。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <Grid ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8">
+                    <TextBlock Grid.Column="0" Text="Provider" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding TranslationProviderOptions}"
+                              DisplayMemberBinding="{Binding DisplayName}"
+                              SelectedItem="{Binding SelectedTranslationProvider}"
+                              PlaceholderText="跟随聊天模型" HorizontalAlignment="Stretch" />
+                    <TextBlock Grid.Column="2" Text="模型" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="3" IsEditable="True" ItemsSource="{Binding TranslationModelOptions}"
+                              Text="{Binding TranslationModel}"
+                              PlaceholderText="留空=跟随聊天模型" HorizontalAlignment="Stretch" />
+                  </Grid>
+                  <TextBlock Text="模型覆盖只影响翻译请求；Provider 未配置完成时保存会提示补全。" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding TranslationErrorMessage}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource ErrorBrush}"
+                             IsVisible="{Binding TranslationErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+              </Border>
+
 
               <TextBlock Text="Provider 配置" FontWeight="SemiBold" FontSize="14" />
               <TextBlock Text="尚未添加 Provider。选择服务后填写模型和凭据，即可启用。"

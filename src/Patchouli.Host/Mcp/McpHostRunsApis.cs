@@ -1,5 +1,7 @@
+using System.Globalization;
 using Microsoft.FSharp.Core;
 using Patchouli.Core.Results;
+using Patchouli.Core.Translation;
 using Patchouli.Host.Agent;
 using Patchouli.Host.Workflows;
 using Patchouli.Mcp;
@@ -321,5 +323,204 @@ public sealed class McpHostOcrRunsApi(
             row.Outcome?.Committed,
             row.Outcome?.CommittedPageCount,
             row.Outcome?.IndexState);
+    }
+}
+
+/// <summary>
+///     Host-side adapter over the volatile direct translation runs: the
+///     <c>runs/translation/{run-id}/status</c> projection and the start/cancel channel used by the
+///     <c>translation.start</c> and <c>translation.cancel</c> Actions. It only maps data and parses the
+///     shared one-based page selector; validation and execution stay in the host run service.
+/// </summary>
+public sealed class McpHostTranslationRunsApi(ITranslationRunService runs) : IMcpTranslationRunsApi
+{
+    private const int MaxPageSelectorLength = 4096;
+    private const int MaxSelectedPages = 100_000;
+
+    public async Task<Result<McpTranslationRunStatusProjection>> StartAsync(
+        McpTranslationRunStartRequest request, CancellationToken cancellationToken = default)
+    {
+        Result<IReadOnlyList<int>> pages = ParsePages(request.Pages);
+        if (pages.IsFailure)
+        {
+            return Result<McpTranslationRunStatusProjection>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
+        }
+
+        Result<TranslationRunStatus> started = await runs.StartAsync(
+            new TranslationRunStartRequest(
+                request.DocumentInstanceId,
+                pages.Value,
+                request.TargetLanguage,
+                request.ForceRetranslate),
+            cancellationToken).ConfigureAwait(false);
+        return started.IsFailure
+            ? Result<McpTranslationRunStatusProjection>.Failure(started.ErrorCode!, started.ErrorMessage!)
+            : Result<McpTranslationRunStatusProjection>.Success(Project(started.Value));
+    }
+
+    public async Task<Result<IReadOnlyList<McpTranslationRunStatusProjection>>> ListRunsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Result<IReadOnlyList<TranslationRunStatus>> listed =
+            await runs.ListAsync(cancellationToken).ConfigureAwait(false);
+        return listed.IsFailure
+            ? Result<IReadOnlyList<McpTranslationRunStatusProjection>>.Failure(
+                listed.ErrorCode!, listed.ErrorMessage!)
+            : Result<IReadOnlyList<McpTranslationRunStatusProjection>>.Success(
+                listed.Value.Select(Project).ToArray());
+    }
+
+    public async Task<Result<McpTranslationRunStatusProjection>> TryGetRunStatusAsync(string taskId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParse(taskId, out Guid runId))
+        {
+            return Result<McpTranslationRunStatusProjection>.Failure(
+                AppErrorCodes.InvalidArgument,
+                $"The translation run id '{taskId}' must be a UUID.");
+        }
+
+        Result<TranslationRunStatus> run = await runs.GetAsync(runId, cancellationToken).ConfigureAwait(false);
+        return run.IsFailure
+            ? Result<McpTranslationRunStatusProjection>.Failure(run.ErrorCode!, run.ErrorMessage!)
+            : Result<McpTranslationRunStatusProjection>.Success(Project(run.Value));
+    }
+
+    public async Task<Result<McpTranslationRunStatusProjection>> CancelAsync(string taskId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParse(taskId, out Guid runId))
+        {
+            return Result<McpTranslationRunStatusProjection>.Failure(
+                AppErrorCodes.InvalidArgument,
+                $"The translation run id '{taskId}' must be a UUID.");
+        }
+
+        Result<TranslationRunStatus> run = await runs.CancelAsync(runId, cancellationToken).ConfigureAwait(false);
+        return run.IsFailure
+            ? Result<McpTranslationRunStatusProjection>.Failure(run.ErrorCode!, run.ErrorMessage!)
+            : Result<McpTranslationRunStatusProjection>.Success(Project(run.Value));
+    }
+
+    /// <summary>
+    ///     Parses the shared one-based page selector (<c>1,3-5</c>). A blank selector selects the whole
+    ///     document and is passed to the run service as an empty list.
+    /// </summary>
+    private static Result<IReadOnlyList<int>> ParsePages(string? pages)
+    {
+        if (string.IsNullOrWhiteSpace(pages))
+        {
+            return Result<IReadOnlyList<int>>.Success([]);
+        }
+
+        string trimmed = pages.Trim();
+        if (trimmed.Length > MaxPageSelectorLength)
+        {
+            return InvalidSelection("The pages selector is too long.");
+        }
+
+        SortedSet<int> selected = [];
+        foreach (string rawToken in trimmed.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries))
+        {
+            string token = rawToken.Trim();
+            if (token.Length == 0 ||
+                token.Any(character => !char.IsAsciiDigit(character) && character != '-'))
+            {
+                return InvalidSelection($"Invalid page range '{token}'. Use one-based physical pages like '1,3-5'.");
+            }
+
+            string[] bounds = token.Split('-');
+            if (bounds.Length is < 1 or > 2 || bounds.Any(static bound => bound.Length == 0) ||
+                !TryParsePageNumber(bounds[0], out int first))
+            {
+                return InvalidSelection($"Invalid page range '{token}'. Use one-based physical pages like '1,3-5'.");
+            }
+
+            int last = first;
+            if (bounds.Length == 2 && !TryParsePageNumber(bounds[1], out last))
+            {
+                return InvalidSelection($"Invalid page range '{token}'. Use one-based physical pages like '1,3-5'.");
+            }
+
+            if (last < first)
+            {
+                return InvalidSelection($"Invalid page range '{token}'. Use one-based physical pages like '1,3-5'.");
+            }
+
+            long added = (long)last - first + 1;
+            if (selected.Count + added > MaxSelectedPages)
+            {
+                return InvalidSelection($"The pages selector expands to more than {MaxSelectedPages} pages.");
+            }
+
+            for (int page = first;; page++)
+            {
+                selected.Add(page);
+                if (page == last)
+                {
+                    break;
+                }
+            }
+        }
+
+        return Result<IReadOnlyList<int>>.Success(selected.ToArray());
+    }
+
+    private static Result<IReadOnlyList<int>> InvalidSelection(string message)
+    {
+        return Result<IReadOnlyList<int>>.Failure(AppErrorCodes.InvalidArgument, message);
+    }
+
+    private static bool TryParsePageNumber(string value, out int page)
+    {
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out page) && page > 0;
+    }
+
+    private static McpTranslationRunStatusProjection Project(TranslationRunStatus run)
+    {
+        return new McpTranslationRunStatusProjection(
+            run.RunId.ToString("D"),
+            run.DocumentInstanceId.ToString(),
+            StateName(run.State),
+            run.TotalPages,
+            run.CompletedPages,
+            run.Succeeded,
+            run.Partial,
+            run.Failed,
+            run.Skipped,
+            run.CancelledPages,
+            run.Pages.Select(page => new McpTranslationPageStatusProjection(
+                page.PageIndex,
+                PageStateName(page.State),
+                page.CommittedBoxCount,
+                page.ErrorCode,
+                page.ErrorMessage)).ToArray(),
+            run.ErrorCode,
+            run.ErrorMessage);
+    }
+
+    private static string StateName(TranslationRunLifecycle state)
+    {
+        return state switch
+        {
+            TranslationRunLifecycle.Running => "running",
+            TranslationRunLifecycle.Completed => "completed",
+            TranslationRunLifecycle.Cancelled => "cancelled",
+            TranslationRunLifecycle.Failed => "failed",
+            _ => "unknown"
+        };
+    }
+
+    private static string PageStateName(TranslationPageRunState state)
+    {
+        return state switch
+        {
+            TranslationPageRunState.Skipped => "skipped",
+            TranslationPageRunState.Committed => "committed",
+            TranslationPageRunState.Partial => "partial",
+            TranslationPageRunState.Failed => "failed",
+            TranslationPageRunState.Cancelled => "cancelled",
+            _ => "unknown"
+        };
     }
 }

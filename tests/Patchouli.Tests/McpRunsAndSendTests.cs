@@ -204,18 +204,20 @@ public sealed class McpRunsAndSendTests
     }
 
     [Fact]
-    public async Task Runs_browse_lists_ocr_and_agent_subtrees_and_sessions()
+    public async Task Runs_browse_lists_ocr_translation_and_agent_subtrees_and_sessions()
     {
         StubAgentRunsApi agent = new();
         agent.SetSession(SessionId, "running");
         StubOcrRunsApi ocr = new();
         ocr.SetTask("task-1", "queued");
-        McpCommandService commands = CreateService(new StubReadApi(), agent, ocr: ocr);
+        StubTranslationRunsApi translation = new();
+        translation.SetRun("44444444-4444-4444-4444-444444444444", "running", 1);
+        McpCommandService commands = CreateService(new StubReadApi(), agent, ocr: ocr, translation: translation);
 
         McpCommandResult<McpFindMeta, object> runs = await commands.FindAsync(
             new McpFindRequest(null, "patchouli://runs/", null));
         runs.Envelope!.Entries.Cast<McpFindEntry>().Select(entry => entry.Uri).Should().Equal(
-            "patchouli://runs/ocr/", "patchouli://runs/agent/");
+            "patchouli://runs/ocr/", "patchouli://runs/translation/", "patchouli://runs/agent/");
 
         McpCommandResult<McpFindMeta, object> agents = await commands.FindAsync(
             new McpFindRequest(null, "patchouli://runs/agent/", null));
@@ -226,6 +228,12 @@ public sealed class McpRunsAndSendTests
             new McpFindRequest(null, "patchouli://runs/ocr/", null));
         tasks.Envelope!.Entries.Cast<McpFindEntry>().Should().ContainSingle()
             .Which.Uri.Should().Be(McpResourceUris.OcrRunStatusUri("task-1"));
+
+        McpCommandResult<McpFindMeta, object> translationRuns = await commands.FindAsync(
+            new McpFindRequest(null, McpResourceUris.RunsTranslationScopeUri(), null));
+        translationRuns.Envelope!.Entries.Cast<McpFindEntry>().Should().ContainSingle()
+            .Which.Uri.Should().Be(
+                McpResourceUris.TranslationRunStatusUri("44444444-4444-4444-4444-444444444444"));
     }
 
     [Fact]
@@ -249,6 +257,98 @@ public sealed class McpRunsAndSendTests
             new McpFetchRequest([McpResourceUris.OcrRunStatusUri("unknown-task")], null, null));
         McpToolError.TryGetCode(missing.Envelope!.Entries[0].Error, out McpErrorCode code).Should().BeTrue();
         code.Should().Be(McpErrorCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Runs_translation_status_fetch_and_scope_listing_project_page_outcomes()
+    {
+        const string RunId = "44444444-4444-4444-4444-444444444444";
+        StubTranslationRunsApi translation = new();
+        translation.SetRun(RunId, "running", 2, 1,
+            [new McpTranslationPageStatusProjection(1, "committed", 4)]);
+        McpCommandService commands = CreateService(new StubReadApi(), translation: translation);
+
+        McpResourceUris.Parse(McpResourceUris.TranslationRunStatusUri(RunId)).Value.Kind.Should()
+            .Be(McpUriKind.RunTranslationStatus);
+        McpResourceUris.Parse(McpResourceUris.RunsTranslationScopeUri()).Value.Kind.Should()
+            .Be(McpUriKind.RunsTranslationScope);
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.TranslationRunStatusUri(RunId)], null, null));
+
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ResourceType.Should().Be("run_status");
+        using JsonDocument content = JsonDocument.Parse(McpToonCodec.DecodeToJson(entry.Content!));
+        content.RootElement.GetProperty("task_id").GetString().Should().Be(RunId);
+        content.RootElement.GetProperty("state").GetString().Should().Be("running");
+        content.RootElement.GetProperty("total").GetInt32().Should().Be(2);
+        content.RootElement.GetProperty("completed").GetInt32().Should().Be(1);
+        content.RootElement.GetProperty("succeeded").GetInt32().Should().Be(1);
+        JsonElement pages = content.RootElement.GetProperty("pages");
+        pages.GetArrayLength().Should().Be(1);
+        pages[0].GetProperty("page_index").GetInt32().Should().Be(1);
+        pages[0].GetProperty("state").GetString().Should().Be("committed");
+        pages[0].GetProperty("committed_box_count").GetInt32().Should().Be(4);
+
+        McpCommandResult<McpFindMeta, object> listed = await commands.FindAsync(
+            new McpFindRequest(null, McpResourceUris.RunsTranslationScopeUri(), null));
+        listed.Envelope!.Entries.Cast<McpFindEntry>().Should().ContainSingle()
+            .Which.Uri.Should().Be(McpResourceUris.TranslationRunStatusUri(RunId));
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> missing = await commands.FetchAsync(
+            new McpFetchRequest(
+                [McpResourceUris.TranslationRunStatusUri("55555555-5555-5555-5555-555555555555")], null, null));
+        McpToolError.TryGetCode(missing.Envelope!.Entries[0].Error, out McpErrorCode code).Should().BeTrue();
+        code.Should().Be(McpErrorCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Translation_actions_start_and_cancel_through_the_run_api()
+    {
+        Guid documentId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        const string RunId = "44444444-4444-4444-4444-444444444444";
+        StubTranslationRunsApi translation = new();
+        translation.SetRun(RunId, "running", 3);
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions =
+            [
+                new McpDomainPermission("texts", "translation.start", true),
+                new McpDomainPermission("runs", "translation.cancel", true)
+            ]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), translation: translation,
+            permissions: _ => Task.FromResult(settings));
+
+        McpCommandResult<McpFindMeta, object> actions = await commands.FindAsync(
+            new McpFindRequest(null, "patchouli://actions/", null));
+        actions.Envelope!.Entries.Cast<McpFindEntry>().Select(entry => entry.Title).Should()
+            .Contain(["translation.start", "translation.cancel"]);
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> started = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.DocumentUri(new DocumentInstanceId(documentId)),
+                "translation.start", JsonSerializer.SerializeToElement(new
+                {
+                    pages = "1,3-5", target_language = "zh", force = true
+                })));
+
+        started.Error.Should().BeNull();
+        McpActionSendResult startEntry = started.Envelope!.Entries.Should().ContainSingle().Subject;
+        startEntry.State.Should().Be("started");
+        startEntry.RunUri.Should().Be(McpResourceUris.TranslationRunStatusUri(RunId));
+        startEntry.Result.Should().BeOfType<McpTranslationActionResult>().Which.TotalPages.Should().Be(3);
+        McpTranslationRunStartRequest request = translation.Starts.Should().ContainSingle().Subject;
+        request.Pages.Should().Be("1,3-5");
+        request.TargetLanguage.Should().Be("zh");
+        request.ForceRetranslate.Should().BeTrue();
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> cancelled = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.TranslationRunStatusUri(RunId), "translation.cancel",
+                JsonSerializer.SerializeToElement(new { })));
+
+        cancelled.Error.Should().BeNull();
+        cancelled.Envelope!.Entries.Should().ContainSingle().Which.State.Should().Be("completed");
+        translation.Cancelled.Should().Be(RunId);
     }
 
     [Fact]
@@ -394,11 +494,13 @@ public sealed class McpRunsAndSendTests
     private static McpCommandService CreateService(StubReadApi read, StubAgentRunsApi? agent = null,
         StubWorkflowRunsApi? workflows = null, StubOcrRunsApi? ocr = null, bool putEnabled = true,
         bool sendEnabled = true, StubWriteApi? write = null,
-        Func<CancellationToken, Task<McpServerSettings>>? permissions = null)
+        Func<CancellationToken, Task<McpServerSettings>>? permissions = null,
+        StubTranslationRunsApi? translation = null)
     {
         return new McpCommandService(read, write ?? new StubWriteApi(), new StubBiblatexImportService(),
             new StubItemService(), new StubEvidenceReader(), putEnabled: putEnabled, sendEnabled: sendEnabled,
-            agentRuns: agent, workflowRuns: workflows, ocrRuns: ocr, permissionSettings: permissions);
+            agentRuns: agent, workflowRuns: workflows, ocrRuns: ocr, permissionSettings: permissions,
+            translationRuns: translation);
     }
 
     private sealed class StubAgentRunsApi : IMcpAgentRunsApi
@@ -605,6 +707,76 @@ public sealed class McpRunsAndSendTests
                 ? Result<McpOcrTaskStatusProjection>.Failure(AppErrorCodes.NotFound,
                     $"The OCR task '{taskId}' does not exist.")
                 : Result<McpOcrTaskStatusProjection>.Success(task));
+        }
+    }
+
+    private sealed class StubTranslationRunsApi : IMcpTranslationRunsApi
+    {
+        private readonly Dictionary<string, McpTranslationRunStatusProjection> _runs = new(StringComparer.Ordinal);
+
+        public readonly List<McpTranslationRunStartRequest> Starts = [];
+        public string? Cancelled { get; private set; }
+
+        public void SetRun(string taskId, string state, int total = 0, int completed = 0,
+            IReadOnlyList<McpTranslationPageStatusProjection>? pages = null,
+            string documentId = "11111111-1111-1111-1111-111111111111")
+        {
+            McpTranslationPageStatusProjection[] settled = pages is null ? [] : [.. pages];
+            _runs[taskId] = new McpTranslationRunStatusProjection(
+                taskId,
+                documentId,
+                state,
+                total,
+                completed,
+                settled.Count(page => page.State == "committed"),
+                settled.Count(page => page.State == "partial"),
+                settled.Count(page => page.State == "failed"),
+                settled.Count(page => page.State == "skipped"),
+                settled.Count(page => page.State == "cancelled"),
+                settled);
+        }
+
+        public Task<Result<McpTranslationRunStatusProjection>> StartAsync(
+            McpTranslationRunStartRequest request, CancellationToken cancellationToken = default)
+        {
+            Starts.Add(request);
+            if (_runs.Count == 0)
+            {
+                SetRun("44444444-4444-4444-4444-444444444444", "running", 1,
+                    documentId: request.DocumentInstanceId.ToString());
+            }
+
+            return Task.FromResult(Result<McpTranslationRunStatusProjection>.Success(_runs.Values.First()));
+        }
+
+        public Task<Result<IReadOnlyList<McpTranslationRunStatusProjection>>> ListRunsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<McpTranslationRunStatusProjection>>.Success(
+                (IReadOnlyList<McpTranslationRunStatusProjection>)_runs.Values.ToArray()));
+        }
+
+        public Task<Result<McpTranslationRunStatusProjection>> TryGetRunStatusAsync(string taskId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(!_runs.TryGetValue(taskId, out McpTranslationRunStatusProjection? run)
+                ? Result<McpTranslationRunStatusProjection>.Failure(AppErrorCodes.NotFound,
+                    $"The translation run '{taskId}' does not exist.")
+                : Result<McpTranslationRunStatusProjection>.Success(run));
+        }
+
+        public Task<Result<McpTranslationRunStatusProjection>> CancelAsync(string taskId,
+            CancellationToken cancellationToken = default)
+        {
+            Cancelled = taskId;
+            if (!_runs.TryGetValue(taskId, out McpTranslationRunStatusProjection? run))
+            {
+                return Task.FromResult(Result<McpTranslationRunStatusProjection>.Failure(AppErrorCodes.NotFound,
+                    $"The translation run '{taskId}' does not exist."));
+            }
+
+            _runs[taskId] = run with { State = "cancelled" };
+            return Task.FromResult(Result<McpTranslationRunStatusProjection>.Success(_runs[taskId]));
         }
     }
 

@@ -325,6 +325,10 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "      send patchouli://runs/ocr/<task-id>/status ocr.retry --args '{\"request_id\":\"r2\"}'");
     Console.Error.WriteLine(
+        "      send patchouli://texts/<document-id>/ translation.start --args '{\"pages\":\"1,3-5\",\"target_language\":\"zh\",\"force\":false}'");
+    Console.Error.WriteLine(
+        "      send patchouli://runs/translation/<run-id>/status translation.cancel");
+    Console.Error.WriteLine(
         "      send patchouli://items/<item-id>.yml cite.render");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");

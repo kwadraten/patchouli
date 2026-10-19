@@ -54,8 +54,7 @@
         <ResourceDictionary x:Key="Light">
           <SolidColorBrush x:Key="StatusErrorBrush" Color="#ffdad6" />
         </ResourceDictionary>
-        <ResourceDictionary x:Key="Dark">
-        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark" />
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
   </Window.Resources>
@@ -275,6 +274,8 @@
                 </Style>
               </MenuItem.Styles>
             </MenuItem>
+            <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
+                      ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
             <Separator />
             <!-- Opens the chat tab without starting any session (plan §3.8). -->
             <MenuItem Header="打开聊天标签页" Command="{Binding OpenAgentChatCommand}" />

@@ -32,6 +32,21 @@ public sealed partial class McpCommandService
                 {"type":"object","additionalProperties":false,"properties":{"request_id":{"type":"string","minLength":1}}}
                 """), receipt, "started", ["ocr", "write_text", "rebuild_index", "engine_network"], ["runs:ocr.retry"]),
             (invocation, ct) => ExecuteOcrActionAsync("ocr.retry", invocation, ct));
+        JsonElement translationReceipt = Schema("""
+                                                {"type":"object","required":["task_id","status_uri","state","total_pages"],
+                                                 "properties":{"task_id":{"type":"string"},"status_uri":{"type":"string"},
+                                                 "state":{"type":"string"},"total_pages":{"type":"integer"}}}
+                                                """);
+        registry.Register(new ActionDescriptor("translation.start", [nameof(McpUriKind.Document)], Schema("""
+                    {"type":"object","additionalProperties":false,"properties":{"pages":{"type":"string"},
+                     "target_language":{"type":"string"},"force":{"type":"boolean"},"request_id":{"type":"string"}}}
+                    """), translationReceipt, "started", ["translation", "write_text", "engine_network"],
+                ["texts:translation.start"]),
+            (invocation, ct) => ExecuteTranslationActionAsync("translation.start", invocation, ct));
+        registry.Register(new ActionDescriptor("translation.cancel", [nameof(McpUriKind.RunTranslationStatus)],
+                Schema("""{"type":"object","additionalProperties":false,"properties":{}}"""), translationReceipt,
+                "completed", ["cancel_translation"], ["runs:translation.cancel"]),
+            (invocation, ct) => ExecuteTranslationActionAsync("translation.cancel", invocation, ct));
         registry.Register(new ActionDescriptor("cite.render",
                 [
                     nameof(McpUriKind.Item), nameof(McpUriKind.Document), nameof(McpUriKind.Page),
@@ -156,12 +171,37 @@ public sealed partial class McpCommandService
         return _actions.Describe().Where(descriptor => descriptor.Id == "cite.render"
             ? new[] { "items", "texts" }.Any(domain =>
                 ActionAllowed(descriptor, permissions, "patchouli://" + domain + "/"))
-            : _ocrCommands is not null && _sendEnabled && descriptor.RequiredCapabilities.Any(capability =>
+            : ActionServiceAvailable(descriptor) && _sendEnabled &&
+              descriptor.RequiredCapabilities.Any(capability =>
+              {
+                  string domain = capability.Split(':')[0];
+                  return SendToolAllowed(permissions) &&
+                         ActionAllowed(descriptor, permissions, "patchouli://" + domain + "/");
+              })).OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
+    }
+
+    /// <summary>
+    ///     Whether the command service an Action needs is available on this host. OCR verbs need
+    ///     <see cref="_ocrCommands" />, translation verbs need <see cref="_translationRuns" />; other
+    ///     verbs have no optional command-service dependency.
+    /// </summary>
+    private bool ActionServiceAvailable(ActionDescriptor descriptor)
+    {
+        foreach (string capability in descriptor.RequiredCapabilities)
+        {
+            string verb = capability.Split(':').Last();
+            if (verb.StartsWith("ocr.", StringComparison.Ordinal) && _ocrCommands is null)
             {
-                string domain = capability.Split(':')[0];
-                return SendToolAllowed(permissions) &&
-                       ActionAllowed(descriptor, permissions, "patchouli://" + domain + "/");
-            })).OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
+                return false;
+            }
+
+            if (verb.StartsWith("translation.", StringComparison.Ordinal) && _translationRuns is null)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async Task<Result<ActionOutcome>> ExecuteOcrActionAsync(string action, ActionInvocation invocation,
@@ -212,6 +252,64 @@ public sealed partial class McpCommandService
             new McpOcrResult(action, receipt.TaskId, receipt.StatusUri, receipt.State, receipt.EngineId,
                 receipt.PresetId, receipt.PresetVersionId, receipt.Reused),
             action == "ocr.cancel" ? null : receipt.StatusUri));
+    }
+
+    private async Task<Result<ActionOutcome>> ExecuteTranslationActionAsync(string action, ActionInvocation invocation,
+        CancellationToken ct)
+    {
+        if (_translationRuns is null)
+        {
+            return Result<ActionOutcome>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Translation runs are unavailable on this host.");
+        }
+
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(invocation.Target);
+        if (parsed.IsFailure)
+        {
+            return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                parsed.ErrorMessage ?? "Invalid target.");
+        }
+
+        if (action == "translation.start")
+        {
+            JsonElement args = invocation.Args;
+            Result<McpTranslationRunStatusProjection> started = await _translationRuns.StartAsync(
+                new McpTranslationRunStartRequest(
+                    parsed.Value.DocumentId!.Value,
+                    StringArg(args, "pages"),
+                    StringArg(args, "target_language"),
+                    args.TryGetProperty("force", out JsonElement force) && force.ValueKind == JsonValueKind.True,
+                    StringArg(args, "request_id")), ct);
+            return ToTranslationOutcome(started, true);
+        }
+
+        if (!Guid.TryParse(parsed.Value.RunTaskId, out _))
+        {
+            return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                "The translation run identity must be a UUID.");
+        }
+
+        Result<McpTranslationRunStatusProjection> cancelled =
+            await _translationRuns.CancelAsync(parsed.Value.RunTaskId!, ct);
+        return ToTranslationOutcome(cancelled, false);
+    }
+
+    private static Result<ActionOutcome> ToTranslationOutcome(
+        Result<McpTranslationRunStatusProjection> result,
+        bool start)
+    {
+        if (result.IsFailure)
+        {
+            return Result<ActionOutcome>.Failure(result.ErrorCode!,
+                McpOutputSanitizer.Sanitize(result.ErrorMessage ?? "The translation run failed."));
+        }
+
+        McpTranslationRunStatusProjection run = result.Value;
+        string statusUri = McpResourceUris.TranslationRunStatusUri(run.TaskId);
+        return Result<ActionOutcome>.Success(new ActionOutcome(
+            start ? "started" : "completed",
+            new McpTranslationActionResult(run.TaskId, statusUri, run.State, run.Total),
+            start ? statusUri : null));
     }
 
     private static string? StringArg(JsonElement args, string key)

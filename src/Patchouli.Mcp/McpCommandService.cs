@@ -38,6 +38,7 @@ public sealed partial class McpCommandService
     private readonly IFileImportService? _fileImport;
     private readonly IPageImageViewService? _pageView;
     private readonly IMcpOcrCommandApi? _ocrCommands;
+    private readonly IMcpTranslationRunsApi? _translationRuns;
     private readonly Func<CancellationToken, Task<McpServerSettings>>? _permissionSettings;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
@@ -48,7 +49,7 @@ public sealed partial class McpCommandService
         Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
         bool addEnabled = true, bool viewEnabled = true,
-        IMcpOcrCommandApi? ocrCommands = null)
+        IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null)
     {
         _read = read;
         _write = write;
@@ -67,6 +68,7 @@ public sealed partial class McpCommandService
         _fileImport = fileImport;
         _pageView = pageView;
         _ocrCommands = ocrCommands;
+        _translationRuns = translationRuns;
         _permissionSettings = permissionSettings;
         _actions = CreateActionRegistry();
     }
@@ -684,6 +686,7 @@ public sealed partial class McpCommandService
         if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
+            or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
             or McpUriKind.RunsAgentScope or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
             or McpUriKind.RunAgentEvents or McpUriKind.WorkflowsScope or McpUriKind.Workflow or McpUriKind.ActionsScope
             or McpUriKind.Action)
@@ -1023,6 +1026,8 @@ public sealed partial class McpCommandService
                 parsed.Value.IsLegacy),
             McpUriKind.RunOcrStatus => await FetchOcrRunStatusAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
+            McpUriKind.RunTranslationStatus => await FetchTranslationRunStatusAsync(parsed.Value, range, limitBytes,
+                state, cancellationToken),
             McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus => await FetchAgentRunStatusAsync(
                 parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.RunAgentEvents => await FetchAgentRunEventsAsync(parsed.Value, range, limitBytes, state,
@@ -1183,6 +1188,34 @@ public sealed partial class McpCommandService
         }
 
         string content = ApplyLines(DefaultToonEncoder(task.Value), range, "lines");
+        return FitTextEntry(uri, "run_status", null, content, limitBytes, state.LibraryRevision);
+    }
+
+    private async Task<McpFetchResult> FetchTranslationRunStatusAsync(McpUriParseResult target, string? range,
+        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        string uri = McpResourceUris.TranslationRunStatusUri(target.RunTaskId!);
+        if (_translationRuns is null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.Unavailable,
+                "Translation run projections are unavailable on this host."), limitBytes);
+        }
+
+        Result<McpTranslationRunStatusProjection> run =
+            await _translationRuns.TryGetRunStatusAsync(target.RunTaskId!, cancellationToken);
+        if (run.IsFailure)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorMappings.ToReadError(run.ErrorCode),
+                run.ErrorMessage ?? "Translation run was not found."), limitBytes);
+        }
+
+        string? rangeError = ValidateRange(range, "lines");
+        if (rangeError is not null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
+        }
+
+        string content = ApplyLines(DefaultToonEncoder(run.Value), range, "lines");
         return FitTextEntry(uri, "run_status", null, content, limitBytes, state.LibraryRevision);
     }
 
@@ -1928,11 +1961,13 @@ public sealed partial class McpCommandService
 
             case McpUriKind.RunsScope:
             {
-                // The volatile runs root exposes its two independent runtime subtrees (D7: OCR runs
-                // and agent sessions keep separate status vocabularies and are never unified).
+                // The volatile runs root exposes its three independent runtime subtrees: OCR tasks,
+                // direct translation runs and agent sessions. Their status vocabularies stay separate
+                // and are never unified (D7).
                 object[] runRoots =
                 [
                     new McpFindEntry(McpResourceUris.RunsOcrScopeUri(), "/runs/ocr", "directory"),
+                    new McpFindEntry(McpResourceUris.RunsTranslationScopeUri(), "/runs/translation", "directory"),
                     new McpFindEntry(McpResourceUris.RunsAgentScopeUri(), "/runs/agent", "directory")
                 ];
                 object[] page = runRoots.Skip(offset).Take(limit).ToArray();
@@ -1991,6 +2026,35 @@ public sealed partial class McpCommandService
                     .Select(task => (object)new McpFindEntry(
                         McpResourceUris.OcrRunStatusUri(task.TaskId),
                         string.IsNullOrWhiteSpace(task.ItemTitle) ? task.TaskId : task.ItemTitle,
+                        "file"))
+                    .ToArray();
+                object[] page = all.Skip(offset).Take(limit).ToArray();
+                string? continuation = offset + page.Length < all.Length
+                    ? EncodeCursor(scopeUri, null, false, where, offset + page.Length, null)
+                    : null;
+                return new FindPage(page, continuation, all.Length, all.Length);
+            }
+
+            case McpUriKind.RunsTranslationScope:
+            {
+                if (_translationRuns is null)
+                {
+                    return FindPage.Failed(McpErrorCode.Unavailable,
+                        "Translation run projections are unavailable on this host.");
+                }
+
+                Result<IReadOnlyList<McpTranslationRunStatusProjection>> runs =
+                    await _translationRuns.ListRunsAsync(cancellationToken);
+                if (runs.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(runs.ErrorCode),
+                        runs.ErrorMessage ?? runs.ErrorCode ?? "List translation runs failed.");
+                }
+
+                object[] all = runs.Value
+                    .Select(run => (object)new McpFindEntry(
+                        McpResourceUris.TranslationRunStatusUri(run.TaskId),
+                        string.IsNullOrWhiteSpace(run.DocumentId) ? run.TaskId : run.DocumentId,
                         "file"))
                     .ToArray();
                 object[] page = all.Skip(offset).Take(limit).ToArray();
@@ -2432,6 +2496,24 @@ public sealed partial class McpCommandService
                     ? new SingletonResource(
                         McpResourceUris.OcrRunStatusUri(target.RunTaskId!),
                         string.IsNullOrWhiteSpace(task.Value.ItemTitle) ? target.RunTaskId! : task.Value.ItemTitle,
+                        "file",
+                        false)
+                    : null;
+            }
+
+            case McpUriKind.RunTranslationStatus:
+            {
+                if (_translationRuns is null)
+                {
+                    return null;
+                }
+
+                Result<McpTranslationRunStatusProjection> run =
+                    await _translationRuns.TryGetRunStatusAsync(target.RunTaskId!, cancellationToken);
+                return run.IsSuccess
+                    ? new SingletonResource(
+                        McpResourceUris.TranslationRunStatusUri(target.RunTaskId!),
+                        string.IsNullOrWhiteSpace(run.Value.DocumentId) ? target.RunTaskId! : run.Value.DocumentId,
                         "file",
                         false)
                     : null;
@@ -2908,7 +2990,8 @@ public sealed partial class McpCommandService
                     "citable"
                 },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
-            McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunsAgentScope
+            McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunsTranslationScope
+                or McpUriKind.RunsAgentScope
                 or McpUriKind.WorkflowsScope => [],
             _ => null
         };
@@ -2932,7 +3015,8 @@ public sealed partial class McpCommandService
     {
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
-            or McpUriKind.RunOcrStatus or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
+            or McpUriKind.RunOcrStatus or McpUriKind.RunTranslationStatus
+            or McpUriKind.RunAgentSession or McpUriKind.RunAgentStatus
             or McpUriKind.RunAgentEvents or McpUriKind.Workflow or McpUriKind.DocumentMap or McpUriKind.Action;
     }
 

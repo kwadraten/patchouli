@@ -241,7 +241,8 @@ public sealed class McpServerHost : IAsyncDisposable
             workflowRuns: new McpHostWorkflowRunsApi(_services.HostWorkflows),
             ocrRuns: new McpHostOcrRunsApi(_services.GetOcrQueueRowsAsync),
             fileImport: _services.FileImport, pageView: _services.PageImageView,
-            ocrCommands: _services.OcrCommands);
+            ocrCommands: _services.OcrCommands,
+            translationRuns: new McpHostTranslationRunsApi(_services.TranslationRuns));
         McpHttpServer server = new(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnServerConnectionCountsChanged;
         try

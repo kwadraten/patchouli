@@ -38,7 +38,7 @@ public sealed class McpProtocolHandler
         IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
         IMcpOcrRunsApi? ocrRuns = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
-        IMcpOcrCommandApi? ocrCommands = null)
+        IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
@@ -57,7 +57,8 @@ public sealed class McpProtocolHandler
             pageView,
             !IsSwitchOff(effectiveSettings, "patchouli.add"),
             !IsSwitchOff(effectiveSettings, "patchouli.view"),
-            ocrCommands);
+            ocrCommands,
+            translationRuns);
         _ = db;
         _settings = effectiveSettings with
         {
@@ -518,14 +519,17 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.send",
-                "Execute a typed action against a Library resource (e.g. ocr.start, ocr.cancel, ocr.retry, cite.render).",
+                "Execute a typed action against a Library resource (e.g. ocr.start, ocr.cancel, ocr.retry, " +
+                "translation.start, translation.cancel, cite.render).",
                 ["target", "action", "args"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["target"] = ToolSchemaProperty.String(
-                        "Target resource URI (e.g. texts/<document-id>/ for ocr.start; runs/ocr/<task-id>/status for ocr.cancel/retry)."),
+                        "Target resource URI (e.g. texts/<document-id>/ for ocr.start or translation.start; " +
+                        "runs/ocr/<task-id>/status for ocr.cancel/retry; runs/translation/<run-id>/status for translation.cancel)."),
                     ["action"] = ToolSchemaProperty.String(
-                        "Action identifier (e.g. \"ocr.start\", \"ocr.cancel\", \"ocr.retry\", \"cite.render\")."),
+                        "Action identifier (e.g. \"ocr.start\", \"ocr.cancel\", \"ocr.retry\", \"translation.start\", " +
+                        "\"translation.cancel\", \"cite.render\")."),
                     ["args"] = ToolSchemaProperty.Object("Action arguments object."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 },

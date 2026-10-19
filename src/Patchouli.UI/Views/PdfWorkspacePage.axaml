@@ -283,6 +283,16 @@
             </StackPanel>
           </Button>
 
+          <!-- Issue #20: translate every page of the document that is open in this workspace. -->
+          <Button Background="Transparent" Command="{Binding StartDocumentTranslationCommand}"
+                  ToolTip.Tip="全文翻译当前文档">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Text="翻译" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+            </StackPanel>
+          </Button>
+
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0" />
 
           <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}"

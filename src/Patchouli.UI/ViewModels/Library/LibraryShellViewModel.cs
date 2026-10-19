@@ -450,6 +450,10 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public AsyncCommand RunSelectedItemOcrCommand => _main.RunSelectedItemOcrCommand;
 
+    /// <summary>Full-document translation for the selected item's main document (issue #20).</summary>
+    [ExcludeFromDerivedGeneration]
+    public AsyncCommand StartFullTranslationCommand => _main.StartFullTranslationCommand;
+
     /// <summary>
     ///     The workflow entries of the Library context menu: the very collection the menu bar shows, so
     ///     both surfaces list the same <c>WorkflowStore</c> definitions in the same order (plan §3.8).

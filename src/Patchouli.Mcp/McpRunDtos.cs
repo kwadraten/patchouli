@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
@@ -69,6 +70,100 @@ public interface IMcpOcrRunsApi
     Task<Result<McpOcrTaskStatusProjection>> TryGetTaskStatusAsync(string taskId,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+///     The volatile direct translation runs behind <c>patchouli://runs/translation/</c>. A run belongs
+///     to exactly one document, accepts an optional one-based page selector and returns the same
+///     per-page outcome projection the host recorded. The run id is the task id.
+/// </summary>
+public interface IMcpTranslationRunsApi
+{
+    /// <summary>
+    ///     Starts one direct translation run over the requested pages (empty selects the whole
+    ///     document) and returns its initial running snapshot.
+    /// </summary>
+    Task<Result<McpTranslationRunStatusProjection>> StartAsync(McpTranslationRunStartRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Every run this host still holds in memory, newest first.</summary>
+    Task<Result<IReadOnlyList<McpTranslationRunStatusProjection>>> ListRunsAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>One run's live status, or NotFound when the run id is unknown.</summary>
+    Task<Result<McpTranslationRunStatusProjection>> TryGetRunStatusAsync(string taskId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Cancels a running translation and returns its post-cancel snapshot.</summary>
+    Task<Result<McpTranslationRunStatusProjection>> CancelAsync(string taskId,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+///     One direct translation start request. <see cref="Pages" /> uses the same one-based
+///     <c>1,3-5</c> selector as OCR; blank or null selects the whole document.
+/// </summary>
+/// <param name="DocumentInstanceId">The document to translate.</param>
+/// <param name="Pages">Optional one-based page selector; blank selects the whole document.</param>
+/// <param name="TargetLanguage">Optional target-language override for this run only.</param>
+/// <param name="ForceRetranslate">When true, pages with a current translation are translated again.</param>
+/// <param name="RequestId">Optional caller correlation id; accepted for symmetry with OCR, not deduplicated.</param>
+public sealed record McpTranslationRunStartRequest(
+    DocumentInstanceId DocumentInstanceId,
+    string? Pages = null,
+    string? TargetLanguage = null,
+    bool ForceRetranslate = false,
+    string? RequestId = null);
+
+/// <summary>One direct translation run's observable state projected for runs/translation status.</summary>
+public sealed record McpTranslationRunStatusProjection(
+    [property: JsonPropertyName("task_id")]
+    string TaskId,
+    [property: JsonPropertyName("document_id")]
+    string DocumentId,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("total")] int Total,
+    [property: JsonPropertyName("completed")]
+    int Completed,
+    [property: JsonPropertyName("succeeded")]
+    int Succeeded,
+    [property: JsonPropertyName("partial")]
+    int Partial,
+    [property: JsonPropertyName("failed")] int Failed,
+    [property: JsonPropertyName("skipped")]
+    int Skipped,
+    [property: JsonPropertyName("cancelled")]
+    int Cancelled,
+    [property: JsonPropertyName("pages")] IReadOnlyList<McpTranslationPageStatusProjection> Pages,
+    [property: JsonPropertyName("error_code")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ErrorCode = null,
+    [property: JsonPropertyName("error_message")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ErrorMessage = null);
+
+/// <summary>One settled page of a direct translation run.</summary>
+public sealed record McpTranslationPageStatusProjection(
+    [property: JsonPropertyName("page_index")]
+    int PageIndex,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("committed_box_count")]
+    int CommittedBoxCount,
+    [property: JsonPropertyName("error_code")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ErrorCode = null,
+    [property: JsonPropertyName("error_message")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ErrorMessage = null);
+
+/// <summary>The receipt returned by <c>translation.start</c> and <c>translation.cancel</c>.</summary>
+public sealed record McpTranslationActionResult(
+    [property: JsonPropertyName("task_id")]
+    string TaskId,
+    [property: JsonPropertyName("status_uri")]
+    string StatusUri,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("total_pages")]
+    int TotalPages);
 
 /// <summary>One agent session's observable state projected for <c>runs/agent/{session-id}/status</c>.</summary>
 public sealed record McpAgentSessionStatusProjection(

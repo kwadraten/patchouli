@@ -17,6 +17,7 @@ using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
+using Patchouli.Core.Translation;
 using Patchouli.Core.View;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
@@ -54,6 +55,8 @@ using Patchouli.Core.Search;
 using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Lifecycle;
+using Patchouli.Host.Mcp;
+using Patchouli.Host.Translation;
 using Patchouli.Host.Workflows;
 using Patchouli.Host.Settings;
 using Patchouli.UI;
@@ -256,6 +259,16 @@ public sealed class HostServices
             OcrDefaults,
             adapterRegistry,
             () => StartupSettings.OcrEngines.DocumentOcrEngine);
+        // Issue #20 (B1): the direct batch translation engine is host-owned state, not an Agent or
+        // workflow. Every run reads the live LLM/Translation settings when it starts; runs are
+        // volatile and keep the engine's per-page outcomes for MCP observation and cancellation.
+        TranslationRuns = new TranslationRunService(
+            Pages,
+            DocumentTrees,
+            PageTranslations,
+            () => LlmSettings,
+            Credentials,
+            hostLifetime: LifetimeToken);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
             LibraryRevisions);
@@ -280,7 +293,8 @@ public sealed class HostServices
                     ? permissions.Value
                     : throw new InvalidOperationException(permissions.ErrorMessage);
             },
-            ocrCommands: OcrCommands);
+            ocrCommands: OcrCommands,
+            translationRuns: new McpHostTranslationRunsApi(TranslationRuns));
         // The .fsx workflow session reuses exactly that interpreter: a workflow runs through the same
         // session service and the same effect surface as the built-in agent (ADR 0036).
         OcrQueueHostPrimitives agentHostPrimitives = new(
@@ -437,6 +451,7 @@ public sealed class HostServices
     public ISourceFingerprintValidationService SourceFingerprintValidation { get; }
     public IOcrRunCoordinator Ocr { get; }
     public IMcpOcrCommandApi OcrCommands { get; }
+    public ITranslationRunService TranslationRuns { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public IDocumentPageMapService DocumentPageMaps { get; }
@@ -883,6 +898,11 @@ public sealed class HostServices
 
         _lifetimeCancellation.Cancel();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        if (TranslationRuns is IAsyncDisposable translationRuns)
+        {
+            await translationRuns.DisposeAsync();
+        }
+
         await _sessionResumeTask;
         await AgentSessions.DisposeAsync();
         await LibraryRevisionMonitor.DisposeAsync();

@@ -9,7 +9,10 @@ public static class McpPermissionPolicy
         ["/", "items", "texts", "translations", "csl-styles", "runs", "workflows", "actions", "library.yml"];
 
     public static IReadOnlyList<string> Verbs { get; } =
-        ["find", "fetch", "put", "cite", "send", "add", "view", "ocr.start", "ocr.cancel", "ocr.retry"];
+    [
+        "find", "fetch", "put", "cite", "send", "add", "view", "ocr.start", "ocr.cancel", "ocr.retry",
+        "translation.start", "translation.cancel"
+    ];
 
     /// <summary>Resource capabilities, independent of the user's authorization choices.</summary>
     public static bool Supports(string domain, string verb)
@@ -18,10 +21,11 @@ public static class McpPermissionPolicy
         {
             "/" => verb == "find",
             "items" => verb is "find" or "fetch" or "put" or "cite" or "add",
-            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view" or "ocr.start",
+            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view" or "ocr.start"
+                or "translation.start",
             "translations" => verb is "find" or "fetch" or "put" or "view",
             "csl-styles" => verb is "find" or "fetch" or "put" or "add",
-            "runs" => verb is "find" or "fetch" or "send" or "ocr.cancel" or "ocr.retry",
+            "runs" => verb is "find" or "fetch" or "send" or "ocr.cancel" or "ocr.retry" or "translation.cancel",
             "workflows" => verb is "find" or "fetch" or "send",
             "actions" => verb is "find" or "fetch",
             "library.yml" => verb is "find" or "fetch",
@@ -50,7 +54,7 @@ public static class McpPermissionPolicy
     {
         string domain = DomainOf(uri);
 
-        if (verb is "ocr.start" or "ocr.cancel" or "ocr.retry")
+        if (verb is "ocr.start" or "ocr.cancel" or "ocr.retry" or "translation.start" or "translation.cancel")
         {
             if (!Supports(domain, verb))
             {
