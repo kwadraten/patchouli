@@ -52,8 +52,8 @@ public sealed class UpdateLauncherMappingTests
     {
         // The launcher branches on exactly these three extensions (Windows
         // .exe / macOS .dmg / Linux .AppImage). A .tmp fallback therefore
-        // matches no platform branch and can never be launched as an
-        // installer.
+        // is rejected by the launcher's extension guard before any launch
+        // is attempted.
         FieldInfo? field = typeof(UpdateDownloader).GetField(
             "KnownInstallerExtensions", BindingFlags.NonPublic | BindingFlags.Static);
 
