@@ -49,7 +49,10 @@ public sealed class UpdateDownloaderTests : IDisposable
 
     private static HashSet<string> TempUpdateFiles()
     {
-        return Directory.GetFiles(Path.GetTempPath(), "patchouli-update-*.tmp").ToHashSet();
+        // No extension filter: since the P1 fix the temp file keeps the asset's
+        // installer extension (.exe/.dmg/.AppImage), so a "*.tmp" glob would
+        // miss leaked downloads.
+        return Directory.GetFiles(Path.GetTempPath(), "patchouli-update-*").ToHashSet();
     }
 
     private UpdateDownloader DownloaderWithSidecar(string? sidecarHex)
@@ -82,6 +85,35 @@ public sealed class UpdateDownloaderTests : IDisposable
         result.Value.Sha256Verified.Should().BeTrue();
         File.Exists(result.Value.FilePath).Should().BeTrue();
         (await File.ReadAllBytesAsync(result.Value.FilePath)).Should().Equal(_payload);
+        _deliveredFiles.Add(result.Value.FilePath);
+    }
+
+    [Fact]
+    public async Task Downloaded_file_keeps_the_asset_installer_extension()
+    {
+        // P1 fix: the temp file must keep the asset extension so the launcher
+        // can dispatch on it; a hardcoded ".tmp" missed every platform branch.
+        string expected = Convert.ToHexString(SHA256.HashData(_payload));
+        var downloader = DownloaderWithSidecar(expected);
+
+        Result<VerifiedDownload> result = await downloader.DownloadAsync(Asset());
+
+        result.IsSuccess.Should().BeTrue();
+        Path.GetExtension(result.Value.FilePath).Should().Be(".AppImage");
+        _deliveredFiles.Add(result.Value.FilePath);
+    }
+
+    [Fact]
+    public async Task Unknown_asset_extension_falls_back_to_tmp_temp_file()
+    {
+        var asset = new ReleaseAssetInfo("patchouli-0.3.13-release-notes.zip",
+            "https://example.test/patchouli-0.3.13-release-notes.zip", _payload.Length);
+        var downloader = DownloaderWithSidecar(sidecarHex: null);
+
+        Result<VerifiedDownload> result = await downloader.DownloadAsync(asset);
+
+        result.IsSuccess.Should().BeTrue();
+        Path.GetExtension(result.Value.FilePath).Should().Be(".tmp");
         _deliveredFiles.Add(result.Value.FilePath);
     }
 

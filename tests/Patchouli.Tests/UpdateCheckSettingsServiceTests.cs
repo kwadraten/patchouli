@@ -108,4 +108,55 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
         await FluentActions.Invoking(() => Service().SaveSettingsAsync(null!))
             .Should().ThrowAsync<ArgumentNullException>();
     }
+
+    [Fact]
+    public async Task SaveAutoCheckAsync_toggles_flag_and_preserves_last_check()
+    {
+        var service = Service();
+        var stamp = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: stamp));
+
+        Result<UpdateCheckSettings> saved = await service.SaveAutoCheckAsync(false);
+        Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
+
+        saved.IsSuccess.Should().BeTrue();
+        saved.Value.Should().Be(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: stamp));
+        loaded.Value.Should().Be(saved.Value);
+    }
+
+    [Fact]
+    public async Task SaveAutoCheckAsync_restores_flag_without_a_last_check()
+    {
+        var service = Service();
+        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: null));
+
+        Result<UpdateCheckSettings> saved = await service.SaveAutoCheckAsync(true);
+
+        saved.IsSuccess.Should().BeTrue();
+        saved.Value.Should().Be(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null));
+    }
+
+    [Fact]
+    public async Task Concurrent_record_and_flag_save_stay_coherent_under_the_write_gate()
+    {
+        var service = Service();
+        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null));
+        // From here on the flag is false and every writer preserves it; this
+        // keeps the final assertion deterministic under any interleaving.
+        await service.SaveAutoCheckAsync(false);
+
+        // Interleave the two writers; the write gate must keep the file
+        // coherent (no deadlock, no exception, no torn read-modify-write).
+        await Task.WhenAll(Enumerable.Range(0, 20).SelectMany(_ => new Task[]
+        {
+            service.RecordCheckAsync(),
+            service.SaveAutoCheckAsync(false),
+        }));
+        Result<UpdateCheckSettings> recorded = await service.RecordCheckAsync();
+        Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
+
+        recorded.IsSuccess.Should().BeTrue();
+        loaded.Value.Should().Be(new UpdateCheckSettings(
+            AutoCheckEnabled: false, LastCheckUtc: _clock.UtcNow));
+    }
 }
