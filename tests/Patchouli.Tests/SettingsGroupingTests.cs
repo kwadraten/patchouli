@@ -39,6 +39,7 @@ public sealed class SettingsGroupingTests
     [Theory]
     [InlineData("mcp", "MCP 服务与权限", "AI集成")]
     [InlineData("llm", "模型与翻译", "AI集成")]
+    [InlineData("agents", "Agent 集成", "AI集成")]
     [InlineData("import", "导入规则", "导入与识别")]
     [InlineData("ocr", "OCR 引擎", "导入与识别")]
     [InlineData("ocr_model", "多模态 OCR 模型", "导入与识别")]
