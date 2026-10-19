@@ -38,7 +38,8 @@ public sealed class UpdateDownloader
     /// <summary>
     /// Installer extensions the launcher knows how to start, matched against
     /// the release asset name (see <see cref="UpdateAssetSelector"/>). Anything
-    /// else falls back to <c>.tmp</c>, which the launcher refuses to execute.
+    /// else falls back to <c>.tmp</c>, which the launcher's extension guard
+    /// rejects before any launch is attempted.
     /// </summary>
     private static readonly string[] KnownInstallerExtensions = [".exe", ".dmg", ".AppImage"];
 
@@ -100,8 +101,11 @@ public sealed class UpdateDownloader
                 }
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception)
         {
+            // Best-effort cleanup: Path.GetTempPath() and the directory
+            // enumeration above can throw exception types beyond IO/permission
+            // failures; none of them may break startup, so swallow everything.
             _ = exception;
         }
     }
@@ -210,8 +214,11 @@ public sealed class UpdateDownloader
     }
 
     /// <summary>
-    /// Deletes a downloaded installer (e.g. when the user chooses "稍后安装" or
-    /// the install launch fails). Best-effort; never throws.
+    /// Deletes a downloaded installer when the update dialog is dismissed
+    /// without a choice (neither "立即安装" nor "稍后安装"). "稍后安装" keeps
+    /// the file for manual installation; kept files that outlive <see
+    /// cref="StaleDownloadRetention"/> are removed by <see
+    /// cref="CleanupStaleDownloads"/>. Best-effort; never throws.
     /// </summary>
     public static void DeleteDownload(string? path)
     {

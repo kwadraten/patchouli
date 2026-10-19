@@ -19,6 +19,13 @@ namespace Patchouli.Infrastructure.Update;
 /// </summary>
 public sealed class UpdateLauncher
 {
+    /// <summary>
+    /// Installer extensions the launcher knows how to start, matched
+    /// case-insensitively against the file extension. Anything else is
+    /// rejected before any launch is attempted (see <see cref="LaunchAsync"/>).
+    /// </summary>
+    private static readonly string[] KnownInstallerExtensions = [".exe", ".dmg", ".AppImage"];
+
     public Task<Result> LaunchAsync(string installerPath, CancellationToken cancellationToken = default)
     {
         try
@@ -28,6 +35,17 @@ public sealed class UpdateLauncher
             {
                 return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed,
                     "安装包文件不存在，无法启动安装。"));
+            }
+
+            // Reject unknown installer kinds explicitly: without this guard a
+            // ".tmp" fallback file would reach the UseShellExecute fallback
+            // below, which on Linux reports success via xdg-open while
+            // installing nothing.
+            if (!KnownInstallerExtensions.Contains(Path.GetExtension(installerPath),
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed,
+                    "不支持的安装包类型，仅支持 .exe、.dmg、.AppImage。"));
             }
 
             ProcessStartInfo startInfo;
