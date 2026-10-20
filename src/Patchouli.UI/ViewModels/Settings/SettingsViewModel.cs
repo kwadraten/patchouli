@@ -122,7 +122,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
-            new SettingsSectionEntryViewModel("update", "更新", UpdateSettings)
+            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
         ];
         foreach (SettingsSectionEntryViewModel entry in SectionEntries)
         {
@@ -150,7 +150,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
             new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
-            new NavCategoryViewModel("应用更新", "Download", UpdateSettings)
+            new NavCategoryViewModel("更新设置", "Download", UpdateSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
         {

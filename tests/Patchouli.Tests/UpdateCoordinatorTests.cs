@@ -79,7 +79,8 @@ public sealed class UpdateCoordinatorTests : IDisposable
 
     private static ReleaseAssetInfo Asset(string name, long size = 512)
     {
-        return new ReleaseAssetInfo(name, $"https://example.test/{name}", size);
+        return new ReleaseAssetInfo(name, $"https://example.test/{name}", size,
+            ChecksumSidecarStatus.Absent);
     }
 
     private static ReleaseInfo NewerReleaseWithAllPlatformAssets()

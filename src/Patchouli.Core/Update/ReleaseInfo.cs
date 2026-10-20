@@ -6,7 +6,16 @@ namespace Patchouli.Core.Update;
 public sealed record ReleaseAssetInfo(
     string Name,
     string DownloadUrl,
-    long SizeBytes);
+    long SizeBytes,
+    ChecksumSidecarStatus ChecksumStatus = ChecksumSidecarStatus.Unknown);
+
+/// <summary>Whether the release asset list confirms a SHA256 sidecar exists.</summary>
+public enum ChecksumSidecarStatus
+{
+    Unknown,
+    Absent,
+    Present
+}
 
 /// <summary>
 /// Issue #15: normalized release metadata returned by an <see cref="IUpdateSource"/>.

@@ -49,7 +49,7 @@ public sealed class GitHubReleaseSourceTests
             ReleaseJson("v0.4.0", draft: true, prerelease: false),
             ReleaseJson("v0.3.14", draft: false, prerelease: true),
             ReleaseJson("v0.3.13", draft: false, prerelease: false,
-                """[{"name": "Patchouli.NET-0.3.13-linux-x64.AppImage", "browser_download_url": "https://example.test/a.AppImage", "size": 42}]"""),
+                """[{"name": "Patchouli.NET-0.3.13-linux-x64.AppImage", "browser_download_url": "https://example.test/a.AppImage", "size": 42}, {"name": "Patchouli.NET-0.3.13-linux-x64.AppImage.sha256", "browser_download_url": "https://example.test/a.AppImage.sha256", "size": 93}]"""),
             ReleaseJson("v0.3.10", draft: false, prerelease: false)) + "]";
 
         Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
@@ -62,7 +62,20 @@ public sealed class GitHubReleaseSourceTests
         result.Value.IsDraft.Should().BeFalse();
         result.Value.IsPrerelease.Should().BeFalse();
         result.Value.Assets.Should().ContainSingle()
-            .Which.Name.Should().Be("Patchouli.NET-0.3.13-linux-x64.AppImage");
+            .Which.Should().Be(new ReleaseAssetInfo("Patchouli.NET-0.3.13-linux-x64.AppImage",
+                "https://example.test/a.AppImage", 42, ChecksumSidecarStatus.Present));
+    }
+
+    [Fact]
+    public async Task Marks_checksum_absence_only_when_release_asset_list_confirms_it()
+    {
+        string body = "[" + ReleaseJson("v0.3.13", draft: false, prerelease: false,
+            """[{"name": "Patchouli.NET-0.3.13-win-x64-setup.exe", "browser_download_url": "https://example.test/a.exe", "size": 42}]""") + "]";
+
+        Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
+
+        result.Value!.Assets.Should().ContainSingle().Which.ChecksumStatus.Should()
+            .Be(ChecksumSidecarStatus.Absent);
     }
 
     [Fact]

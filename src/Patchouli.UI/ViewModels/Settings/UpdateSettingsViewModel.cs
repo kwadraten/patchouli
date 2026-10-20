@@ -11,7 +11,7 @@ using Patchouli.UI.ViewModels;
 namespace Patchouli.UI.ViewModels.Settings;
 
 /// <summary>
-/// Issue #15 「应用更新」设置节：自动检查更新开关（设备本地设置，修改后立即
+/// Issue #15 「更新设置」设置节：自动检查更新开关（设备本地设置，修改后立即
 /// 持久化）与上次检查时间展示。关闭后不再做后台自动检查；手动「检查更新」
 /// 不受该开关影响。
 /// </summary>
@@ -24,6 +24,7 @@ public sealed partial class UpdateSettingsViewModel : SettingsSectionViewModelBa
     public UpdateSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
+        CheckForUpdatesCommand = _main.CheckForUpdatesCommand;
         _isConstructing = false;
     }
 
@@ -80,7 +81,7 @@ public sealed partial class UpdateSettingsViewModel : SettingsSectionViewModelBa
     }
 
     /// <summary>Opens the update check flow manually (same pipeline as the menu entry).</summary>
-    public AsyncCommand CheckForUpdatesCommand => _main.CheckForUpdatesCommand;
+    public AsyncCommand CheckForUpdatesCommand { get; }
 
     private async Task SaveNowAsync()
     {

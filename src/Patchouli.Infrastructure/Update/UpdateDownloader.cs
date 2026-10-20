@@ -139,7 +139,9 @@ public sealed class UpdateDownloader
 
             long? totalBytes = response.Content.Headers.ContentLength is > 0
                 ? response.Content.Headers.ContentLength
-                : asset.SizeBytes > 0 ? asset.SizeBytes : null;
+                : asset.SizeBytes > 0
+                    ? asset.SizeBytes
+                    : null;
 
             await using (FileStream destination = new(temporary, FileMode.CreateNew,
                              FileAccess.Write, FileShare.None))
@@ -194,9 +196,14 @@ public sealed class UpdateDownloader
                 new FileInfo(temporary).Length, totalBytes));
             return Result<VerifiedDownload>.Success(new VerifiedDownload(temporary, sha256Verified));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            return Result<VerifiedDownload>.Failure(AppErrorCodes.NetworkError,
+                $"下载安装包下载超时：{exception.Message}");
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.update-downloader"))
@@ -226,24 +233,38 @@ public sealed class UpdateDownloader
     }
 
     /// <summary>
-    /// Integrity policy (ADR 0048): prefer a <c>{asset}.sha256</c> sidecar when
-    /// the release publishes one; the file's SHA256 must match. Older releases
-    /// have no sidecar — then the byte-exact size match against the release
-    /// metadata (checked during download) plus HTTPS transport integrity is the
-    /// verification. Returns whether SHA256 verification was performed.
+    /// Integrity policy (ADR 0048): verify a confirmed sidecar when published.
+    /// A confirmed absence may use a positive byte-exact release size; unknown
+    /// status and every sidecar retrieval or parse failure reject the download.
     /// </summary>
     private async Task<Result<bool>> VerifyIntegrityAsync(
         ReleaseAssetInfo asset,
         string filePath,
         CancellationToken cancellationToken)
     {
-        string? expected = await TryDownloadSidecarHashAsync(asset.DownloadUrl, cancellationToken)
-            .ConfigureAwait(false);
-        if (expected is null)
+        if (asset.ChecksumStatus == ChecksumSidecarStatus.Unknown)
         {
-            // No sidecar: size was already verified byte-exact against the release
-            // metadata above; transport integrity comes from HTTPS.
+            return Result<bool>.Failure(AppErrorCodes.NetworkError,
+                "无法确认发布页是否提供 SHA256 校验文件，请从 GitHub Release 页面手动下载更新。");
+        }
+
+        if (asset.ChecksumStatus == ChecksumSidecarStatus.Absent)
+        {
+            if (asset.SizeBytes <= 0)
+            {
+                return Result<bool>.Failure(AppErrorCodes.NetworkError,
+                    "发布页未提供 SHA256 校验文件，也未提供有效文件大小，无法验证安装包。");
+            }
+
             return Result<bool>.Success(false);
+        }
+
+        Result<string> sidecarResult = await TryDownloadSidecarHashAsync(asset.DownloadUrl, cancellationToken)
+            .ConfigureAwait(false);
+        if (sidecarResult.IsFailure)
+        {
+            return Result<bool>.Failure(sidecarResult.ErrorCode ?? AppErrorCodes.NetworkError,
+                sidecarResult.ErrorMessage ?? "获取 SHA256 校验文件失败，安装包不会执行。");
         }
 
         string actual;
@@ -253,7 +274,7 @@ public sealed class UpdateDownloader
             actual = Convert.ToHexString(hash);
         }
 
-        if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+        if (!actual.Equals(sidecarResult.Value, StringComparison.OrdinalIgnoreCase))
         {
             return Result<bool>.Failure(AppErrorCodes.NetworkError,
                 "安装包 SHA256 校验失败：文件可能已损坏或被篡改，不会执行该文件。");
@@ -263,12 +284,10 @@ public sealed class UpdateDownloader
     }
 
     /// <summary>
-    /// Fetches the <c>{asset}.sha256</c> sidecar published next to the asset
-    /// (see <c>.github/workflows/release.yml</c>). Returns the expected hex
-    /// digest, or null when the release has no sidecar. Any failure here is
-    /// non-fatal: the caller falls back to size verification.
+    /// Fetches and parses a sidecar known to exist from the GitHub release asset
+    /// list. Only absence confirmed from that list permits the size fallback.
     /// </summary>
-    private async Task<string?> TryDownloadSidecarHashAsync(
+    private async Task<Result<string>> TryDownloadSidecarHashAsync(
         string assetUrl,
         CancellationToken cancellationToken)
     {
@@ -278,11 +297,12 @@ public sealed class UpdateDownloader
             using CancellationTokenSource linked = CancellationTokenSource
                 .CreateLinkedTokenSource(cancellationToken, timeout.Token);
             using HttpResponseMessage response = await _httpClient.GetAsync(
-                assetUrl + ".sha256", HttpCompletionOption.ResponseHeadersRead, linked.Token)
+                    assetUrl + ".sha256", HttpCompletionOption.ResponseHeadersRead, linked.Token)
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return Result<string>.Failure(AppErrorCodes.NetworkError,
+                    $"获取 SHA256 校验文件失败：HTTP {(int)response.StatusCode}，安装包不会执行。");
             }
 
             string text = (await response.Content.ReadAsStringAsync(linked.Token)
@@ -290,17 +310,25 @@ public sealed class UpdateDownloader
             // sha256sum format: "<hex>  <filename>"
             string hex = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
                 .FirstOrDefault() ?? string.Empty;
-            return hex.Length == 64 && hex.All(static c => Uri.IsHexDigit(c)) ? hex : null;
+            return hex.Length == 64 && hex.All(static c => Uri.IsHexDigit(c))
+                ? Result<string>.Success(hex)
+                : Result<string>.Failure(AppErrorCodes.NetworkError,
+                    "SHA256 校验文件格式无效，安装包不会执行。");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The caller cancelled: propagate. A local timeout below is
-            // non-fatal and falls through to the size-verification fallback.
             throw;
         }
-        catch (Exception)
+        catch (OperationCanceledException exception)
         {
-            return null;
+            return Result<string>.Failure(AppErrorCodes.NetworkError,
+                $"获取 SHA256 校验文件超时：{exception.Message}，安装包不会执行。");
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.update-downloader-sidecar"))
+        {
+            return Result<string>.Failure(AppErrorCodes.NetworkError,
+                $"获取 SHA256 校验文件失败：{exception.Message}，安装包不会执行。");
         }
     }
 

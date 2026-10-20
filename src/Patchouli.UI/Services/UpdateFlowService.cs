@@ -4,6 +4,8 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
+using System.Diagnostics;
+using Patchouli.UI;
 using Patchouli.Core.Results;
 using Patchouli.Core.Update;
 using Patchouli.Host.Composition;
@@ -16,11 +18,9 @@ namespace Patchouli.UI.Services;
 
 /// <summary>
 /// Issue #15: drives the user-facing update flow — manual/auto check, the
-/// new-version prompt, the cancellable download with progress, integrity
-/// reporting, the install confirmation and the installer launch.
-/// A cancelled or failed step never affects normal app usage; the installer is
-/// only launched after the user explicitly confirms, and Patchouli only exits
-/// after the launch succeeded.
+/// new-version prompt, optional verified download and the installer launch.
+/// Package-managed installations receive the Release page link. Installation
+/// first passes through the normal protected window close lifecycle.
 /// </summary>
 public sealed class UpdateFlowService
 {
@@ -43,7 +43,7 @@ public sealed class UpdateFlowService
         {
             HostServices services = await _main.ServicesAsync();
             outcome = await services.UpdateCoordinator.CheckForUpdatesAsync(
-                manual: true, cancellationToken);
+                true, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -74,8 +74,18 @@ public sealed class UpdateFlowService
                 break;
             case UpdateCheckStatus.NotAvailableForPlatform:
                 _main.Report(outcome.Message ?? "当前平台没有可用的安装包。");
-                await _main.Dialogs.ShowDialogAsync<bool>(
-                    new InfoDialogViewModel("检查更新", outcome.Message ?? "当前平台没有可用的安装包。"));
+                if (outcome.Release is { } unsupportedRelease &&
+                    UpdateVersion.TryParse(Core.BuildInfo.Version, out UpdateVersion? installed) &&
+                    installed is not null)
+                {
+                    await ShowReleasePageAsync(installed, unsupportedRelease);
+                }
+                else
+                {
+                    await _main.Dialogs.ShowDialogAsync<bool>(
+                        new InfoDialogViewModel("检查更新", outcome.Message ?? "当前平台没有可用的安装包。"));
+                }
+
                 break;
             case UpdateCheckStatus.CheckFailed:
                 _main.ReportError(outcome.Message ?? "检查更新失败。");
@@ -104,11 +114,17 @@ public sealed class UpdateFlowService
         {
             HostServices services = await _main.ServicesAsync();
             UpdateCheckOutcome outcome = await services.UpdateCoordinator.CheckForUpdatesAsync(
-                manual: false);
+                false);
             if (outcome.Status == UpdateCheckStatus.UpdateAvailable &&
                 outcome is { Release: not null, Asset: not null })
             {
                 await OfferDownloadAsync(outcome.Release, outcome.Asset);
+            }
+            else if (outcome.Status == UpdateCheckStatus.NotAvailableForPlatform && outcome.Release is { } release &&
+                     UpdateVersion.TryParse(Core.BuildInfo.Version, out UpdateVersion? current) &&
+                     current is not null)
+            {
+                await ShowReleasePageAsync(current, release);
             }
             // All other automatic outcomes stay silent by design: up-to-date
             // shows nothing, network errors must not nag (throttled by the
@@ -123,21 +139,49 @@ public sealed class UpdateFlowService
     /// <summary>Shows the new-version dialog; downloads only on explicit confirmation.</summary>
     private async Task OfferDownloadAsync(ReleaseInfo release, ReleaseAssetInfo asset)
     {
-        if (!UpdateVersion.TryParse(Patchouli.Core.BuildInfo.Version, out UpdateVersion? current) ||
+        if (!UpdateVersion.TryParse(Core.BuildInfo.Version, out UpdateVersion? current) ||
             current is null)
         {
             return;
         }
 
-        bool download = await _main.Dialogs.ShowDialogAsync<bool>(
-            new UpdateAvailableDialogViewModel(current, release, asset));
-        if (!download)
+        bool canDownload = UpdateInstallability.CanInstallInPlace();
+        UpdateAvailableDialogViewModel dialog = new(current, release, asset, canDownload)
         {
-            _main.Report("已暂不更新。");
+            RequestOpenReleasePage = OpenReleasePage
+        };
+        bool downloadStarted = await ContinueDownloadAsync(canDownload,
+            () => _main.Dialogs.ShowDialogAsync<bool>(dialog),
+            () => DownloadAndConfirmInstallAsync(release, asset));
+        if (!downloadStarted)
+        {
+            _main.Report(canDownload
+                ? "已暂不更新。"
+                : "请从 GitHub Release 页面手动下载适合当前安装方式的更新包。");
             return;
         }
+    }
 
-        await DownloadAndConfirmInstallAsync(release, asset);
+    internal static async Task<bool> ContinueDownloadAsync(bool canDownload, Func<Task<bool>> showPrompt,
+        Func<Task> download)
+    {
+        bool requested = await showPrompt();
+        if (!canDownload || !requested)
+        {
+            return false;
+        }
+
+        await download();
+        return true;
+    }
+
+    private async Task ShowReleasePageAsync(UpdateVersion current, ReleaseInfo release)
+    {
+        UpdateAvailableDialogViewModel dialog = new(current, release, null, false)
+        {
+            RequestOpenReleasePage = OpenReleasePage
+        };
+        await _main.Dialogs.ShowDialogAsync<bool>(dialog);
     }
 
     private async Task DownloadAndConfirmInstallAsync(ReleaseInfo release, ReleaseAssetInfo asset)
@@ -152,7 +196,7 @@ public sealed class UpdateFlowService
                 new ModalOperationOptions(
                     $"下载更新 {release.Version}",
                     $"正在下载 {asset.Name}…",
-                    CanCancel: true),
+                    true),
                 async context =>
                 {
                     Progress<UpdateDownloadProgress> progress = new(value =>
@@ -201,11 +245,11 @@ public sealed class UpdateFlowService
         ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
             new ConfirmDialogViewModel(
                 $"安装更新 {release.Version}",
-                $"新版本安装包已下载并通过完整性校验。\n{verifyText}\n\n" +
+                $"新版本安装包已下载。\n{verifyText}\n\n" +
                 "选择「立即安装并退出」将启动安装程序并退出 Patchouli；选择「稍后安装」保留下载的文件位置以便稍后手动安装。",
                 "立即安装并退出",
-                discardText: "稍后安装",
-                confirmDanger: false));
+                "稍后安装",
+                false));
 
         if (choice != ConfirmDialogResult.Confirm)
         {
@@ -222,27 +266,41 @@ public sealed class UpdateFlowService
             return;
         }
 
-        Result launchResult = await coordinator.LaunchInstallerAsync(verified.FilePath);
-        if (launchResult.IsFailure)
-        {
-            // Keep the app running; the download is retained for a manual retry.
-            _main.ReportError(launchResult.ErrorMessage ?? "安装程序启动失败。");
-            await _main.Dialogs.ShowDialogAsync<bool>(
-                new InfoDialogViewModel("安装更新",
-                    $"{launchResult.ErrorMessage ?? "安装程序启动失败。"}Patchouli 将继续运行，安装包保留在：{verified.FilePath}"));
-            return;
-        }
-
-        // Only exit after the installer was launched successfully.
-        _main.Report("安装程序已启动，正在退出 Patchouli…");
-        await _main.ShutdownAsync();
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
+                desktop.MainWindow is MainWindow window)
             {
-                desktop.Shutdown();
+                window.RequestExitAfterAsync(async () =>
+                {
+                    Result launchResult = await coordinator.LaunchInstallerAsync(verified.FilePath);
+                    if (launchResult.IsFailure)
+                    {
+                        _main.ReportError(launchResult.ErrorMessage ?? "安装程序启动失败。");
+                        await _main.Dialogs.ShowDialogAsync<bool>(
+                            new InfoDialogViewModel("安装更新",
+                                $"{launchResult.ErrorMessage ?? "安装程序启动失败。"}Patchouli 将继续运行，安装包保留在：{verified.FilePath}"));
+                        return false;
+                    }
+
+                    _main.Report("安装程序已启动，正在退出 Patchouli…");
+                    return true;
+                });
             }
         });
+    }
+
+    private void OpenReleasePage(string url)
+    {
+        try
+        {
+            Process? process = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            process?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            _main.ReportError($"无法打开 GitHub Release 页面：{exception.Message}");
+        }
     }
 
     private static string FormatBytes(long bytes)

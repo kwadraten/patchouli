@@ -21,9 +21,9 @@ Constraints from the issue:
 - Cloud-function implementation, deployment, docs and proxy selection/fallback
   are all skipped — but the "version metadata query + download URL resolution"
   must converge on a **single service interface** so a future proxy can slot in.
-- The release workflow publishes **no checksum files** today (only the 6
-  installers). The SHA256 strategy must be explicit and must guarantee a
-  corrupt file is never executed.
+- Release assets include a `<asset>.sha256` sidecar for each installer. The
+  client must distinguish a confirmed missing sidecar from an unavailable or
+  invalid sidecar and must never execute an asset whose integrity is unknown.
 - Decisions required here: the single service interface, the SHA256 policy,
   the auto-check default, the check interval and the Linux default package.
 
@@ -49,20 +49,18 @@ reverse proxy implements the same interface — no client call sites change.
 
 Two-tier, explicit about the missing-checksum reality:
 
-1. **Prefer a `{asset}.sha256` sidecar.** The client requests
-   `{download_url}.sha256`; if the release carries it, the downloaded file's
-   SHA256 must match byte-for-byte (hex, case-insensitive), otherwise the
-   download fails and the file is deleted.
-2. **Fallback when no sidecar exists** (all releases before this change):
-   the downloaded byte count must equal the asset `size` from the release
-   metadata exactly, and the file must be non-empty. Transport integrity comes
-   from HTTPS. The install-confirmation dialog states honestly which tier was
-   used.
+1. The GitHub release asset list marks checksum presence as `Present`,
+   `Absent`, or `Unknown`. A `Present` sidecar is fetched and the downloaded
+   file's SHA256 must match its 64-digit digest. HTTP errors, timeouts, invalid
+   content and mismatches fail the download and delete the temporary file.
+2. Only a release asset list that confirms `Absent` permits the legacy fallback:
+   the published asset size must be positive and the downloaded byte count must
+   match it exactly. Unknown status and missing/invalid size fail closed. The
+   UI says that size was checked when a legacy release has no checksum.
 
-To make tier 1 real going forward, `.github/workflows/release.yml` now
-generates a `<asset>.sha256` sidecar (`sha256sum` format) for each of the 6
-installers and uploads them with the release. Older releases keep working
-through tier 2.
+`.github/workflows/release.yml` generates a `<asset>.sha256` sidecar
+(`sha256sum` format) for each installer and uploads it with the release. Older
+releases use tier 2 only when the release asset list confirms no sidecar.
 
 Hard guarantees regardless of tier: downloads stream to a uniquely-named temp
 file; failure, cancellation or verification failure deletes it; the launcher
@@ -78,7 +76,7 @@ user confirms installation a second time.
   standard behavior of desktop apps (browsers, VS Code, etc.).
 - The cost of "on" is kept negligible by design: checks are throttled (see 4),
   silent when up to date, and network errors never nag.
-- Turning it off is one checkbox in 「设置 → 应用更新」 and takes effect
+- Turning it off is one checkbox in 「设置 → 更新设置」 and takes effect
   immediately; manual 「检查更新」 is unaffected by the switch.
 
 ### 4. Check interval: 24 hours, persisted
@@ -90,38 +88,32 @@ even when a check fails, so a down network cannot cause retry storms. Manual
 checks bypass both the switch and the throttle, and report all four states
 explicitly （正在检查 / 已是最新 / 发现新版本 / 检查失败）.
 
-### 5. Linux default package: AppImage
+### 5. Installation formats that require manual updates
 
-Of the four Linux formats, the updater downloads and launches
-`Patchouli.NET-{version}-linux-x64.AppImage`. Rationale:
+Only a confirmed Windows Inno Setup installation may use the built-in download
+and installer flow. The running install path must match the Inno uninstall
+record, and recognized package-manager paths are excluded. A missing or
+unreadable record, an unknown Windows layout, and every non-Windows format fall
+back to a GitHub Release page link.
 
-- deb/rpm require root and a distro-specific installer (`apt`/`dnf`) — the
-  app cannot complete that flow itself and must not escalate privileges
-  silently.
-- flatpak requires the flathub remote and the Freedesktop runtime to be
-  present, plus `flatpak install` mediation.
-- AppImage is a single user-space executable: `chmod +x` and run. It is the
-  only format the app can launch directly for "立即安装并退出" without
-  privilege escalation or external package managers.
+AppImage is a container-style single-file installation; deb/rpm and Flatpak are
+owned by system or external package managers; macOS `.dmg` requires the user to
+replace the app in Applications. Patchouli does not chmod/run an AppImage or
+mount/open a DMG as an update. When a newer release exists for a manual-update
+installation, the version dialog gives the user its Release page and does not
+download an asset or start an installer.
 
-Limitation recorded: the updater launches the *downloaded* AppImage copy; it
-never overwrites the running binary in place (the running path is not
-reliably known outside the `APPIMAGE` env var, and in-place replacement of a
-running executable is unsafe). The dialog tells the user where the file is.
+### 6. Windows launch behavior
 
-### 6. Platform launch behavior
+- **Windows**: start a verified `.exe` with `UseShellExecute`; Inno Setup
+  elevates itself when needed. The `-smoke-setup` diagnostic variant is
+  explicitly excluded from asset selection.
 
-- **Windows**: start the `.exe` with `UseShellExecute`; Inno Setup elevates
-  itself when needed. The `-smoke-setup` diagnostic variant is explicitly
-  excluded from asset selection.
-- **macOS**: `open` the `.dmg` (mounts it); the user drags the app to
-  `/Applications`. This is the standard DMG update step — the client cannot
-  install a `.dmg` unattended, and does not pretend to.
-- **Linux**: mark the AppImage executable and start it directly.
-
-Patchouli exits **only after** the installer process started successfully; a
-failed launch keeps the app running with an error dialog and the retained
-download path.
+After the user confirms update installation, the normal window close path first
+resolves MCP drafts and unsaved settings. Only then does it start the installer.
+A failed launch leaves the window open and the verified download retained; a
+successful launch completes the already-authorized normal close path, whose
+`OnClosed` handler performs asynchronous service shutdown.
 
 ### 7. Version comparison and release filtering
 
@@ -147,13 +139,15 @@ download. A second check/download attempt while one is in flight returns
   `IUpdateCheckSettingsService`, `src/Patchouli.Infrastructure/Update/`
   (`GitHubReleaseSource`, `UpdateCheckSettingsService`, `UpdateDownloader`,
   `UpdateLauncher`, `UpdateCoordinator`), `src/Patchouli.UI/Services/UpdateFlowService.cs`,
-  settings section 「应用更新」, two dialogs, a Settings-menu 「检查更新」 entry.
+  settings section 「更新设置」, two dialogs, a Settings-menu 「检查更新」 entry.
 - `HostServices` exposes `UpdateCheckSettings`, `UpdateSource`,
   `UpdateCoordinator` (constructed with `BuildInfo.Version`).
-- UI dialog behavior is written but **not verified on a real machine** (no GUI
-  in this environment); noted as unvalidated in the handoff.
-- `scripts/cleanup-code.ps1` / `scripts/inspect-code.ps1` are Windows-only and
-  were not run here; inspection status is unvalidated.
+- UI dialog and close behavior are covered by headless tests; update installation
+  has not been exercised by running a real installer.
+- `scripts/cleanup-code.ps1` ran with JetBrains Command Line Tools 2026.1.4.
+  The final targeted update/UI regression filter passed 219/219 tests. The final
+  JetBrains InspectCode 2026.1.4 run passed with no blocking issues; its SARIF
+  report is `.tmp/issue-15-fixes-20261020/inspectcode-final.sarif`.
 
 ## Alternatives considered
 
@@ -161,8 +155,9 @@ download. A second check/download attempt while one is in flight returns
   and note bodies are human-edited; sidecar assets are machine-readable and
   travel with the file they describe.
 - **Blocking updates entirely until checksums exist**: would ship a dead
-  feature; the two-tier policy keeps old releases updatable with an honest,
-  size-anchored fallback while new releases get real SHA256 verification.
+  feature; a release listing that explicitly confirms a missing sidecar can
+  still support a verified-size download, with the UI stating that SHA256 was
+  unavailable. Unknown checksum state or missing/invalid size fails closed.
 - **Defaulting auto-check to off**: rejected — it would leave most users on
   stale versions with security fixes unapplied; the throttle + silent design
   makes "on" cheap.

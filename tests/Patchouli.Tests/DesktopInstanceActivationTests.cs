@@ -1,6 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Headless;
 using FluentAssertions;
+using Patchouli.UI.Services;
+using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 
@@ -67,6 +69,98 @@ public sealed class DesktopInstanceActivationTests
             window.RequestExit();
             closed.Should().BeTrue();
             return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Update_exit_action_runs_once_after_confirmation_and_closes_normally()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            MainWindow window = new(new MainWindowViewModel());
+            int launchCount = 0;
+            bool closed = false;
+            window.Closed += (_, _) => closed = true;
+            window.Show();
+
+            window.RequestExitAfterAsync(() =>
+            {
+                launchCount++;
+                return Task.FromResult(true);
+            });
+
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (!closed && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(10);
+            }
+
+            closed.Should().BeTrue();
+            launchCount.Should().Be(1);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Failed_update_exit_action_keeps_window_open_and_allows_normal_exit()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            MainWindow window = new(new MainWindowViewModel());
+            int launchCount = 0;
+            bool closed = false;
+            window.Closed += (_, _) => closed = true;
+            window.Show();
+
+            window.RequestExitAfterAsync(() =>
+            {
+                launchCount++;
+                return Task.FromResult(false);
+            });
+            await Task.Delay(50);
+
+            closed.Should().BeFalse();
+            window.IsVisible.Should().BeTrue();
+            launchCount.Should().Be(1);
+
+            window.RequestExit();
+            closed.Should().BeTrue();
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Cancelling_unsaved_settings_confirmation_never_starts_installer_or_closes_window()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            QueuedExitDialogs dialogs = new(ConfirmDialogResult.Cancel, ConfirmDialogResult.Discard);
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            MainWindow window = new(main);
+            int launchCount = 0;
+            bool closed = false;
+            window.Closed += (_, _) => closed = true;
+            window.Show();
+            main.Settings.AppearanceSettings.ReadingFontSize++;
+
+            window.RequestExitAfterAsync(() =>
+            {
+                launchCount++;
+                return Task.FromResult(true);
+            });
+            await Task.Delay(50);
+
+            closed.Should().BeFalse();
+            window.IsVisible.Should().BeTrue();
+            launchCount.Should().Be(0);
+            dialogs.Confirmations.Should().Be(1);
+
+            window.RequestExit();
+            closed.Should().BeTrue();
+            launchCount.Should().Be(0);
+            dialogs.Confirmations.Should().Be(2);
         }, CancellationToken.None);
     }
 
@@ -281,6 +375,28 @@ public sealed class DesktopInstanceActivationTests
             {
                 Interlocked.Exchange(ref _action, null)?.Invoke();
             }
+        }
+    }
+
+    private sealed class QueuedExitDialogs(params ConfirmDialogResult[] choices) : IDialogService
+    {
+        private readonly Queue<ConfirmDialogResult> _choices = new(choices);
+        public int Confirmations { get; private set; }
+
+        public Task ShowDialogAsync(object viewModel)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+        {
+            if (viewModel is ConfirmDialogViewModel)
+            {
+                Confirmations++;
+                return Task.FromResult((TResult?)(object?)_choices.Dequeue());
+            }
+
+            return Task.FromResult(default(TResult?));
         }
     }
 }

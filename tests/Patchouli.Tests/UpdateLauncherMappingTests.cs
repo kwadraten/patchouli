@@ -1,4 +1,3 @@
-using System.Reflection;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Update;
@@ -31,8 +30,8 @@ public sealed class UpdateLauncherMappingTests
     [InlineData("patchouli-0.3.13-release-notes.zip", ".tmp")]
     [InlineData("Patchouli-0.3.13-setup.msi", ".tmp")]
     [InlineData("patchouli-0.3.13.tar.gz", ".tmp")]
-    [InlineData("patchouli-0.3.13", ".tmp")]   // no extension
-    [InlineData("patchouli-0.3.13.", ".tmp")]  // dangling dot
+    [InlineData("patchouli-0.3.13", ".tmp")] // no extension
+    [InlineData("patchouli-0.3.13.", ".tmp")] // dangling dot
     [InlineData("", ".tmp")]
     [InlineData("   ", ".tmp")]
     public void InstallerExtensionFor_maps_asset_name_to_launcher_extension(
@@ -48,18 +47,13 @@ public sealed class UpdateLauncherMappingTests
     }
 
     [Fact]
-    public void KnownInstallerExtensions_allowlist_matches_the_launcher_branches()
+    public void Launcher_only_supports_windows_Inno_installers()
     {
-        // The launcher branches on exactly these three extensions (Windows
-        // .exe / macOS .dmg / Linux .AppImage). A .tmp fallback therefore
-        // is rejected by the launcher's extension guard before any launch
-        // is attempted.
-        FieldInfo? field = typeof(UpdateDownloader).GetField(
-            "KnownInstallerExtensions", BindingFlags.NonPublic | BindingFlags.Static);
-
-        string[]? extensions = field?.GetValue(null) as string[];
-
-        extensions.Should().BeEquivalentTo(".exe", ".dmg", ".AppImage");
+        UpdateLauncher.KnownInstallerExtensions.Should().Equal(".exe");
+        UpdateLauncher.CanLaunchInstaller(true, "setup.exe").Should().BeTrue();
+        UpdateLauncher.CanLaunchInstaller(false, "setup.exe").Should().BeFalse();
+        UpdateLauncher.CanLaunchInstaller(true, "update.dmg").Should().BeFalse();
+        UpdateLauncher.CanLaunchInstaller(true, "update.AppImage").Should().BeFalse();
     }
 
     [Theory]
@@ -67,7 +61,7 @@ public sealed class UpdateLauncherMappingTests
     [InlineData("   ")]
     public async Task LaunchAsync_rejects_blank_path_without_starting_a_process(string? path)
     {
-        var launcher = new UpdateLauncher();
+        UpdateLauncher launcher = new();
 
         Result result = await launcher.LaunchAsync(path!);
 
@@ -78,7 +72,7 @@ public sealed class UpdateLauncherMappingTests
     [Fact]
     public async Task LaunchAsync_rejects_null_path_without_starting_a_process()
     {
-        var launcher = new UpdateLauncher();
+        UpdateLauncher launcher = new();
 
         Result result = await launcher.LaunchAsync(null!);
 
@@ -89,7 +83,7 @@ public sealed class UpdateLauncherMappingTests
     [Fact]
     public async Task LaunchAsync_rejects_missing_file_without_starting_a_process()
     {
-        var launcher = new UpdateLauncher();
+        UpdateLauncher launcher = new();
         string missing = Path.Combine(Path.GetTempPath(),
             $"patchouli-update-missing-{Guid.NewGuid():N}.tmp");
 
@@ -102,14 +96,11 @@ public sealed class UpdateLauncherMappingTests
     [Fact]
     public async Task LaunchAsync_propagates_cancellation_without_starting_a_process()
     {
-        var launcher = new UpdateLauncher();
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        UpdateLauncher launcher = new();
+        CancellationToken cancelled = new(true);
 
-        Func<Task> launch = () => launcher.LaunchAsync(
+        await Assert.ThrowsAsync<OperationCanceledException>(() => launcher.LaunchAsync(
             Path.Combine(Path.GetTempPath(), "patchouli-update-cancelled.tmp"),
-            cts.Token);
-
-        await launch.Should().ThrowAsync<OperationCanceledException>();
+            cancelled));
     }
 }

@@ -160,6 +160,18 @@ public sealed class GitHubReleaseSource : IUpdateSource
             }
         }
 
+        HashSet<string> assetNames = assets.Select(static asset => asset.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        assets = assets
+            .Where(static asset => !asset.Name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase))
+            .Select(asset => asset with
+            {
+                ChecksumStatus = assetNames.Contains(asset.Name + ".sha256")
+                    ? ChecksumSidecarStatus.Present
+                    : ChecksumSidecarStatus.Absent
+            })
+            .ToList();
+
         return new ReleaseInfo(
             tag.GetString() ?? string.Empty,
             version,

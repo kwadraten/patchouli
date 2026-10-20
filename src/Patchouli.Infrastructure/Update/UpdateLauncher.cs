@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 
@@ -12,9 +11,7 @@ namespace Patchouli.Infrastructure.Update;
 /// verifies anything itself.
 /// <list type="bullet">
 /// <item>Windows: starts the Inno Setup <c>.exe</c> (it elevates itself when needed).</item>
-/// <item>macOS: <c>open</c>s the <c>.dmg</c> so the user can drag the app into
-/// <c>/Applications</c> — mounting is the standard DMG update step.</item>
-/// <item>Linux: marks the AppImage executable and starts it directly.</item>
+/// <item>macOS and Linux: manual GitHub Release installation only.</item>
 /// </list>
 /// </summary>
 public sealed class UpdateLauncher
@@ -24,7 +21,13 @@ public sealed class UpdateLauncher
     /// case-insensitively against the file extension. Anything else is
     /// rejected before any launch is attempted (see <see cref="LaunchAsync"/>).
     /// </summary>
-    private static readonly string[] KnownInstallerExtensions = [".exe", ".dmg", ".AppImage"];
+    internal static readonly string[] KnownInstallerExtensions = [".exe"];
+
+    internal static bool CanLaunchInstaller(bool isWindows, string? path)
+    {
+        return isWindows && !string.IsNullOrWhiteSpace(path) &&
+               KnownInstallerExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+    }
 
     public Task<Result> LaunchAsync(string installerPath, CancellationToken cancellationToken = default)
     {
@@ -41,50 +44,17 @@ public sealed class UpdateLauncher
             // ".tmp" fallback file would reach the UseShellExecute fallback
             // below, which on Linux reports success via xdg-open while
             // installing nothing.
-            if (!KnownInstallerExtensions.Contains(Path.GetExtension(installerPath),
-                    StringComparer.OrdinalIgnoreCase))
+            if (!CanLaunchInstaller(OperatingSystem.IsWindows(), installerPath))
             {
                 return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed,
-                    "不支持的安装包类型，仅支持 .exe、.dmg、.AppImage。"));
+                    "此安装包必须从 GitHub Release 页面手动安装。"));
             }
 
-            ProcessStartInfo startInfo;
-            if (OperatingSystem.IsWindows() &&
-                installerPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            ProcessStartInfo startInfo = new()
             {
-                startInfo = new ProcessStartInfo
-                {
-                    FileName = installerPath,
-                    UseShellExecute = true,
-                };
-            }
-            else if (OperatingSystem.IsMacOS() &&
-                     installerPath.EndsWith(".dmg", StringComparison.OrdinalIgnoreCase))
-            {
-                startInfo = new ProcessStartInfo("open")
-                {
-                    UseShellExecute = false,
-                };
-                startInfo.ArgumentList.Add(installerPath);
-            }
-            else if (OperatingSystem.IsLinux() &&
-                     installerPath.EndsWith(".AppImage", StringComparison.OrdinalIgnoreCase))
-            {
-                MakeExecutable(installerPath);
-                startInfo = new ProcessStartInfo
-                {
-                    FileName = installerPath,
-                    UseShellExecute = false,
-                };
-            }
-            else
-            {
-                startInfo = new ProcessStartInfo
-                {
-                    FileName = installerPath,
-                    UseShellExecute = true,
-                };
-            }
+                FileName = installerPath,
+                UseShellExecute = true,
+            };
 
             using Process? process = Process.Start(startInfo);
             if (process is null)
@@ -107,23 +77,4 @@ public sealed class UpdateLauncher
         }
     }
 
-    private static void MakeExecutable(string path)
-    {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-        {
-            return;
-        }
-
-        try
-        {
-            UnixFileMode mode = File.GetUnixFileMode(path);
-            File.SetUnixFileMode(path,
-                mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-                                              or PlatformNotSupportedException)
-        {
-            _ = exception;
-        }
-    }
 }
