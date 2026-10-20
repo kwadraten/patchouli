@@ -67,7 +67,7 @@ Classify every candidate against all relevant roots. A test reference alone does
 - runtime services reached from the manual composition root;
 - MCP command dispatch and advertised tools;
 - CLI parsing, help, and HTTP mappings;
-- background OCR, rendering, snapshot, import, and workflow execution paths.
+- background OCR, rendering, snapshot, import, translation, and terminal execution paths.
 
 ### 2. Dynamic production roots
 

@@ -337,14 +337,6 @@ public sealed partial class MainWindow : Window
             .Observe("ui-event", "ocr-engine-menu-refresh");
     }
 
-    private async void OnWorkflowMenuPointerEntered(object? sender, PointerEventArgs e)
-    {
-        // Menus are opened far more often than workflows change: rebuilding the entries here keeps the
-        // list current (and picks up the current Library selection) without watching the store.
-        await UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshWorkflowMenuAsync, "workflow-menu-refresh");
-    }
-
-
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try

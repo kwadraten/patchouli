@@ -14,7 +14,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.12");
+        BuildInfo.Version.Should().Be("0.3.13");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -82,7 +82,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.12").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.13").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.12");
+        BuildInfo.Version.Should().Be("0.3.13");
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.12").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.13").And.NotContain("0.3.5");
         }
     }
 
@@ -202,13 +202,13 @@ public sealed class AlphaPackagingTests
             "src", "Patchouli.Infrastructure", "Patchouli.Infrastructure.csproj"));
         string windowsPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
         string macosPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
-        string rustTools = File.ReadAllText(TestPaths.FromRepositoryRoot("tools", "README.md"));
+        string rustTools = File.ReadAllText(TestPaths.FromRepositoryRoot("sidecar", "README.md"));
 
         packages.Should().Contain("Fsharp.Citeproc");
         infrastructure.Should().Contain("Fsharp.Citeproc");
         windowsPackage.Should().NotContain("patchouli-hayagriva");
         macosPackage.Should().NotContain("patchouli-hayagriva");
-        rustTools.Should().Contain("typst/biblatex").And.Contain("tools/**/target/");
+        rustTools.Should().Contain("typst/biblatex").And.Contain("sidecar/**/target/");
     }
 
     [Fact]
@@ -216,10 +216,10 @@ public sealed class AlphaPackagingTests
     {
         string readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
 
-        readme.Should().Contain("tools/biblatex-helper")
+        readme.Should().Contain("sidecar/biblatex-helper")
             .And.Contain("typst/biblatex 0.12.0")
-            .And.Contain("cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml")
-            .And.NotContain("tools/patchouli-shell-sidecar")
+            .And.Contain("cargo build --release --manifest-path sidecar/biblatex-helper/Cargo.toml")
+            .And.NotContain("sidecar/patchouli-shell-sidecar")
             .And.NotContain("Bashkit 0.14.4");
     }
 
@@ -358,8 +358,8 @@ public sealed class AlphaPackagingTests
             .Contain("'$(RuntimeIdentifier)' == 'osx-x64'").And.Contain("x86_64").And
             .Contain("-arch $(MacOSFsHelperArchitecture)");
 
-        string helperSource = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.m");
-        string helperHeader = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.h");
+        string helperSource = TestPaths.FromRepositoryRoot("sidecar", "patchouli-macos-fs", "patchouli_macos_fs.m");
+        string helperHeader = TestPaths.FromRepositoryRoot("sidecar", "patchouli-macos-fs", "patchouli_macos_fs.h");
         File.Exists(helperSource).Should().BeTrue();
         File.Exists(helperHeader).Should().BeTrue();
     }

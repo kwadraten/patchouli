@@ -20,6 +20,37 @@ namespace Patchouli.Tests;
 public sealed class LibraryItemQueryServiceTests
 {
     [Fact]
+    public async Task Rows_format_east_asian_authors_in_stored_order_and_match_editor_display()
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> created = await context.Items.CreateItemAsync("book", "Mixed authors", creators:
+        [
+            new ItemCreatorInput(ItemCreatorRoles.Author, "日野", "清三郎"),
+            new ItemCreatorInput(ItemCreatorRoles.Editor, "統", "長正"),
+            new ItemCreatorInput(ItemCreatorRoles.Author, "福田", "千鶴"),
+            new ItemCreatorInput(ItemCreatorRoles.Author, "Lovelace", "Ada"),
+            new ItemCreatorInput(ItemCreatorRoles.Author, Literal: "九州大学大学院地球社会統合科学府")
+        ]);
+        created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+        const string expected = "日野清三郎, 福田千鶴, Ada Lovelace, 九州大学大学院地球社会統合科学府";
+        (await context.Query.ListRowsAsync()).Value.Single().Authors.Should().Be(expected);
+        (await context.Query.ListRowsAsync(1, null)).Value.Rows.Single().Authors.Should().Be(expected);
+        (await context.Query.GetRowsByIdsAsync([created.Value.ItemId])).Value.Single().Authors.Should().Be(expected);
+        foreach (ItemCreator creator in created.Value.Creators)
+        {
+            UI.ViewModels.Editor.CreatorItemViewModel editor = new(_ => { });
+            editor.LoadFrom(creator);
+            editor.Name.Should().Be(creator.DisplayName);
+            editor.Family.Should().Be(creator.Family ?? "");
+            editor.Given.Should().Be(creator.Given ?? "");
+        }
+
+        (await context.Items.GetItemAsync(created.Value.ItemId)).Value.Creators
+            .Select(creator => (creator.Family, creator.Given, creator.Literal))
+            .Should().Equal(created.Value.Creators.Select(creator => (creator.Family, creator.Given, creator.Literal)));
+    }
+
+    [Fact]
     public async Task Rows_report_latest_ocr_failure_instead_of_stale_index_status()
     {
         await using TestContext context = await CreateContextAsync();

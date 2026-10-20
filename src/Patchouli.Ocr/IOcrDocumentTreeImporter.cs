@@ -6,7 +6,8 @@ namespace Patchouli.Ocr;
 public sealed record OcrDocumentTreeImportRequest(
     DocumentInstanceId DocumentInstanceId,
     OcrDocumentTreeCandidate Candidate,
-    string RevisionSource = "import");
+    string RevisionSource = "import",
+    IReadOnlyDictionary<PageId, DocumentTreeRevisionId>? ExpectedParentTreeRevisionIds = null);
 
 public sealed record OcrDocumentTreeImportResult(
     IReadOnlyList<DocumentTreeRevisionId> WorkingRevisionIds,

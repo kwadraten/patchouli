@@ -41,7 +41,7 @@ Patchouli desktop on macOS will not use App Sandbox entitlements and will not ta
 
 4. Symlink, Finder alias, and mount point
    - Symlinks are already canonicalized in `PortableNativeFileAccessAdapter.ResolveDirectoryAsync` via `DirectoryInfo.ResolveLinkTarget(true)`. Keep this behavior on macOS.
-   - Finder aliases require a macOS-specific adapter. Implement a small native helper using Objective-C runtime interop or a tiny Swift/C helper in `tools/patchouli-macos-fs` that resolves an alias path to its target. The C# adapter calls this helper and falls back to `offline` if resolution fails.
+   - Finder aliases require a macOS-specific adapter. Implement a small native helper using Objective-C runtime interop or a tiny Swift/C helper in `sidecar/patchouli-macos-fs` that resolves an alias path to its target. The C# adapter calls this helper and falls back to `offline` if resolution fails.
    - Mount points (network volumes, removable drives) are treated as ordinary directories during traversal. If a mount disappears mid-scan, the resulting `DirectoryNotFoundException` becomes `offline` for that branch.
    - Cycle detection in `FileSearchRootAccess.TraverseAsync` already uses a `HashSet` of resolved paths; extend it to report cycles as `skippedDirectories` with code `directory_cycle` instead of silently dropping them.
 

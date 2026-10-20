@@ -66,7 +66,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         LlmSettings = new LlmSettingsViewModel(main);
-        WorkflowSettings = new WorkflowSettingsViewModel(main);
+        AgentIntegrationSettings = new AgentIntegrationSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
         CslLocalizationSettings = new CslLocalizationSettingsViewModel(main);
@@ -82,8 +82,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
         ISettingsSection[] sections =
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
-            LlmSettings, WorkflowSettings, MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement,
-            ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles
+            LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
+            LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles
         ];
 
         _sections = sections;
@@ -109,10 +109,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("appearance", "外观与阅读", AppearanceSettings),
             new SettingsSectionEntryViewModel("library", "书库与源文件", LibrarySettings),
             new SettingsSectionEntryViewModel("local_files", "模型与临时文件", LocalFileManagement),
-            new SettingsSectionEntryViewModel("import", "导入规则", ImportSettings),
+            new SettingsSectionEntryViewModel("import", "导入时设置", ImportSettings),
             new SettingsSectionEntryViewModel("ocr", "OCR 引擎", OcrProviderSettings),
-            new SettingsSectionEntryViewModel("llm", "模型连接与聊天", LlmSettings),
-            new SettingsSectionEntryViewModel("workflows", "工作流", WorkflowSettings),
+            new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
+            new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),
             new SettingsSectionEntryViewModel("csl_localization", "题录本地化", CslLocalizationSettings),
@@ -133,15 +133,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         SettingsSectionGroupViewModel library = new(Entry("library"), Entry("local_files"));
         SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr"),
-            new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR 模型", new LlmOcrDefaultsViewModel(LlmSettings)));
-        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("workflows"), Entry("mcp"));
+            new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR", new LlmOcrDefaultsViewModel(LlmSettings)),
+            new SettingsSectionEntryViewModel("translation", "文献翻译", new TranslationDefaultsViewModel(LlmSettings)));
+        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"));
         Categories =
         [
             new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
             new NavCategoryViewModel("书库与本机文件", "Database", library),
-            new NavCategoryViewModel("导入与识别", "ScanText", recognition),
+            new NavCategoryViewModel("文献加工", "ScanText", recognition),
             new NavCategoryViewModel("AI集成", "Sparkles", ai),
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
@@ -193,7 +194,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public LlmSettingsViewModel LlmSettings { get; }
-    public WorkflowSettingsViewModel WorkflowSettings { get; }
+    public AgentIntegrationSettingsViewModel AgentIntegrationSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
     public CslLocalizationSettingsViewModel CslLocalizationSettings { get; }
@@ -618,6 +619,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return group.ActiveEntry.Content switch
             {
                 LlmOcrDefaultsViewModel ocr => [ocr.Settings],
+                TranslationDefaultsViewModel translation => [translation.Settings],
                 ISettingsSection selectedSection => [selectedSection],
                 _ => []
             };

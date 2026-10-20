@@ -7,8 +7,7 @@ namespace Patchouli.Mcp;
 /// Values follow the PRD v3 error table: 0 OK, 1 INTERNAL, 2 INVALID_ARGUMENT,
 /// 3 NOT_FOUND, 4 PERMISSION_DENIED, 5 RESERVED (put has no base revision and no
 /// revision conflict), 6 INVALID_CONTENT, 7 RESPONSE_TRUNCATED, 8 UNAVAILABLE,
-/// 9 NOT_CITABLE, 10 DEADLINE_EXCEEDED, 11 CANCELLED, 12 ITEM_IN_TRASH, 13 ITEM_MERGED,
-/// 14 WORKFLOW_NOT_FOUND, 15 SESSION_NOT_FOUND, 16 SESSION_STATE_INVALID, 17 DUPLICATE_MESSAGE.
+/// 9 NOT_CITABLE, 10 DEADLINE_EXCEEDED, 11 CANCELLED, 12 ITEM_IN_TRASH, 13 ITEM_MERGED.
 /// </summary>
 public enum McpErrorCode
 {
@@ -25,11 +24,7 @@ public enum McpErrorCode
     DeadlineExceeded = 10,
     Cancelled = 11,
     ItemInTrash = 12,
-    ItemMerged = 13,
-    WorkflowNotFound = 14,
-    SessionNotFound = 15,
-    SessionStateInvalid = 16,
-    DuplicateMessage = 17
+    ItemMerged = 13
 }
 
 /// <summary>Single source of truth mapping domain error codes to the shared numeric codes.</summary>
@@ -77,6 +72,21 @@ public static class McpErrorMappings
             AppErrorCodes.ItemMerged => McpErrorCode.ItemMerged,
             AppErrorCodes.DatabaseError or AppErrorCodes.InvalidState or AppErrorCodes.MappingRequired
                 or AppErrorCodes.StaleSettingsRevision => McpErrorCode.Internal,
+            _ => McpErrorCode.Internal
+        };
+    }
+
+    /// <summary>Maps domain failures surfaced by OCR operations.</summary>
+    public static McpErrorCode ToOcrError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument or AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound or "source_file_missing" => McpErrorCode.NotFound,
+            AppErrorCodes.Conflict or "source_file_changed" => McpErrorCode.RevisionConflict,
+            AppErrorCodes.UnsupportedOperation or AppErrorCodes.InvalidState => McpErrorCode.Unavailable,
+            "permission_denied" => McpErrorCode.PermissionDenied,
+            "cancelled" or "operation_cancelled" => McpErrorCode.Cancelled,
             _ => McpErrorCode.Internal
         };
     }

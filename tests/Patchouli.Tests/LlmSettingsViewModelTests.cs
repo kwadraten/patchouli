@@ -15,9 +15,9 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-/// <summary>The 「模型连接与聊天」settings section: the provider form is rendered from the catalog (D3), the
-/// Azure-only fields follow the catalog flags, secrets travel through <see cref="ICredentialStore"/> only
-/// and the chat window radius is clamped to [0, 5] (D5).</summary>
+/// <summary>The 「模型连接」settings section: the provider form is rendered from the catalog (D3), the
+/// Azure-only fields follow the catalog flags, secrets travel through <see cref="ICredentialStore"/> only,
+/// and the direct translation bounds are validated before they are persisted.</summary>
 [Collection("Avalonia")]
 public sealed class LlmSettingsViewModelTests : IDisposable
 {
@@ -115,26 +115,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     window.KeyTextInput("replacement-secret");
                     Dispatcher.UIThread.RunJobs();
                     row.ApiKeyInput.Should().Be("replacement-secret", "typing must update the credential draft");
-                    NumericUpDown payloadLimit = page.GetVisualDescendants().OfType<NumericUpDown>()
-                        .Single(input => input.Name == "ToolResultMaxCharactersInput");
-                    NumericUpDown retries = page.GetVisualDescendants().OfType<NumericUpDown>()
-                        .Single(input => input.Name == "AgentMaxRetriesInput");
-                    retries.Value.Should().Be(3);
-                    retries.Value = 0;
-                    Dispatcher.UIThread.RunJobs();
-                    section.AgentMaxRetries.Should().Be(0);
-                    ComboBox effort = page.GetVisualDescendants().OfType<ComboBox>()
-                        .Single(input => input.Name == "AgentReasoningEffortInput");
-                    effort.SelectedItem =
-                        section.AgentReasoningEffortOptions.Single(option => option.ProviderId == "high");
-                    Dispatcher.UIThread.RunJobs();
-                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
-                    section.SelectedAgentReasoningEffort = null;
-                    section.SelectedAgentReasoningEffort!.ProviderId.Should().Be("high");
-                    payloadLimit.Value.Should().Be(32768);
-                    payloadLimit.Value = 16384;
-                    Dispatcher.UIThread.RunJobs();
-                    section.ToolResultMaxCharacters.Should().Be(16384);
                     using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
                     while (section.IsDirty || section.IsSaving)
                     {
@@ -142,12 +122,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     }
 
                     store.SavedSecrets["deepseek"].Should().Be("replacement-secret");
-                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentMaxRetries.Should().Be(0);
-                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentReasoningEffort.Should().Be("high");
-                    (await main.ServicesAsync()).LlmSettings.AgentReasoningEffort.Should().Be("high");
-                    (await main.ServicesAsync()).LlmSettings.AgentMaxRetries.Should().Be(0);
-                    PatchouliAppSettings.Load(_settings.Path).Llm.ToolResultMaxCharacters.Should().Be(16384);
-                    (await main.ServicesAsync()).LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
                     row.HasCredential.Should().BeTrue();
                     key.Text.Should().Be("replacement-secret");
                     key.PlaceholderText.Should().NotContain("•");
@@ -185,7 +159,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             await using MainWindowViewModel reopened = new(settingsPath: _settings.Path);
             reopened.Settings.LlmSettings.UseCredentialStore(store);
             await reopened.Settings.SelectSectionAsync("llm");
-            reopened.Settings.LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
             LlmProviderSettingsRowViewModel savedRow = reopened.Settings.LlmSettings.VisibleProviders
                 .Single(provider => provider.ProviderId == "deepseek");
             savedRow.Model.Should().Be("deepseek-reasoner");
@@ -806,7 +779,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         // The page binds exactly this section, registered under the LLM category.
         vm.Settings.SectionEntries.Should()
             .ContainSingle(entry => ReferenceEquals(entry.Content, section))
-            .Which.Title.Should().Be("模型连接与聊天");
+            .Which.Title.Should().Be("模型连接");
         section.UseCredentialStore(store);
         return (vm, section);
     }

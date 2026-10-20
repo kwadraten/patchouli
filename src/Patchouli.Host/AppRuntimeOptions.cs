@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Patchouli.Core.Agents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Ids;
@@ -159,27 +160,11 @@ public sealed record SyncAppSettings(
     string SyncRootId = "",
     SnapshotSyncLocalState? SnapshotState = null,
     IReadOnlyList<string>? SyncedSettingKeys = null,
-    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null,
-    bool SyncAgentSessions = false,
-    bool SyncWorkflowDefinitions = false)
+    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
         return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
-    }
-
-    /// <summary>
-    /// Two independent snapshot switches (ADR 0036 §Persistence): whether agent session directories and
-    /// whether workflow definitions enter a Library snapshot. Both default to off — session history is
-    /// never pulled into a snapshot unless the user opts in.
-    /// </summary>
-    public SyncAppSettings WithAgentWorkflowSync(bool syncAgentSessions, bool syncWorkflowDefinitions)
-    {
-        return this with
-        {
-            SyncAgentSessions = syncAgentSessions,
-            SyncWorkflowDefinitions = syncWorkflowDefinitions
-        };
     }
 
     [JsonIgnore]
@@ -519,6 +504,13 @@ public sealed record PatchouliAppSettings(
     /// </summary>
     public LlmAppSettings Llm { get; init; } = LlmAppSettings.Default();
 
+    /// <summary>
+    /// External Agent integration settings, persisted in the JSON "Agents" section. The section only
+    /// selects an agent and optional executable overrides; authentication and sessions stay in the agent
+    /// CLI's own configuration.
+    /// </summary>
+    public AgentIntegrationAppSettings Agents { get; init; } = AgentIntegrationAppSettings.Default();
+
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
         return new PatchouliAppSettings(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(),
@@ -583,6 +575,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? ocrEngines = GetSection(root, "OcrEngines");
             JsonElement? import = GetSection(root, "Import");
             JsonElement? llm = GetSection(root, "Llm");
+            JsonElement? agents = GetSection(root, "Agents") ?? GetSection(root, "AgentIntegration");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -625,6 +618,7 @@ public sealed record PatchouliAppSettings(
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Import = ReadImport(import, defaults.Import),
                 Llm = ReadLlm(llm, defaults.Llm),
+                Agents = ReadAgents(agents, defaults.Agents),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
                 Sync = new SyncAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
@@ -811,6 +805,7 @@ public sealed record PatchouliAppSettings(
                 OcrEngines.RegionOcrEngine
             });
             root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
+            root["Agents"] = SerializeAgents(Agents);
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -942,8 +937,6 @@ public sealed record PatchouliAppSettings(
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRoot));
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncMetadataLookup));
                     CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncRootId));
-                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncAgentSessions));
-                    CopyJsonMember(incomingSync, syncNode, nameof(SyncAppSettings.SyncWorkflowDefinitions));
                 }
 
                 if (existingSyncNode is null)
@@ -1023,6 +1016,11 @@ public sealed record PatchouliAppSettings(
             if (saveAll || dirtyFields!.Contains(LlmProviderCatalog.SectionName))
             {
                 root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
+            }
+
+            if (saveAll || dirtyFields!.Contains("Agents"))
+            {
+                root["Agents"] = SerializeAgents(Agents);
             }
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
@@ -1190,8 +1188,6 @@ public sealed record PatchouliAppSettings(
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncMetadataLookup));
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncRootId));
                 CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncedSettingKeys));
-                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncAgentSessions));
-                CopyJsonMember(incomingSync, sync, nameof(SyncAppSettings.SyncWorkflowDefinitions));
             }
 
             UpsertDeviceBindingJson(sync, targetBinding);
@@ -1425,6 +1421,14 @@ public sealed record PatchouliAppSettings(
                 ReadBool(element, "BackfillPreviousWindowTranslation", true) ? "true" : "false";
         }
 
+        // One-time migration: a file written before the direct translation engine had no "Translation"
+        // subsection, so seed it from the legacy values a single time. A present subsection always wins.
+        TranslationAppSettings translation = ReadTranslation(element, fallback.Translation);
+        if (!element.TryGetProperty("Translation", out _) && legacyValues.Count > 0)
+        {
+            translation = MigrateLegacyTranslation(legacyValues);
+        }
+
         return new LlmAppSettings(
                 providers,
                 ReadString(element, "OcrProviderId", fallback.OcrProviderId),
@@ -1438,12 +1442,128 @@ public sealed record PatchouliAppSettings(
                 OcrLayoutModel = ReadString(element, "OcrLayoutModel", fallback.OcrLayoutModel),
                 OcrReasoningEffort = ReadString(element, "OcrReasoningEffort", fallback.OcrReasoningEffort),
                 OcrConcurrency = ReadInt(element, "OcrConcurrency", fallback.OcrConcurrency),
-                AgentMaxRetries = ReadInt(element, "AgentMaxRetries", fallback.AgentMaxRetries),
-                AgentReasoningEffort = ReadString(element, "AgentReasoningEffort", fallback.AgentReasoningEffort),
-                ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
-                LegacyWorkflowValues = legacyValues.Count == 0 ? fallback.LegacyWorkflowValues : legacyValues
+                Translation = translation
             }
             .Normalize();
+    }
+
+    /// <summary>
+    /// Reads the "Translation" subsection. A missing or malformed subsection returns the fallback
+    /// (defaults on a fresh load); individual missing fields fall back per field.
+    /// </summary>
+    private static TranslationAppSettings ReadTranslation(JsonElement element, TranslationAppSettings fallback)
+    {
+        if (!element.TryGetProperty("Translation", out JsonElement translation) ||
+            translation.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        int? maxBatchTokens = translation.TryGetProperty("MaxBatchTokens", out _)
+            ? ReadNullableInt(translation, "MaxBatchTokens")
+            : fallback.MaxBatchTokens;
+        return new TranslationAppSettings(
+            ReadString(translation, "TargetLanguage", fallback.TargetLanguage),
+            ReadInt(translation, "BatchSize", fallback.BatchSize),
+            ReadInt(translation, "MaxBatchCharacters", fallback.MaxBatchCharacters),
+            maxBatchTokens,
+            ReadInt(translation, "Concurrency", fallback.Concurrency),
+            ReadInt(translation, "RequestIntervalSeconds", fallback.RequestIntervalSeconds),
+            ReadInt(translation, "RequestTimeoutSeconds", fallback.RequestTimeoutSeconds),
+            ReadInt(translation, "MaxRetries", fallback.MaxRetries),
+            ReadInt(translation, "WindowRadius", fallback.WindowRadius),
+            ReadBool(translation, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation),
+            ReadString(translation, "ProviderId", fallback.ProviderId ?? ""),
+            ReadString(translation, "Model", fallback.Model ?? "")).Normalize();
+    }
+
+    /// <summary>
+    /// Seeds the Translation subsection from the pre-#20 workflow values. Only the values the workflow
+    /// exposed are carried over (target language, provider/model, window radius and backfill); everything
+    /// else keeps its default.
+    /// </summary>
+    private static TranslationAppSettings MigrateLegacyTranslation(
+        IReadOnlyDictionary<string, string> legacyValues)
+    {
+        TranslationAppSettings defaults = new();
+        string targetLanguage = legacyValues.TryGetValue("targetLanguage", out string? legacyLanguage)
+            ? legacyLanguage
+            : defaults.TargetLanguage;
+        string? providerId = defaults.ProviderId;
+        string? model = defaults.Model;
+        if (legacyValues.TryGetValue("model", out string? legacyModelJson) &&
+            !string.IsNullOrWhiteSpace(legacyModelJson))
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(legacyModelJson);
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    providerId = ReadString(document.RootElement, "providerId", "");
+                    model = ReadString(document.RootElement, "model", "");
+                }
+            }
+            catch (JsonException)
+            {
+                // A malformed legacy payload must not prevent settings from loading; keep the defaults.
+            }
+        }
+
+        int windowRadius = legacyValues.TryGetValue("windowRadius", out string? legacyRadius) &&
+                           int.TryParse(legacyRadius, out int parsedRadius)
+            ? parsedRadius
+            : defaults.WindowRadius;
+        bool backfill = legacyValues.TryGetValue("backfillPreviousWindowTranslation", out string? legacyBackfill) &&
+                        bool.TryParse(legacyBackfill, out bool parsedBackfill)
+            ? parsedBackfill
+            : defaults.BackfillPreviousWindowTranslation;
+
+        return (defaults with
+        {
+            TargetLanguage = targetLanguage,
+            ProviderId = providerId,
+            Model = model,
+            WindowRadius = windowRadius,
+            BackfillPreviousWindowTranslation = backfill
+        }).Normalize();
+    }
+
+    /// <summary>
+    /// Reads the "Agents" section (with "AgentIntegration" accepted as a legacy alias). A missing or
+    /// malformed section returns the fallback; individual missing fields fall back per field.
+    /// </summary>
+    private static AgentIntegrationAppSettings ReadAgents(
+        JsonElement? section,
+        AgentIntegrationAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        Dictionary<string, string> customPaths = new(StringComparer.Ordinal);
+        if (element.TryGetProperty("CustomPaths", out JsonElement paths) &&
+            paths.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in paths.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                string? value = property.Value.GetString();
+                if (!string.IsNullOrWhiteSpace(property.Name) && !string.IsNullOrWhiteSpace(value))
+                {
+                    customPaths[property.Name.Trim()] = value.Trim();
+                }
+            }
+        }
+
+        return new AgentIntegrationAppSettings(
+            ReadBool(element, "Enabled", fallback.Enabled),
+            ReadString(element, "SelectedAgentId", fallback.SelectedAgentId),
+            customPaths).Normalize();
     }
 
     private static JsonObject SerializeLlm(LlmAppSettings llm)
@@ -1460,17 +1580,20 @@ public sealed record PatchouliAppSettings(
             normalized.OcrConcurrency,
             normalized.ChatProviderId,
             normalized.ChatModel,
-            normalized.AgentMaxRetries,
-            normalized.AgentReasoningEffort,
-            normalized.ToolResultMaxCharacters
+            normalized.Translation
         }) as JsonObject ?? new JsonObject();
-        // Retain pending values until workflow storage has consumed them, even if settings save first.
-        if (normalized.LegacyWorkflowValues.Count > 0)
-        {
-            result["PendingWorkflowMigration"] = JsonSerializer.SerializeToNode(normalized.LegacyWorkflowValues);
-        }
-
         return result;
+    }
+
+    private static JsonObject SerializeAgents(AgentIntegrationAppSettings agents)
+    {
+        AgentIntegrationAppSettings normalized = agents.Normalize();
+        return new JsonObject
+        {
+            ["Enabled"] = normalized.Enabled,
+            ["SelectedAgentId"] = normalized.SelectedAgentId,
+            ["CustomPaths"] = JsonSerializer.SerializeToNode(normalized.CustomPaths) ?? new JsonObject()
+        };
     }
 
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)

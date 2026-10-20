@@ -44,9 +44,7 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
             settings.Sync.DeviceId,
             state,
             settings.Sync.EnabledSettingKeysForLibrary(libraryId.Value),
-            settings.Sync.Bindings.Select(binding => binding.ToDeviceRootBinding()).ToArray(),
-            settings.Sync.SyncAgentSessions,
-            settings.Sync.SyncWorkflowDefinitions));
+            settings.Sync.Bindings.Select(binding => binding.ToDeviceRootBinding()).ToArray()));
     }
 
     public async Task<Result> SaveLocalStateAsync(

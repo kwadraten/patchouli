@@ -154,16 +154,6 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         }
     }
 
-    private async void OnReadingWorkflowMenuOpening(object? sender, EventArgs e)
-    {
-        // The reading toolbar reads the same workflow menu mechanism as the Library context menu and the
-        // menu bar; opening it re-captures the entries against the page the reader is on.
-        if (_workspace is { } workspace)
-        {
-            await UnexpectedExceptionBoundary.RunAsync(workspace.RefreshWorkflowMenuAsync, "reading-workflow-menu");
-        }
-    }
-
     private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key == Key.Delete && _workspace is { IsEditMode: true } &&

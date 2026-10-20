@@ -239,50 +239,34 @@
               <TextBlock Text="阅读模式" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
             </StackPanel>
           </Button>
-          <!-- One-click page OCR: RunCurrentPageOcrCommand already plans logical pages when the
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <!-- One-click page OCR: RunCurrentPageOcrCommand already plans logical pages when the
                current revision has them and falls back to the whole physical page otherwise. -->
-          <Button IsVisible="{Binding IsEditMode}" Command="{Binding RunCurrentPageOcrCommand}"
-                  ToolTip.Tip="{Binding OcrPresetStatusText}">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
-              <TextBlock Text="OCR" FontSize="12" />
-            </StackPanel>
-          </Button>
-          <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
-              <TextBlock Text="编辑 OCR 结果" FontSize="12" />
-            </StackPanel>
-          </Button>
+            <Button IsVisible="{Binding IsEditMode}" Command="{Binding RunCurrentPageOcrCommand}"
+                    ToolTip.Tip="{Binding OcrPresetStatusText}">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
+                <TextBlock Text="当前页 OCR" FontSize="12" />
+              </StackPanel>
+            </Button>
+            <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
+                <TextBlock Text="编辑 OCR 结果" FontSize="12" />
+              </StackPanel>
+            </Button>
 
-          <!-- The reading view's workflow entry: the same ordered definitions the Library context
-               menu and the menu bar show, captured against the open document. -->
-          <Button Background="Transparent" ToolTip.Tip="工作流">
-            <Button.Flyout>
-              <MenuFlyout Opening="OnReadingWorkflowMenuOpening">
-                <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
-                          IsVisible="{Binding HasReadingWorkflowMenuEntries}" x:CompileBindings="False">
-                  <MenuItem.ItemTemplate>
-                    <DataTemplate x:DataType="vm:WorkflowMenuEntryViewModel">
-                      <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
-                    </DataTemplate>
-                  </MenuItem.ItemTemplate>
-                  <MenuItem.Styles>
-                    <Style Selector="MenuItem MenuItem">
-                      <Setter Property="Command" Value="{Binding LaunchCommand}" />
-                      <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
-                    </Style>
-                  </MenuItem.Styles>
-                </MenuItem>
-              </MenuFlyout>
-            </Button.Flyout>
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="RefreshCw" Width="14" Height="14"
-                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Text="工作流" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
-            </StackPanel>
-          </Button>
+            <!-- Issue #20: translate every page of the document that is open in this workspace. -->
+            <Button Background="Transparent" Command="{Binding StartDocumentTranslationCommand}"
+                    ToolTip.Tip="全文翻译当前文档">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <lucide:Lucide Icon="Sparkles" Width="14" Height="14"
+                               StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="全文翻译" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+              </StackPanel>
+            </Button>
 
+          </StackPanel>
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0" />
 
           <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}"
@@ -603,8 +587,6 @@
                           <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
-                          <MenuItem Header="返回页面编辑" Command="{Binding ShowContentTabCommand}"
-                                    IsVisible="{Binding IsEditMode}" />
                         </MenuFlyout>
                       </Button.Flyout>
                       <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
@@ -789,7 +771,6 @@
               <Border Classes="SidebarHeader">
                 <Grid ColumnDefinitions="*,Auto">
                   <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" Content="章节" Command="{Binding ShowChaptersTabCommand}" />
                 </Grid>
               </Border>
               <Grid Grid.Row="1">

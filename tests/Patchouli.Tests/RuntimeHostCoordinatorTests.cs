@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Net;
+using System.Net.Sockets;
 using FluentAssertions;
 using Patchouli.Host.Lifecycle;
 
@@ -69,6 +71,68 @@ public sealed class RuntimeHostCoordinatorTests : IDisposable
         await File.WriteAllTextAsync(recordPath, JsonSerializer.Serialize(stale));
 
         (await RuntimeHostCoordinator.ReadAsync(database, _root)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Publishing_replaces_record_while_existing_reader_retains_old_snapshot()
+    {
+        string database = Path.Combine(_root, "shared-reader.sqlite");
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(
+            database, RuntimeHostKind.Headless, _root)!;
+        RuntimeHostDiscoveryRecord original = await lease.PublishAsync(
+            Guid.NewGuid().ToString("D"), "http://localhost:4536/mcp");
+        string recordPath = Path.Combine(_root, lease.PathKey + ".json");
+        await using FileStream reader = new(recordPath, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        RuntimeHostDiscoveryRecord replacement = await lease.PublishAsync(
+            original.LibraryId, "http://localhost:4537/mcp");
+
+        (await RuntimeHostCoordinator.ReadAsync(database, _root)).Should().Be(replacement);
+        (await JsonSerializer.DeserializeAsync<RuntimeHostDiscoveryRecord>(
+            reader, RuntimeHostCoordinator.JsonOptions)).Should().Be(original);
+        Directory.GetFiles(_root, "*.tmp").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Discovery_releases_record_before_waiting_for_stale_host_health_probe()
+    {
+        string database = Path.Combine(_root, "slow-health.sqlite");
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(
+            database, RuntimeHostKind.Headless, _root)!;
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        RuntimeHostDiscoveryRecord original = await lease.PublishAsync(
+            Guid.NewGuid().ToString("D"), $"http://127.0.0.1:{port}/mcp");
+        string recordPath = Path.Combine(_root, lease.PathKey + ".json");
+        await File.WriteAllTextAsync(recordPath, JsonSerializer.Serialize(
+            original with { ProcessId = int.MaxValue }, RuntimeHostCoordinator.JsonOptions));
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        Task<RuntimeHostDiscoveryRecord?> discovery = RuntimeHostCoordinator.ReadAsync(
+            database, _root, timeout.Token);
+        try
+        {
+            using TcpClient connection = await listener.AcceptTcpClientAsync(timeout.Token);
+            byte[] request = new byte[1024];
+            (await connection.GetStream().ReadAsync(request, timeout.Token)).Should().BePositive();
+            discovery.IsCompleted.Should().BeFalse();
+
+            // On Windows this fails if discovery retains its read handle during the health probe.
+            using FileStream exclusive = new(recordPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        }
+        finally
+        {
+            await timeout.CancelAsync();
+            try
+            {
+                await discovery;
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                // End the deliberately stalled health probe before disposing the fixture.
+            }
+        }
     }
 
     [Fact]

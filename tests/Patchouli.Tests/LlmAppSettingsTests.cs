@@ -17,13 +17,6 @@ public sealed class LlmAppSettingsTests
         settings.OcrSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         settings.ChatSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
-        settings.ToolResultMaxCharacters.Should().Be(32768);
-        settings.AgentMaxRetries.Should().Be(3);
-        settings.AgentReasoningEffort.Should().BeEmpty();
-        (settings with { AgentReasoningEffort = " XHIGH " }).Normalize().AgentReasoningEffort.Should().Be("xhigh");
-        (settings with { AgentReasoningEffort = "unknown" }).Normalize().AgentReasoningEffort.Should().BeEmpty();
-        (settings with { AgentMaxRetries = -1 }).Normalize().AgentMaxRetries.Should().Be(0);
-        (settings with { AgentMaxRetries = 99 }).Normalize().AgentMaxRetries.Should().Be(20);
     }
 
     [Fact]
@@ -35,11 +28,13 @@ public sealed class LlmAppSettingsTests
     }
 
     [Fact]
-    public void Shared_settings_do_not_serialize_workflow_business_defaults()
+    public void Shared_settings_serialize_the_direct_translation_subsection()
     {
+        // Direct translation is a host feature now (#20), so its settings belong to the shared LLM
+        // block and must serialize.
         string json = System.Text.Json.JsonSerializer.Serialize(LlmAppSettings.Default());
-        json.Should().NotContain("Translation").And.NotContain("TargetLanguage")
-            .And.NotContain("WindowRadius").And.NotContain("LegacyWorkflowValues");
+        json.Should().Contain("\"Translation\"").And.Contain("\"TargetLanguage\"")
+            .And.Contain("\"WindowRadius\"");
     }
 
     [Fact]

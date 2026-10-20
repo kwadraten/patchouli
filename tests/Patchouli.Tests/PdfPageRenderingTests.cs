@@ -536,7 +536,9 @@ public sealed class PdfPageRenderingTests
                 "048_normalize_document_box_types.sql",
                 "049_add_csl_language_locale_mappings.sql",
                 "050_file_search_root_sort_order.sql",
-                "051_file_import_recovery.sql");
+                "051_file_import_recovery.sql",
+                "052_create_document_page_maps.sql",
+                "053_add_page_translation_target_language.sql");
     }
 
     private sealed class Context : IAsyncDisposable

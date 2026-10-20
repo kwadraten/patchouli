@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -494,7 +494,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
             Dictionary<string, string> authorsByItem = (await connection.QueryAsync<AuthorRow>(
                     AuthorRowSql, new { ItemIds = itemIdTexts }))
-                .ToDictionary(static row => row.ItemId, static row => row.Authors, StringComparer.Ordinal);
+                .GroupBy(static row => row.ItemId, StringComparer.Ordinal)
+                .ToDictionary(static group => group.Key, static group => string.Join(", ", group
+                    .Select(row =>
+                        ItemCreatorNameFormatter.Format(row.Family, row.Given, row.Literal, row.Suffix, row.Particles))
+                    .Where(name => !string.IsNullOrWhiteSpace(name))), StringComparer.Ordinal);
             Dictionary<string, string> issuedDates = (await connection.QueryAsync<IssuedDateRow>(
                     IssuedDateRowSql, new { ItemIds = itemIdTexts }))
                 .GroupBy(static row => row.ItemId, StringComparer.Ordinal)
@@ -626,18 +630,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         """
         select
             c.item_id as ItemId,
-            group_concat(
-                case
-                    when length(trim(coalesce(c.literal, ''))) > 0 then c.literal
-                    else trim(coalesce(c.given, '') || ' ' || coalesce(c.particles, '') || ' ' ||
-                              coalesce(c.family, '') || ' ' || coalesce(c.suffix, ''))
-                end,
-                ', '
-            ) as Authors
+            c.family as Family, c.given as Given, c.literal as Literal,
+            c.suffix as Suffix, c.particles as Particles
         from item_creators c
         where c.item_id in @ItemIds and c.role = 'author'
-        group by c.item_id
-        order by c.item_id;
+        order by c.item_id, c.sequence_index, c.creator_id;
         """;
 
     private const string IssuedDateRowSql =
@@ -834,7 +831,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     private sealed class AuthorRow
     {
         public string ItemId { get; init; } = "";
-        public string Authors { get; init; } = "";
+        public string? Family { get; init; }
+        public string? Given { get; init; }
+        public string? Literal { get; init; }
+        public string? Suffix { get; init; }
+        public string? Particles { get; init; }
     }
 
     private sealed class IssuedDateRow

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Patchouli.Terminal</RootNamespace>
+    <AssemblyName>Patchouli.Terminal</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Iciclecreek.Avalonia.Terminal" />
+    <PackageReference Include="Porta.Pty" />
+  </ItemGroup>
+</Project>

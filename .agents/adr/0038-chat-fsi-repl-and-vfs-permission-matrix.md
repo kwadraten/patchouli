@@ -1,5 +1,10 @@
 # 0038. Chat FSI REPL and VFS permission matrix
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): the built-in Agent,
+chat page and FSI REPL have been removed. The VFS domain × verb permission matrix — including
+the rule that legacy grants never promote to new Action grants — remains in force for
+external MCP clients.
+
 2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)
 partitions live FSI workers and temporary workspaces by conversation context within a
 Session. SDK bindings remain activation-scoped; durable receipts and unknown-write
@@ -12,13 +17,15 @@ and generated callable `AgentTools` bindings. Native and FSI operations share th
 domain checks and durable primitive receipts. Frozen workflow definitions and input bindings are
 rebuilt from the snapshot; worker-local variables remain temporary. Interrupted whole code blocks
 are refused on restore, while settled SDK receipts remain available. This preserves the existing
-independent process, scratch workspace and .NET trust boundary. See [workflow-api](../workflow-api.md).
+independent process, scratch workspace and .NET trust boundary. The former workflow API is
+removed with the built-in Agent system; see [ADR 0047](0047-external-agent-cli-terminal-integration.md).
 
 Date: 2026-10-07
 
 ## Status
 
-Accepted. Amends ADR 0036's built-in agent capability boundary.
+Accepted. Amends ADR 0036's built-in agent capability boundary. Superseded by ADR 0047; the
+permission matrix described below remains in force.
 
 ## Decision
 

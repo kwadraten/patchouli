@@ -38,7 +38,16 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
         foreach (OcrPageCandidate page in request.Candidate.Pages.OrderBy(page => page.PageIndex))
         {
             List<DocumentBoxSeed> seeds = [];
-            DocumentTreeRevisionId? parentRevisionId = null;
+            // The engine captures each page's current committed revision before recognition
+            // starts; that snapshot is the lineage basis recorded on the working revision.
+            // Reading "current" here would be too late: a manual edit committed while the
+            // engine ran would silently become the parent and mask the conflict at adoption.
+            DocumentTreeRevisionId? parentRevisionId =
+                request.ExpectedParentTreeRevisionIds is not null &&
+                request.ExpectedParentTreeRevisionIds.TryGetValue(
+                    page.PageId, out DocumentTreeRevisionId expectedParent)
+                    ? expectedParent
+                    : null;
             DocumentBoxId[] logicalParentIds = page.Boxes
                 .Where(box => box.ParentLogicalPageBoxId is not null)
                 .Select(box => box.ParentLogicalPageBoxId!.Value)
@@ -46,17 +55,21 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 .ToArray();
             if (logicalParentIds.Length > 0)
             {
-                Result<DocumentTreeRevision> current = await _trees.GetCurrentRevisionAsync(
-                    request.DocumentInstanceId, page.PageId, cancellationToken);
-                if (current.IsFailure)
+                if (parentRevisionId is null)
                 {
-                    return Result<OcrDocumentTreeImportResult>.Failure(
-                        current.ErrorCode!, current.ErrorMessage!);
+                    Result<DocumentTreeRevision> current = await _trees.GetCurrentRevisionAsync(
+                        request.DocumentInstanceId, page.PageId, cancellationToken);
+                    if (current.IsFailure)
+                    {
+                        return Result<OcrDocumentTreeImportResult>.Failure(
+                            current.ErrorCode!, current.ErrorMessage!);
+                    }
+
+                    parentRevisionId = current.Value.TreeRevisionId;
                 }
 
-                parentRevisionId = current.Value.TreeRevisionId;
                 Result<IReadOnlyList<DocumentBox>> currentBoxes = await _trees.ListBoxesAsync(
-                    current.Value.TreeRevisionId, cancellationToken);
+                    parentRevisionId.Value, cancellationToken);
                 if (currentBoxes.IsFailure)
                 {
                     return Result<OcrDocumentTreeImportResult>.Failure(

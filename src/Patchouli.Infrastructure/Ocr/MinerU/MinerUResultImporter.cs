@@ -68,7 +68,10 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
         }
 
         Result<OcrDocumentTreeImportResult> imported = await _treeImporter.BeginWorkingAsync(
-            new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
+            new OcrDocumentTreeImportRequest(
+                documentInstanceId,
+                candidate,
+                ExpectedParentTreeRevisionIds: request.ExpectedParentTreeRevisionIds),
             cancellationToken);
         if (imported.IsFailure)
         {

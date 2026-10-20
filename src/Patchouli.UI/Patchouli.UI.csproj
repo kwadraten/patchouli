@@ -24,8 +24,8 @@
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.McpServer\Patchouli.McpServer.csproj" />
     <ProjectReference Include="..\Patchouli.Host\Patchouli.Host.csproj" />
-    <ProjectReference Include="..\Patchouli.Workflows\Patchouli.Workflows.fsproj" />
     <ProjectReference Include="..\Patchouli.Reading\Patchouli.Reading.csproj" />
+    <ProjectReference Include="..\Patchouli.Terminal\Patchouli.Terminal.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
@@ -42,6 +42,7 @@
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <AvaloniaResource Include="Assets\AppIcon.ico" />
+    <AvaloniaResource Include="Assets\Agents\*.svg" />
     <AvaloniaResource Include="Assets\Lucide\*.svg" />
     <AvaloniaResource Include="Assets\CatWalk\*.svg" />
     <AvaloniaResource Include="Assets\CatWalk\LICENSE" />
@@ -49,7 +50,6 @@
     <AvaloniaResource Include="Assets\CatWalk\SOURCE" />
     <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE" />
     <EmbeddedResource Include="..\..\Changelog.md" Link="Changelog.md" LogicalName="Patchouli.UI.Changelog.md" />
-    <EmbeddedResource Include="Assets\FSharp.xshd" />
     <EmbeddedResource Include="Assets\CatWalk\LICENSE" Link="Assets\CatWalk\LICENSE" />
     <EmbeddedResource Include="Assets\CatWalk\NOTICE" Link="Assets\CatWalk\NOTICE" />
     <EmbeddedResource Include="Assets\CatWalk\SOURCE" Link="Assets\CatWalk\SOURCE" />

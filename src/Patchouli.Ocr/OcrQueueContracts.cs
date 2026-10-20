@@ -97,7 +97,8 @@ public sealed record OcrQueueTask(
     int CompletedPageCount = 0,
     int FailedPageCount = 0,
     NormalizedBBox? RegionBBox = null,
-    bool CommitOnCompletion = true);
+    bool CommitOnCompletion = true,
+    OcrPresetVersionId? PresetVersionId = null);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -112,7 +113,8 @@ public sealed record OcrQueueTaskRequest(
     int? Dpi = null,
     int MaxAttempts = 3,
     NormalizedBBox? RegionBBox = null,
-    bool CommitOnCompletion = true);
+    bool CommitOnCompletion = true,
+    OcrPresetVersionId? PresetVersionId = null);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,
@@ -207,6 +209,14 @@ public interface IOcrQueueScheduler
     Task<Result> ResumeAsync(string scope, string? target = null, CancellationToken c = default);
     Task<Result> CancelTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
     Task<Result<OcrQueueTask>> RetryTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
+
+    Task<Result<OcrQueueTask>> RetryTaskWithVersionAsync(OcrQueueTaskId id,
+        OcrPresetVersionId presetVersionId, CancellationToken c = default)
+    {
+        return Task.FromResult(Result<OcrQueueTask>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Version-pinned OCR retries are unavailable on this queue."));
+    }
+
     Task<Result<OcrQueueTask>> GetTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
     Task<Result<IReadOnlyList<OcrQueueTask>>> ListTasksAsync(OcrQueueTaskFilter filter, CancellationToken c = default);
     Task<Result<OcrQueueStatus>> GetQueueStatusAsync(CancellationToken c = default);

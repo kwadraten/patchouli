@@ -50,6 +50,9 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Mon Oct 19 2026 kwadraten <schild0van0man@duck.com> - 0.3.13-1
+- Replace the built-in agent with external CLI agents in an embedded terminal, and add direct batched full-text translation
+
 * Sun Oct 18 2026 kwadraten <schild0van0man@duck.com> - 0.3.12-1
 - Add MCP local imports and source images, CSL localization and settings fixes
 

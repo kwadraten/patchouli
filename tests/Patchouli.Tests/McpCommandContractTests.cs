@@ -66,7 +66,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_root_returns_the_six_vfs_directories_and_library_projection_without_message()
+    public async Task Find_root_returns_existing_directories_and_library_projection_without_message()
     {
         McpCommandResult<McpFindMeta, object> result =
             await _library.Commands.FindAsync(new McpFindRequest(null, null, null));
@@ -75,20 +75,20 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(7);
-        envelope.Meta.DomainTotal.Should().Be(7);
-        envelope.Meta.FilteredTotal.Should().Be(7);
+        envelope.Meta.ShownTotal.Should().Be(6);
+        envelope.Meta.DomainTotal.Should().Be(6);
+        envelope.Meta.FilteredTotal.Should().Be(6);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
-        envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().Equal(
+        envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
             "patchouli://texts/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
-            "patchouli://workflows/",
             "patchouli://library.yml");
-        envelope.Entries.Select(Entry).Take(6).Should().OnlyContain(entry => entry.Type == "directory");
-        envelope.Entries.Select(Entry).Last().Type.Should().Be("file");
+        envelope.Entries.Select(Entry).Where(entry => entry.Uri != "patchouli://library.yml")
+            .Should().OnlyContain(entry => entry.Type == "directory");
+        envelope.Entries.Select(Entry).Single(entry => entry.Uri == "patchouli://library.yml").Type.Should().Be("file");
     }
 
     [Fact]
@@ -236,7 +236,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpCommandResult<McpFindMeta, object> document = await _library.Commands.FindAsync(
             new McpFindRequest(null, documentUri, [filter]));
         document.IsSuccess.Should().BeTrue();
-        document.Envelope!.Entries.Should().ContainSingle();
+        document.Envelope!.Entries.Should().ContainSingle(entry => Entry(entry).Uri == documentUri,
+            "the filtered document remains present alongside its independently browsable page map");
 
         string pageUri = McpResourceUris.PageUri(_library.DocumentA, 1);
         McpCommandResult<McpFindMeta, object> page = await _library.Commands.FindAsync(
@@ -772,6 +773,77 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Retired_citation_send_route_is_rejected_while_dedicated_cite_stays_read_only()
+    {
+        string target = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> sent =
+            await _library.Commands.SendAsync(new McpActionSendRequest(target, "cite.render",
+                JsonSerializer.SerializeToElement(new { })));
+        sent.Error!.Name.Should().Be("INVALID_ARGUMENT");
+        McpCommandResult<McpCiteMeta, McpCitationResult> direct =
+            await _library.Commands.CiteAsync(new McpCiteRequest([target], McpResourceUris.StyleUri("apa"), "en-US",
+                true, false));
+        direct.IsSuccess.Should().BeTrue(direct.Error?.Detail);
+        direct.Envelope!.Meta.Bibliography.Should().NotBeNullOrWhiteSpace();
+        direct.Envelope.Entries.Single().Citation.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task Dedicated_cite_still_works_with_send_disabled_and_without_ocr_action_grants()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.send", false)]
+        };
+        McpCommandService commands = new(_library.Api, _library.Writes, _library.Biblatex, _library.Items,
+            _library.EvidenceReader, sendEnabled: false, permissionSettings: _ => Task.FromResult(settings));
+        string target = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpCiteMeta, McpCitationResult> direct = await commands.CiteAsync(
+            new McpCiteRequest([target], McpResourceUris.StyleUri("apa"), null, false, false));
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> generic = await commands.SendAsync(
+            new McpActionSendRequest(target, "cite.render", JsonSerializer.SerializeToElement(new { })));
+
+        direct.IsSuccess.Should().BeTrue(direct.Error?.Detail);
+        direct.Envelope!.Entries.Single().Citation.Should().NotBeNullOrWhiteSpace();
+        generic.Error!.Name.Should().Be("PERMISSION_DENIED");
+    }
+
+    [Theory]
+    [InlineData("items", "cite")]
+    [InlineData("texts", "cite")]
+    [InlineData("csl-styles", "cite")]
+    public async Task Generic_and_dedicated_cite_check_all_refs_and_style_permissions(string domain, string verb)
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.send", true)],
+            DomainPermissions = [new McpDomainPermission(domain, verb, false)]
+        };
+        McpCommandService commands = new(_library.Api, _library.Writes, _library.Biblatex, _library.Items,
+            _library.EvidenceReader, permissionSettings: _ => Task.FromResult(settings));
+        string target = McpResourceUris.ItemUri(_library.BookA);
+        string[] refs = [target, McpResourceUris.DocumentUri(_library.DocumentA)];
+        string style = McpResourceUris.StyleUri("apa");
+        McpCommandResult<McpCiteMeta, McpCitationResult> direct = await commands.CiteAsync(
+            new McpCiteRequest(refs, style, null, false, false));
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> generic = await commands.SendAsync(
+            new McpActionSendRequest(target, "cite.render", JsonSerializer.SerializeToElement(new { refs, style })));
+
+        direct.Error!.Name.Should().Be("PERMISSION_DENIED");
+        generic.Error!.Name.Should().Be("INVALID_ARGUMENT");
+    }
+
+    [Fact]
+    public async Task Generic_cite_rejects_refs_that_exclude_target_instead_of_authorizing_a_decoy()
+    {
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> sent = await _library.Commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(_library.BookA), "cite.render",
+                JsonSerializer.SerializeToElement(new { refs = new[] { McpResourceUris.ItemUri(_library.BookB) } })));
+
+        sent.Error!.Name.Should().Be("INVALID_ARGUMENT");
+    }
+
+    [Fact]
     public async Task Cite_renders_per_reference_results_and_supports_document_page_and_evidence_refs()
     {
         McpCommandResult<McpCiteMeta, McpCitationResult> item = await _library.Commands.CiteAsync(
@@ -1093,6 +1165,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         IMcpWriteApi Writes,
         IBiblatexImportService Biblatex,
         ItemService Items,
+        IVersionedEvidenceReader EvidenceReader,
         McpCommandService Commands,
         McpCommandService CommandsHidden)
     {
@@ -1176,7 +1249,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             return new TestLibrary(databasePath, bookA.Value.ItemId, bookB.Value.ItemId, general.Value.ItemId,
                 docA.Value.DocumentInstanceId, docB.Value.DocumentInstanceId, pageA1, pageA2, pageB1, pageB2,
                 readingList.Value.CollectionId, emptyList.Value.CollectionId,
-                db, api, writes, biblatex, items, commands, commandsHidden);
+                db, api, writes, biblatex, items, evidenceReader, commands, commandsHidden);
         }
 
         private static async Task<PageId> CommitPageAsync(

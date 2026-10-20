@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using ToolkitRelayCommand = CommunityToolkit.Mvvm.Input.RelayCommand;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Results;
+using Patchouli.Core.Translation;
 using Patchouli.Host.Composition;
 using Patchouli.Llm;
 using Patchouli.UI.ViewModels;
@@ -16,7 +18,7 @@ using Patchouli.UI.ViewModels;
 namespace Patchouli.UI.ViewModels.Settings;
 
 /// <summary>
-/// 「模型连接与聊天」section. The catalog supplies available provider types; the form displays providers with
+/// 「模型与翻译」section. The catalog supplies available provider types; the form displays providers with
 /// stored credentials and the provider currently being added. API keys never enter
 /// the settings file: each provider key is written through the existing
 /// <see cref="ICredentialStore"/> (D2); saved API keys are loaded into masked inputs and tracked separately from edits.
@@ -96,6 +98,15 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ExcludeFromDerivedGeneration] public ObservableCollection<string> OcrModelOptions { get; } = [];
 
+    /// <summary>
+    /// Translation provider choices: the blank entry follows the default model and every other entry is a
+    /// configured provider. The translation model picker is only enabled for an explicit provider.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public ObservableCollection<LlmSelectionOption> TranslationProviderOptions { get; } = [];
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<string> TranslationModelOptions { get; } = [];
+
     // A selector can clear its item while loading or refreshing the available providers.
     // That UI state must not overwrite the configured default or schedule a save.
     [ExcludeFromDerivedGeneration]
@@ -139,60 +150,108 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         return $"{name}（未就绪）";
     }
 
-    [ObservableProperty] public partial int AgentMaxRetries { get; set; } = LlmAppSettings.DefaultAgentMaxRetries;
+    public ObservableCollection<TranslationLanguageOption> TranslationLanguageOptions { get; } =
+        new(CultureInfo.GetCultures(CultureTypes.NeutralCultures | CultureTypes.SpecificCultures)
+            .Where(culture => !string.IsNullOrEmpty(culture.Name))
+            .OrderBy(culture => culture.NativeName, StringComparer.Ordinal)
+            .Select(culture => new TranslationLanguageOption(culture.Name, culture.NativeName)));
 
     [ExcludeFromDerivedGeneration]
-    public IReadOnlyList<LlmSelectionOption> AgentReasoningEffortOptions { get; } =
-    [
-        new("", "默认（由供应商决定）"), new("none", "关闭（none）"), new("minimal", "最小（minimal）"),
-        new("low", "低（low）"), new("medium", "中（medium）"), new("high", "高（high）"),
-        new("xhigh", "极高（xhigh）"), new("max", "最高（max）")
-    ];
-
-    [ExcludeFromDerivedGeneration]
-    public LlmSelectionOption? SelectedAgentReasoningEffort
+    public TranslationLanguageOption SelectedTranslationLanguage
     {
-        get => AgentReasoningEffortOptions.First(option => option.ProviderId == _current.AgentReasoningEffort);
+        get => TranslationLanguageOptions.First(language =>
+            string.Equals(language.Code, TranslationTargetLanguage, StringComparison.OrdinalIgnoreCase));
         set
         {
-            if (value is null || IsWaitingForDraftSync() || value.ProviderId == _current.AgentReasoningEffort)
+            if (value is not null)
             {
-                return;
+                TranslationTargetLanguage = value.Code;
             }
-
-            _current = _current with { AgentReasoningEffort = value.ProviderId };
-            Raise();
-            MarkDirty("有未保存的更改");
         }
     }
 
-    partial void OnAgentMaxRetriesChanged(int value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with { AgentMaxRetries = Math.Clamp(value, 0, LlmAppSettings.MaxAgentMaxRetries) };
-        MarkDirty("有未保存的更改");
-    }
+    // ---- Direct translation (issue #20, settings subsection of 「模型与翻译」) ----
+    // Numeric inputs are kept as text so an out-of-range or non-numeric draft can show a field-level
+    // error next to the input instead of being silently clamped. Only a valid draft reaches _current,
+    // and SaveAsync refuses to persist while an error is present.
 
     [ObservableProperty]
-    public partial int ToolResultMaxCharacters { get; set; } = LlmAppSettings.DefaultToolResultMaxCharacters;
+    public partial string TranslationTargetLanguage { get; set; } = TranslationSettings.DefaultTargetLanguage;
 
-    partial void OnToolResultMaxCharactersChanged(int value)
+    [ObservableProperty]
+    public partial string TranslationBatchSizeText { get; set; } =
+        TranslationSettings.DefaultBatchSize.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial string TranslationMaxBatchCharactersText { get; set; } =
+        TranslationSettings.DefaultMaxBatchCharacters.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty] public partial string TranslationMaxBatchTokensText { get; set; } = "";
+
+    [ObservableProperty]
+    public partial string TranslationConcurrencyText { get; set; } =
+        TranslationSettings.DefaultConcurrency.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial string TranslationRequestIntervalSecondsText { get; set; } =
+        TranslationAppSettings.DefaultRequestIntervalSeconds.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial string TranslationRequestTimeoutSecondsText { get; set; } =
+        TranslationAppSettings.DefaultRequestTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial string TranslationMaxRetriesText { get; set; } =
+        TranslationSettings.DefaultMaxRetries.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial string TranslationWindowRadiusText { get; set; } =
+        TranslationSettings.DefaultWindowRadius.ToString(CultureInfo.InvariantCulture);
+
+    [ObservableProperty]
+    public partial bool TranslationBackfillPreviousWindowTranslation { get; set; } =
+        TranslationAppSettings.DefaultBackfillPreviousWindowTranslation;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SelectedTranslationProvider))]
+    public partial string TranslationProviderId { get; set; } = "";
+
+    [ObservableProperty] public partial string TranslationModel { get; set; } = "";
+
+    [ObservableProperty] public partial string? TranslationTargetLanguageError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationBatchSizeError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationMaxBatchCharactersError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationMaxBatchTokensError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationConcurrencyError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationRequestIntervalSecondsError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationRequestTimeoutSecondsError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationMaxRetriesError { get; private set; }
+
+    [ObservableProperty] public partial string? TranslationWindowRadiusError { get; private set; }
+
+    /// <summary>Aggregate of the translation field errors, shown at the bottom of the translation card.</summary>
+    [ObservableProperty]
+    public partial string? TranslationErrorMessage { get; private set; }
+
+    /// <summary>Provider picker selection; the blank option explicitly means "follow the default model".</summary>
+    [ExcludeFromDerivedGeneration]
+    public LlmSelectionOption? SelectedTranslationProvider
     {
-        if (IsWaitingForDraftSync())
+        get => TranslationProviderOptions.FirstOrDefault(option => option.ProviderId == TranslationProviderId);
+        set
         {
-            return;
+            if (value is not null && !IsWaitingForDraftSync())
+            {
+                TranslationProviderId = value.ProviderId;
+            }
         }
-
-        _current = _current with
-        {
-            ToolResultMaxCharacters = Math.Clamp(value, LlmAppSettings.MinToolResultMaxCharacters,
-                LlmAppSettings.MaxToolResultMaxCharacters)
-        };
-        MarkDirty("有未保存的更改");
     }
 
     [ObservableProperty]
@@ -208,6 +267,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         }
 
         RebuildChatModelOptions();
+        RebuildTranslationModelOptions();
         Raise(nameof(SelectedChatProvider));
         if (!IsWaitingForDraftSync())
         {
@@ -354,6 +414,19 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        RefreshTranslationValidationState();
+        string? translationProblem = DescribeTranslationProblem();
+        if (translationProblem is not null)
+        {
+            LastError = translationProblem;
+            ValidationState = SettingsValidationState.Invalid;
+            SaveState = SettingsSaveState.Failed;
+            Status = "翻译设置校验失败，修改未保存";
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+            return;
+        }
+
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
@@ -373,7 +446,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                 _main.AppOptions with { Llm = draft }, LlmProviderCatalog.SectionName);
         if (!saved.IsSuccess)
         {
-            LastError = saved.ErrorMessage ?? "无法保存 模型连接与聊天设置。";
+            LastError = saved.ErrorMessage ?? "无法保存模型与翻译设置。";
             SaveState = SettingsSaveState.Failed;
             Status = "保存失败";
             Raise(nameof(IsDirty));
@@ -766,7 +839,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         try
         {
             _current = _persisted;
-            Raise(nameof(SelectedAgentReasoningEffort));
 
             foreach (LlmProviderSettingsRowViewModel row in Providers)
             {
@@ -786,8 +858,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             Raise(nameof(SelectedOcrReasoning));
             Raise(nameof(SelectedOcrLayoutModel));
             Raise(nameof(OcrLayoutStatus));
-            AgentMaxRetries = _persisted.AgentMaxRetries;
-            ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
+            SyncTranslationFromSettings(_persisted.Translation);
             RebuildChatModelOptions();
             RebuildOcrModelOptions();
             _isDirty = false;
@@ -807,15 +878,20 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         string chatModel = ChatModel;
         string ocrId = OcrProviderId;
         string ocrModel = OcrModel;
+        string translationProviderId = TranslationProviderId;
+        string translationModel = TranslationModel;
         _syncingDraft = true;
         try
         {
             FillOptions(ChatProviderOptions);
             FillOptions(OcrProviderOptions, true);
+            FillTranslationProviderOptions();
             ChatProviderId = chatId;
             ChatModel = chatModel;
             OcrProviderId = ocrId;
             OcrModel = ocrModel;
+            TranslationProviderId = translationProviderId;
+            TranslationModel = translationModel;
         }
         finally
         {
@@ -824,6 +900,8 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
         Raise(nameof(SelectedChatProvider));
         Raise(nameof(SelectedOcrProvider));
+        Raise(nameof(SelectedTranslationProvider));
+        RebuildTranslationModelOptions();
     }
 
     private void FillOptions(ObservableCollection<LlmSelectionOption> options, bool requireVision = false)
@@ -843,6 +921,226 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     private void RebuildOcrModelOptions()
     {
         FillModelOptions(OcrModelOptions, OcrProviderId, OcrModel);
+    }
+
+    /// <summary>The blank translation provider means "follow the default selection"; see
+    /// <see cref="TranslationAppSettings"/>.</summary>
+    private void FillTranslationProviderOptions()
+    {
+        Dictionary<string, LlmSelectionOption> existing =
+            TranslationProviderOptions.ToDictionary(option => option.ProviderId);
+        List<LlmSelectionOption> options =
+        [
+            existing.GetValueOrDefault("") ?? new LlmSelectionOption("", "跟随默认模型")
+        ];
+        options.AddRange(Providers.Where(row => row.Readiness?.IsConfigured == true)
+            .Select(row => existing.GetValueOrDefault(row.ProviderId) ??
+                           new LlmSelectionOption(row.ProviderId, row.DisplayName)));
+        SynchronizeCollection(TranslationProviderOptions, options);
+    }
+
+    private void RebuildTranslationModelOptions()
+    {
+        if (!string.IsNullOrWhiteSpace(TranslationProviderId))
+        {
+            FillModelOptions(TranslationModelOptions, TranslationProviderId, TranslationModel);
+            return;
+        }
+
+        // A blank provider follows chat; offering the chat provider's known models lets the user
+        // override only the model while still using the chat provider.
+        if (!string.IsNullOrWhiteSpace(ChatProviderId))
+        {
+            FillModelOptions(TranslationModelOptions, ChatProviderId, TranslationModel);
+            if (!string.IsNullOrWhiteSpace(ChatModel) && !TranslationModelOptions.Contains(ChatModel))
+            {
+                TranslationModelOptions.Add(ChatModel);
+            }
+
+            return;
+        }
+
+        TranslationModelOptions.Clear();
+        TranslationModelOptions.Add("");
+        if (!string.IsNullOrWhiteSpace(ChatModel))
+        {
+            TranslationModelOptions.Add(ChatModel);
+        }
+
+        if (!string.IsNullOrWhiteSpace(TranslationModel) && !TranslationModelOptions.Contains(TranslationModel))
+        {
+            TranslationModelOptions.Add(TranslationModel);
+        }
+    }
+
+    private void SyncTranslationFromSettings(TranslationAppSettings settings)
+    {
+        TranslationAppSettings translation = settings.Normalize();
+        TranslationTargetLanguage = translation.TargetLanguage;
+        TranslationBatchSizeText = FormatTranslationNumber(translation.BatchSize);
+        TranslationMaxBatchCharactersText = FormatTranslationNumber(translation.MaxBatchCharacters);
+        TranslationMaxBatchTokensText = translation.MaxBatchTokens?.ToString(CultureInfo.InvariantCulture) ?? "";
+        TranslationConcurrencyText = FormatTranslationNumber(translation.Concurrency);
+        TranslationRequestIntervalSecondsText = FormatTranslationNumber(translation.RequestIntervalSeconds);
+        TranslationRequestTimeoutSecondsText = FormatTranslationNumber(translation.RequestTimeoutSeconds);
+        TranslationMaxRetriesText = FormatTranslationNumber(translation.MaxRetries);
+        TranslationWindowRadiusText = FormatTranslationNumber(translation.WindowRadius);
+        TranslationBackfillPreviousWindowTranslation = translation.BackfillPreviousWindowTranslation;
+        TranslationProviderId = translation.ProviderId ?? "";
+        TranslationModel = translation.Model ?? "";
+        RebuildTranslationModelOptions();
+        ClearTranslationErrors();
+        RefreshTranslationValidationState();
+    }
+
+    private static string FormatTranslationNumber(int value)
+    {
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void ClearTranslationErrors()
+    {
+        TranslationTargetLanguageError = null;
+        TranslationBatchSizeError = null;
+        TranslationMaxBatchCharactersError = null;
+        TranslationMaxBatchTokensError = null;
+        TranslationConcurrencyError = null;
+        TranslationRequestIntervalSecondsError = null;
+        TranslationRequestTimeoutSecondsError = null;
+        TranslationMaxRetriesError = null;
+        TranslationWindowRadiusError = null;
+        TranslationErrorMessage = null;
+    }
+
+    /// <summary>Updates one range-checked number; an out-of-range or non-numeric draft leaves the
+    /// previously committed value in place and records a field-level error.</summary>
+    private void ApplyTranslationNumber(string text, int minimum, int maximum, string errorMessage,
+        Action<string?> setError, Action<int> apply)
+    {
+        if (int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) &&
+            value >= minimum && value <= maximum)
+        {
+            setError(null);
+            apply(value);
+        }
+        else
+        {
+            setError(errorMessage);
+        }
+    }
+
+    private static string? DescribeTargetLanguageProblem(string value)
+    {
+        string language = value.Trim();
+        if (language.Length == 0)
+        {
+            return "目标语言不能为空，请填写语言代码，如 en。";
+        }
+
+        if (language.Length > 35)
+        {
+            return "目标语言代码过长。";
+        }
+
+        foreach (char character in language)
+        {
+            if (!char.IsLetterOrDigit(character) && character is not '-' and not '_')
+            {
+                return "目标语言只能包含字母、数字、连字符或下划线，如 en、zh-CN。";
+            }
+        }
+
+        return null;
+    }
+
+    private static string? DescribeMaxBatchTokensProblem(string value)
+    {
+        string text = value.Trim();
+        if (text.Length == 0)
+        {
+            return null;
+        }
+
+        return int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int tokens) && tokens > 0
+            ? null
+            : "Token 上限需为正整数，或留空表示不限制。";
+    }
+
+    /// <summary>Recomputes every field error and reflects the aggregate on the section state.</summary>
+    private void RefreshTranslationValidationState()
+    {
+        TranslationTargetLanguageError = DescribeTargetLanguageProblem(TranslationTargetLanguage);
+        TranslationMaxBatchTokensError = DescribeMaxBatchTokensProblem(TranslationMaxBatchTokensText);
+        string? translationProblem = DescribeTranslationProblem();
+        TranslationErrorMessage = translationProblem;
+        if (translationProblem is not null)
+        {
+            ValidationState = SettingsValidationState.Invalid;
+            LastError = translationProblem;
+            Status = "翻译设置中有无效字段，暂未保存";
+            return;
+        }
+
+        string? providerProblem = DescribeProviderProblem();
+        ValidationState = providerProblem is null ? SettingsValidationState.Valid : SettingsValidationState.Invalid;
+        LastError = providerProblem;
+    }
+
+    private string? DescribeTranslationProblem()
+    {
+        List<string> problems = [];
+        if (TranslationTargetLanguageError is not null)
+        {
+            problems.Add(TranslationTargetLanguageError);
+        }
+
+        if (TranslationBatchSizeError is not null)
+        {
+            problems.Add(TranslationBatchSizeError);
+        }
+
+        if (TranslationMaxBatchCharactersError is not null)
+        {
+            problems.Add(TranslationMaxBatchCharactersError);
+        }
+
+        if (TranslationMaxBatchTokensError is not null)
+        {
+            problems.Add(TranslationMaxBatchTokensError);
+        }
+
+        if (TranslationConcurrencyError is not null)
+        {
+            problems.Add(TranslationConcurrencyError);
+        }
+
+        if (TranslationRequestIntervalSecondsError is not null)
+        {
+            problems.Add(TranslationRequestIntervalSecondsError);
+        }
+
+        if (TranslationRequestTimeoutSecondsError is not null)
+        {
+            problems.Add(TranslationRequestTimeoutSecondsError);
+        }
+
+        if (TranslationMaxRetriesError is not null)
+        {
+            problems.Add(TranslationMaxRetriesError);
+        }
+
+        if (TranslationWindowRadiusError is not null)
+        {
+            problems.Add(TranslationWindowRadiusError);
+        }
+
+        return problems.Count == 0 ? null : string.Join(" ", problems);
+    }
+
+    private void OnTranslationEdited()
+    {
+        MarkDirty("有未保存的更改");
+        RefreshTranslationValidationState();
     }
 
     /// <summary>Model ids already known for the provider: its configured model plus a blank row so a model
@@ -875,6 +1173,21 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     private string? DescribeDraftProblem()
     {
+        return JoinProblems(DescribeProviderProblem(), DescribeTranslationProblem());
+    }
+
+    private static string? JoinProblems(string? first, string? second)
+    {
+        if (string.IsNullOrEmpty(first))
+        {
+            return string.IsNullOrEmpty(second) ? null : second;
+        }
+
+        return string.IsNullOrEmpty(second) ? first : $"{first} {second}";
+    }
+
+    private string? DescribeProviderProblem()
+    {
         Dictionary<string, LlmProviderReadiness> readiness = Providers
             .Where(row => row.Readiness is not null)
             .ToDictionary(row => row.ProviderId, row => row.Readiness!, StringComparer.OrdinalIgnoreCase);
@@ -894,13 +1207,20 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             readiness.TryGetValue(ChatProviderId, out LlmProviderReadiness? chat)
             && !chat.IsConfigured)
         {
-            problems.Add($"聊天默认 provider「{chat.DisplayName}」尚未配置完成：{chat.Diagnostic}");
+            problems.Add($"默认 provider「{chat.DisplayName}」尚未配置完成：{chat.Diagnostic}");
         }
 
         if (!string.IsNullOrWhiteSpace(OcrProviderId) &&
             readiness.TryGetValue(OcrProviderId, out LlmProviderReadiness? ocr) && !ocr.IsConfigured)
         {
             problems.Add($"OCR 默认 provider「{ocr.DisplayName}」尚未配置完成：{ocr.Diagnostic}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(TranslationProviderId) &&
+            readiness.TryGetValue(TranslationProviderId, out LlmProviderReadiness? translation) &&
+            !translation.IsConfigured)
+        {
+            problems.Add($"翻译默认 provider「{translation.DisplayName}」尚未配置完成：{translation.Diagnostic}");
         }
 
         return problems.Count == 0 ? null : string.Join(" ", problems);
@@ -958,6 +1278,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
         _current = _current with { ChatModel = value ?? "" };
         MarkDirty("有未保存的更改");
+        RebuildTranslationModelOptions();
     }
 
     partial void OnOcrModelChanged(string value)
@@ -969,6 +1290,238 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
         _current = _current with { OcrModel = value ?? "" };
         MarkDirty("有未保存的更改");
+    }
+
+    // ---- Translation change handlers ----
+
+    partial void OnTranslationTargetLanguageChanged(string value)
+    {
+        if (!TranslationLanguageOptions.Any(language =>
+                string.Equals(language.Code, value, StringComparison.OrdinalIgnoreCase)))
+        {
+            TranslationLanguageOptions.Add(new TranslationLanguageOption(value, value));
+        }
+
+        Raise(nameof(SelectedTranslationLanguage));
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        TranslationTargetLanguageError = DescribeTargetLanguageProblem(value);
+        if (TranslationTargetLanguageError is null)
+        {
+            _current = _current with
+            {
+                Translation = _current.Translation with { TargetLanguage = value.Trim() }
+            };
+        }
+
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationBatchSizeTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationSettings.MinBatchSize, TranslationSettings.MaxBatchSize,
+            $"批量大小需为 {TranslationSettings.MinBatchSize}–{TranslationSettings.MaxBatchSize} 的整数。",
+            error => TranslationBatchSizeError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { BatchSize = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationMaxBatchCharactersTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationSettings.MinMaxBatchCharacters,
+            TranslationSettings.MaxMaxBatchCharacters,
+            $"单请求最大字符需为 {TranslationSettings.MinMaxBatchCharacters}–" +
+            $"{TranslationSettings.MaxMaxBatchCharacters} 的整数。",
+            error => TranslationMaxBatchCharactersError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { MaxBatchCharacters = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationMaxBatchTokensTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        TranslationMaxBatchTokensError = DescribeMaxBatchTokensProblem(value);
+        if (TranslationMaxBatchTokensError is null)
+        {
+            int? tokens = value.Trim().Length == 0
+                ? null
+                : int.Parse(value.Trim(), NumberStyles.None, CultureInfo.InvariantCulture);
+            _current = _current with
+            {
+                Translation = _current.Translation with { MaxBatchTokens = tokens }
+            };
+        }
+
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationConcurrencyTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationSettings.MinConcurrency, TranslationSettings.MaxConcurrency,
+            $"并发数需为 {TranslationSettings.MinConcurrency}–{TranslationSettings.MaxConcurrency} 的整数。",
+            error => TranslationConcurrencyError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { Concurrency = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationRequestIntervalSecondsTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationAppSettings.MinRequestIntervalSeconds,
+            TranslationAppSettings.MaxRequestIntervalSeconds,
+            $"请求间隔需为 {TranslationAppSettings.MinRequestIntervalSeconds}–" +
+            $"{TranslationAppSettings.MaxRequestIntervalSeconds} 秒的整数。",
+            error => TranslationRequestIntervalSecondsError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { RequestIntervalSeconds = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationRequestTimeoutSecondsTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationAppSettings.MinRequestTimeoutSeconds,
+            TranslationAppSettings.MaxRequestTimeoutSeconds,
+            $"超时需为 {TranslationAppSettings.MinRequestTimeoutSeconds}–" +
+            $"{TranslationAppSettings.MaxRequestTimeoutSeconds} 秒的整数。",
+            error => TranslationRequestTimeoutSecondsError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { RequestTimeoutSeconds = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationMaxRetriesTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationSettings.MinMaxRetries, TranslationSettings.MaxMaxRetries,
+            $"重试次数需为 {TranslationSettings.MinMaxRetries}–{TranslationSettings.MaxMaxRetries} 的整数。",
+            error => TranslationMaxRetriesError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { MaxRetries = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationWindowRadiusTextChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        ApplyTranslationNumber(value, TranslationSettings.MinWindowRadius, TranslationSettings.MaxWindowRadius,
+            $"上下文窗口半径需为 {TranslationSettings.MinWindowRadius}–{TranslationSettings.MaxWindowRadius} 的整数。",
+            error => TranslationWindowRadiusError = error,
+            parsed => _current = _current with
+            {
+                Translation = _current.Translation with { WindowRadius = parsed }
+            });
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationBackfillPreviousWindowTranslationChanged(bool value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        _current = _current with
+        {
+            Translation = _current.Translation with { BackfillPreviousWindowTranslation = value }
+        };
+        OnTranslationEdited();
+    }
+
+    partial void OnTranslationProviderIdChanged(string value)
+    {
+        bool isUserEdit = !IsWaitingForDraftSync();
+        if (isUserEdit)
+        {
+            // A model id belongs to the provider it was typed for; switching provider falls back to
+            // "follow the default model" instead of silently carrying an unusable id over.
+            if (!string.IsNullOrEmpty(TranslationModel))
+            {
+                TranslationModel = "";
+            }
+
+            _current = _current with
+            {
+                Translation = _current.Translation with
+                {
+                    ProviderId = string.IsNullOrWhiteSpace(value) ? null : value.Trim()
+                }
+            };
+        }
+
+        RebuildTranslationModelOptions();
+        Raise(nameof(SelectedTranslationProvider));
+        if (isUserEdit)
+        {
+            OnTranslationEdited();
+        }
+    }
+
+    partial void OnTranslationModelChanged(string value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        _current = _current with
+        {
+            Translation = _current.Translation with { Model = value ?? "" }
+        };
+        OnTranslationEdited();
     }
 }
 
@@ -1311,3 +1864,5 @@ public sealed class LlmSelectionOption
 
     public string DisplayName { get; }
 }
+
+public sealed record TranslationLanguageOption(string Code, string DisplayName);

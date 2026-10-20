@@ -71,8 +71,10 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             "item_dates", "file_assets",
             "file_search_root_definitions", "known_file_locations", "document_instances"
         ],
-        ["pages", "document_tree_revisions", "document_boxes", "document_commits", "document_commit_pages",
-            "document_page_maps"],
+        [
+            "pages", "document_tree_revisions", "document_boxes", "document_commits", "document_commit_pages",
+            "document_page_maps"
+        ],
         ["ocr_presets", "ocr_preset_versions", "ocr_runs", "ocr_page_results", "ocr_candidate_adoptions"],
         ["search_units", "search_index_status"],
         ["search_profiles", "search_rewrite_rules", "search_settings", "library_setting_records"]
@@ -136,34 +138,10 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 }
             }
 
-            List<SnapshotFilePayload> filePayloads = new();
-            if (request.SyncAgentSessions)
-            {
-                SnapshotFilePayload? payload = await SnapshotFilePayloads.CreateArchiveAsync(
-                    runtimePath, syncRoot, snapshotId, SnapshotFilePayloadKinds.AgentSessions, cancellationToken);
-                if (payload is not null)
-                {
-                    filePayloads.Add(payload);
-                }
-            }
-
-            if (request.SyncWorkflowDefinitions)
-            {
-                SnapshotFilePayload? payload = await SnapshotFilePayloads.CreateArchiveAsync(
-                    runtimePath, syncRoot, snapshotId, SnapshotFilePayloadKinds.Workflows, cancellationToken);
-                if (payload is not null)
-                {
-                    filePayloads.Add(payload);
-                }
-            }
-
             SnapshotManifest manifest = new(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
                 AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards,
                 Array.Empty<SnapshotShard>(),
-                await Blake3FileAsync(sourceSnapshotPath), request.Notes)
-            {
-                FilePayloads = filePayloads
-            };
+                await Blake3FileAsync(sourceSnapshotPath), request.Notes);
             string manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             SnapshotCurrentPointer pointer = new(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId,
@@ -174,8 +152,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 currentPath, shards, generation,
                 shards.Count > 1
                     ? "Runtime database exceeded the snapshot shard target; data was split into multiple immutable shards. FTS rows are cleared in data shards; persisted search_units remain canonical."
-                    : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical.",
-                filePayloads));
+                    : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.snapshot-services"))
         {
@@ -1186,24 +1163,6 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
                     $"Imported Document Box Tree is invalid: {treeValidation.ErrorMessage}",
                     treeValidation.Conflicts);
-            }
-
-            if (manifest.FilePayloads.Count > 0)
-            {
-                string stagingPayloadsRoot =
-                    SnapshotFilePayloads.StagingPayloadsRoot(stagingPath, manifest.SnapshotId);
-                Result<IReadOnlyList<string>> extraction = await SnapshotFilePayloads.ExtractIntoStagingAsync(
-                    manifest, syncRoot, stagingPayloadsRoot,
-                    (root, fileName) =>
-                        TryResolveShardPath(root, fileName, out string resolved) ? resolved : null,
-                    cancellationToken);
-                if (extraction.IsFailure)
-                {
-                    stagingFactory.DeleteDatabaseFiles();
-                    return Result<SnapshotImportResult>.Failure(extraction.ErrorCode!, extraction.ErrorMessage!);
-                }
-
-                warnings.AddRange(extraction.Value);
             }
 
             if (manifest.SensitiveMutableShards.Count > 0)

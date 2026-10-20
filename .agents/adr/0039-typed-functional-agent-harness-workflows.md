@@ -1,5 +1,9 @@
 # ADR 0039: Typed functional workflows control the existing agent
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): the built-in Agent
+and workflow harness has been removed. No workflow execution, checkpoint or replay path
+remains; the MCP write and permission boundary the harness used is unaffected.
+
 2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)
 adds explicit context selectors and binding scopes to the cold typed control plan.
 Agent definitions remain reusable; each invocation has an independent loop activation.
@@ -9,8 +13,9 @@ Historical implicit-context examples below are superseded by the workflow API.
 
 Status: accepted, 2026-10-07. Supersedes the imperative workflow API and built-in translation script in ADR 0036. The user explicitly requested removing compatibility.
 
-Amendment, 2026-10-08: the mixed SDK implementation described in
-[workflow-api](../workflow-api.md) supersedes the historical protocol/replay details below.
+Amendment, 2026-10-08: the mixed SDK implementation described in the former workflow API
+supersedes the historical protocol/replay details below. That API was removed in 0.3.13 (see
+[ADR 0047](0047-external-agent-cli-terminal-integration.md)).
 Snapshot API is now `patchouli.workflow.harness/5`. Chat and workflows use the shared `AgentDriver`
 and `AgentCore.chatStep`; workflows supply stage control policies, not another provider/tool loop.
 Native FC remains the default transport. Native calls and session-local FSI functions reach the same
@@ -45,7 +50,8 @@ Unknown writes quarantine their target within the session. Domain-transaction id
 automatic unknown-write reconciliation and a dedicated reconciliation UI are not implemented.
 Checkpoints currently save the full core context rather than content-addressed history references.
 These limits must not be presented as exactly-once execution or rollback of arbitrary .NET IO.
-The exact API and journal contracts remain in [workflow-api](../workflow-api.md).
+The exact API and journal contracts lived in the former workflow API, removed with the built-in
+Agent system (ADR 0047).
 
 ### Native FC / FSI experiment evidence, 2026-10-08
 
@@ -95,7 +101,7 @@ all-trials.csv and final-summary.json. They are not repository/runtime dependenc
 Credentials were read in memory and not recorded. Conservative tracked spend including pilots
 was CNY 13.5656 against a CNY 30 cap, not an invoice amount; Codex used the existing subscription.
 The experiment did not itself modify production code; the subsequent mixed SDK implementation
-is described above and in workflow-api.
+is described above; the workflow API and harness were removed in 0.3.13 (ADR 0047).
 
 Use [Agent.NET](https://github.com/JordanMarr/Agent.NET)'s cold typed workflow construction and typed agent contracts as the API reference. Patchouli retains its existing pure `AgentCore.chatStep` and host interpreter rather than adding another agent runtime.
 

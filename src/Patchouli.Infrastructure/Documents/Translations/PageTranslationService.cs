@@ -19,6 +19,12 @@ namespace Patchouli.Infrastructure.Documents.Translations;
 /// </summary>
 public sealed class PageTranslationService : IPageTranslationService
 {
+    /// <summary>Maximum boxes accepted by one MCP box replacement batch.</summary>
+    private const int McpBoxReplacementLimit = 100;
+
+    /// <summary>Maximum boxes accepted by one host-side whole-page translation commit.</summary>
+    private const int PageBoxReplacementLimit = 4096;
+
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IDocumentTreeService _trees;
     private readonly IDocumentMarkdownCompiler _markdownCompiler;
@@ -71,7 +77,7 @@ public sealed class PageTranslationService : IPageTranslationService
         }
 
         DocumentTreeRevision revision = revisionResult.Value;
-        Result<TranslationHeader?> headerResult = await RealignIfNeededAsync(revision, cancellationToken);
+        Result<PageTranslationHeaderRow?> headerResult = await RealignIfNeededAsync(revision, cancellationToken);
         if (headerResult.IsFailure)
         {
             return Result<PageXmlTranslation>.Failure(headerResult.ErrorCode!, headerResult.ErrorMessage!);
@@ -96,8 +102,8 @@ public sealed class PageTranslationService : IPageTranslationService
                 AppErrorCodes.Conflict, "The source page revision changed while reading the XML translation.");
         }
 
-        TranslationHeader? header = await connection.QuerySingleOrDefaultAsync<TranslationHeader>(
-            "select source_tree_revision_id as SourceTreeRevisionId, version as Version from page_translations where page_id = @PageId;",
+        PageTranslationHeaderRow? header = await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
+            "select source_tree_revision_id as SourceTreeRevisionId, version as Version, target_language as TargetLanguage from page_translations where page_id = @PageId;",
             new { PageId = pageId.ToString() }, readTransaction);
         if (header is not null && !string.Equals(
                 header.SourceTreeRevisionId, revision.TreeRevisionId.ToString(), StringComparison.Ordinal))
@@ -116,7 +122,7 @@ public sealed class PageTranslationService : IPageTranslationService
         string xml = PageXmlCodec.EncodePage(
             documentInstanceId, pageIndex, revision.TreeRevisionId, boxes, translations, version);
         PageTranslationStatus status = BuildStatus(
-            boxes, translations, revision.TreeRevisionId, true, version);
+            boxes, translations, revision.TreeRevisionId, true, version, header?.TargetLanguage);
         return Result<PageXmlTranslation>.Success(new PageXmlTranslation(xml, status));
     }
 
@@ -125,7 +131,8 @@ public sealed class PageTranslationService : IPageTranslationService
         PageId pageId,
         int pageIndex,
         string xml,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null)
     {
         if (pageIndex <= 0)
         {
@@ -181,9 +188,10 @@ public sealed class PageTranslationService : IPageTranslationService
                     "The source page revision changed while applying the XML translation.");
             }
 
-            TranslationHeader? storedHeader = await connection.QuerySingleOrDefaultAsync<TranslationHeader>(
-                "select source_tree_revision_id as SourceTreeRevisionId, version as Version from page_translations where page_id = @PageId;",
-                new { PageId = pageIdValue }, transaction);
+            PageTranslationHeaderRow? storedHeader =
+                await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
+                    "select source_tree_revision_id as SourceTreeRevisionId, version as Version, target_language as TargetLanguage from page_translations where page_id = @PageId;",
+                    new { PageId = pageIdValue }, transaction);
             int expectedVersion = storedHeader?.Version ?? 0;
             if (expectedVersion != decoded.Value.TranslationVersion)
             {
@@ -206,16 +214,19 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             int nextVersion = currentVersion + 1;
+            // A null target language means "keep what the page already declared". The row is
+            // recreated below, so the stored value must survive the delete/insert round trip.
+            string? storedTargetLanguage = targetLanguage ?? storedHeader?.TargetLanguage;
             await connection.ExecuteAsync("delete from translation_boxes where page_id = @PageId;",
                 new { PageId = pageIdValue }, transaction);
             await connection.ExecuteAsync("delete from page_translations where page_id = @PageId;",
                 new { PageId = pageIdValue }, transaction);
             await connection.ExecuteAsync(
-                "insert into page_translations(page_id, source_tree_revision_id, version, updated_at) values (@PageId, @RevisionId, @Version, @UpdatedAt);",
+                "insert into page_translations(page_id, source_tree_revision_id, version, updated_at, target_language) values (@PageId, @RevisionId, @Version, @UpdatedAt, @TargetLanguage);",
                 new
                 {
                     PageId = pageIdValue, RevisionId = revision.TreeRevisionId.ToString(), Version = nextVersion,
-                    UpdatedAt = FormatUtc(_clock.UtcNow)
+                    UpdatedAt = FormatUtc(_clock.UtcNow), TargetLanguage = storedTargetLanguage
                 }, transaction);
 
             int ordinal = 0;
@@ -233,7 +244,7 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             return Result<PageTranslationStatus>.Success(BuildStatus(
-                boxesResult.Value, translated, revision.TreeRevisionId, true, nextVersion));
+                boxesResult.Value, translated, revision.TreeRevisionId, true, nextVersion, storedTargetLanguage));
         }, cancellationToken, TranslationChange(documentInstanceId, pageId));
 
         if (persisted.IsSuccess)
@@ -244,18 +255,61 @@ public sealed class PageTranslationService : IPageTranslationService
         return persisted;
     }
 
-    public async Task<Result<PageTranslationStatus>> PutBoxPayloadsAsync(
+    public Task<Result<PageTranslationStatus>> PutBoxPayloadsAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
         DocumentTreeRevisionId expectedRevision,
         int expectedTranslationVersion,
         IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null)
     {
-        if (replacements is null || replacements.Count is < 1 or > 100)
+        return PutBoxesCoreAsync(
+            documentInstanceId,
+            pageId,
+            expectedRevision,
+            expectedTranslationVersion,
+            replacements,
+            McpBoxReplacementLimit,
+            cancellationToken,
+            targetLanguage);
+    }
+
+    public Task<Result<PageTranslationStatus>> PutPageBoxesAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        int expectedTranslationVersion,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        CancellationToken cancellationToken = default,
+        string? targetLanguage = null)
+    {
+        return PutBoxesCoreAsync(
+            documentInstanceId,
+            pageId,
+            expectedRevision,
+            expectedTranslationVersion,
+            replacements,
+            PageBoxReplacementLimit,
+            cancellationToken,
+            targetLanguage);
+    }
+
+    private async Task<Result<PageTranslationStatus>> PutBoxesCoreAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId expectedRevision,
+        int expectedTranslationVersion,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        int maxReplacements,
+        CancellationToken cancellationToken,
+        string? targetLanguage)
+    {
+        if (replacements is null || replacements.Count < 1 || replacements.Count > maxReplacements)
         {
             return Result<PageTranslationStatus>.Failure(
-                AppErrorCodes.ValidationFailed, "Provide between 1 and 100 box payload replacements.");
+                AppErrorCodes.ValidationFailed,
+                $"Provide between 1 and {maxReplacements} box payload replacements.");
         }
 
         if (expectedTranslationVersion < 0)
@@ -286,8 +340,8 @@ public sealed class PageTranslationService : IPageTranslationService
                     "The source page revision changed before the box translations were applied.");
             }
 
-            TranslationHeader? header = await connection.QuerySingleOrDefaultAsync<TranslationHeader>(
-                "select source_tree_revision_id as SourceTreeRevisionId, version as Version from page_translations where page_id = @PageId;",
+            PageTranslationHeaderRow? header = await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
+                "select source_tree_revision_id as SourceTreeRevisionId, version as Version, target_language as TargetLanguage from page_translations where page_id = @PageId;",
                 new { PageId = pageIdValue }, transaction);
             int expectedStoredVersion = header?.Version ?? 0;
             if (expectedStoredVersion != expectedTranslationVersion)
@@ -312,16 +366,18 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             int nextVersion = currentVersion + 1;
+            string? storedTargetLanguage = targetLanguage ?? header?.TargetLanguage;
             if (header is null)
             {
                 await connection.ExecuteAsync(
-                    "insert into page_translations(page_id, source_tree_revision_id, version, updated_at) values (@PageId, @RevisionId, @Version, @UpdatedAt);",
+                    "insert into page_translations(page_id, source_tree_revision_id, version, updated_at, target_language) values (@PageId, @RevisionId, @Version, @UpdatedAt, @TargetLanguage);",
                     new
                     {
                         PageId = pageIdValue,
                         RevisionId = expectedRevision.ToString(),
                         Version = nextVersion,
-                        UpdatedAt = FormatUtc(_clock.UtcNow)
+                        UpdatedAt = FormatUtc(_clock.UtcNow),
+                        TargetLanguage = storedTargetLanguage
                     }, transaction);
             }
 
@@ -372,13 +428,14 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             await connection.ExecuteAsync(
-                "update page_translations set source_tree_revision_id = @RevisionId, version = @Version, updated_at = @UpdatedAt where page_id = @PageId;",
+                "update page_translations set source_tree_revision_id = @RevisionId, version = @Version, updated_at = @UpdatedAt, target_language = coalesce(@TargetLanguage, target_language) where page_id = @PageId;",
                 new
                 {
                     PageId = pageIdValue,
                     RevisionId = expectedRevision.ToString(),
                     Version = nextVersion,
-                    UpdatedAt = FormatUtc(_clock.UtcNow)
+                    UpdatedAt = FormatUtc(_clock.UtcNow),
+                    TargetLanguage = targetLanguage
                 }, transaction);
 
             Dictionary<DocumentBoxId, string> currentTranslations = (await connection.QueryAsync<TranslationBoxRow>(
@@ -386,7 +443,8 @@ public sealed class PageTranslationService : IPageTranslationService
                     new { PageId = pageIdValue }, transaction))
                 .ToDictionary(row => DocumentBoxId.Parse(row.BoxId), row => row.TranslatedMd);
             return Result<PageTranslationStatus>.Success(
-                BuildStatus(boxes, currentTranslations, expectedRevision, true, nextVersion));
+                BuildStatus(boxes, currentTranslations, expectedRevision, true, nextVersion,
+                    storedTargetLanguage));
         }, cancellationToken, TranslationChange(documentInstanceId, pageId));
 
         if (persisted.IsSuccess)
@@ -417,7 +475,9 @@ public sealed class PageTranslationService : IPageTranslationService
         }
 
         if (source.Payload is TableBoxPayload sourceTable && replacement is TableBoxPayload replacementTable &&
-            !string.Equals(sourceTable.Html, replacementTable.Html, StringComparison.Ordinal))
+            !string.Equals(sourceTable.Html, replacementTable.Html, StringComparison.Ordinal) &&
+            !(sourceTable.Markdown.Trim() == "[Table]" && replacementTable.Html is null &&
+              replacementTable.Markdown.Trim() != "[Table]"))
         {
             return BoxPayloadFailure(source.BoxId, "The replacement cannot change diagnostic table HTML.");
         }
@@ -432,6 +492,16 @@ public sealed class PageTranslationService : IPageTranslationService
             equation.HasImage != changedEquation.HasImage)
         {
             return BoxPayloadFailure(source.BoxId, "The formula image region cannot be changed by translation.");
+        }
+
+        // A validated pipe table may replace an HTML-only placeholder in the derived translation.
+        // Its source HTML remains unchanged in the document tree; placeholder paragraph structure
+        // cannot be compared to the newly translated table structure.
+        if (source.Payload is TableBoxPayload { Markdown: var sourceMarkdown, Html: not null } &&
+            sourceMarkdown.Trim() == "[Table]" && replacement is TableBoxPayload { Html: null } translatedTable &&
+            translatedTable.Markdown.Trim() != "[Table]")
+        {
+            return Result<string>.Success(translatedTable.Markdown);
         }
 
         DocumentBox renderSource = source with
@@ -513,15 +583,27 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             DocumentTreeRevision revision = revisionResult.Value;
-            Result<TranslationHeader?> headerResult = await RealignIfNeededAsync(revision, cancellationToken);
+            Result<PageTranslationHeaderRow?> headerResult = await RealignIfNeededAsync(revision, cancellationToken);
             if (headerResult.IsFailure || headerResult.Value is null)
             {
                 return null;
             }
 
+            PageTranslationHeaderRow header = headerResult.Value;
             Result<TranslatedPageMarkdown> compiled = await _translationCompiler.CompilePageTranslationAsync(
-                pageId, revision.TreeRevisionId, headerResult.Value.Version, cancellationToken);
-            return compiled.IsSuccess ? compiled.Value : null;
+                pageId, revision.TreeRevisionId, header.Version, cancellationToken);
+            if (!compiled.IsSuccess)
+            {
+                return null;
+            }
+
+            // The compiler derives its status from the stored box rows alone, so the target
+            // language of the header is attached here.
+            TranslatedPageMarkdown translation = compiled.Value;
+            return translation with
+            {
+                Status = translation.Status with { TargetLanguage = header.TargetLanguage }
+            };
         }
         catch (OperationCanceledException)
         {
@@ -587,10 +669,13 @@ public sealed class PageTranslationService : IPageTranslationService
                     AppErrorCodes.Conflict, "The source page revision changed while applying the translation.");
             }
 
-            int version = (await connection.ExecuteScalarAsync<int?>(
-                "select version from page_translations where page_id = @PageId;",
+            PageTranslationHeaderRow? existing = await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
+                "select source_tree_revision_id as SourceTreeRevisionId, version as Version, target_language as TargetLanguage from page_translations where page_id = @PageId;",
                 new { PageId = pageIdValue },
-                transaction) ?? 0) + 1;
+                transaction);
+            int version = (existing?.Version ?? 0) + 1;
+            // The header row is recreated below; keep the target language it already declared.
+            string? storedTargetLanguage = existing?.TargetLanguage;
 
             await connection.ExecuteAsync(
                 "delete from translation_boxes where page_id = @PageId;",
@@ -602,15 +687,16 @@ public sealed class PageTranslationService : IPageTranslationService
                 transaction);
             await connection.ExecuteAsync(
                 """
-                insert into page_translations(page_id, source_tree_revision_id, version, updated_at)
-                values (@PageId, @RevisionId, @Version, @UpdatedAt);
+                insert into page_translations(page_id, source_tree_revision_id, version, updated_at, target_language)
+                values (@PageId, @RevisionId, @Version, @UpdatedAt, @TargetLanguage);
                 """,
                 new
                 {
                     PageId = pageIdValue,
                     RevisionId = revision.TreeRevisionId.ToString(),
                     Version = version,
-                    UpdatedAt = FormatUtc(_clock.UtcNow)
+                    UpdatedAt = FormatUtc(_clock.UtcNow),
+                    TargetLanguage = storedTargetLanguage
                 },
                 transaction);
 
@@ -640,7 +726,8 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             return Result<PageTranslationStatus>.Success(BuildStatus(
-                boxes, validation.BoxFragments, revision.TreeRevisionId, true, version));
+                boxes, validation.BoxFragments, revision.TreeRevisionId, true, version,
+                storedTargetLanguage));
         }, cancellationToken, TranslationChange(documentInstanceId, pageId));
 
         if (persisted.IsSuccess)
@@ -651,22 +738,22 @@ public sealed class PageTranslationService : IPageTranslationService
         return persisted;
     }
 
-    private async Task<Result<TranslationHeader?>> RealignIfNeededAsync(
+    private async Task<Result<PageTranslationHeaderRow?>> RealignIfNeededAsync(
         DocumentTreeRevision revision,
         CancellationToken cancellationToken)
     {
-        TranslationHeader? header = await LoadHeaderAsync(revision.PageId, cancellationToken);
+        PageTranslationHeaderRow? header = await LoadHeaderAsync(revision.PageId, cancellationToken);
         if (header is null)
         {
-            return Result<TranslationHeader?>.Success(null);
+            return Result<PageTranslationHeaderRow?>.Success(null);
         }
 
         if (string.Equals(header.SourceTreeRevisionId, revision.TreeRevisionId.ToString(), StringComparison.Ordinal))
         {
-            return Result<TranslationHeader?>.Success(header);
+            return Result<PageTranslationHeaderRow?>.Success(header);
         }
 
-        Result<TranslationHeader?> realigned = await InTransactionAsync(async (connection, transaction) =>
+        Result<PageTranslationHeaderRow?> realigned = await InTransactionAsync(async (connection, transaction) =>
         {
             string? head = await connection.QuerySingleOrDefaultAsync<string>(
                 "select tree_revision_id from document_tree_revisions where document_instance_id = @DocumentId and page_id = @PageId and status = 'committed' and is_current = 1;",
@@ -677,31 +764,42 @@ public sealed class PageTranslationService : IPageTranslationService
                 }, transaction);
             if (!string.Equals(head, revision.TreeRevisionId.ToString(), StringComparison.Ordinal))
             {
-                return Result<TranslationHeader?>.Failure(
+                return Result<PageTranslationHeaderRow?>.Failure(
                     AppErrorCodes.Conflict, "The source page revision changed before translations could be realigned.");
             }
 
-            TranslationHeader? currentHeader = await connection.QuerySingleOrDefaultAsync<TranslationHeader>(
-                "select source_tree_revision_id as SourceTreeRevisionId, version as Version from page_translations where page_id = @PageId;",
-                new { PageId = revision.PageId.ToString() }, transaction);
+            PageTranslationHeaderRow? currentHeader =
+                await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
+                    "select source_tree_revision_id as SourceTreeRevisionId, version as Version, target_language as TargetLanguage from page_translations where page_id = @PageId;",
+                    new { PageId = revision.PageId.ToString() }, transaction);
             if (currentHeader is null || string.Equals(
                     currentHeader.SourceTreeRevisionId, revision.TreeRevisionId.ToString(), StringComparison.Ordinal))
             {
-                return Result<TranslationHeader?>.Success(currentHeader);
+                return Result<PageTranslationHeaderRow?>.Success(currentHeader);
             }
 
             Result<IReadOnlyList<DocumentBox>> boxesResult = await _trees.ListBoxesAsync(
                 revision.TreeRevisionId, cancellationToken);
             if (boxesResult.IsFailure)
             {
-                return Result<TranslationHeader?>.Failure(boxesResult.ErrorCode!, boxesResult.ErrorMessage!);
+                return Result<PageTranslationHeaderRow?>.Failure(boxesResult.ErrorCode!, boxesResult.ErrorMessage!);
             }
 
             Result<TranslationHeader> result = await _realigner.RealignAsync(
                 connection, transaction, revision.PageId, revision.TreeRevisionId, boxesResult.Value);
-            return result.IsFailure
-                ? Result<TranslationHeader?>.Failure(result.ErrorCode!, result.ErrorMessage!)
-                : Result<TranslationHeader?>.Success(result.Value);
+            if (result.IsFailure)
+            {
+                return Result<PageTranslationHeaderRow?>.Failure(result.ErrorCode!, result.ErrorMessage!);
+            }
+
+            // Realignment re-anchors the rows to a newer revision but never touches the target
+            // language, so the value read before realignment is still current.
+            return Result<PageTranslationHeaderRow?>.Success(new PageTranslationHeaderRow
+            {
+                SourceTreeRevisionId = result.Value.SourceTreeRevisionId,
+                Version = result.Value.Version,
+                TargetLanguage = currentHeader.TargetLanguage
+            });
         }, cancellationToken);
 
         if (realigned.IsSuccess)
@@ -712,13 +810,14 @@ public sealed class PageTranslationService : IPageTranslationService
         return realigned;
     }
 
-    private async Task<TranslationHeader?> LoadHeaderAsync(PageId pageId, CancellationToken cancellationToken)
+    private async Task<PageTranslationHeaderRow?> LoadHeaderAsync(PageId pageId, CancellationToken cancellationToken)
     {
         await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
         await connection.OpenAsync(cancellationToken);
-        return await connection.QuerySingleOrDefaultAsync<TranslationHeader>(
+        return await connection.QuerySingleOrDefaultAsync<PageTranslationHeaderRow>(
             """
-            select source_tree_revision_id as SourceTreeRevisionId, version as Version
+            select source_tree_revision_id as SourceTreeRevisionId, version as Version,
+                   target_language as TargetLanguage
             from page_translations
             where page_id = @PageId;
             """,
@@ -730,7 +829,8 @@ public sealed class PageTranslationService : IPageTranslationService
         IReadOnlyDictionary<DocumentBoxId, string> fragments,
         DocumentTreeRevisionId treeRevisionId,
         bool isCurrent,
-        int version = 0)
+        int version = 0,
+        string? targetLanguage = null)
     {
         DocumentBox[] contentBoxes = DocumentBoxProjection.ContentBoxes(boxes).ToArray();
         List<DocumentBoxId> staleBoxIds = [];
@@ -748,7 +848,8 @@ public sealed class PageTranslationService : IPageTranslationService
         }
 
         return new PageTranslationStatus(
-            translatedBoxCount, contentBoxes.Length, staleBoxIds, treeRevisionId, isCurrent, version);
+            translatedBoxCount, contentBoxes.Length, staleBoxIds, treeRevisionId, isCurrent, version,
+            targetLanguage);
     }
 
     private async Task<Result<T>> InTransactionAsync<T>(
@@ -814,5 +915,12 @@ public sealed class PageTranslationService : IPageTranslationService
     {
         public string BoxId { get; set; } = string.Empty;
         public string TranslatedMd { get; set; } = string.Empty;
+    }
+
+    private sealed class PageTranslationHeaderRow
+    {
+        public string SourceTreeRevisionId { get; set; } = string.Empty;
+        public int Version { get; set; }
+        public string? TargetLanguage { get; set; }
     }
 }

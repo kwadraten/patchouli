@@ -62,7 +62,7 @@ public sealed class RuntimeHostResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task Built_cli_auto_launches_a_headless_host_and_completes_a_request()
+    public async Task Built_cli_auto_launches_headless_host_and_yields_to_desktop_with_connected_sse_client()
     {
         string database = Path.Combine(_root, "end-to-end.sqlite");
         PatchouliAppSettings defaults = PatchouliAppSettings.Default();
@@ -119,10 +119,20 @@ public sealed class RuntimeHostResolverTests : IDisposable
             record.Should().NotBeNull();
             record!.HostKind.Should().Be(RuntimeHostKind.Headless);
 
+            using HttpClient http = new();
+            using HttpRequestMessage sseRequest = new(HttpMethod.Get, record.Endpoint);
+            sseRequest.Headers.Accept.ParseAdd("text/event-stream");
+            using HttpResponseMessage sse = await http.SendAsync(
+                sseRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            sse.EnsureSuccessStatusCode();
+            using StreamReader events = new(await sse.Content.ReadAsStreamAsync(timeout.Token));
+            (await events.ReadLineAsync(timeout.Token)).Should().Be(": connected");
+
             // The headless child of the CLI inherits the redirected stdout/stderr handles, so the
             // output reads below only reach EOF once that child exits. Take the Library over first.
             desktopLease = await RuntimeHostCoordinator.AcquireDesktopAsync(
                 database, TimeSpan.FromSeconds(10));
+            (await events.ReadToEndAsync(timeout.Token)).Should().Be("\n");
             string output = await outputTask;
             string error = await errorTask;
 
@@ -131,10 +141,9 @@ public sealed class RuntimeHostResolverTests : IDisposable
         }
         finally
         {
-            if (desktopLease is not null)
-            {
-                await desktopLease.DisposeAsync();
-            }
+            // Also reclaim a failed test's child after the SSE client has been disposed.
+            desktopLease ??= await RuntimeHostCoordinator.AcquireDesktopAsync(database, TimeSpan.FromSeconds(10));
+            await desktopLease.DisposeAsync();
         }
     }
 

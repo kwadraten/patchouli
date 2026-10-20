@@ -13,9 +13,7 @@ public sealed record SnapshotPublishRequest(
     string? Notes = null,
     long TargetShardSizeBytes = 512L * 1024L * 1024L,
     string? SyncRootId = null,
-    IReadOnlyList<string>? EnabledSettingKeys = null,
-    bool SyncAgentSessions = false,
-    bool SyncWorkflowDefinitions = false);
+    IReadOnlyList<string>? EnabledSettingKeys = null);
 
 public sealed record SnapshotPublishResult(
     string SnapshotId,
@@ -23,12 +21,7 @@ public sealed record SnapshotPublishResult(
     string CurrentPointerPath,
     IReadOnlyList<SnapshotShard> Shards,
     long LogicalGeneration,
-    string? Warning,
-    IReadOnlyList<SnapshotFilePayload> FilePayloads = null!)
-{
-    public IReadOnlyList<SnapshotFilePayload> FilePayloads { get; init; } =
-        FilePayloads ?? Array.Empty<SnapshotFilePayload>();
-}
+    string? Warning);
 
 public sealed record SnapshotImportRequest(
     string ManifestPath,
@@ -65,18 +58,16 @@ public sealed record SnapshotManifest(
     string? Notes)
 {
     /// <summary>
-    /// Optional file-tree payloads (agent session directories, workflow definitions). They are content
-    /// addressed like shards but are opaque archives, not sqlite databases, so validation and import
-    /// handle them separately from <see cref="Shards" />. Absent on snapshots published before
-    /// session/workflow sync existed, and whenever both independent switches were off.
+    /// Optional file-tree payloads carried by older snapshots. Their kinds are no longer produced or
+    /// applied, but the field stays on the wire model so an old snapshot still validates and imports
+    /// instead of failing on data this build does not consume.
     /// </summary>
     public IReadOnlyList<SnapshotFilePayload> FilePayloads { get; init; } = [];
 }
 
 /// <summary>
-/// One archived library file tree carried by a snapshot. <see cref="Kind" /> is a wire-format value
-/// (<see cref="SnapshotFilePayloadKinds" />) mapped to a fixed auxiliary library directory; the
-/// volatile <c>runs/</c> projection is deliberately not a payload kind and never enters a snapshot.
+/// One archived library file tree carried by an older snapshot. <see cref="Kind" /> is a wire-format
+/// value that this build retains for validation only; unknown kinds are tolerated.
 /// </summary>
 public sealed record SnapshotFilePayload(
     string PayloadId,
@@ -168,9 +159,7 @@ public sealed record SnapshotSyncBinding(
     string DeviceId,
     SnapshotSyncLocalState LocalState,
     IReadOnlyList<string>? EnabledSettingKeys = null,
-    IReadOnlyList<DeviceRootBinding>? DeviceRootBindings = null,
-    bool SyncAgentSessions = false,
-    bool SyncWorkflowDefinitions = false);
+    IReadOnlyList<DeviceRootBinding>? DeviceRootBindings = null);
 
 public interface ISnapshotSyncBindingStore
 {

@@ -9,10 +9,7 @@ public sealed class McpPutInterfaceTests
     [Fact]
     public void Published_put_schema_describes_bounded_box_objects_and_versions()
     {
-        JsonElement put = JsonDocument.Parse(McpProtocolHandler.AgentToolDefinitions()
-                .Single(definition => JsonDocument.Parse(definition).RootElement.GetProperty("function")
-                    .GetProperty("name").GetString() == "put")).RootElement.GetProperty("function")
-            .GetProperty("parameters");
+        JsonElement put = McpProtocolHandler.PublishedToolSchema("patchouli.put").GetProperty("inputSchema");
 
         JsonElement properties = put.GetProperty("properties");
         properties.GetProperty("source_revision").GetProperty("type").GetString().Should().Be("string");

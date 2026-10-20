@@ -187,6 +187,28 @@ public sealed class McpSettingsNavigationTests
         fixture.Dialogs.Shown.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Run_child_selections_round_trip_without_a_parent_grant_or_enabling_global_send()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        mcp.ToolOverrides.Single(value => value.ToolName == "patchouli.send").Enabled = false;
+        mcp.RunSendPermissions!.ToggleCommand.Execute(null);
+        mcp.RunSendPermissions.Checked.Should().BeTrue();
+        mcp.ToolOverrides.Single(value => value.ToolName == "patchouli.send").Enabled.Should().BeFalse();
+        mcp.RunSendPermissions.Children.Single(value => value.Domain == "runs/translation").Enabled = false;
+        mcp.RunSendPermissions.Checked.Should().BeNull();
+        await mcp.SaveAsync();
+        McpServerSettings persisted = await fixture.ReadSettingsAsync();
+        persisted.DomainPermissions.Should().Contain(new McpDomainPermission("runs/ocr", "send", true));
+        persisted.DomainPermissions.Should().Contain(new McpDomainPermission("runs/translation", "send", false));
+        persisted.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
+        persisted.ToolOverrides.Should().Contain(value => value.ToolName == "patchouli.send" && !value.Enabled);
+        await mcp.LoadAsync();
+        mcp.RunSendPermissions!.Checked.Should().BeNull();
+        mcp.RunSendPermissions.Children.Single(value => value.Domain == "runs/ocr").Enabled.Should().BeTrue();
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public TemporaryAppSettingsFile SettingsFile { get; } = new();

@@ -5,7 +5,7 @@
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.3.12, must match Changelog.md)
+#   VERSION       Application version (default: 0.3.13, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
@@ -13,7 +13,7 @@
 # Prerequisites (built by default unless SKIP_PUBLISH=1):
 #   .tmp/publish/linux-x64            self-contained Patchouli.UI publish
 #   .tmp/publish/linux-x64-cli        self-contained patchouli-cli publish
-#   tools/biblatex-helper/target/release/biblatex-helper
+#   sidecar/biblatex-helper/target/release/biblatex-helper
 #
 # Outputs land in .tmp/installer/.
 set -euo pipefail
@@ -24,12 +24,12 @@ export TMPDIR="$root/.tmp"
 # A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
 mkdir -p "$TMPDIR"
 
-version="${VERSION:-0.3.12}"
+version="${VERSION:-0.3.13}"
 runtime="${RUNTIME:-linux-x64}"
 skip_publish="${SKIP_PUBLISH:-0}"
 publish_ui="$root/.tmp/publish/$runtime"
 publish_cli="$root/.tmp/publish/$runtime-cli"
-helper_src="$root/tools/biblatex-helper/target/release/biblatex-helper"
+helper_src="$root/sidecar/biblatex-helper/target/release/biblatex-helper"
 stage="$root/.tmp/linux-stage"
 out="$root/.tmp/installer"
 app_id="io.github.kwadraten.patchouli"
@@ -61,7 +61,7 @@ publish() {
       -p:Version="$version" -p:DebugType=None -p:DebugSymbols=false \
       -o "$publish_cli"
     echo "Building biblatex-helper..."
-    cargo build --release --manifest-path "$root/tools/biblatex-helper/Cargo.toml"
+    cargo build --release --manifest-path "$root/sidecar/biblatex-helper/Cargo.toml"
   fi
 
   [[ -x "$publish_ui/Patchouli.UI" ]] || { echo "Missing $publish_ui/Patchouli.UI" >&2; exit 1; }

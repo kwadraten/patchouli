@@ -236,7 +236,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ShowContentTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.Content);
         ShowHistoryTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.History);
         ShowTranslationTabCommand = new AsyncCommand(ShowTranslationTabAsync);
-        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync);
+        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync, () => !IsEditMode);
         ToggleTranslationCompareCommand =
             new RelayCommand(_ => IsTranslationCompareVisible = !IsTranslationCompareVisible);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
@@ -322,22 +322,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     [ObservableProperty] public partial Bitmap? Image { get; private set; }
     public LibraryItemViewModel Item { get; }
 
-    /// <summary>The reading toolbar's workflow entries: the window's shared, ordered menu source.</summary>
-    [ExcludeFromDerivedGeneration]
-    public System.Collections.ObjectModel.ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries =>
-        _main.ReadingWorkflowMenuEntries;
-
-    /// <summary>True when at least one workflow opted into the menus.</summary>
-    [ExcludeFromDerivedGeneration]
-    public bool HasReadingWorkflowMenuEntries => _main.HasReadingWorkflowMenuEntries;
-
-    /// <summary>Rebuilds the reading entries against the open document and the current page.</summary>
-    public Task RefreshWorkflowMenuAsync()
-    {
-        string pageRange = PageCount > 0 ? (PageIndex + 1).ToString(CultureInfo.InvariantCulture) : string.Empty;
-        return _main.RefreshReadingWorkflowMenuAsync(Item.DocumentInstanceId ?? string.Empty, pageRange);
-    }
-
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     [ObservableProperty] public partial bool IsBusy { get; private set; }
@@ -407,6 +391,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     {
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
+        ShowChaptersTabCommand?.NotifyCanExecuteChanged();
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
             box.NotifyEditModeChanged();
@@ -429,8 +414,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public bool IsHistoryTabActive => ActiveSidebarTab == SidebarTab.History;
     public bool IsTranslationTabActive => ActiveSidebarTab == SidebarTab.Translation;
     public bool IsChaptersTabActive => ActiveSidebarTab == SidebarTab.Chapters;
-    public bool IsNavigationSidebarVisible => !IsEditMode || IsChaptersTabActive;
-    public bool IsBoxSidebarVisible => IsEditMode && !IsChaptersTabActive;
+    public bool IsNavigationSidebarVisible => !IsEditMode;
+    public bool IsBoxSidebarVisible => IsEditMode;
     public ChapterSidebarViewModel ChapterEditor { get; }
 
     public string SidebarTabTitle => ActiveSidebarTab switch
@@ -2742,6 +2727,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task ShowChaptersTabAsync()
     {
+        if (IsEditMode)
+        {
+            return;
+        }
+
         ActiveSidebarTab = SidebarTab.Chapters;
         await EnsureChapterMapLoadedAsync();
     }

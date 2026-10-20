@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Patchouli parses and writes BibLaTeX/BibTeX through a locked Rust helper under `tools/biblatex-helper` that depends on [`typst/biblatex` 0.12.0](https://github.com/typst/biblatex). The helper exchanges stable UTF-8 JSON DTOs over stdin/stdout. C# owns item mapping, candidate matching, conflict descriptors, UI, file selection, and persistence. CSL formatting remains `Fsharp.Citeproc` and is not replaced.
+Patchouli parses and writes BibLaTeX/BibTeX through a locked Rust helper under `sidecar/biblatex-helper` that depends on [`typst/biblatex` 0.12.0](https://github.com/typst/biblatex). The helper exchanges stable UTF-8 JSON DTOs over stdin/stdout. C# owns item mapping, candidate matching, conflict descriptors, UI, file selection, and persistence. CSL formatting remains `Fsharp.Citeproc` and is not replaced.
 
 **Upstream mapping sources**
 

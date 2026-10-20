@@ -36,7 +36,7 @@ public sealed class AppSettingsStoreTests
         store.SettingsCommitted += (_, change) => committed = change;
         PatchouliAppSettings next = initial with
         {
-            Llm = initial.Llm with { ToolResultMaxCharacters = 16384 }
+            Llm = initial.Llm with { ChatModel = "committed-model" }
         };
         store.Update(settings => settings with { Llm = next.Llm }, "Llm");
 
@@ -44,7 +44,7 @@ public sealed class AppSettingsStoreTests
 
         result.IsSuccess.Should().BeTrue();
         committed.Should().NotBeNull();
-        committed!.Snapshot.Llm.ToolResultMaxCharacters.Should().Be(16384);
+        committed!.Snapshot.Llm.ChatModel.Should().Be("committed-model");
         committed.Categories.Should().Equal("Llm");
     }
 

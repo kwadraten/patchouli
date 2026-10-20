@@ -337,7 +337,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                 request.PageIds, request.TaskKind, request.EngineId, request.AdapterKind, request.ProviderId,
                 request.Priority, now, now, OcrQueueTaskState.Queued, 0, Math.Max(1, request.MaxAttempts), null, null,
                 null, null, request.ImagePath, request.Dpi, RegionBBox: request.RegionBBox,
-                CommitOnCompletion: request.CommitOnCompletion);
+                CommitOnCompletion: request.CommitOnCompletion, PresetVersionId: request.PresetVersionId);
             _tasks[task.TaskId] = task;
         }
 
@@ -437,7 +437,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                     $"OCR worker error reporter failed: {reporterException}");
             }
 
-            result = new OcrQueueExecutionResult(false, false, "worker_crashed", ex.Message);
+            // Never surface the raw exception message here: it can contain local paths or
+            // credential material. The stable code carries the diagnosis for public projections.
+            result = new OcrQueueExecutionResult(false, false, "worker_crashed",
+                "The OCR worker stopped unexpectedly.");
         }
 
         OcrQueueTask updated;
@@ -636,6 +639,18 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
 
     public Task<Result<OcrQueueTask>> RetryTaskAsync(OcrQueueTaskId id, CancellationToken c = default)
     {
+        return RetryTaskCoreAsync(id, null, c);
+    }
+
+    public Task<Result<OcrQueueTask>> RetryTaskWithVersionAsync(OcrQueueTaskId id,
+        OcrPresetVersionId presetVersionId, CancellationToken c = default)
+    {
+        return RetryTaskCoreAsync(id, presetVersionId, c);
+    }
+
+    private Task<Result<OcrQueueTask>> RetryTaskCoreAsync(OcrQueueTaskId id,
+        OcrPresetVersionId? presetVersionId, CancellationToken c)
+    {
         c.ThrowIfCancellationRequested();
         OcrQueueTask retry;
         lock (_stateLock)
@@ -646,15 +661,18 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                     Result<OcrQueueTask>.Failure(AppErrorCodes.NotFound, "Queue task was not found."));
             }
 
-            if (task.State is not (OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
+            if (task.State is not (OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked
+                or OcrQueueTaskState.Cancelled))
             {
                 return Task.FromResult(Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState,
-                    "Only failed or blocked OCR tasks can be retried."));
+                    "Only failed, blocked, or cancelled OCR tasks can be retried."));
             }
 
             DateTimeOffset now = _clock.UtcNow;
+            // A task reaches the Cancelled state only after its worker has quiesced (queued tasks
+            // flip immediately; running tasks flip in ExecuteAndCompleteAsync under _stateLock),
+            // so retrying here cannot race the old worker.
             bool preserveRunId = task.RunId is not null &&
-                                 task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked &&
                                  task.FailedPageCount == 0 && task.CompletedPageCount > 0;
             retry = task with
             {
@@ -670,7 +688,8 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                 ScheduledAfter = null,
                 RunId = preserveRunId ? task.RunId : null,
                 CompletedPageCount = preserveRunId ? task.CompletedPageCount : 0,
-                FailedPageCount = 0
+                FailedPageCount = 0,
+                PresetVersionId = presetVersionId ?? task.PresetVersionId
             };
             _tasks[retry.TaskId] = retry;
         }

@@ -8,7 +8,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.3.12}"
+version="${VERSION:-0.3.13}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/.tmp/publish/$runtime"
 app_dir="$root/.tmp/macos/Patchouli.NET.app"
@@ -29,7 +29,7 @@ case "$runtime" in
   *) echo "Unsupported macOS runtime: $runtime" >&2; exit 2 ;;
 esac
 
-fs_helper_dir="$root/tools/patchouli-macos-fs"
+fs_helper_dir="$root/sidecar/patchouli-macos-fs"
 fs_helper_dylib="libpatchouli-macos-fs.dylib"
 clang -dynamiclib -framework Foundation \
   -arch "$fs_helper_arch" \
@@ -53,9 +53,9 @@ cp -R "$publish_dir/." "$macos_dir/"
 cp "$fs_helper_dir/$fs_helper_dylib" "$macos_dir/$fs_helper_dylib"
 chmod +x "$macos_dir/Patchouli.UI"
 
-helper_bin="$root/tools/biblatex-helper/target/release/biblatex-helper"
+helper_bin="$root/sidecar/biblatex-helper/target/release/biblatex-helper"
 if [[ ! -x "$helper_bin" ]]; then
-  cargo build --release --manifest-path "$root/tools/biblatex-helper/Cargo.toml"
+  cargo build --release --manifest-path "$root/sidecar/biblatex-helper/Cargo.toml"
 fi
 if [[ ! -x "$helper_bin" ]]; then
   echo "biblatex-helper was not found at $helper_bin" >&2

@@ -57,6 +57,37 @@ public sealed class McpServerHostTests
     }
 
     [Fact]
+    public async Task Stop_finishes_with_connected_sse_client()
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        await using McpServerHost host = new(context.Services, (_, _, _) => { });
+        McpServerSettings settings = new(
+            GetFreeTcpPort(), "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
+        await host.StartAsync(settings);
+        try
+        {
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            using HttpClient http = new();
+            using HttpRequestMessage request = new(HttpMethod.Get, host.Endpoint);
+            request.Headers.Accept.ParseAdd("text/event-stream");
+            using HttpResponseMessage response = await http.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            response.EnsureSuccessStatusCode();
+            using StreamReader events = new(await response.Content.ReadAsStreamAsync(timeout.Token));
+            (await events.ReadLineAsync(timeout.Token)).Should().Be(": connected");
+
+            await host.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+
+            host.Status.Should().Be(McpServerHostStatus.Stopped);
+            (await events.ReadToEndAsync(timeout.Token)).Should().Be("\n");
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task Port_conflict_reports_an_exception_and_reaches_the_error_status()
     {
         await using HostContext context = await HostContext.CreateAsync();

@@ -31,7 +31,7 @@ below remain historical implementation evidence.
 
 **Locked dependency**
 
-- Bashkit `=0.14.4` under `tools/patchouli-shell-sidecar`. Feature upgrades require capability review (commands, redirects, host FS, network, process, parser).
+- Bashkit `=0.14.4` under `sidecar/patchouli-shell-sidecar`. Feature upgrades require capability review (commands, redirects, host FS, network, process, parser).
 
 **Standing constraints**
 

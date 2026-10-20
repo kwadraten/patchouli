@@ -221,7 +221,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
                 ? parsedUpdatedAt.ToUniversalTime()
                 : _clock.UtcNow.ToUniversalTime();
-        McpServerSettings settings = new McpServerSettings(port, bindAddress, cors, origins,
+        McpServerSettings settings = new(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
         {
@@ -237,16 +237,27 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     }
 
     /// <summary>
-    /// Issue #11 §11: old settings files predate patchouli.add/patchouli.view. The permission
-    /// model is deny-list based (missing entry = allowed), so without an explicit migration
-    /// old settings would implicitly grant the new tools — auto-expanding existing put grants.
-    /// The migration writes explicit disabled entries; users opt in via the settings UI.
+    /// Applies the same legacy permission migration used when settings load. Callers that supply an
+    /// already-deserialized settings object (the headless host and the standalone server) use this so
+    /// retired domains and verbs never fail validation during startup.
+    /// </summary>
+    public static McpServerSettings NormalizeLegacySettings(McpServerSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return MigrateAddViewDefaults(settings);
+    }
+
+    /// <summary>
+    /// New send subdomains require explicit grants. Retired Agent/action permissions never
+    /// promote to endpoint permissions; missing children are materialized as disabled.
     /// </summary>
     private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
     {
         string[] newTools = ["patchouli.add", "patchouli.view"];
-        List<McpToolOverride> overrides = settings.ToolOverrides.ToList();
-        bool changed = false;
+        List<McpToolOverride> overrides = settings.ToolOverrides
+            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal))
+            .ToList();
+        bool changed = overrides.Count != settings.ToolOverrides.Count;
         foreach (string tool in newTools)
         {
             if (overrides.All(value => value.ToolName != tool))
@@ -257,7 +268,33 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             }
         }
 
-        return changed ? settings with { ToolOverrides = overrides } : settings;
+        List<McpDomainPermission> permissions = settings.DomainPermissions
+            .Where(value => !string.Equals(value.Verb, "ocr", StringComparison.Ordinal) &&
+                            McpPermissionPolicy.Domains.Contains(value.Domain) &&
+                            McpPermissionPolicy.Verbs.Contains(value.Verb))
+            .ToList();
+        if (permissions.Count != settings.DomainPermissions.Count)
+        {
+            changed = true;
+        }
+
+        // New send domains are opt-in. A parent or retired action grant cannot promote them.
+        if (permissions.RemoveAll(value =>
+                value.Verb == "send" && !McpPermissionPolicy.RunSendDomains.Contains(value.Domain)) > 0)
+        {
+            changed = true;
+        }
+
+        foreach (string domain in McpPermissionPolicy.RunSendDomains)
+        {
+            if (permissions.All(value => value.Domain != domain || value.Verb != "send"))
+            {
+                permissions.Add(new McpDomainPermission(domain, "send", false));
+                changed = true;
+            }
+        }
+
+        return changed ? settings with { ToolOverrides = overrides, DomainPermissions = permissions } : settings;
     }
 
     private async Task WriteAsync(McpServerSettings settings, CancellationToken cancellationToken)

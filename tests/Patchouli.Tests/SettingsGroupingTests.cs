@@ -20,7 +20,7 @@ public sealed class SettingsGroupingTests
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             SettingsViewModel page = main.Settings;
             page.LlmSettings.ReportSaveFailure("Provider 'deepseek' is missing model.");
-            main.Status.Should().Contain("模型连接与聊天").And.Contain("missing model");
+            main.Status.Should().Contain("模型连接").And.Contain("missing model");
             main.StatusIsError.Should().BeTrue();
             page.ActiveCategory = page.Categories.Single(category => category.Title == "同步与快照");
             main.Status.Should().Contain("missing model");
@@ -38,11 +38,12 @@ public sealed class SettingsGroupingTests
 
     [Theory]
     [InlineData("mcp", "MCP 服务与权限", "AI集成")]
-    [InlineData("llm", "模型连接与聊天", "AI集成")]
-    [InlineData("workflows", "工作流", "AI集成")]
-    [InlineData("import", "导入规则", "导入与识别")]
-    [InlineData("ocr", "OCR 引擎", "导入与识别")]
-    [InlineData("ocr_model", "多模态 OCR 模型", "导入与识别")]
+    [InlineData("llm", "模型连接", "AI集成")]
+    [InlineData("agents", "Agent 集成", "AI集成")]
+    [InlineData("import", "导入时设置", "文献加工")]
+    [InlineData("ocr", "OCR 引擎", "文献加工")]
+    [InlineData("translation", "文献翻译", "文献加工")]
+    [InlineData("ocr_model", "多模态 OCR", "文献加工")]
     [InlineData("library", "书库与源文件", "书库与本机文件")]
     [InlineData("local_files", "模型与临时文件", "书库与本机文件")]
     [InlineData("csl_localization", "题录本地化", "引用与题录")]

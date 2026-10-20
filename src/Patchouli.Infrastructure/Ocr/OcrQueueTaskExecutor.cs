@@ -41,6 +41,13 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Preparing, null, null));
         }
 
+        // Known durable progress, retained through exceptions and cancellation so the queue (and
+        // the public committed-truth projection) keeps the run id even when recognition or the
+        // post-commit dirty-marker/index chain throws after the database commit.
+        OcrRunId? knownRunId = null;
+        int knownCompleted = 0;
+        int knownFailed = 0;
+
         try
         {
             Result<OcrRun>? run = null;
@@ -64,11 +71,17 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             {
                 run = task.TaskKind switch
                 {
+                    OcrQueueTaskKind.Document when task.PresetVersionId is { } pinned =>
+                        await _engine.RunPresetOnPagesWithVersionAsync(task.DocumentInstanceId, task.PresetId,
+                            task.PageIds, pinned, cancellationToken, stageProgress),
                     OcrQueueTaskKind.Document => await _engine.RunPresetOnDocumentAsync(task.DocumentInstanceId,
                         task.PresetId, cancellationToken, stageProgress),
                     OcrQueueTaskKind.MockPages when !task.CommitOnCompletion && task.PageIds.Count == 1 =>
                         await _engine.RunWorkingOnPageAsync(task.DocumentInstanceId, task.PresetId,
                             task.PageIds.Single(), cancellationToken),
+                    OcrQueueTaskKind.MockPages when task.PresetVersionId is { } pinned =>
+                        await _engine.RunPresetOnPagesWithVersionAsync(task.DocumentInstanceId, task.PresetId,
+                            task.PageIds, pinned, cancellationToken, stageProgress),
                     OcrQueueTaskKind.MockPages => await _engine.RunPresetOnPagesAsync(task.DocumentInstanceId,
                         task.PresetId, task.PageIds, cancellationToken, stageProgress),
                     OcrQueueTaskKind.ImagePage => await _engine.RunPresetOnImagePageAsync(task.DocumentInstanceId,
@@ -93,21 +106,25 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                 return new OcrQueueExecutionResult(false, false, run.ErrorCode, run.ErrorMessage);
             }
 
+            knownRunId = run.Value.OcrRunId;
             Result<IReadOnlyList<OcrPageResult>> pages =
                 await _engine.ListPageResultsAsync(run.Value.OcrRunId, cancellationToken);
             if (pages.IsFailure)
             {
-                return new OcrQueueExecutionResult(false, false, pages.ErrorCode, pages.ErrorMessage);
+                return new OcrQueueExecutionResult(false, false, pages.ErrorCode, pages.ErrorMessage,
+                    knownRunId);
             }
 
             int completed = pages.Value.Count(page => page.State == OcrPageResultState.Succeeded);
             int failedCount = pages.Value.Count(page =>
                 page.State is OcrPageResultState.Failed or OcrPageResultState.Skipped or OcrPageResultState.Cancelled);
+            knownCompleted = completed;
+            knownFailed = failedCount;
             OcrPageResult? failed = pages.Value.FirstOrDefault(page => page.State != OcrPageResultState.Succeeded);
             if (failed is not null)
             {
                 return new OcrQueueExecutionResult(false, false, failed.ErrorCode ?? "ocr_page_failed",
-                    failed.ErrorMessage ?? "One or more OCR pages failed.", run.Value.OcrRunId, completed, failedCount);
+                    failed.ErrorMessage ?? "One or more OCR pages failed.", knownRunId, completed, failedCount);
             }
 
             if (task.CommitOnCompletion)
@@ -119,7 +136,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                 {
                     return new OcrQueueExecutionResult(false, false, commit.ErrorCode,
                         commit.ErrorMessage ?? "OCR candidate commit requires attention.",
-                        run.Value.OcrRunId, completed, failedCount);
+                        knownRunId, completed, failedCount);
                 }
 
                 if (_searchUnits is not null && _searchIndex is not null)
@@ -130,7 +147,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                     if (units.IsFailure)
                     {
                         return new OcrQueueExecutionResult(false, false, units.ErrorCode, units.ErrorMessage,
-                            run.Value.OcrRunId, completed, failedCount);
+                            knownRunId, completed, failedCount);
                     }
 
                     stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Indexing, 0.7, "fts"));
@@ -140,7 +157,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                     if (index.IsFailure)
                     {
                         return new OcrQueueExecutionResult(false, false, index.ErrorCode, index.ErrorMessage,
-                            run.Value.OcrRunId, completed, failedCount);
+                            knownRunId, completed, failedCount);
                     }
 
                     stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Indexing, 1.0, "done"));
@@ -152,12 +169,20 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                 stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Importing, null, null));
             }
 
-            return new OcrQueueExecutionResult(true, false, RunId: run.Value.OcrRunId, CompletedPageCount: completed,
+            return new OcrQueueExecutionResult(true, false, RunId: knownRunId, CompletedPageCount: completed,
                 FailedPageCount: failedCount);
         }
         catch (OperationCanceledException)
         {
-            return new OcrQueueExecutionResult(false, true);
+            return new OcrQueueExecutionResult(false, true, RunId: knownRunId,
+                CompletedPageCount: knownCompleted, FailedPageCount: knownFailed);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception, "infrastructure.ocr-queue-executor"))
+        {
+            // Never surface the raw exception message: it can contain local paths or secrets.
+            return new OcrQueueExecutionResult(false, false, "worker_crashed",
+                "The OCR worker stopped unexpectedly.", knownRunId, knownCompleted, knownFailed);
         }
     }
 

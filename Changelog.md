@@ -1,5 +1,15 @@
 # 更新日志
 
+## 0.3.13
+
+发布：2026-10-19 · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.12...0.3.13)
+
+- 内置 Agent 与 F# 工作流系统移除，改为外部 Agent 集成：在嵌入式终端中直接运行 OpenCode（默认）、Claude Code、Codex、Kimi Code、Antigravity 等 CLI Agent；设置页「Agent 集成」可查看各 Agent 检测状态、选择默认项、指定自定义路径或暂不启用，OpenCode 支持一键安装（官方下载、原子落位、失败回滚）。
+- 新增「Agent 集成」工作区页面：终端内运行所选 Agent；四个预置提示词（整理题录、调查主题、梳理文献、反向提问）作为可编辑模板填入输入区，绝不自动发送；Zed 风格的可搜索题录引用面板插入标题、Item ID 与规范 URI（不含本地路径）；内容可复制或注入终端但不自动回车；可为 Agent 生成受限、可撤销的 Patchouli MCP 连接配置。
+- 新增不依赖 Agent 的全文直接翻译：按 Box 分段、批量并行请求大模型，支持目标语言、批量大小、并发、请求间隔、超时与重试设置；主窗口菜单、书库右键与阅读工具栏均可启动，进度窗口实时显示各页状态并可取消；冲突自动重读重试，已提交页面在取消或部分失败时保持不变。
+- MCP/CLI 新增 `translation.start`/`translation.cancel` 动作与 `runs/translation/` 状态查询，权限矩阵增加相应授权项；移除 `runs/agent` 与 `workflows` 资源树及内置 Agent 设置项（旧快照中的相关载荷仍可导入，将被忽略）。
+- 仓库整理：`tools/` 更名 `sidecar/`，调色板生成脚本迁移为 PowerShell；Agent 目录由 `scripts/update-agent-catalog.ps1` 从 ACP registry 生成，支持 `-Check` 漂移检测。
+
 ## 0.3.12
 
 发布：2026-10-18 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.12) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.11...0.3.12)

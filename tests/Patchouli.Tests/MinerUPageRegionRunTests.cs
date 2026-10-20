@@ -24,6 +24,99 @@ namespace Patchouli.Tests;
 public sealed class MinerUPageRegionRunTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Remote_zip_ocr_can_be_repeated_on_existing_body_when_captured_page_basis_is_unchanged(
+        bool selectedPages)
+    {
+        await using Context context = await Context.CreateAsync(3);
+        Page[] selected = selectedPages ? [context.Pages[0], context.Pages[2]] : context.Pages;
+
+        Task<Result<OcrRun>> Recognize()
+        {
+            return selectedPages
+                ? context.Engine.RunPresetOnPagesAsync(context.Document.DocumentInstanceId, context.Preset.PresetId,
+                    selected.Select(page => page.PageId).ToArray())
+                : context.Engine.RunPresetOnDocumentAsync(context.Document.DocumentInstanceId, context.Preset.PresetId);
+        }
+
+        Result<OcrRun> first = await Recognize();
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        (await context.Engine.CommitCandidateRunAsync(first.Value.OcrRunId)).IsSuccess.Should().BeTrue();
+        Dictionary<PageId, DocumentTreeRevisionId> previous = new();
+        foreach (Page page in selected)
+        {
+            previous[page.PageId] = (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId,
+                page.PageId)).Value.TreeRevisionId;
+        }
+
+        Result<OcrRun> repeated = await Recognize();
+        repeated.IsSuccess.Should().BeTrue(repeated.ErrorMessage);
+        Result<OcrCandidateCommit> committed = await context.Engine.CommitCandidateRunAsync(repeated.Value.OcrRunId);
+
+        committed.IsSuccess.Should().BeTrue(committed.ErrorMessage);
+        repeated.Value.OcrRunId.Should().NotBe(first.Value.OcrRunId);
+        foreach (Page page in selected)
+        {
+            DocumentTreeRevision current = (await context.Trees.GetCurrentRevisionAsync(
+                context.Document.DocumentInstanceId, page.PageId)).Value;
+            current.TreeRevisionId.Should().NotBe(previous[page.PageId]);
+            current.ParentTreeRevisionId.Should().Be(previous[page.PageId]);
+        }
+
+        context.MinerUClient.UploadRequests.Count.Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    [Fact]
+    public async Task Remote_zip_ocr_retains_pre_upload_baseline_when_manual_body_is_saved_during_provider_wait()
+    {
+        await using Context context = await Context.CreateAsync(3);
+        Result<OcrRun> first = await context.Engine.RunPresetOnDocumentAsync(context.Document.DocumentInstanceId,
+            context.Preset.PresetId);
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        (await context.Engine.CommitCandidateRunAsync(first.Value.OcrRunId)).IsSuccess.Should().BeTrue();
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.MinerUClient.BeforeUpload = async (_, token) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+            return Result.Success();
+        };
+        Task<Result<OcrRun>> recognizing = context.Engine.RunPresetOnDocumentAsync(context.Document.DocumentInstanceId,
+            context.Preset.PresetId);
+        DocumentTreeRevisionId saved = default;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.Document.DocumentInstanceId,
+                context.Pages[0].PageId)).Value;
+            (await context.Trees.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(null, null,
+                DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .2, .2),
+                new TextBoxPayload("Saved during remote recognition")))).IsSuccess.Should().BeTrue();
+            (await context.Trees.CommitPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+            saved = edit.DraftRevisionId;
+        }
+        finally
+        {
+            release.TrySetResult();
+            await recognizing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Result<OcrRun> candidate = await recognizing;
+        candidate.IsSuccess.Should().BeTrue(candidate.ErrorMessage);
+
+        Result<OcrCandidateCommit> commit = await context.Engine.CommitCandidateRunAsync(candidate.Value.OcrRunId);
+
+        commit.IsFailure.Should().BeTrue();
+        commit.ErrorCode.Should().Be(AppErrorCodes.Conflict);
+        (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, context.Pages[0].PageId))
+            .Value.TreeRevisionId.Should().Be(saved);
+        (await context.Trees.ListBoxesAsync(saved)).Value.Should().Contain(box =>
+            box.Payload == new TextBoxPayload("Saved during remote recognition"));
+    }
+
+    [Theory]
     [InlineData(false, false, false)]
     [InlineData(false, true, true)]
     [InlineData(true, false, true)]

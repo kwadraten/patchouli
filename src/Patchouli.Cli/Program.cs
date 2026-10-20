@@ -311,11 +311,16 @@ static void PrintUsage()
     Console.Error.WriteLine("  view <uri> --output <image.png> [--overwrite] [--context page|region] [--max-edge <n>]");
     Console.Error.WriteLine(
         "    Saves the source image PNG and prints the host metadata plus the client-side output_path.");
-    Console.Error.WriteLine("  send <start|message|cancel|resume> [OPTIONS]");
     Console.Error.WriteLine(
-        "    start --workflow <uri> [--param NAME=VALUE]...; message --session <uri> --message-id <id> [--text <text>]; cancel|resume --session <uri>");
+        "  send <endpoint> <action> <target> [domain options] [--args <json-object>] [--request-id <id>]");
     Console.Error.WriteLine(
-        "    Sessions and workflows are observed at patchouli://runs/agent/{session-id}/status|/events and patchouli://workflows/.");
+        "    Fetch runs/<domain>/control for message schemas. Domain options map into args; empty args defaults to {}.");
+    Console.Error.WriteLine("    Examples:");
+    Console.Error.WriteLine(
+        "      send runs/ocr/control start texts/<document-id>/ --pages 1,3-5 --engine default --request-id r1");
+    Console.Error.WriteLine(
+        "      send runs/translation/control start texts/<document-id>/ --target-language zh-CN --force false");
+    Console.Error.WriteLine("      send runs/ocr/control cancel runs/ocr/<task-id>/");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(

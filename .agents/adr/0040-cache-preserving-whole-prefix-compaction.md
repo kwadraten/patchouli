@@ -1,5 +1,9 @@
 # ADR 0040: Cache-preserving whole-prefix compaction
 
+Superseded by [ADR 0047](0047-external-agent-cli-terminal-integration.md): built-in chat and
+its compaction machinery have been removed. External CLIs own their context and caching; no
+Patchouli summary, prefix generation or history-tool path remains.
+
 Status: accepted, 2026-10-08. Amends ADR 0036's provider-visible append-only invariant.
 
 2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)

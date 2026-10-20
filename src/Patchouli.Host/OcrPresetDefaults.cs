@@ -25,6 +25,7 @@ public sealed class OcrPresetDefaults(
     {
         return engineId switch
         {
+            OcrEngineIds.Mock => EnsureMockPresetAsync(cancellationToken),
             OcrEngineIds.MinerU => EnsureMinerUPresetAsync(cancellationToken),
             OcrEngineIds.NdlKoten => EnsureNdlKotenPresetAsync(cancellationToken),
             OcrEngineIds.NdlLite => EnsureNdlLitePresetAsync(cancellationToken),
@@ -89,6 +90,34 @@ public sealed class OcrPresetDefaults(
 
         Result<OcrPreset> created = await _presets.CreatePresetAsync(MultimodalPresetName,
             MultimodalPresetDescription, OcrEngineIds.MultimodalLlm, model, null, "{}", true, cancellationToken);
+        return created.IsFailure
+            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
+            : Result<OcrPresetId>.Success(created.Value.PresetId);
+    }
+
+    private async Task<Result<OcrPresetId>> EnsureMockPresetAsync(CancellationToken cancellationToken)
+    {
+        Result<OcrPreset?> existing =
+            await _presets.FindActivePresetByEngineIdAsync(OcrEngineIds.Mock, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
+        }
+
+        if (existing.Value is not null)
+        {
+            return Result<OcrPresetId>.Success(existing.Value.PresetId);
+        }
+
+        Result<OcrPreset> created = await _presets.CreatePresetAsync(
+            "Mock OCR",
+            "In-process mock OCR preset",
+            OcrEngineIds.Mock,
+            OcrModelIds.MockBasic,
+            null,
+            "{}",
+            true,
+            cancellationToken);
         return created.IsFailure
             ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
             : Result<OcrPresetId>.Success(created.Value.PresetId);

@@ -22,8 +22,8 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <MacOSFsHelperSource>$(MSBuildProjectDirectory)\..\..\tools\patchouli-macos-fs\patchouli_macos_fs.m</MacOSFsHelperSource>
-    <MacOSFsHelperDylib>$(MSBuildProjectDirectory)\..\..\tools\patchouli-macos-fs\libpatchouli-macos-fs.dylib</MacOSFsHelperDylib>
+    <MacOSFsHelperSource>$(MSBuildProjectDirectory)\..\..\sidecar\patchouli-macos-fs\patchouli_macos_fs.m</MacOSFsHelperSource>
+    <MacOSFsHelperDylib>$(MSBuildProjectDirectory)\..\..\sidecar\patchouli-macos-fs\libpatchouli-macos-fs.dylib</MacOSFsHelperDylib>
   </PropertyGroup>
 
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">

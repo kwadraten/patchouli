@@ -114,6 +114,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         RefreshLibraryPreviewCommand = new AsyncCommand(RefreshLibraryPreviewAsync);
         CopyEndpointCommand = new AsyncCommand(CopyEndpointAsync);
 
+        RunSendPermissions = CreateRunSendPermissions();
         SyncFromSettings(_settings);
         _isConstructing = false;
     }
@@ -785,7 +786,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         List<McpDomainPermission> permissions = _settings.DomainPermissions.ToList();
         string toolName = "patchouli." + verb;
-        bool legacyGlobalDeny = _settings.ToolOverrides.Any(value => value.ToolName == toolName && !value.Enabled);
+        bool legacyGlobalDeny = verb != "send" &&
+                                _settings.ToolOverrides.Any(value => value.ToolName == toolName && !value.Enabled);
         // Materialize the legacy global deny before removing it, so granting one cell cannot
         // accidentally grant every other domain for that verb.
         if (legacyGlobalDeny)
@@ -797,7 +799,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         permissions.RemoveAll(value => value.Domain == domain && value.Verb == verb);
         permissions.Add(new McpDomainPermission(domain, verb, enabled));
-        List<McpToolOverride> overrides = _settings.ToolOverrides.Where(value => value.ToolName != toolName).ToList();
+        List<McpToolOverride> overrides = _settings.ToolOverrides
+            .Where(value => verb == "send" || value.ToolName != toolName).ToList();
         if (verb is "add" or "view")
         {
             // Preserve the user's opt-in across the legacy migration on the next load. The
@@ -813,12 +816,24 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         MarkDirty();
     }
 
+    [ExcludeFromDerivedGeneration] public RunSendPermissionsViewModel RunSendPermissions { get; private set; }
+
+    private RunSendPermissionsViewModel CreateRunSendPermissions()
+    {
+        return new RunSendPermissionsViewModel(
+            McpPermissionPolicy.RunSendDomains, _settings,
+            (domain, enabled) => UpdateDomainPermission(domain, "send", enabled));
+    }
+
     private void ReloadToolOverrides()
     {
         HashSet<string> disabled = _settings.ToolOverrides.Where(value => !value.Enabled)
             .Select(value => value.ToolName).ToHashSet(StringComparer.Ordinal);
+        RunSendPermissions = CreateRunSendPermissions();
+        Raise(nameof(RunSendPermissions));
         PermissionRows.Clear();
-        foreach (string domain in McpPermissionPolicy.Domains)
+        foreach (string domain in McpPermissionPolicy.Domains.Where(domain =>
+                     !McpPermissionPolicy.RunSendDomains.Contains(domain)))
         {
             PermissionRows.Add(new McpDomainPermissionRowViewModel(this, domain, _settings));
         }
@@ -826,7 +841,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         ToolOverrides.Clear();
         foreach (string tool in KnownTools)
         {
-            ToolOverrides.Add(new McpToolOverrideViewModel(this, tool, !disabled.Contains(tool)));
+            bool isEnabled = !disabled.Contains(tool);
+            ToolOverrides.Add(new McpToolOverrideViewModel(this, tool, isEnabled));
         }
     }
 
@@ -887,18 +903,31 @@ public sealed partial class McpToolOverrideViewModel : ViewModelBase
     }
 }
 
-public sealed class McpDomainPermissionRowViewModel
+public sealed partial class McpDomainPermissionRowViewModel : ViewModelBase
 {
     public McpDomainPermissionRowViewModel(McpSettingsViewModel parent, string domain, McpServerSettings settings)
     {
         Domain = domain == "/" ? "根目录 /" : domain;
-        Cells = McpPermissionPolicy.Verbs.Select(verb => new McpDomainPermissionCellViewModel(parent, domain, verb,
-                McpPermissionPolicy.Allows(settings, verb,
-                    domain == "/" ? "patchouli://" : "patchouli://" + domain + "/")))
+        HasChildren = domain == "runs";
+        Children = HasChildren ? parent.RunSendPermissions.Children : [];
+        Cells = McpPermissionPolicy.Verbs.Select(verb =>
+            {
+                bool enabled = McpPermissionPolicy.Allows(settings, verb,
+                    domain == "/" ? "patchouli://" : "patchouli://" + domain + "/");
+                return new McpDomainPermissionCellViewModel(parent, domain, verb, enabled);
+            })
             .ToArray();
     }
 
     public string Domain { get; }
+    public bool HasChildren { get; }
+    public IReadOnlyList<RunSendPermissionViewModel> Children { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ExpansionGlyph))]
+    public partial bool IsExpanded { get; set; }
+
+    [ExcludeFromDerivedGeneration] public string ExpansionGlyph => IsExpanded ? "▼" : "▶";
     public IReadOnlyList<McpDomainPermissionCellViewModel> Cells { get; }
 }
 
@@ -914,6 +943,8 @@ public sealed partial class McpDomainPermissionCellViewModel : ViewModelBase
         _parent = parent;
         _domain = domain;
         _verb = verb;
+        IsAggregate = domain == "runs" && verb == "send";
+        Aggregate = parent.RunSendPermissions;
         IsSupported = McpPermissionPolicy.Supports(domain, verb);
         Description = IsSupported ? domain + " / " + verb : $"{domain} 不支持 {verb}，无法授权。";
         Enabled = IsSupported && enabled;
@@ -921,6 +952,8 @@ public sealed partial class McpDomainPermissionCellViewModel : ViewModelBase
     }
 
     public string Description { get; }
+    public bool IsAggregate { get; }
+    public RunSendPermissionsViewModel Aggregate { get; }
 
     public bool IsSupported { get; }
 

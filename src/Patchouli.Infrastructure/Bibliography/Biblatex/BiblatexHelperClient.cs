@@ -178,7 +178,7 @@ public sealed class BiblatexHelperClient : IBiblatexHelperClient
         string?[] candidates =
         [
             Path.Combine(AppContext.BaseDirectory, fileName),
-            Path.Combine(AppContext.BaseDirectory, "tools", "biblatex-helper", fileName),
+            Path.Combine(AppContext.BaseDirectory, "sidecar", "biblatex-helper", fileName),
             FindFromRepositoryRoot(fileName)
         ];
 
@@ -198,13 +198,14 @@ public sealed class BiblatexHelperClient : IBiblatexHelperClient
         DirectoryInfo? current = new(AppContext.BaseDirectory);
         while (current is not null)
         {
-            string release = Path.Combine(current.FullName, "tools", "biblatex-helper", "target", "release", fileName);
+            string release = Path.Combine(current.FullName, "sidecar", "biblatex-helper", "target", "release",
+                fileName);
             if (File.Exists(release))
             {
                 return release;
             }
 
-            string debug = Path.Combine(current.FullName, "tools", "biblatex-helper", "target", "debug", fileName);
+            string debug = Path.Combine(current.FullName, "sidecar", "biblatex-helper", "target", "debug", fileName);
             if (File.Exists(debug))
             {
                 return debug;

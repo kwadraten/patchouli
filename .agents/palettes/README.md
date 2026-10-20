@@ -15,7 +15,7 @@
 
 每套配色方案 (`UiColorPalette`) 均同时具备浅色 (`LightColors`) 与深色 (`DarkColors`) 两种模式：
 - 用户切换明暗模式时，保持当前选中的配色方案 ID 不变，自动选用该方案对应的模式集合。
-- 优先使用方案明确声明的颜色集合；内置 Radix 配色方案均由 `tools/palette-generator/generate_palettes.py` 从 `@radix-ui/colors` 生成对应的 12 阶浅色与深色色彩。
+- 优先使用方案明确声明的颜色集合；内置 Radix 配色方案均由 `scripts/generate-palettes.ps1` 从 `@radix-ui/colors` 生成对应的 12 阶浅色与深色色彩。
 
 ## 3. 缺失模式自动反相规则
 
@@ -33,7 +33,7 @@
 
 ## 4. 生成与可读性
 
-配色数据和语义映射由 tools/palette-generator/generate_palettes.py 维护；先修改 generator 再重生成，禁止手写生成文件。按钮文字优先保留已有前景；若与 PrimaryContainerColor 的 WCAG 相对亮度对比度低于 4.5:1，generator 生成的解析器选择对比更高的黑色或白色。原始 Radix 色阶保持不变。
+配色数据和语义映射由 scripts/generate-palettes.ps1 维护；先修改 generator 再重生成，禁止手写生成文件。按钮文字优先保留已有前景；若与 PrimaryContainerColor 的 WCAG 相对亮度对比度低于 4.5:1，generator 生成的解析器选择对比更高的黑色或白色。原始 Radix 色阶保持不变。
 
 ## 5. 深色背景与状态栏
 
