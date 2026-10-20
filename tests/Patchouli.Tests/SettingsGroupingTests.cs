@@ -45,6 +45,7 @@ public sealed class SettingsGroupingTests
     [InlineData("translation", "文献翻译", "文献加工")]
     [InlineData("ocr_model", "多模态 OCR", "文献加工")]
     [InlineData("library", "书库与源文件", "书库与本机文件")]
+    [InlineData("update", "更新设置", "更新设置")]
     [InlineData("local_files", "模型与临时文件", "书库与本机文件")]
     [InlineData("csl_localization", "题录本地化", "引用与题录")]
     [InlineData("csl_installed", "已安装样式", "引用与题录")]
@@ -58,6 +59,12 @@ public sealed class SettingsGroupingTests
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             await main.OpenSettingsAsync(id);
             main.Settings.ActiveCategory.Title.Should().Be(category);
+            if (id == "update")
+            {
+                main.Settings.ActiveCategory.Content.Should().BeSameAs(main.Settings.UpdateSettings);
+                return 0;
+            }
+
             SettingsSectionGroupViewModel group = (SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!;
             group.SelectedTab.Should().BeSameAs(group.ActiveEntry);
             group.ActiveEntry.Id.Should().Be(id);

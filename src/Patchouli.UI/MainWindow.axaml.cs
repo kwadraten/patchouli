@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
     private readonly MainWindowViewModel _viewModel;
     private bool _exitConfirmed;
     private bool _exitRequested;
+    private Func<Task<bool>>? _beforeConfirmedExit;
     private bool _startupScheduled;
     private CatStatusIndicator? _catIndicator;
     private DispatcherTimer? _geometryClampDebounce;
@@ -362,7 +363,14 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_exitConfirmed || (!_viewModel.HasDirtySettings && !_viewModel.HasPendingMcpSettings))
+        if (_exitConfirmed)
+        {
+            base.OnClosing(e);
+            return;
+        }
+
+        if (!_viewModel.HasDirtySettings && !_viewModel.HasPendingMcpSettings &&
+            _beforeConfirmedExit is null)
         {
             base.OnClosing(e);
             return;
@@ -372,14 +380,13 @@ public sealed partial class MainWindow : Window
         base.OnClosing(e);
         if (!await _viewModel.ConfirmMcpSettingsBeforeExitAsync())
         {
-            _exitRequested = false;
+            ClearPendingExitAction();
             return;
         }
 
         if (!_viewModel.HasDirtySettings)
         {
-            _exitConfirmed = true;
-            Close();
+            await CompleteConfirmedExitAsync();
             return;
         }
 
@@ -394,24 +401,64 @@ public sealed partial class MainWindow : Window
             bool saved = await _viewModel.SaveDirtySettingsAsync();
             if (!saved)
             {
-                _exitRequested = false;
+                ClearPendingExitAction();
                 return;
             }
         }
         else if (choice != ConfirmDialogResult.Discard)
         {
-            _exitRequested = false;
+            ClearPendingExitAction();
             return;
         }
 
-        _exitConfirmed = true;
-        Close();
+        await CompleteConfirmedExitAsync();
     }
 
     internal void RequestExit()
     {
         _exitRequested = true;
         Close();
+    }
+
+    internal void RequestExitAfterAsync(Func<Task<bool>> beforeConfirmedExit)
+    {
+        ArgumentNullException.ThrowIfNull(beforeConfirmedExit);
+        _beforeConfirmedExit = beforeConfirmedExit;
+        RequestExit();
+    }
+
+    private async Task CompleteConfirmedExitAsync()
+    {
+        Func<Task<bool>>? beforeExit = _beforeConfirmedExit;
+        _beforeConfirmedExit = null;
+        if (beforeExit is not null)
+        {
+            bool proceed;
+            try
+            {
+                proceed = await beforeExit();
+            }
+            catch (Exception exception)
+            {
+                UnexpectedExceptions.Sink.Report(exception, "update", "pre-exit-action");
+                proceed = false;
+            }
+
+            if (!proceed)
+            {
+                _exitRequested = false;
+                return;
+            }
+        }
+
+        _exitConfirmed = true;
+        Close();
+    }
+
+    private void ClearPendingExitAction()
+    {
+        _beforeConfirmedExit = null;
+        _exitRequested = false;
     }
 
     protected override async void OnClosed(EventArgs e)

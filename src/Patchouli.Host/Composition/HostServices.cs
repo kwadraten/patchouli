@@ -19,6 +19,7 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Core.Translation;
+using Patchouli.Core.Update;
 using Patchouli.Core.View;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
@@ -49,6 +50,7 @@ using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Settings;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.Infrastructure.Update;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
@@ -93,6 +95,10 @@ public sealed class HostServices
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
     private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
+    // Issue #15: dedicated clients for update checks (short timeout) and installer
+    // downloads (long timeout for ~100MB installers).
+    private readonly HttpClient _updateApiHttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _updateDownloadHttpClient = new() { Timeout = TimeSpan.FromMinutes(15) };
     private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -335,6 +341,17 @@ public sealed class HostServices
         // settings are device-local; the recovery store lives in the runtime database.
         FileHandlingBehaviorSettings =
             new FileHandlingBehaviorSettingsService(settingsPath, Clock);
+        // Issue #15: application auto-update (direct GitHub source; a future
+        // reverse proxy only needs to implement IUpdateSource).
+        UpdateCheckSettings = new UpdateCheckSettingsService(settingsPath, Clock);
+        UpdateSource = new GitHubReleaseSource(_updateApiHttpClient);
+        UpdateCoordinator = new UpdateCoordinator(
+            UpdateSource,
+            UpdateCheckSettings,
+            new UpdateDownloader(_updateDownloadHttpClient),
+            new UpdateLauncher(),
+            Clock,
+            Patchouli.Core.BuildInfo.Version);
         CslLocalInstall = new CslLocalFileInstallService(CslStore);
         FileImport = new FileImportService(
             PdfImport,
@@ -467,6 +484,9 @@ public sealed class HostServices
     public IMinerUResultImporter MinerUImporter { get; }
     public PdfImportWorkflow PdfImport { get; }
     public IFileHandlingBehaviorSettingsService FileHandlingBehaviorSettings { get; }
+    public IUpdateCheckSettingsService UpdateCheckSettings { get; }
+    public IUpdateSource UpdateSource { get; }
+    public UpdateCoordinator UpdateCoordinator { get; }
     public ICslLocalFileInstallService CslLocalInstall { get; }
     public IFileImportService FileImport { get; }
     public IPageImageViewService PageImageView { get; }
@@ -900,6 +920,8 @@ public sealed class HostServices
         await LibraryRevisionMonitor.DisposeAsync();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
+        _updateApiHttpClient.Dispose();
+        _updateDownloadHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 }

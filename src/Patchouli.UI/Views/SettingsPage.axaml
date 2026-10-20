@@ -1564,6 +1564,35 @@
             </StackPanel>
           </DataTemplate>
 
+          <DataTemplate DataType="settings:UpdateSettingsViewModel">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="自动检查更新" Classes="CardTitle" />
+                  <CheckBox Content="启动后自动检查更新（每天最多一次）" IsChecked="{Binding AutoCheckEnabled}" />
+                  <TextBlock Text="开启后，应用启动时会在后台检查 GitHub Releases 是否有新版本；已是最新时不打扰，网络错误也不会反复提示。关闭后仅可通过菜单手动检查。"
+                             FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding LastCheckText}" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource PrimaryBrush}"
+                             IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="手动检查" Classes="CardTitle" />
+                  <TextBlock Text="立即检查一次更新，不受自动检查开关影响。"
+                             FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <Button Content="检查更新" Command="{Binding CheckForUpdatesCommand}" HorizontalAlignment="Left" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+
         </controls:RetainedContentHost.DataTemplates>
       </controls:RetainedContentHost>
     </Grid>

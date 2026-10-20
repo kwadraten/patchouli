@@ -27,6 +27,7 @@ using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.Infrastructure.Update;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
@@ -182,6 +183,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
     public IModalOperationRunner ModalOperations { get; }
+    public UpdateFlowService UpdateFlow { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
 
@@ -449,6 +451,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand ShowChangelogCommand { get; }
+    public AsyncCommand CheckForUpdatesCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
     public UiCommandDescriptor CheckSyncStateDescriptor { get; }
     public UiCommandDescriptor PublishSnapshotDescriptor { get; }
@@ -770,6 +773,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         FilePicker = filePicker ?? new AvaloniaFilePickerService();
         Dialogs = dialogs ?? CreateDialogService();
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
+        UpdateFlow = new UpdateFlowService(this);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
         Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
@@ -1026,6 +1030,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         ShowChangelogCommand = new AsyncCommand(OpenChangelogAsync);
+        CheckForUpdatesCommand = new AsyncCommand(() => UpdateFlow.CheckForUpdatesManualAsync());
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
 
         IDisposable commandInvalidationSub = layoutChanges.ObserveOn(_uiScheduler).Subscribe(_ =>
@@ -1200,6 +1205,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         StartupLoadingStatus = "正在启动…";
         try
         {
+            // Issue #15: sweep installer downloads left in temp (kept via
+            // "稍后安装" or after a successful install) older than the
+            // retention window. Best-effort; never throws.
+            UpdateDownloader.CleanupStaleDownloads();
             if (_settingsStore.IsDirty)
             {
                 SettingsSaveResult pendingSettings = await _settingsStore.SaveImmediatelyAsync();
@@ -1263,6 +1272,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     await Shell.RefreshAsync();
                 }
             }
+
+            // Issue #15: fire-and-forget automatic update check — never blocks
+            // startup and never throws; stays silent unless an update is found.
+            UpdateFlow.StartAutomaticCheckOnStartup();
         }
         finally
         {
@@ -2706,6 +2719,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<ItemMergePreviewDialogViewModel, ItemMergePreviewDialog>();
         service.Register<DuplicateItemsDialogViewModel, DuplicateItemsDialog>();
         service.Register<AgentMcpConfigDialogViewModel, AgentMcpConfigDialog>();
+        service.Register<UpdateAvailableDialogViewModel, UpdateAvailableDialog>();
+        service.Register<InfoDialogViewModel, InfoDialog>();
         return service;
     }
 
