@@ -31,7 +31,7 @@ namespace Patchouli.UI.ViewModels;
 public sealed partial class LibraryShellViewModel : ViewModelBase
 {
     internal const int LibraryPageSize = 100;
-    private static readonly TimeSpan TagSelectionThrottle = TimeSpan.FromMilliseconds(30);
+    private static readonly TimeSpan FilterSelectionThrottle = TimeSpan.FromMilliseconds(30);
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan SidebarEventThrottle = TimeSpan.Zero;
     private static readonly TimeSpan CollectionMembershipThrottle = TimeSpan.FromMilliseconds(50);
@@ -48,6 +48,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private LibraryItemCursor? _nextPageCursor;
     private int _pageLoadInFlight;
     private int _pagingGeneration;
+    private int _filterSelectionGeneration;
     private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
 
@@ -102,13 +103,23 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
                 handler => Sidebar.TagSelectionChanged += handler,
                 handler => Sidebar.TagSelectionChanged -= handler)
             .Select(_ => Unit.Default);
+        IObservable<Unit> collectionSelectionChanges = Observable.FromEventPattern(
+                handler => Sidebar.CollectionSelectionChanged += handler,
+                handler => Sidebar.CollectionSelectionChanged -= handler)
+            .Select(_ => Unit.Default);
         Register(ReactiveUiFlow.SubscribeLatest(
-            tagSelectionChanges,
-            TagSelectionThrottle,
+            tagSelectionChanges.Merge(collectionSelectionChanges).Do(_ =>
+            {
+                Interlocked.Increment(ref _filterSelectionGeneration);
+                Interlocked.Increment(ref _pagingGeneration);
+                _pagingSession.Cancel();
+                IsRefreshingItems = true;
+            }),
+            FilterSelectionThrottle,
             _timingScheduler,
             _uiScheduler,
-            RefreshItemsCoreAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-tag-refresh")));
+            RefreshItemsFromFilterSelectionAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-filter-refresh")));
 
         // Rapid selection changes must not stack inspector loads: only the latest selection
         // resolves, and the inspector pipeline cancels the superseded fetch.
@@ -136,10 +147,6 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.MergeIntoRequested += handler,
                 handler => Sidebar.MergeIntoRequested -= handler),
             (tag, _) => MergeTagAsync(tag));
-        RegisterSequentialSidebarEvent(
-            Observable.FromEventPattern(handler => Sidebar.CollectionSelectionChanged += handler,
-                handler => Sidebar.CollectionSelectionChanged -= handler),
-            (_, _) => RefreshItemsFromCollectionSelectionAsync());
         RegisterSequentialSidebarEvent(
             Observable.FromEventPattern(handler => Sidebar.CreateCollectionRequested += handler,
                 handler => Sidebar.CreateCollectionRequested -= handler),
@@ -304,6 +311,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             // flight so its completion cannot refresh the grid or editors against the next Library.
             CancelMetadataBatchForLibrarySwitch();
             Interlocked.Increment(ref _pagingGeneration);
+            Interlocked.Increment(ref _filterSelectionGeneration);
+            IsRefreshingItems = false;
             _pagingSession.Cancel();
             _pageQuery = null;
             _nextPageCursor = null;
@@ -378,6 +387,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     [ObservableProperty] public partial bool HasMoreItems { get; private set; }
 
     [ObservableProperty] public partial bool IsLoadingMoreItems { get; private set; }
+    [ObservableProperty] public partial bool IsRefreshingItems { get; private set; }
 
     [ExcludeFromDerivedGeneration] public int LoadedItemCount => Items.Count;
 
@@ -897,6 +907,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private async Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
     {
         int pagingGeneration = Interlocked.Increment(ref _pagingGeneration);
+        int filterGeneration = Volatile.Read(ref _filterSelectionGeneration);
+        IsRefreshingItems = true;
         CancellationTokenSource nextPagingSession = new();
         CancellationTokenSource previousPagingSession = Interlocked.Exchange(ref _pagingSession, nextPagingSession);
         previousPagingSession.Cancel();
@@ -964,7 +976,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             if (requiredCollectionId is { } collectionId)
             {
                 Result<IReadOnlyList<ItemId>> members =
-                    await services.Collections.GetCollectionItemIdsAsync(collectionId, refreshToken);
+                    await Task.Run(() => services.Collections.GetCollectionItemIdsAsync(collectionId, refreshToken),
+                        refreshToken);
                 if (members.IsFailure)
                 {
                     throw new InvalidOperationException(members.ErrorMessage);
@@ -985,6 +998,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
             refreshToken.ThrowIfCancellationRequested();
             if (pagingGeneration != Volatile.Read(ref _pagingGeneration) ||
+                filterGeneration != Volatile.Read(ref _filterSelectionGeneration) ||
                 pageQuery.LibraryGeneration != _main.LibraryGeneration)
             {
                 return;
@@ -1044,11 +1058,19 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         {
             // A newer scope/filter refresh or a database switch owns publication now.
         }
+        finally
+        {
+            if (pagingGeneration == Volatile.Read(ref _pagingGeneration) &&
+                filterGeneration == Volatile.Read(ref _filterSelectionGeneration))
+            {
+                IsRefreshingItems = false;
+            }
+        }
     }
 
     public async Task LoadNextPageAsync()
     {
-        if (!HasMoreItems || _pageQuery is null || _nextPageCursor is null ||
+        if (IsRefreshingItems || !HasMoreItems || _pageQuery is null || _nextPageCursor is null ||
             Interlocked.CompareExchange(ref _pageLoadInFlight, 1, 0) != 0)
         {
             return;
@@ -1476,12 +1498,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
     }
 
-    private async Task RefreshItemsFromCollectionSelectionAsync()
+    private async Task RefreshItemsFromFilterSelectionAsync(CancellationToken cancellationToken)
     {
         Raise(nameof(CanModifyLibraryItems));
         Raise(nameof(HasSelectedCollectionFilter));
         Raise(nameof(SelectedCollectionFilterName));
-        await RefreshItemsAsync();
+        await RefreshItemsCoreAsync(cancellationToken);
     }
 
     private async Task CreateCollectionAsync()

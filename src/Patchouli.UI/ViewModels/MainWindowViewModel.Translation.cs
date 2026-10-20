@@ -4,8 +4,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Host.Composition;
-using Patchouli.UI.ViewModels.Translation;
-using Patchouli.UI.Views;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -35,8 +33,8 @@ public sealed partial class MainWindowViewModel
     }
 
     /// <summary>
-    /// Starts a translation over every page of one document instance and opens the modeless progress
-    /// window. An empty page list means the host translates the whole document. The host service owns
+    /// Starts a translation over every page of one document instance and opens the task queue
+    /// page. An empty page list means the host translates the whole document. The host service owns
     /// validation (missing pages, credentials, unusable model) and returns an actionable failure.
     /// </summary>
     public async Task StartFullTranslationAsync(string? documentInstanceId)
@@ -56,6 +54,7 @@ public sealed partial class MainWindowViewModel
         try
         {
             HostServices services = await ServicesAsync();
+            int libraryGeneration = LibraryGeneration;
             Result<TranslationRunStatus> started = await services.TranslationRuns.StartAsync(
                 new TranslationRunStartRequest(new DocumentInstanceId(documentId), []));
             if (started.IsFailure)
@@ -65,16 +64,21 @@ public sealed partial class MainWindowViewModel
             }
 
             TranslationRunStatus status = started.Value;
-            ITranslationRunService runService = services.TranslationRuns;
-            TranslationProgressViewModel viewModel = new(status.RunId, status,
-                () => Task.FromResult(runService));
-            TranslationProgressWindow.ShowModeless(viewModel);
+            if (!IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
+            OcrQueue.FocusedTaskId = status.RunId.ToString();
+            OcrQueue.SelectedTaskTabIndex = status.State == TranslationRunLifecycle.Running ? 0 : 1;
+            OcrQueue.SelectedTaskType = "全部任务";
+            await OpenOcrQueueAsync();
             Report($"已启动全文翻译：共 {status.TotalPages} 页。");
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             ReportError($"无法启动全文翻译：{exception.Message}" +
-                        " 请检查「AI集成 → 模型与翻译」中的模型与凭据。");
+                        " 请检查「AI集成 → 模型连接」中的模型与凭据。");
         }
     }
 
@@ -83,7 +87,7 @@ public sealed partial class MainWindowViewModel
         string detail = string.IsNullOrWhiteSpace(failure.ErrorMessage)
             ? failure.ErrorCode ?? "未知错误"
             : failure.ErrorMessage!;
-        return $"无法启动全文翻译：{detail}。请检查所选文档的页面，以及「AI集成 → 模型与翻译」" +
+        return $"无法启动全文翻译：{detail}。请检查所选文档的页面，以及「AI集成 → 模型连接」" +
                "中的模型与凭据。";
     }
 }

@@ -135,9 +135,10 @@ The Agent workspace page hosts a real PTY through `Porta.Pty` and renders it wit
 screen-scrape, proxy or reinterpret the agent's conversation. The component exposes no public
 PTY resize method in the pinned version, so the control's layout is the resize authority:
 initial columns/rows seed the emulator grid and the layout-driven terminal applies subsequent
-size changes. Stop and restart are explicit actions. Closing the workspace tab asks whether to
-stop the terminal or keep it running in the background, so a process is never silently
-orphaned.
+size changes. A compact header selects the Agent and hosts the reference/preset actions; the terminal fills
+all remaining space. Switching Agents or closing the tab asks whether there is unfinished
+work and requires confirmation before terminating the process. Closing a tab always ends its
+terminal session; background retention and explicit stop/restart controls are removed.
 
 ### Restricted, revocable MCP configuration
 
@@ -146,7 +147,7 @@ The workspace page can generate a Patchouli MCP connection document for the sele
 for other clients. The document points at the local loopback MCP endpoint and, when a token
 is configured, references it through `PATCHOULI_MCP_TOKEN` rather than embedding a secret in
 the file. The UI writes the document **inside the Library's agent-workspace** only after the
-user confirms it; Patchouli never edits a user-global agent configuration and never writes the
+user confirms writing and restarting. After a successful write, Patchouli automatically stops and restarts the same terminal Agent with its existing launch spec; cancellation or a failed write leaves it running. Failed restarts are reported separately from successful writes. The dialog warns that current terminal work will be interrupted. Patchouli never edits a user-global agent configuration and never writes the
 token to disk. The current host supplies this token to the launched process environment as a
 per-launch placeholder (there is no formal issuance API yet); the file itself contains only the
 environment reference.
@@ -163,13 +164,14 @@ The workspace page keeps the product-level workflow that generic chat lacks:
 
 - **Four editable preset prompts** — 整理题录 (organise records), 调查主题 (investigate a
   topic), 梳理文献 (outline the literature) and 反向提问 (Socratic questioning). Applying a
-  preset only fills the composer; it never sends automatically, and the user can edit the text
-  before deciding what to do with it.
+  preset pastes directly into the terminal at its current input position without submitting it;
+  the user edits and sends it in the external Agent's own input surface.
 - **A Zed-style searchable item reference panel** over one snapshot of `ListRowsAsync`.
-  Filtering is client-side and instantaneous. Confirming an entry inserts a plain-text block
-  with the **title**, **Item ID** and canonical `patchouli://items/{id}.yml` URI. It never
-  inserts a local source path. Copy and terminal injection are explicit; injection never
-  presses Enter.
+  Filtering is client-side and instantaneous. Confirming an entry pastes
+  `Title (规范 URI: patchouli://items/{id}.yml)` directly into the terminal. Every Item type,
+  including generic documents, is eligible. The URI already contains the ID, so no separate
+  ID is repeated. No local source path or submitting newline is inserted; terminal pastes
+  honor bracketed-paste mode without modifying the system clipboard.
 
 The preset and reference surfaces deliberately stop at the terminal boundary. The external
 agent owns its conversation, tools and confirmations; Patchouli supplies library context and

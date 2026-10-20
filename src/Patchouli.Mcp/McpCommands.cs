@@ -331,13 +331,20 @@ public sealed record McpOcrResult(
     [property: JsonPropertyName("reused")] bool Reused = false);
 
 /// <summary>Invoke one typed domain Action.</summary>
-public sealed record McpActionSendRequest(string Target, string Action, JsonElement Args);
+public sealed record McpActionSendRequest(
+    string Target,
+    string Action,
+    JsonElement Args,
+    string Endpoint = "",
+    string? RequestId = null);
 
 public sealed record McpActionSendMeta(
     [property: JsonPropertyName("library_revision")]
     string LibraryRevision,
     [property: JsonPropertyName("action")] string Action,
-    [property: JsonPropertyName("state")] string State);
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("endpoint")]
+    string Endpoint = "");
 
 public sealed record McpActionSendResult(
     [property: JsonPropertyName("state")] string State,

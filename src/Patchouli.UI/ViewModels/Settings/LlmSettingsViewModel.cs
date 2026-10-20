@@ -150,6 +150,26 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         return $"{name}（未就绪）";
     }
 
+    public ObservableCollection<TranslationLanguageOption> TranslationLanguageOptions { get; } =
+        new(CultureInfo.GetCultures(CultureTypes.NeutralCultures | CultureTypes.SpecificCultures)
+            .Where(culture => !string.IsNullOrEmpty(culture.Name))
+            .OrderBy(culture => culture.NativeName, StringComparer.Ordinal)
+            .Select(culture => new TranslationLanguageOption(culture.Name, culture.NativeName)));
+
+    [ExcludeFromDerivedGeneration]
+    public TranslationLanguageOption SelectedTranslationLanguage
+    {
+        get => TranslationLanguageOptions.First(language =>
+            string.Equals(language.Code, TranslationTargetLanguage, StringComparison.OrdinalIgnoreCase));
+        set
+        {
+            if (value is not null)
+            {
+                TranslationTargetLanguage = value.Code;
+            }
+        }
+    }
+
     // ---- Direct translation (issue #20, settings subsection of 「模型与翻译」) ----
     // Numeric inputs are kept as text so an out-of-range or non-numeric draft can show a field-level
     // error next to the input instead of being silently clamped. Only a valid draft reaches _current,
@@ -1276,6 +1296,13 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     partial void OnTranslationTargetLanguageChanged(string value)
     {
+        if (!TranslationLanguageOptions.Any(language =>
+                string.Equals(language.Code, value, StringComparison.OrdinalIgnoreCase)))
+        {
+            TranslationLanguageOptions.Add(new TranslationLanguageOption(value, value));
+        }
+
+        Raise(nameof(SelectedTranslationLanguage));
         if (IsWaitingForDraftSync())
         {
             return;
@@ -1837,3 +1864,5 @@ public sealed class LlmSelectionOption
 
     public string DisplayName { get; }
 }
+
+public sealed record TranslationLanguageOption(string Code, string DisplayName);

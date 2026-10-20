@@ -66,7 +66,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_root_returns_action_and_existing_directories_and_library_projection_without_message()
+    public async Task Find_root_returns_existing_directories_and_library_projection_without_message()
     {
         McpCommandResult<McpFindMeta, object> result =
             await _library.Commands.FindAsync(new McpFindRequest(null, null, null));
@@ -75,9 +75,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(7);
-        envelope.Meta.DomainTotal.Should().Be(7);
-        envelope.Meta.FilteredTotal.Should().Be(7);
+        envelope.Meta.ShownTotal.Should().Be(6);
+        envelope.Meta.DomainTotal.Should().Be(6);
+        envelope.Meta.FilteredTotal.Should().Be(6);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
@@ -85,7 +85,6 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
-            "patchouli://actions/",
             "patchouli://library.yml");
         envelope.Entries.Select(Entry).Where(entry => entry.Uri != "patchouli://library.yml")
             .Should().OnlyContain(entry => entry.Type == "directory");
@@ -774,78 +773,19 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Generic_cite_action_and_dedicated_cite_preserve_identical_read_only_results()
+    public async Task Retired_citation_send_route_is_rejected_while_dedicated_cite_stays_read_only()
     {
         string target = McpResourceUris.ItemUri(_library.BookA);
-        string style = McpResourceUris.StyleUri("apa");
-        McpCommandResult<McpCiteMeta, McpCitationResult> direct = await _library.Commands.CiteAsync(
-            new McpCiteRequest([target], style, "en-US", true, false));
-
-        McpCommandResult<McpActionSendMeta, McpActionSendResult> sent = await _library.Commands.SendAsync(
-            new McpActionSendRequest(target, "cite.render", JsonSerializer.SerializeToElement(
-                new { style, locale = "en-US", bibliography = true, html = false })));
-
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> sent =
+            await _library.Commands.SendAsync(new McpActionSendRequest(target, "cite.render",
+                JsonSerializer.SerializeToElement(new { })));
+        sent.Error!.Name.Should().Be("INVALID_ARGUMENT");
+        McpCommandResult<McpCiteMeta, McpCitationResult> direct =
+            await _library.Commands.CiteAsync(new McpCiteRequest([target], McpResourceUris.StyleUri("apa"), "en-US",
+                true, false));
         direct.IsSuccess.Should().BeTrue(direct.Error?.Detail);
-        sent.IsSuccess.Should().BeTrue(sent.Error?.Detail);
-        sent.Envelope!.Meta.State.Should().Be("completed");
-        sent.Envelope.Meta.LibraryRevision.Should().Be(direct.Envelope!.Meta.LibraryRevision);
-        McpActionSendResult action = sent.Envelope.Entries.Should().ContainSingle().Subject;
-        action.State.Should().Be("completed");
-        action.RunUri.Should().BeNull("citation rendering is a direct read-only result");
-        JsonElement result = JsonSerializer.SerializeToElement(action.Result);
-        result.GetProperty("entries")[0].GetProperty("citation").GetString().Should()
-            .Be(direct.Envelope.Entries.Single().Citation);
-        JsonElement meta = result.GetProperty("meta");
-        meta.GetProperty("bibliography").GetString().Should().Be(direct.Envelope.Meta.Bibliography);
-        meta.GetProperty("render_format").GetString().Should().Be(direct.Envelope.Meta.RenderFormat);
-        meta.GetProperty("effective_style_uri").GetString().Should().Be(direct.Envelope.Meta.EffectiveStyleUri);
-        meta.GetProperty("effective_locale").GetString().Should().Be(direct.Envelope.Meta.EffectiveLocale);
-    }
-
-    [Fact]
-    public async Task Generic_and_dedicated_cite_preserve_the_same_legacy_reference_migration_warnings()
-    {
-        string legacy = LegacyItemUri(_library.BookA);
-        string style = McpResourceUris.StyleUri("apa");
-        McpCommandResult<McpCiteMeta, McpCitationResult> direct = await _library.Commands.CiteAsync(
-            new McpCiteRequest([legacy], style, null, false, false));
-        McpCommandResult<McpActionSendMeta, McpActionSendResult> generic = await _library.Commands.SendAsync(
-            new McpActionSendRequest(legacy, "cite.render", JsonSerializer.SerializeToElement(new { style })));
-
-        direct.IsSuccess.Should().BeTrue(direct.Error?.Detail);
-        generic.IsSuccess.Should().BeTrue(generic.Error?.Detail);
-        direct.Envelope!.Message!.Warnings.Should().Contain(warning => warning.Contains("[obsoleted]") &&
-                                                                       warning.Contains("0.4.0") &&
-                                                                       warning.Contains(
-                                                                           McpResourceUris.ItemUri(_library.BookA)));
-        JsonElement result = JsonSerializer.SerializeToElement(generic.Envelope!.Entries.Single().Result);
-        result.GetProperty("message").GetProperty("warnings").EnumerateArray().Select(value => value.GetString())
-            .Should().BeEquivalentTo(direct.Envelope.Message.Warnings);
-    }
-
-    [Fact]
-    public async Task Shared_cite_handler_preserves_valid_results_alongside_an_empty_reference_error()
-    {
-        string target = McpResourceUris.ItemUri(_library.BookA);
-        string[] refs = ["", target];
-        string style = McpResourceUris.StyleUri("apa");
-        McpCommandResult<McpCiteMeta, McpCitationResult> direct = await _library.Commands.CiteAsync(
-            new McpCiteRequest(refs, style, null, false, false));
-        McpCommandResult<McpActionSendMeta, McpActionSendResult> generic = await _library.Commands.SendAsync(
-            new McpActionSendRequest(target, "cite.render", JsonSerializer.SerializeToElement(new { refs, style })));
-
-        direct.IsSuccess.Should().BeTrue("a bad individual ref must not discard another valid citation");
-        direct.Envelope!.Entries.Should().HaveCount(2);
-        ErrorCode(direct.Envelope.Entries[0].Error).Should().Be((int)McpErrorCode.InvalidArgument);
-        direct.Envelope.Entries[0].Citation.Should().BeNull();
-        direct.Envelope.Entries[1].Error.Should().BeNull();
-        direct.Envelope.Entries[1].Citation.Should().NotBeNullOrWhiteSpace();
-        generic.IsSuccess.Should().BeTrue(generic.Error?.Detail);
-        JsonElement entries = JsonSerializer.SerializeToElement(generic.Envelope!.Entries.Single().Result)
-            .GetProperty("entries");
-        entries.GetArrayLength().Should().Be(2);
-        entries[0].GetProperty("error").GetString().Should().StartWith("INVALID_ARGUMENT");
-        entries[1].GetProperty("citation").GetString().Should().Be(direct.Envelope.Entries[1].Citation);
+        direct.Envelope!.Meta.Bibliography.Should().NotBeNullOrWhiteSpace();
+        direct.Envelope.Entries.Single().Citation.Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
@@ -890,7 +830,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             new McpActionSendRequest(target, "cite.render", JsonSerializer.SerializeToElement(new { refs, style })));
 
         direct.Error!.Name.Should().Be("PERMISSION_DENIED");
-        generic.Error!.Name.Should().Be("PERMISSION_DENIED");
+        generic.Error!.Name.Should().Be("INVALID_ARGUMENT");
     }
 
     [Fact]

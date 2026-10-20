@@ -175,7 +175,7 @@
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </MenuItem>
-          <MenuItem Header="OCR" SubmenuOpened="OnOcrMenuOpened">
+          <MenuItem Header="文献加工" SubmenuOpened="OnOcrMenuOpened">
             <MenuItem Header="切换OCR引擎">
               <MenuItem Header="文档级" Classes="ocrEngineScope" ItemsSource="{Binding DocumentOcrEngineMenuEntries}"
                         x:CompileBindings="False">
@@ -226,11 +226,14 @@
                 </MenuItem.Styles>
               </MenuItem>
             </MenuItem>
-            <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
+            <MenuItem Header="任务队列" Command="{Binding OpenOcrQueueCommand}" />
             <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
                       IsVisible="{Binding Shell.CanModifyLibraryItems}" />
             <MenuItem Header="快速补全 OCR" Command="{Binding Shell.QuickFillOcrCommand}"
                       IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
+                      ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
+            <MenuItem Header="文献加工设置" Command="{Binding OpenProcessingSettingsCommand}" />
           </MenuItem>
           <MenuItem Header="搜索">
             <MenuItem Header="启用查询重写" ToggleType="CheckBox"
@@ -244,19 +247,7 @@
             <MenuItem Header="{Binding ToggleMcpServerLabel}" Command="{Binding ToggleMcpServerCommand}" />
             <MenuItem Header="AI集成设置" Command="{Binding OpenMcpSettingsCommand}" />
             <Separator />
-            <MenuItem Command="{Binding OpenAgentTabCommand}">
-              <MenuItem.Header>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <lucide:Lucide Icon="Terminal" Width="14" Height="14"
-                                 StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
-                                 VerticalAlignment="Center" />
-                  <TextBlock Text="Agent 集成" VerticalAlignment="Center" />
-                </StackPanel>
-              </MenuItem.Header>
-            </MenuItem>
-            <Separator />
-            <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
-                      ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
+            <MenuItem Header="Agent 集成" Command="{Binding OpenAgentTabCommand}" />
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />

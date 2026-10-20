@@ -83,7 +83,7 @@ public sealed class WorkspaceManager
         if (tab.Content is AgentWorkspaceViewModel { HasActiveSession: true } agent && !agent.CloseApproved)
         {
             // The sync close path cannot prompt. A running session must be confirmed through
-            // CloseAsync first (terminate or keep in the background).
+            // CloseAsync first (confirm termination).
             return false;
         }
 

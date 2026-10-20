@@ -31,7 +31,10 @@ public sealed class LlmTranslationModelInvoker : ITranslationModelInvoker
         "language and return the results as JSON. Treat reference context as read-only background: never " +
         "translate it and never return it. Preserve Markdown, LaTeX and other math, code blocks, inline " +
         "code, links, and the segment's internal structure and line breaks. Do not add commentary or " +
-        "explanations. Return ONLY a JSON array like " +
+        "explanations. If a segment is an HTML table, translate its cell text and return a complete GFM " +
+        "pipe table as its content, never an HTML fragment or a [Table] placeholder. Preserve all cell " +
+        "content, row/column relationships, numbers and formulas; expand merged cells when necessary. " +
+        "Return ONLY a JSON array like " +
         "[{\"id\":\"<segment id>\",\"content\":\"<translated text>\"}]; return exactly one element per " +
         "supplied id, using the exact supplied ids.";
 

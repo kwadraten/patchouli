@@ -25,8 +25,7 @@ public enum McpUriKind
     RunOcrStatus,
     RunsTranslationScope,
     RunTranslationStatus,
-    ActionsScope,
-    Action
+    RunEndpoint
 }
 
 public sealed record McpUriParseResult(
@@ -41,7 +40,7 @@ public sealed record McpUriParseResult(
     string CanonicalUri = "",
     bool IsLegacy = false,
     string? ContentType = null,
-    string? ActionId = null);
+    string? EndpointDomain = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
@@ -54,16 +53,6 @@ public sealed record McpUriParseResult(
 public static class McpResourceUris
 {
     private const string Prefix = "patchouli://";
-
-    public static string ActionsScopeUri()
-    {
-        return Prefix + "actions/";
-    }
-
-    public static string ActionUri(string actionId)
-    {
-        return Prefix + "actions/" + actionId;
-    }
 
     public static string ItemUri(ItemId itemId)
     {
@@ -154,7 +143,7 @@ public static class McpResourceUris
         return $"{Prefix}runs/translation/";
     }
 
-    /// <summary>The canonical status URI a <c>translation.start</c> returns and the other verbs address.</summary>
+    /// <summary>The canonical status URI a translation endpoint start returns and the other verbs address.</summary>
     public static string TranslationRunStatusUri(string runId)
     {
         return $"{Prefix}runs/translation/{RequirePathToken(runId, nameof(runId))}/status";
@@ -260,8 +249,7 @@ public static class McpResourceUris
         return target.Kind switch
         {
             McpUriKind.Root => Prefix,
-            McpUriKind.ActionsScope => ActionsScopeUri(),
-            McpUriKind.Action => ActionUri(target.ActionId!),
+            McpUriKind.RunEndpoint => Core.Actions.RunEndpointCatalog.Uri(target.EndpointDomain!),
             McpUriKind.ItemsScope => Prefix + "items/",
             McpUriKind.TextsScope => Prefix + "texts/",
             McpUriKind.StylesScope => Prefix + "csl-styles/",
@@ -325,7 +313,7 @@ public static class McpResourceUris
 
         return segments[0] switch
         {
-            "actions" => ParseActionUri(uri, segments, query),
+            "actions" => Invalid(uri, "Action resources were removed; discover runs/<domain>/control instead."),
             "items" => query is null ? ParseItemUri(uri, segments) : Invalid(uri, "Item URIs do not accept queries."),
             "texts" => ParseTextsUri(uri, segments, query),
             "translations" => ParseTranslationsUri(uri, segments, query),
@@ -335,29 +323,6 @@ public static class McpResourceUris
                 $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
-    }
-
-    private static Result<McpUriParseResult> ParseActionUri(string uri, string[] segments, string? query)
-    {
-        if (query is not null || segments.Length != 2)
-        {
-            return Invalid(uri, "Action URIs do not accept nested paths or queries.");
-        }
-
-        if (segments[1].Length == 0)
-        {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.ActionsScope,
-                ContentType: "application/json"));
-        }
-
-        if (segments[1].Length > 64 ||
-            segments[1].Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
-        {
-            return Invalid(uri, "Invalid Action identity.");
-        }
-
-        return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Action,
-            ContentType: "application/json", ActionId: segments[1]));
     }
 
     private static Result<McpUriParseResult> ParseRunsUri(string uri, string[] segments, string? query)
@@ -379,6 +344,13 @@ public static class McpResourceUris
                 "patchouli://runs/translation/{run-id}/status.");
         }
 
+        if (segments.Length == 3 && segments[2] == "control" && query is null &&
+            Core.Actions.RunEndpointCatalog.Domains.Contains(segments[1]))
+        {
+            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunEndpoint,
+                ContentType: "application/json", EndpointDomain: segments[1]));
+        }
+
         return segments[1] switch
         {
             "ocr" => ParseRunsOcrUri(uri, segments, query),
@@ -395,6 +367,15 @@ public static class McpResourceUris
             return query is null
                 ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunsTranslationScope))
                 : Invalid(uri, "The runs/translation scope does not accept query parameters.");
+        }
+
+        if (((segments.Length == 3 && segments[2].Length > 0) ||
+             (segments.Length == 4 && segments[3].Length == 0)) && TryParseGuid(segments[2], out _))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunTranslationStatus,
+                    RunTaskId: segments[2]))
+                : Invalid(uri, "Translation task URIs do not accept queries.");
         }
 
         if (segments.Length == 4 && segments[3] == "status" && TryParseGuid(segments[2], out _))

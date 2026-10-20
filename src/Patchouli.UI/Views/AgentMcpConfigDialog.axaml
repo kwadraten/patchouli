@@ -25,7 +25,7 @@
         </StackPanel>
         <TextBlock Text="{Binding FileName, StringFormat='目标文件：{0}（仅写入当前 Library 的 Agent 工作目录）'}"
                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-        <TextBlock Text="写入后需要重启 Agent 才会加载此配置。Patchouli 不会修改你的全局 Agent 配置。"
+        <TextBlock Text="写入成功后将自动重启当前 Agent，当前终端中的任务会被中断。Patchouli 不会修改你的全局 Agent 配置。"
                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
       </StackPanel>
 
@@ -65,7 +65,7 @@
 
       <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
         <Button Content="取消" Command="{Binding CancelCommand}" />
-        <Button Content="写入配置" Classes="Primary" Command="{Binding ConfirmCommand}" />
+        <Button Content="写入并重启" Classes="Primary" Command="{Binding ConfirmCommand}" />
       </StackPanel>
     </Grid>
   </Border>

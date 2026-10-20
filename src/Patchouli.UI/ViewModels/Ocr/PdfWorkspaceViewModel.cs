@@ -236,7 +236,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ShowContentTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.Content);
         ShowHistoryTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.History);
         ShowTranslationTabCommand = new AsyncCommand(ShowTranslationTabAsync);
-        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync);
+        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync, () => !IsEditMode);
         ToggleTranslationCompareCommand =
             new RelayCommand(_ => IsTranslationCompareVisible = !IsTranslationCompareVisible);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
@@ -391,6 +391,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     {
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
+        ShowChaptersTabCommand?.NotifyCanExecuteChanged();
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
             box.NotifyEditModeChanged();
@@ -413,8 +414,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public bool IsHistoryTabActive => ActiveSidebarTab == SidebarTab.History;
     public bool IsTranslationTabActive => ActiveSidebarTab == SidebarTab.Translation;
     public bool IsChaptersTabActive => ActiveSidebarTab == SidebarTab.Chapters;
-    public bool IsNavigationSidebarVisible => !IsEditMode || IsChaptersTabActive;
-    public bool IsBoxSidebarVisible => IsEditMode && !IsChaptersTabActive;
+    public bool IsNavigationSidebarVisible => !IsEditMode;
+    public bool IsBoxSidebarVisible => IsEditMode;
     public ChapterSidebarViewModel ChapterEditor { get; }
 
     public string SidebarTabTitle => ActiveSidebarTab switch
@@ -2726,6 +2727,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task ShowChaptersTabAsync()
     {
+        if (IsEditMode)
+        {
+            return;
+        }
+
         ActiveSidebarTab = SidebarTab.Chapters;
         await EnsureChapterMapLoadedAsync();
     }

@@ -311,25 +311,16 @@ static void PrintUsage()
     Console.Error.WriteLine("  view <uri> --output <image.png> [--overwrite] [--context page|region] [--max-edge <n>]");
     Console.Error.WriteLine(
         "    Saves the source image PNG and prints the host metadata plus the client-side output_path.");
-    Console.Error.WriteLine("  send <target> <action> [--args <json-object>]");
     Console.Error.WriteLine(
-        "    Dispatches an action against a target URI; --args defaults to {}.");
+        "  send <endpoint> <action> <target> [domain options] [--args <json-object>] [--request-id <id>]");
     Console.Error.WriteLine(
-        "    Available actions are discovered via find --in patchouli://actions/ or fetch patchouli://actions/<action-id>.");
+        "    Fetch runs/<domain>/control for message schemas. Domain options map into args; empty args defaults to {}.");
+    Console.Error.WriteLine("    Examples:");
     Console.Error.WriteLine(
-        "    Examples:");
+        "      send runs/ocr/control start texts/<document-id>/ --pages 1,3-5 --engine default --request-id r1");
     Console.Error.WriteLine(
-        "      send patchouli://texts/<document-id>/ ocr.start --args '{\"pages\":\"1,3-5\",\"engine\":\"default\",\"request_id\":\"r1\"}'");
-    Console.Error.WriteLine(
-        "      send patchouli://runs/ocr/<task-id>/status ocr.cancel");
-    Console.Error.WriteLine(
-        "      send patchouli://runs/ocr/<task-id>/status ocr.retry --args '{\"request_id\":\"r2\"}'");
-    Console.Error.WriteLine(
-        "      send patchouli://texts/<document-id>/ translation.start --args '{\"pages\":\"1,3-5\",\"target_language\":\"zh\",\"force\":false}'");
-    Console.Error.WriteLine(
-        "      send patchouli://runs/translation/<run-id>/status translation.cancel");
-    Console.Error.WriteLine(
-        "      send patchouli://items/<item-id>.yml cite.render");
+        "      send runs/translation/control start texts/<document-id>/ --target-language zh-CN --force false");
+    Console.Error.WriteLine("      send runs/ocr/control cancel runs/ocr/<task-id>/");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(

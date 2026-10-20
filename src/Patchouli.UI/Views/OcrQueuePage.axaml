@@ -2,6 +2,7 @@
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Patchouli.UI.ViewModels"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              x:DataType="vm:OcrQueueViewModel">
 
   <UserControl.Styles>
@@ -21,6 +22,7 @@
           <!-- 标题 + 状态徽标 + 操作 -->
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <TextBlock Text="{Binding TaskTypeText}" FontSize="12" />
               <TextBlock Text="{Binding DocumentTitle}" FontSize="14" FontWeight="SemiBold"
                          Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
               <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4" Padding="8,2"
@@ -31,13 +33,23 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                         IsVisible="{Binding IsActive}">
-              <Button Content="暂停" Command="{Binding PauseCommand}" Height="28" Padding="12,0" FontSize="12" />
-              <Button Content="恢复" Command="{Binding ResumeCommand}" Height="28" Padding="12,0" FontSize="12" />
-              <Button Content="取消" Classes="Danger" Command="{Binding CancelCommand}" Height="28" Padding="12,0"
-                      FontSize="12" />
+              <Button IsVisible="{Binding SupportsPause}" Command="{Binding PauseCommand}" Width="28" Height="28"
+                      Padding="0" ToolTip.Tip="暂停" AutomationProperties.Name="暂停任务">
+                <lucide:Lucide Icon="Pause" Width="14" Height="14" />
+              </Button>
+              <Button IsVisible="{Binding SupportsPause}" Command="{Binding ResumeCommand}" Width="28" Height="28"
+                      Padding="0" ToolTip.Tip="恢复" AutomationProperties.Name="恢复任务">
+                <lucide:Lucide Icon="Play" Width="14" Height="14" />
+              </Button>
+              <Button Classes="Danger" Command="{Binding CancelCommand}" Width="28" Height="28"
+                      Padding="0" ToolTip.Tip="取消" AutomationProperties.Name="取消任务">
+                <lucide:Lucide Icon="X" Width="14" Height="14" />
+              </Button>
             </StackPanel>
-            <Button Grid.Column="1" Content="重试" Command="{Binding RetryCommand}" Height="28" Padding="12,0"
-                    FontSize="12" IsVisible="{Binding IsFailed}" />
+            <Button Grid.Column="1" Command="{Binding RetryCommand}" Width="28" Height="28" Padding="0"
+                    ToolTip.Tip="重试" AutomationProperties.Name="重试任务" IsVisible="{Binding CanRetry}">
+              <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
+            </Button>
           </Grid>
 
           <!-- 进度条 + 百分比 -->
@@ -70,20 +82,18 @@
       <StackPanel Margin="32" Spacing="18" MaxWidth="1200">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
           <StackPanel Spacing="6">
-            <TextBlock Text="OCR 队列" FontSize="24" FontWeight="SemiBold"
+            <TextBlock Text="任务队列" FontSize="24" FontWeight="SemiBold"
                        Foreground="{DynamicResource OnSurfaceBrush}" />
-            <TextBlock Text="{Binding StatusSummary}" FontSize="12"
-                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
             <Button Content="刷新" Command="{Binding RefreshCommand}" Height="32" />
-            <Button Content="启动队列" Classes="Primary" Command="{Binding StartCommand}" Height="32"
+            <Button Content="启动任务" Classes="Primary" Command="{Binding StartCommand}" Height="32"
                     IsVisible="{Binding IsQueueStopped}" />
-            <Button Content="停止队列" Command="{Binding StopCommand}" Height="32"
+            <Button Content="停止任务" Command="{Binding StopCommand}" Height="32"
                     IsVisible="{Binding IsQueueRunning}" />
-            <Button Content="暂停全部" Command="{Binding PauseGlobalCommand}" Height="32"
+            <Button Content="暂停全部任务" Command="{Binding PauseGlobalCommand}" Height="32"
                     IsVisible="{Binding IsGloballyResumed}" />
-            <Button Content="恢复全部" Command="{Binding ResumeGlobalCommand}" Height="32"
+            <Button Content="恢复全部任务" Command="{Binding ResumeGlobalCommand}" Height="32"
                     IsVisible="{Binding IsGloballyPaused}" />
             <Button Content="清空已完成" Command="{Binding ClearFinishedCommand}" Height="32"
                     IsEnabled="{Binding HasFinishedTasks}" />
@@ -92,28 +102,33 @@
           </StackPanel>
         </Grid>
 
-        <TabControl Padding="0,12,0,0">
-          <TabItem Header="{Binding ActiveTabHeader}">
-            <StackPanel Spacing="0" Margin="0,16,0,0">
-              <ItemsControl ItemsSource="{Binding ActiveTaskRows}"
-                            ItemTemplate="{StaticResource TaskRowTemplate}"
-                            IsVisible="{Binding HasActiveTasks}" />
-              <TextBlock Text="没有进行中的任务。" FontSize="13"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                         IsVisible="{Binding NoActiveTasks}" />
-            </StackPanel>
-          </TabItem>
-          <TabItem Header="{Binding FinishedTabHeader}">
-            <StackPanel Spacing="0" Margin="0,16,0,0">
-              <ItemsControl ItemsSource="{Binding FinishedTaskRows}"
-                            ItemTemplate="{StaticResource TaskRowTemplate}"
-                            IsVisible="{Binding HasFinishedTasks}" />
-              <TextBlock Text="暂无已完成的任务。" FontSize="13"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                         IsVisible="{Binding NoFinishedTasks}" />
-            </StackPanel>
-          </TabItem>
-        </TabControl>
+        <Grid>
+          <ComboBox ItemsSource="{Binding TaskTypes}" SelectedItem="{Binding SelectedTaskType}"
+                    HorizontalAlignment="Right" VerticalAlignment="Top" MinWidth="140" ZIndex="1"
+                    AutomationProperties.Name="筛选任务类型" />
+          <TabControl Padding="0,12,0,0" SelectedIndex="{Binding SelectedTaskTabIndex}">
+            <TabItem Header="{Binding ActiveTabHeader}">
+              <StackPanel Spacing="0" Margin="0,16,0,0">
+                <ItemsControl ItemsSource="{Binding ActiveTaskRows}"
+                              ItemTemplate="{StaticResource TaskRowTemplate}"
+                              IsVisible="{Binding HasActiveTasks}" />
+                <TextBlock Text="没有进行中的任务。" FontSize="13"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                           IsVisible="{Binding NoActiveTasks}" />
+              </StackPanel>
+            </TabItem>
+            <TabItem Header="{Binding FinishedTabHeader}">
+              <StackPanel Spacing="0" Margin="0,16,0,0">
+                <ItemsControl ItemsSource="{Binding FinishedTaskRows}"
+                              ItemTemplate="{StaticResource TaskRowTemplate}"
+                              IsVisible="{Binding HasFinishedTasks}" />
+                <TextBlock Text="暂无已完成的任务。" FontSize="13"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                           IsVisible="{Binding NoFinishedTasks}" />
+              </StackPanel>
+            </TabItem>
+          </TabControl>
+        </Grid>
       </StackPanel>
     </ScrollViewer>
   </Grid>

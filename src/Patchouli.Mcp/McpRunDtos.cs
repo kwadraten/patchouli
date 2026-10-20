@@ -51,7 +51,7 @@ public interface IMcpTranslationRunsApi
 /// <param name="Pages">Optional one-based page selector; blank selects the whole document.</param>
 /// <param name="TargetLanguage">Optional target-language override for this run only.</param>
 /// <param name="ForceRetranslate">When true, pages with a current translation are translated again.</param>
-/// <param name="RequestId">Optional caller correlation id; accepted for symmetry with OCR, not deduplicated.</param>
+/// <param name="RequestId">Optional process-local idempotency key.</param>
 public sealed record McpTranslationRunStartRequest(
     DocumentInstanceId DocumentInstanceId,
     string? Pages = null,
@@ -84,7 +84,8 @@ public sealed record McpTranslationRunStatusProjection(
     string? ErrorCode = null,
     [property: JsonPropertyName("error_message")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    [property: JsonPropertyName("reused")] bool Reused = false);
 
 /// <summary>One settled page of a direct translation run.</summary>
 public sealed record McpTranslationPageStatusProjection(
@@ -100,7 +101,7 @@ public sealed record McpTranslationPageStatusProjection(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ErrorMessage = null);
 
-/// <summary>The receipt returned by <c>translation.start</c> and <c>translation.cancel</c>.</summary>
+/// <summary>The receipt returned by translation endpoint start/cancel messages.</summary>
 public sealed record McpTranslationActionResult(
     [property: JsonPropertyName("task_id")]
     string TaskId,
@@ -108,7 +109,8 @@ public sealed record McpTranslationActionResult(
     string StatusUri,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("total_pages")]
-    int TotalPages);
+    int TotalPages,
+    [property: JsonPropertyName("reused")] bool Reused = false);
 
 /// <summary>
 ///     One OCR task's live status projection; OCR keeps its own state vocabulary, distinct from

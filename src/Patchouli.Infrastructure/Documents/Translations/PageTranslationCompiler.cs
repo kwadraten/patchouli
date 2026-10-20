@@ -135,7 +135,7 @@ internal static class TranslationBoxCodec
             EquationBoxPayload equation => equation with { Latex = stored },
             AlgorithmBoxPayload algorithm => algorithm with { Markdown = stored },
             ListBoxPayload => new ListBoxPayload(stored),
-            TableBoxPayload table => new TableBoxPayload(stored, table.Html),
+            TableBoxPayload table => new TableBoxPayload(stored, stored.Trim() == "[Table]" ? table.Html : null),
             CodeBoxPayload => new CodeBoxPayload(stored),
             MediaBoxPayload media when TryReadMediaDescription(box.BoxType, stored, out string? description) =>
                 new MediaBoxPayload(media.AssetId, description),

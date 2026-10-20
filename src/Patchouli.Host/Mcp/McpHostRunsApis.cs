@@ -74,7 +74,7 @@ public sealed class McpHostOcrRunsApi(
 /// <summary>
 ///     Host-side adapter over the volatile direct translation runs: the
 ///     <c>runs/translation/{run-id}/status</c> projection and the start/cancel channel used by the
-///     <c>translation.start</c> and <c>translation.cancel</c> Actions. It only maps data and parses the
+///     translation endpoint start/cancel messages. It only maps data and parses the
 ///     shared one-based page selector; validation and execution stay in the host run service.
 /// </summary>
 public sealed class McpHostTranslationRunsApi(ITranslationRunService runs) : IMcpTranslationRunsApi
@@ -96,7 +96,7 @@ public sealed class McpHostTranslationRunsApi(ITranslationRunService runs) : IMc
                 request.DocumentInstanceId,
                 pages.Value,
                 request.TargetLanguage,
-                request.ForceRetranslate),
+                request.ForceRetranslate, request.RequestId),
             cancellationToken).ConfigureAwait(false);
         return started.IsFailure
             ? Result<McpTranslationRunStatusProjection>.Failure(started.ErrorCode!, started.ErrorMessage!)
@@ -241,7 +241,7 @@ public sealed class McpHostTranslationRunsApi(ITranslationRunService runs) : IMc
                 page.ErrorCode,
                 page.ErrorMessage)).ToArray(),
             run.ErrorCode,
-            run.ErrorMessage);
+            run.ErrorMessage, run.Reused);
     }
 
     private static string StateName(TranslationRunLifecycle state)

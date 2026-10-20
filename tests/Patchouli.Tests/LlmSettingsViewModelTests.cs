@@ -15,7 +15,7 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-/// <summary>The 「模型与翻译」settings section: the provider form is rendered from the catalog (D3), the
+/// <summary>The 「模型连接」settings section: the provider form is rendered from the catalog (D3), the
 /// Azure-only fields follow the catalog flags, secrets travel through <see cref="ICredentialStore"/> only,
 /// and the direct translation bounds are validated before they are persisted.</summary>
 [Collection("Avalonia")]
@@ -779,7 +779,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         // The page binds exactly this section, registered under the LLM category.
         vm.Settings.SectionEntries.Should()
             .ContainSingle(entry => ReferenceEquals(entry.Content, section))
-            .Which.Title.Should().Be("模型与翻译");
+            .Which.Title.Should().Be("模型连接");
         section.UseCredentialStore(store);
         return (vm, section);
     }

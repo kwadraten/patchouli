@@ -76,7 +76,7 @@ The engine depends only on four Core contracts (`Patchouli.Core/Translation`):
 
 - **`ITranslationSegmenter`** splits one page into segments. It skips non-translatable and
   empty boxes, never merges boxes, preserves source order, and is the only stage allowed to
-  split an oversized box; split parts concatenate back to the exact source text.
+  split an oversized text box; split parts concatenate back to the exact source text. Tables are atomic segments, even above the batch character budget. HTML-only tables send their original HTML to the model, which returns a translated GFM pipe table. The derived translation stores that Markdown without attaching source diagnostic HTML; source table payloads remain unchanged. A valid pipe table may replace an HTML-only `[Table]` placeholder, while ordinary Markdown tables retain structural validation.
 - **`ITranslationBatcher`** places every segment in exactly one ordered batch and respects
   batch size, character and optional token limits. A single oversized segment stays in its
   own batch rather than being split or dropped.
@@ -143,18 +143,19 @@ window reports the same rule: cancellation is not a rollback of completed work.
 
 ### MCP and UI surface
 
-`translation.start` targets a Document and returns a started run with a
-`patchouli://runs/translation/{run-id}/status` URI; `translation.cancel` targets that status
-URI. They are ordinary `send` Actions with their own capabilities
-(`texts:translation.start`, `runs:translation.cancel`) and follow the generic send envelope.
-`patchouli://runs/` now has two independent runtime subtrees, `runs/ocr/` and
-`runs/translation/`; their state vocabularies are not unified.
+The `runs/translation/control` endpoint accepts `start` against a Document and `cancel`
+against a translation task instance or status URI. Flat send fields are endpoint/action/target/args,
+with optional outer request_id. Start returns a started receipt and status URI; process-local
+request-id replay is atomic and reports reused. Both messages require the send tool switch and
+explicit runs/translation send permission, not separate action grants. The runs parent checkbox
+aggregates child choices in three states; new children default off. See the MCP protocol for
+CLI options, envelopes, discovery and migration rejection rules. This 2026-10-20 revision
+supersedes the previous combination-action authorization design (issues #8/#16/#19/#20).
 
-The settings card lives in the existing **模型与翻译** section and exposes target language,
+The settings card lives in the existing **文献加工 → 文献翻译** section and exposes target language,
 batch size, character/token caps, concurrency, request interval, timeout, retries, window
 radius, previous-window backfill, and an optional provider/model override. The main menu, the
-Library context menu and the reading toolbar start a full-document translation. A modeless
-progress window polls the run once per second, shows per-page status and offers cancel.
+Library context menu and the reading toolbar start a full-document translation. The shared task queue page polls translation runs once per second, shows per-page errors and offers pause/resume, cancellation and failed-page retry. OCR and translation appear in the same view, defaulting to all tasks. Global task controls fan out to both services; display filtering does not limit them. Translation uses cooperative per-run gates before model dispatch; in-flight requests may finish, local pauses survive global resume, and cancellation also interrupts paused waits. Retries create an idempotent new run for failed/partial pages using the original target language. Both services retain independent scheduling and can run concurrently. Shared model connections remain under AI integration.
 
 ### Performance expectations
 

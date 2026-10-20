@@ -65,3 +65,5 @@ public sealed partial class SettingsSectionGroupViewModel : ViewModelBase
 }
 
 public sealed record LlmOcrDefaultsViewModel(LlmSettingsViewModel Settings);
+
+public sealed record TranslationDefaultsViewModel(LlmSettingsViewModel Settings);

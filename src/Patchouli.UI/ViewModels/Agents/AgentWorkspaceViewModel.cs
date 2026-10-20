@@ -36,11 +36,14 @@ public sealed class AgentItemReferenceViewModel
     public string ItemType { get; }
     public string Authors { get; }
 
+    /// <summary>Plain-text reference pasted at the terminal's current input position.</summary>
+    public string ReferenceText => $"{Title.Replace('\r', ' ').Replace('\n', ' ')} (规范 URI: {CanonicalUri})";
+
     /// <summary>Client-side haystack. Source paths are deliberately never included.</summary>
     public string SearchText => $"{Title}\n{ItemIdText}\n{CanonicalUri}\n{ItemType}\n{Authors}";
 }
 
-/// <summary>An editable preset prompt. Applying one only fills the composer; it never sends.</summary>
+/// <summary>A preset prompt pasted into the terminal without submitting it.</summary>
 public sealed record AgentPromptPreset(string Key, string Title, string Template);
 
 /// <summary>
@@ -79,23 +82,20 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     private bool _isLoadingItems;
     private bool _isStopping;
     private bool _shutdown;
+    private bool _isSwitching;
+    private bool _isWritingMcpConfig;
 
     public AgentWorkspaceViewModel(MainWindowViewModel main)
     {
         ArgumentNullException.ThrowIfNull(main);
         _main = main;
         StartCommand = new AsyncCommand(StartAsync, activityTracker: _main.ActivityTracker);
-        StopCommand = new AsyncCommand(StopAsync, activityTracker: _main.ActivityTracker);
-        RestartCommand = new AsyncCommand(RestartAsync, activityTracker: _main.ActivityTracker);
         RefreshAgentCommand = new AsyncCommand(() => RefreshAsync(true), activityTracker: _main.ActivityTracker);
         OpenAgentSettingsCommand = new AsyncCommand(OpenAgentSettingsAsync, activityTracker: _main.ActivityTracker);
-        CopyInputCommand = new AsyncCommand(CopyInputAsync, activityTracker: _main.ActivityTracker);
-        InjectInputCommand = new AsyncCommand(InjectInputAsync, activityTracker: _main.ActivityTracker);
         WriteMcpConfigCommand = new AsyncCommand(WriteMcpConfigAsync, activityTracker: _main.ActivityTracker);
         OpenItemPickerCommand = new AsyncCommand(OpenItemPickerAsync, activityTracker: _main.ActivityTracker);
         RefreshItemsCommand = new AsyncCommand(RefreshItemsAsync, activityTracker: _main.ActivityTracker);
         CloseItemPickerCommand = new RelayCommand(_ => CloseItemPicker());
-        ApplyPresetCommand = new RelayCommand(parameter => ApplyPreset(parameter as string));
     }
 
     public IReadOnlyList<AgentPromptPreset> Presets => PromptPresets;
@@ -114,7 +114,10 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
 
     [ObservableProperty] public partial string McpStatusText { get; private set; } = "";
 
-    [ObservableProperty] public partial string InputText { get; set; } = "";
+    public IReadOnlyList<AgentCatalogEntry> Agents { get; } = AgentCatalog.All
+        .Where(entry => entry.Kind == AgentLaunchKind.NativeTui).ToArray();
+
+    [ObservableProperty] public partial AgentCatalogEntry? SelectedAgent { get; private set; }
 
     [ObservableProperty] public partial string ItemSearchText { get; set; } = "";
 
@@ -141,43 +144,32 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     [ExcludeFromDerivedGeneration] public EmbeddedTerminal? Terminal { get; private set; }
 
     [ExcludeFromDerivedGeneration] public bool IsAgentReady => _agentReady;
-    [ExcludeFromDerivedGeneration] public bool IsBusy => IsChecking || IsStarting || _isStopping;
+
+    [ExcludeFromDerivedGeneration]
+    public bool IsBusy => IsChecking || IsStarting || _isStopping || _isSwitching || _isWritingMcpConfig;
+
     [ExcludeFromDerivedGeneration] public bool ShowEmptyState => !HasLaunched;
     [ExcludeFromDerivedGeneration] public bool ShowTerminal => HasLaunched;
-    [ExcludeFromDerivedGeneration] public bool CanStart => IsAgentReady && !IsStarting && !IsRunning && !_isStopping;
-    [ExcludeFromDerivedGeneration] public bool CanStop => IsRunning && !_isStopping;
-    [ExcludeFromDerivedGeneration] public bool CanRestart => IsAgentReady && !IsStarting && !_isStopping;
-    [ExcludeFromDerivedGeneration] public bool CanWriteMcpConfig => HasLaunched;
-    [ExcludeFromDerivedGeneration] public bool CanInjectInput => IsRunning && !string.IsNullOrWhiteSpace(InputText);
-    [ExcludeFromDerivedGeneration] public bool CanCopyInput => !string.IsNullOrWhiteSpace(InputText);
+    [ExcludeFromDerivedGeneration] public bool CanStart => IsAgentReady && !IsBusy && !IsRunning;
+    [ExcludeFromDerivedGeneration] public bool CanWriteMcpConfig => HasLaunched && !IsBusy;
 
     [ExcludeFromDerivedGeneration]
     public bool ShowSettingsShortcut =>
         IsIntegrationDisabled || IsAgentMissing || (!IsAgentReady && !IsChecking && _services is not null);
 
     [ExcludeFromDerivedGeneration] public bool ShowRetryShortcut => !IsChecking && !IsStarting;
-    [ExcludeFromDerivedGeneration] public bool ShowStartShortcut => IsAgentReady && !HasLaunched && !IsStarting;
-    [ExcludeFromDerivedGeneration] public bool HasActiveSession => IsRunning && _terminal is not null;
+    [ExcludeFromDerivedGeneration] public bool ShowStartShortcut => CanStart && !HasLaunched;
+    [ExcludeFromDerivedGeneration] public bool HasActiveSession => IsStarting || (IsRunning && _terminal is not null);
 
     internal bool CloseApproved { get; set; }
 
     public AsyncCommand StartCommand { get; }
-    public AsyncCommand StopCommand { get; }
-    public AsyncCommand RestartCommand { get; }
     public AsyncCommand RefreshAgentCommand { get; }
     public AsyncCommand OpenAgentSettingsCommand { get; }
-    public AsyncCommand CopyInputCommand { get; }
-    public AsyncCommand InjectInputCommand { get; }
     public AsyncCommand WriteMcpConfigCommand { get; }
     public AsyncCommand OpenItemPickerCommand { get; }
     public AsyncCommand RefreshItemsCommand { get; }
     public RelayCommand CloseItemPickerCommand { get; }
-    public RelayCommand ApplyPresetCommand { get; }
-
-    partial void OnInputTextChanged(string value)
-    {
-        RaiseDerivedState();
-    }
 
     partial void OnSelectedItemChanged(AgentItemReferenceViewModel? value)
     {
@@ -246,10 +238,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     public void OnPageClosed()
     {
         CloseApproved = false;
-        if (IsRunning)
-        {
-            ConnectionStatusText = "后台运行中";
-        }
+        ResetTerminal();
 
         RaiseDerivedState();
     }
@@ -260,7 +249,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     /// </summary>
     public async Task RefreshAsync(bool forceDetection)
     {
-        if (_shutdown || _isRefreshing || IsStarting)
+        if (_shutdown || _isRefreshing || IsStarting || _isWritingMcpConfig)
         {
             return;
         }
@@ -301,6 +290,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
                 return;
             }
 
+            SelectedAgent = entry;
             AgentDisplayName = entry.DisplayName;
             if (!settings.Enabled)
             {
@@ -326,7 +316,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
 
     private async Task StartAsync()
     {
-        if (_shutdown || IsRunning || IsStarting)
+        if (_shutdown || IsRunning || IsStarting || _isSwitching || _isRefreshing || _isStopping || _isWritingMcpConfig)
         {
             return;
         }
@@ -360,6 +350,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
                 return;
             }
 
+            SelectedAgent = entry;
             AgentDisplayName = entry.DisplayName;
             AgentLaunchContext context = await CreateLaunchContextAsync(services);
             Result<AgentLaunchSpec> prepared = await services.AgentLauncher.PrepareLaunchAsync(
@@ -411,23 +402,77 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         }
     }
 
-    private async Task StopAsync()
+    public async Task SwitchAgentAsync(string agentId)
     {
-        await StopSessionAsync("Agent 已停止。");
-    }
-
-    private async Task RestartAsync()
-    {
-        if (IsRunning)
+        if (_shutdown || IsBusy || string.Equals(SelectedAgent?.Id, agentId, StringComparison.Ordinal))
         {
-            bool stopped = await StopSessionAsync(null);
-            if (!stopped)
+            return;
+        }
+
+        AgentCatalogEntry? entry = AgentCatalog.Find(agentId);
+        if (entry is null || !_main.HasOpenRuntimeDatabase)
+        {
+            return;
+        }
+
+        _isSwitching = true;
+        RaiseDerivedState();
+        try
+        {
+            if (HasActiveSession && !await ConfirmTerminationAsync("切换 Agent", "切换 Agent 会强制终止当前终端内的进程。", "终止并切换"))
             {
                 return;
             }
+
+            if (!await StopSessionAsync(null))
+            {
+                return;
+            }
+
+            ResetTerminal();
+            AgentIntegrationAppSettings settings = _main.AppOptions.Agents.Normalize() with
+            {
+                SelectedAgentId = entry.Id
+            };
+            SettingsSaveResult saved = await _main.UpdateAppOptionsAsync(
+                _main.AppOptions with { Agents = settings }, "Agents");
+            if (!saved.IsSuccess)
+            {
+                _main.ReportError(saved.ErrorMessage ?? "无法保存 Agent 选择。");
+                return;
+            }
+
+            HostServices services = await _main.ServicesAsync();
+            services.UpdateAgentSettings(settings);
+            await RefreshAsync(false);
+            _isSwitching = false;
+            if (CanStart)
+            {
+                await StartAsync();
+            }
+        }
+        finally
+        {
+            _isSwitching = false;
+            RaiseDerivedState();
+        }
+    }
+
+    private void ResetTerminal()
+    {
+        if (_terminal is not null)
+        {
+            _terminal.Exited -= OnTerminalExited;
+            _terminal.Dispose();
+            _terminal = null;
         }
 
-        await StartAsync();
+        Terminal = null;
+        Raise(nameof(Terminal));
+        IsRunning = false;
+        HasLaunched = false;
+        _launchSpec = null;
+        McpStatusText = "";
     }
 
     private async Task<bool> StopSessionAsync(string? statusMessage)
@@ -502,7 +547,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
 
     private void ApplyExited(TerminalExitedEventArgs args)
     {
-        if (_shutdown)
+        if (_shutdown || _terminal?.IsRunning == true)
         {
             return;
         }
@@ -727,27 +772,16 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         SelectedItem = FilteredItems[index];
     }
 
-    public void CommitSelectedItem()
+    public async Task CommitSelectedItemAsync()
     {
         AgentItemReferenceViewModel? item = SelectedItem;
-        if (item is null)
+        if (item is null || !await PasteIntoTerminalAsync(item.ReferenceText))
         {
             return;
         }
 
-        string block = $"{item.Title}{Environment.NewLine}" +
-                       $"Item ID: {item.ItemIdText}{Environment.NewLine}" +
-                       $"规范 URI: {item.CanonicalUri}";
-        string existing = InputText;
-        string prefix = string.IsNullOrEmpty(existing)
-            ? ""
-            : existing.EndsWith('\n')
-                ? existing + Environment.NewLine
-                : existing + Environment.NewLine +
-                  Environment.NewLine;
-        InputText = prefix + block + Environment.NewLine;
         CloseItemPicker();
-        _main.Report($"已插入题录引用「{item.Title}」；内容尚未发送。");
+        _main.Report($"已粘贴题录引用「{item.Title}」；尚未发送。");
     }
 
     private async Task LoadItemsAsync()
@@ -829,78 +863,62 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         RaiseDerivedState();
     }
 
-    public void ApplyPreset(string? key)
+    public async Task ApplyPresetAsync(string? key)
     {
-        if (string.IsNullOrWhiteSpace(key))
-        {
-            return;
-        }
-
         AgentPromptPreset? preset = PromptPresets.FirstOrDefault(candidate =>
             string.Equals(candidate.Key, key, StringComparison.Ordinal));
-        if (preset is null)
+        if (preset is not null && await PasteIntoTerminalAsync(preset.Template))
         {
-            return;
-        }
-
-        InputText = preset.Template;
-        _main.Report($"已填入预置提示词「{preset.Title}」；请预览或编辑后自行发送。");
-    }
-
-    private async Task CopyInputAsync()
-    {
-        if (string.IsNullOrWhiteSpace(InputText))
-        {
-            _main.Report("输入组合框为空，没有可复制的内容。");
-            return;
-        }
-
-        try
-        {
-            await _main.Clipboard.SetTextAsync(InputText);
-            _main.Report("输入内容已复制到剪贴板。");
-        }
-        catch (Exception exception)
-        {
-            _main.ReportError($"复制失败：{exception.Message}");
+            _main.Report($"已粘贴预置提示词「{preset.Title}」；尚未发送。");
         }
     }
 
-    private async Task InjectInputAsync()
+    private async Task<bool> PasteIntoTerminalAsync(string text)
     {
         if (_terminal is null || !_terminal.IsRunning)
         {
-            _main.ReportError("Agent 尚未运行，无法注入输入。");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(InputText))
-        {
-            _main.Report("输入组合框为空，没有可注入的内容。");
-            return;
+            _main.ReportError("Agent 尚未运行，无法粘贴到终端。");
+            return false;
         }
 
         try
         {
-            // No carriage return: the user reviews the text and presses Enter inside the terminal.
-            await _terminal.WriteInputAsync(InputText);
-            _main.Report("已把输入注入终端（未按下回车），请在终端中确认后自行回车。");
+            await _terminal.PasteTextAsync(text);
+            Dispatcher.UIThread.Post(() => _terminal?.TerminalControl.Focus(), DispatcherPriority.Input);
+            return true;
         }
         catch (Exception exception)
         {
-            _main.ReportError($"注入终端失败：{exception.Message}");
+            _main.ReportError($"粘贴到终端失败：{exception.Message}");
+            return false;
         }
     }
 
     private async Task WriteMcpConfigAsync()
     {
-        if (_services is null || _launchSpec is null)
+        if (_shutdown || IsBusy)
+        {
+            return;
+        }
+
+        if (_services is null || _launchSpec is null || _terminal is null)
         {
             _main.ReportError("请先成功启动 Agent，再写入 MCP 连接配置。");
             return;
         }
 
-        AgentCatalogEntry? entry = AgentCatalog.Find(_launchSpec.AgentId);
+        HostServices services = _services;
+        AgentLaunchSpec spec = _launchSpec;
+        EmbeddedTerminal terminal = _terminal;
+        int generation = _main.LibraryGeneration;
+
+        bool IsCurrentSession()
+        {
+            return !_shutdown && _main.IsCurrentLibraryContext(services, generation)
+                              && ReferenceEquals(_launchSpec, spec) && ReferenceEquals(_terminal, terminal);
+        }
+
+        AgentCatalogEntry? entry = AgentCatalog.Find(spec.AgentId);
         if (entry is null)
         {
             _main.ReportError("当前 Agent 不在目录中，无法生成 MCP 配置。");
@@ -913,12 +931,15 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             return;
         }
 
+        bool written = false;
+        _isWritingMcpConfig = true;
+        RaiseDerivedState();
         try
         {
-            AgentMcpConfigDocument document = _services.AgentMcpConfig.Generate(
+            AgentMcpConfigDocument document = services.AgentMcpConfig.Generate(
                 entry, new AgentMcpConnection(endpoint, _mcpToken));
-            string workspace = Path.GetFullPath(_services.AgentWorkspace.EnsureWorkspaceDirectory());
-            string target = ResolveMcpConfigTarget(document, workspace, _launchSpec.McpConfigPath);
+            string workspace = Path.GetFullPath(services.AgentWorkspace.EnsureWorkspaceDirectory());
+            string target = ResolveMcpConfigTarget(document, workspace, spec.McpConfigPath);
             string preview = document.ContentWithComments ?? document.Content;
             List<string> notes = [.. document.PermissionNotes];
             if (!_main.McpServerRunning)
@@ -926,7 +947,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
                 notes.Add("MCP 服务当前未运行；请先在 AI集成菜单中启动 MCP 服务，Agent 才能连接。");
             }
 
-            notes.Add("写入后需要重启 Agent（可用工具栏的重启按钮）才会加载此配置。");
+            notes.Add("写入成功后将自动重启当前 Agent 以加载配置；当前终端中的任务会被中断。");
             string environmentNote = _mcpTokenFromSettings
                 ? $"PATCHOULI_MCP_TOKEN 使用 MCP 服务设置中已启用的 Bearer token（{MaskToken(_mcpToken)}），" +
                   "只在本次 Agent 进程环境中提供；token 值不写入配置文件。"
@@ -935,7 +956,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             AgentMcpConfigDialogViewModel dialog = new(
                 entry.DisplayName, document.RelativePath, preview, notes, environmentNote);
             bool confirmed = await _main.Dialogs.ShowDialogAsync<bool>(dialog);
-            if (!confirmed)
+            if (!confirmed || !IsCurrentSession())
             {
                 return;
             }
@@ -947,12 +968,60 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             }
 
             await File.WriteAllTextAsync(target, document.Content, new UTF8Encoding(false));
-            McpStatusText = $"MCP 配置已写入 {document.FileName}；请重启 Agent 使其生效。";
-            _main.Report(McpStatusText);
+            written = true;
+            if (!IsCurrentSession())
+            {
+                return;
+            }
+
+            McpStatusText = $"MCP 配置已写入 {document.FileName}；正在重启 Agent…";
+            if (!await StopSessionAsync(null))
+            {
+                McpStatusText = "MCP 配置已写入，但无法停止原 Agent，自动重启失败。";
+                _main.ReportError(McpStatusText);
+                return;
+            }
+
+            if (!IsCurrentSession())
+            {
+                return;
+            }
+
+            IsStarting = true;
+            ConnectionStatusText = "重启中…";
+            await _sessions.StartAsync(terminal, CreateTerminalOptions(spec));
+            if (!IsCurrentSession())
+            {
+                return;
+            }
+
+            IsRunning = terminal.IsRunning;
+            HasLaunched = true;
+            ConnectionStatusText = IsRunning ? "已连接" : "重启后立即退出";
+            McpStatusText = IsRunning
+                ? $"MCP 配置已写入 {document.FileName}，Agent 已自动重启。"
+                : "MCP 配置已写入，但 Agent 重启后立即退出，请检查终端输出。";
+            if (IsRunning)
+            {
+                _main.Report(McpStatusText);
+            }
+            else
+            {
+                _main.ReportError(McpStatusText);
+            }
         }
         catch (Exception exception)
         {
-            _main.ReportError($"写入 MCP 配置失败：{exception.Message}");
+            McpStatusText = written
+                ? $"MCP 配置已写入，但自动重启 Agent 失败：{exception.Message}"
+                : $"写入 MCP 配置失败：{exception.Message}";
+            _main.ReportError(McpStatusText);
+        }
+        finally
+        {
+            IsStarting = false;
+            _isWritingMcpConfig = false;
+            RaiseDerivedState();
         }
     }
 
@@ -1100,48 +1169,38 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         Raise(nameof(ShowEmptyState));
         Raise(nameof(ShowTerminal));
         Raise(nameof(CanStart));
-        Raise(nameof(CanStop));
-        Raise(nameof(CanRestart));
         Raise(nameof(CanWriteMcpConfig));
-        Raise(nameof(CanInjectInput));
-        Raise(nameof(CanCopyInput));
         Raise(nameof(ShowSettingsShortcut));
         Raise(nameof(ShowRetryShortcut));
         Raise(nameof(ShowStartShortcut));
         Raise(nameof(HasActiveSession));
     }
 
+    private async Task<bool> ConfirmTerminationAsync(string title, string consequence, string confirmText)
+    {
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(title,
+                $"“{AgentDisplayName}” 中是否还有未完成的任务？{consequence}请确认已保存需要的内容。",
+                confirmText, confirmDanger: true));
+        return choice == ConfirmDialogResult.Confirm;
+    }
+
     internal async Task<bool> ConfirmCloseAsync()
     {
-        if (!HasActiveSession)
+        if (IsStarting || _isSwitching || _isWritingMcpConfig)
         {
-            CloseApproved = true;
-            return true;
+            _main.Report("Agent 正在启动、切换或写入配置，请稍后再关闭标签页。");
+            return false;
         }
 
-        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
-            new ConfirmDialogViewModel(
-                "Agent 会话仍在运行",
-                $"“{AgentDisplayName}” 仍在终端中运行。关闭标签页时要终止它，还是保留到后台继续运行？",
-                "终止并关闭",
-                "保留后台运行",
-                true));
-        if (choice == ConfirmDialogResult.Confirm)
+        if (HasActiveSession && !await ConfirmTerminationAsync(
+                "关闭 Agent 标签页", "关闭标签页会强制终止终端内的进程。", "终止并关闭"))
         {
-            bool stopped = await StopSessionAsync(null);
-            CloseApproved = stopped;
-            return stopped;
+            return false;
         }
 
-        if (choice == ConfirmDialogResult.Discard)
-        {
-            CloseApproved = true;
-            ConnectionStatusText = "后台运行中";
-            _main.Report("Agent 会话已保留在后台运行；重新打开「Agent 集成」即可继续。");
-            return true;
-        }
-
-        return false;
+        CloseApproved = await StopSessionAsync(null);
+        return CloseApproved;
     }
 
     /// <summary>Stops the terminal session and disposes the PTY while the application shuts down.</summary>
@@ -1170,6 +1229,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             _ = exception;
         }
 
+        _terminal?.Dispose();
         _terminal = null;
         Terminal = null;
         Raise(nameof(Terminal));

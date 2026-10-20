@@ -8,77 +8,82 @@ namespace Patchouli.Tests;
 public sealed class OcrPermissionMigrationIndependentTests
 {
     [Fact]
-    public void New_profiles_require_each_explicit_target_action_grant()
+    public void Parent_and_old_action_grants_cannot_authorize_subdomains()
     {
-        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
-        McpPermissionPolicy.Allows(settings, "ocr.start", "patchouli://texts/document/").Should().BeFalse();
-        McpPermissionPolicy.Allows(settings, "ocr.cancel", "patchouli://runs/ocr/task/").Should().BeFalse();
-        McpPermissionPolicy.Allows(settings, "ocr.retry", "patchouli://runs/ocr/task/").Should().BeFalse();
-        McpPermissionPolicy.Verbs.Should().NotContain("ocr");
-        McpPermissionPolicy.Verbs.Should().Contain(["ocr.start", "ocr.cancel", "ocr.retry"]);
-        settings.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.ocr");
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Legacy_send_workflow_and_ocr_grants_never_promote_to_new_action_grants(bool oldOcrEnabled)
-    {
-        using TemporaryAppSettingsFile file = new();
-        string enabled = oldOcrEnabled ? "true" : "false";
-        await File.WriteAllTextAsync(file.Path,
-            """{"Mcp":{"Port":4540,"BindAddress":"127.0.0.1","AuthRequired":false,"ToolOverrides":[{"ToolName":"patchouli.send","Enabled":true},{"ToolName":"patchouli.ocr","Enabled":"""
-            + enabled +
-            """}],"DomainPermissions":[{"Domain":"texts","Verb":"put","Enabled":true},{"Domain":"texts","Verb":"send","Enabled":true},{"Domain":"runs","Verb":"send","Enabled":true},{"Domain":"workflows","Verb":"send","Enabled":true},{"Domain":"texts","Verb":"ocr","Enabled":true},{"Domain":"runs","Verb":"ocr","Enabled":true}]}}""");
-        McpServerSettingsService service = new(file.Path, new FixedClock(DateTimeOffset.UtcNow));
-        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
-        loaded.IsSuccess.Should().BeTrue(loaded.ErrorMessage);
-        McpPermissionPolicy.Allows(loaded.Value, "put", "patchouli://texts/document/page-1.xml").Should().BeTrue();
-        McpPermissionPolicy.Allows(loaded.Value, "ocr.start", "patchouli://texts/document/").Should().BeFalse();
-        McpPermissionPolicy.Allows(loaded.Value, "ocr.cancel", "patchouli://runs/ocr/task/").Should().BeFalse();
-        McpPermissionPolicy.Allows(loaded.Value, "ocr.retry", "patchouli://runs/ocr/task/").Should().BeFalse();
-        loaded.Value.DomainPermissions.Should()
-            .Contain(value => value.Domain == "texts" && value.Verb == "ocr.start" && !value.Enabled);
-        loaded.Value.DomainPermissions.Should()
-            .Contain(value => value.Domain == "runs" && value.Verb == "ocr.cancel" && !value.Enabled);
-        loaded.Value.DomainPermissions.Should()
-            .Contain(value => value.Domain == "runs" && value.Verb == "ocr.retry" && !value.Enabled);
-        loaded.Value.DomainPermissions.Should().NotContain(value => value.Domain == "workflows");
-        loaded.Value.DomainPermissions.Should().NotContain(value => value.Verb == "send");
-        loaded.Value.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.ocr");
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions =
+            [
+                new McpDomainPermission("runs", "send", true), new McpDomainPermission("texts", "ocr.start", true),
+                new McpDomainPermission("runs", "ocr.cancel", true)
+            ]
+        };
+        McpPermissionPolicy.Allows(settings, "send", "runs/ocr/control").Should().BeFalse();
+        McpPermissionPolicy.Allows(settings, "ocr.start", "texts/document/").Should().BeFalse();
+        McpPermissionPolicy.Verbs.Should().NotContain(["ocr.start", "ocr.cancel", "ocr.retry", "translation.start"]);
     }
 
     [Fact]
-    public void Send_switch_and_each_action_grant_are_independent()
+    public void Subdomain_grants_and_global_switch_are_independent()
     {
-        McpServerSettings startOnly = new(4540, "127.0.0.1", false, [], false, null,
-            [new McpToolOverride("patchouli.send", true)], DateTimeOffset.UtcNow)
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
         {
-            DomainPermissions = [new McpDomainPermission("texts", "ocr.start", true)]
+            DomainPermissions = [new McpDomainPermission("runs/ocr", "send", true)]
         };
-        McpPermissionPolicy.Allows(startOnly, "ocr.start", "patchouli://texts/document/").Should().BeTrue();
-        McpPermissionPolicy.Allows(startOnly, "ocr.cancel", "patchouli://runs/ocr/task/").Should().BeFalse();
-        McpPermissionPolicy.Allows(startOnly, "ocr.retry", "patchouli://runs/ocr/task/").Should().BeFalse();
-        McpServerSettings sendOff = startOnly with { ToolOverrides = [new McpToolOverride("patchouli.send", false)] };
-        McpPermissionPolicy.Allows(sendOff, "ocr.start", "patchouli://texts/document/").Should().BeFalse();
-        McpPermissionPolicy.Allows(sendOff, "cite", "patchouli://texts/document/page-1.xml").Should().BeTrue();
+        McpPermissionPolicy.Allows(settings, "send", "runs/ocr/control").Should().BeTrue();
+        McpPermissionPolicy.Allows(settings, "send", "./runs/translation/control").Should().BeFalse();
+        McpPermissionPolicy.Allows(settings, "send", "runs/ocr-other/control").Should().BeFalse();
+        McpPermissionPolicy.Allows(settings, "send", "runs/ocr/../translation/control").Should().BeFalse();
+        McpPermissionPolicy.Allows(settings with { ToolOverrides = [new McpToolOverride("patchouli.send", false)] },
+            "send", "runs/ocr/control").Should().BeFalse();
+        McpPermissionPolicy.Allows(settings, "fetch", "runs/ocr/task/status").Should().BeTrue();
     }
 
-    [Theory]
-    [InlineData("texts", "ocr.start", true)]
-    [InlineData("texts", "ocr.cancel", false)]
-    [InlineData("texts", "ocr.retry", false)]
-    [InlineData("runs", "ocr.start", false)]
-    [InlineData("runs", "ocr.cancel", true)]
-    [InlineData("runs", "ocr.retry", true)]
-    [InlineData("items", "ocr.start", false)]
-    [InlineData("runs", "send", false)]
-    [InlineData("translations", "ocr.start", false)]
-    [InlineData("csl-styles", "ocr.start", false)]
-    [InlineData("texts", "ocr", false)]
-    public void Capability_matrix_exposes_only_supported_target_action_combinations(string domain, string action,
-        bool expected)
+    [Fact]
+    public async Task Migration_drops_old_grants_and_persists_explicit_subdomain_choices()
     {
-        McpPermissionPolicy.Supports(domain, action).Should().Be(expected);
+        using TemporaryAppSettingsFile file = new();
+        await File.WriteAllTextAsync(file.Path,
+            """{"Mcp":{"Port":4540,"DomainPermissions":[{"Domain":"runs","Verb":"send","Enabled":true},{"Domain":"texts","Verb":"ocr.start","Enabled":true},{"Domain":"runs","Verb":"ocr.cancel","Enabled":true},{"Domain":"texts","Verb":"put","Enabled":true}]}}""");
+        McpServerSettingsService service = new(file.Path, new FixedClock(DateTimeOffset.UtcNow));
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+        loaded.IsSuccess.Should().BeTrue(loaded.ErrorMessage);
+        loaded.Value.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
+        loaded.Value.DomainPermissions.Should().NotContain(value => value.Verb.Contains('.'));
+        foreach (string domain in McpPermissionPolicy.RunSendDomains)
+        {
+            loaded.Value.DomainPermissions.Should().Contain(new McpDomainPermission(domain, "send", false));
+        }
+
+        Result<McpServerSettings> saved = await service.SaveSettingsAsync(loaded.Value with
+        {
+            DomainPermissions =
+            [
+                new McpDomainPermission("runs/ocr", "send", true),
+                new McpDomainPermission("runs/translation", "send", false)
+            ]
+        });
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        Result<McpServerSettings> reloaded = await service.GetSettingsAsync();
+        McpPermissionPolicy.Allows(reloaded.Value, "send", "runs/ocr/control").Should().BeTrue();
+        McpPermissionPolicy.Allows(reloaded.Value, "send", "runs/translation/control").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Migration_removes_parent_even_when_both_children_and_tool_markers_exist()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.add", true), new McpToolOverride("patchouli.view", true)],
+            DomainPermissions =
+            [
+                new McpDomainPermission("runs", "send", true), new McpDomainPermission("runs/ocr", "send", true),
+                new McpDomainPermission("runs/translation", "send", true)
+            ]
+        };
+        McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
+        migrated.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
+        migrated.DomainPermissions.Should().HaveCount(2);
+        migrated.DomainPermissions.Should().OnlyContain(value => value.Enabled);
     }
 }

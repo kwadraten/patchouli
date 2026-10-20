@@ -101,8 +101,8 @@ connection.
 Direct translation is owned by the four extension contracts in `Patchouli.Core/Translation`,
 the default segment/batch/model/merge implementations and `TranslationRunEngine` in
 `Patchouli.Infrastructure/Translation`, and the volatile `TranslationRunService` in
-`Patchouli.Host/Translation`. MCP exposes `translation.start`, `translation.cancel` and
-`runs/translation/{id}/status`; the settings card and modeless progress window are thin
+`Patchouli.Host/Translation`. MCP exposes start/cancel messages at `runs/translation/control` and
+`runs/translation/{id}/status`; the processing settings card and shared task queue page are thin
 clients. Runs are in-memory only; committed translations follow ADR `0034`/`0044`.
 
 MCP/CLI parameters, runtime roots and regression obligations are in

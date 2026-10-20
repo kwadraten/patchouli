@@ -3,14 +3,15 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Patchouli.UI.Controls;
+using Patchouli.Core.Agents;
+using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels.Agents;
 
 namespace Patchouli.UI.Views;
 
 /// <summary>
 /// View side of the Agent integration page: it anchors and focuses the @-reference popup, forwards
-/// the picker's keyboard contract, and detaches the terminal control from the visual tree when the
-/// retained tab page is released so the cached session can be reattached on the next open.
+/// the picker's keyboard contract, and releases the terminal when its tab closes.
 /// </summary>
 public sealed partial class AgentWorkspacePage : UserControl, IWorkspaceTabPage
 {
@@ -60,9 +61,7 @@ public sealed partial class AgentWorkspacePage : UserControl, IWorkspaceTabPage
 
         _isClosed = true;
         _viewModel?.OnPageClosed();
-        // The view model keeps the EmbeddedTerminal (and its PTY) alive when the user chose to leave
-        // the session in the background. Clearing Content detaches the control from this page's
-        // visual/logical tree so a future page instance can attach it again.
+        // Closing a tab ends its terminal session; the next page receives a fresh terminal.
         TerminalHost.Content = null;
     }
 
@@ -92,7 +91,7 @@ public sealed partial class AgentWorkspacePage : UserControl, IWorkspaceTabPage
                 e.Handled = true;
                 break;
             case Key.Enter:
-                _viewModel.CommitSelectedItem();
+                _viewModel.CommitSelectedItemAsync().Observe("agent-workspace", "paste-reference");
                 FocusInput();
                 e.Handled = true;
                 break;
@@ -109,7 +108,7 @@ public sealed partial class AgentWorkspacePage : UserControl, IWorkspaceTabPage
 
     private void OnItemPickerDoubleTapped(object? sender, TappedEventArgs e)
     {
-        _viewModel?.CommitSelectedItem();
+        _viewModel?.CommitSelectedItemAsync().Observe("agent-workspace", "paste-reference");
         FocusInput();
     }
 
@@ -125,12 +124,33 @@ public sealed partial class AgentWorkspacePage : UserControl, IWorkspaceTabPage
     {
         if (sender is MenuItem { Tag: string key })
         {
-            _viewModel?.ApplyPreset(key);
+            _viewModel?.ApplyPresetAsync(key).Observe("agent-workspace", "paste-preset");
+        }
+    }
+
+    private void OnAgentSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_viewModel is { } workspace && AgentSelector.SelectedItem is AgentCatalogEntry entry &&
+            !string.Equals(workspace.SelectedAgent?.Id, entry.Id, StringComparison.Ordinal))
+        {
+            SwitchAgentAsync(workspace, entry.Id).Observe("agent-workspace", "switch-agent");
+        }
+    }
+
+    private async Task SwitchAgentAsync(AgentWorkspaceViewModel workspace, string agentId)
+    {
+        try
+        {
+            await workspace.SwitchAgentAsync(agentId);
+        }
+        finally
+        {
+            AgentSelector.SetCurrentValue(ComboBox.SelectedItemProperty, workspace.SelectedAgent);
         }
     }
 
     private void FocusInput()
     {
-        Dispatcher.UIThread.Post(() => InputBox.Focus(), DispatcherPriority.Input);
+        Dispatcher.UIThread.Post(() => _viewModel?.Terminal?.TerminalControl.Focus(), DispatcherPriority.Input);
     }
 }

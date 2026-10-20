@@ -12,7 +12,8 @@ public sealed record TranslationRunStartRequest(
     DocumentInstanceId DocumentInstanceId,
     IReadOnlyList<int> PageIndexes,
     string? TargetLanguage = null,
-    bool ForceRetranslate = false);
+    bool ForceRetranslate = false,
+    string? RequestId = null);
 
 /// <summary>The lifecycle of one volatile translation run.</summary>
 public enum TranslationRunLifecycle
@@ -40,7 +41,9 @@ public sealed record TranslationRunStatus(
     int CancelledPages,
     IReadOnlyList<TranslationPageOutcome> Pages,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    bool Reused = false,
+    bool IsPaused = false);
 
 /// <summary>
 /// Host-side entry point for the direct translation engine. It validates the request, resolves

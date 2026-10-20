@@ -1,3 +1,5 @@
+using Avalonia.Automation;
+using Avalonia.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -21,6 +23,7 @@ public sealed class SettingsHeaderLayoutTests
         await RunAsync(async (main, window, page) =>
         {
             await main.Settings.SelectSectionAsync("llm");
+            window.Height = 500;
             Pump(window);
             SettingsSectionGroupViewModel group = main.Settings.ActiveTabbedGroup!;
             group.Should().NotBeNull();
@@ -73,7 +76,7 @@ public sealed class SettingsHeaderLayoutTests
     }
 
     [Theory]
-    [InlineData("import", 3)]
+    [InlineData("import", 4)]
     [InlineData("library", 2)]
     public async Task Every_settings_group_switches_one_subpage_at_a_time_in_the_fixed_header(string sectionId,
         int expectedHeaders)
@@ -113,6 +116,58 @@ public sealed class SettingsHeaderLayoutTests
                 SavePreview(window, $"settings-tabs-{entry.Id}.png");
             }
         });
+    }
+
+    [Fact]
+    public async Task Runs_permissions_expand_inside_the_matrix_and_keep_send_cells_aligned()
+    {
+        await RunAsync(async (main, window, _) =>
+        {
+            await main.Settings.SelectSectionAsync("mcp");
+            Pump(window);
+            McpSettingsViewModel settings = main.Settings.McpSettings;
+            McpDomainPermissionRowViewModel runs = settings.PermissionRows.Single(row => row.Domain == "runs");
+            runs.IsExpanded.Should().BeFalse();
+            ToggleButton triangle = window.GetVisualDescendants().OfType<ToggleButton>().Single(control =>
+                AutomationProperties.GetName(control) == "展开 runs 子域权限" && control.IsEffectivelyVisible);
+            CheckBox parent = window.GetVisualDescendants().OfType<CheckBox>().Single(control =>
+                AutomationProperties.GetName(control) == "runs 全部子域 send 权限" && control.IsEffectivelyVisible);
+            Click(window, triangle);
+            runs.IsExpanded.Should().BeTrue();
+            triangle.Content.Should().Be("▼");
+            CheckBox ocr = window.GetVisualDescendants().OfType<CheckBox>().Single(control =>
+                AutomationProperties.GetName(control) == "runs/ocr" && control.IsEffectivelyVisible);
+            ocr.GetVisualAncestors().OfType<Expander>().Should()
+                .BeEmpty("children belong to the runs table row, not a separate section");
+            double parentX = parent.TranslatePoint(new Point(parent.Bounds.Width / 2, 0), window)!.Value.X;
+            double childX = ocr.TranslatePoint(new Point(ocr.Bounds.Width / 2, 0), window)!.Value.X;
+            childX.Should().BeApproximately(parentX, 1);
+            Click(window, parent);
+            settings.RunSendPermissions.Checked.Should().BeTrue();
+            settings.RunSendPermissions.Children.Should().OnlyContain(child => child.Enabled);
+            Click(window, ocr);
+            parent.IsChecked.Should().BeNull();
+            Click(window, triangle);
+            runs.IsExpanded.Should().BeFalse();
+            settings.RunSendPermissions.Checked.Should().BeNull("collapsing does not change child grants");
+            Click(window, triangle);
+            Pump(window);
+            parent.GetVisualAncestors().OfType<Border>().First(border => border.Classes.Contains("Card"))
+                .BringIntoView();
+            Pump(window);
+            SavePreview(window, "settings-runs-send-tree.png");
+        });
+    }
+
+    private static void Click(Window window, Control control)
+    {
+        control.BringIntoView();
+        Pump(window);
+        Point point = control.TranslatePoint(new Point(control.Bounds.Width / 2, control.Bounds.Height / 2), window)!
+            .Value;
+        window.MouseDown(point, MouseButton.Left);
+        window.MouseUp(point, MouseButton.Left);
+        Pump(window);
     }
 
     private static async Task RunAsync(Func<MainWindowViewModel, Window, SettingsPage, Task> action)

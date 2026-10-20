@@ -42,6 +42,7 @@
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <AvaloniaResource Include="Assets\AppIcon.ico" />
+    <AvaloniaResource Include="Assets\Agents\*.svg" />
     <AvaloniaResource Include="Assets\Lucide\*.svg" />
     <AvaloniaResource Include="Assets\CatWalk\*.svg" />
     <AvaloniaResource Include="Assets\CatWalk\LICENSE" />

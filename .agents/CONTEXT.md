@@ -2,8 +2,7 @@
 
 Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, immutable page-local Document Box Trees, searchable units, and text-only evidence references.
 
-The **模型与翻译** settings hold the default model, used when a translation run does not select
-its own provider/model, and the direct translation parameters: target language (BCP 47, default
+The **AI集成 → 模型连接** settings hold shared provider connections and the default model, used when a translation run does not select its own provider/model. **文献加工 → 文献翻译** holds the direct translation parameters: target language (selected by readable language name, stored as a BCP 47 tag, default
 `en`), batch size 1–64, character/token caps, concurrency 1–16, request interval, per-request
 timeout, retries 0–10, window radius 0–5 and previous-window translation backfill. Changes save
 automatically and apply to later runs; an active run keeps the settings snapshot it started
@@ -62,7 +61,7 @@ SearchUnits are persisted derived text units generated one per non-suppressed le
 The virtual Library filesystem is resolved on demand through bounded runtime-host domain RPCs. One desktop or headless .NET host is the only authority for a Library database, cursors, revisions, projections and writes. The desktop host includes the UI and local MCP HTTP endpoint; `patchouli-cli` is a thin local client of that endpoint and auto-starts the same binary headlessly when no host exists. There is never a direct-SQL CLI path or second domain implementation. Directory paging, traversal and batch limits, command/output limits, and bounded rebuildable compiled-page caches constrain reads.
 MCP is a first-class human-machine collaboration interface, not a read-only inspection surface (ADR `0036`, as retained by ADR `0047`, amending `0010`). The production surface is the structured `patchouli.find`, `patchouli.fetch`, `patchouli.add`, `patchouli.view`, `patchouli.put`, `patchouli.cite`, and `patchouli.send` contract from ADR `0024` (as extended by ADR `0034`, ADR `0036`, ADR `0044`, ADR `0045` and ADR `0046`, with the resource tree narrowed by ADR `0047`). **Capability boundaries are user-controlled**: the tool/write policy lets the user switch `put` and `send` off, returning MCP to read-only, and `add`/`view` have their own independent switches; **data boundaries are developer invariants** that no setting relaxes—MCP never edits bbox, triggers OCR, rebuilds indexes, reveals file URLs, or leaks provider secrets/configuration. Two explicit exceptions exist (ADR `0045`): `add` accepts a host-local file path as its input (never a URL), and `view` returns the source image as a native MCP image block; neither exposes host source paths, cache paths, or geometry beyond the view crop range. Native item and Library resources use YAML; source and translation pages use box XML. Canonical page `put` operations atomically replace payloads by box ID and use `source_revision`, plus `translation_version` for translations, as optimistic concurrency checks. Source edits create committed page-tree history and a document commit; active UI drafts block them. CSL style writes remain atomic whole-resource replacements. The tool/write policy still gates every write. The Bashkit virtual shell implementation has been removed from `main`; it exists only on the `feature/mcp-ab-benchmark` branch as historical benchmark evidence and is not the production MCP path. Unrelated metadata mutation remains out of scope.
 
-MCP capability settings use a VFS domain × verb matrix (ADR [0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md), whose chat/FSI part is removed by ADR `0047`); every shared command checks its requested domain, including restored cursor scopes. OCR Actions (`texts × ocr.start`, `runs × ocr.cancel/retry`) and translation Actions (`texts × translation.start`, `runs × translation.cancel`) require explicit grants in addition to the `send` switch; unsupported `domain × verb` combinations are always denied. The direct translation Actions and `runs/translation/` status projection are described in [ADR 0046](adr/0046-direct-batched-translation-pipeline.md).
+MCP capability settings use a VFS domain × verb matrix (ADR [0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md), whose chat/FSI part is removed by ADR `0047`); every shared command checks its requested domain, including restored cursor scopes. Native task messages use runs/ocr/control and runs/translation/control with flat endpoint/action/target/args and optional outer request_id fields. Send requires the tool switch and explicit runs subdomain send grants, covering all legal messages in that domain. The collapsible runs parent is a three-state selection aggregate, not an inherited grant; new children default off. The direct translation Actions and `runs/translation/` status projection are described in [ADR 0046](adr/0046-direct-batched-translation-pipeline.md).
 
 MCP settings are excluded from the settings page's automatic-save pipeline. Leaving the MCP subpage, changing workspace tabs, closing settings, or exiting with pending MCP changes requires an explicit choice to discard or save and restart the listener. Dismissing the dialog, invalid settings, or a failed restart keeps the user on the current page. Discard restores the running listener's configuration when a previous save has not yet been applied. Reload detection compares configuration values rather than persistence revision numbers.
 
@@ -74,7 +73,7 @@ Snapshot divergence creates a Snapshot Branch. Branches are inspected and import
 ProviderCredential values are user-owned secrets for OCR/HTR providers. They may be present in trusted-user-device sync only through the mutable sensitive credential path, never in immutable historical content shards, never in MCP, and never in logs.
 
 **Desktop settings**:
-The settings sidebar has seven groups: 外观与阅读, 书库与本机文件, 导入与识别, AI集成, 元数据来源, 搜索, and 同步与快照. Library paths and managed local files share one page; import policy and OCR engines share another, including the multimodal OCR provider/model selection. AI集成 has separate 模型与翻译, Agent 集成, and MCP 服务与权限 tabs. Providers and credentials remain shared by translation and OCR. Stable section ids route menu shortcuts independently of icons. A flat section registry owns loading, dirty state, save, and discard so navigation grouping never hides a draft from auto-save. Agent 集成 lists the compiled catalog's detection status, the default agent, per-agent custom paths and the OpenCode install action; the terminal itself lives in the Agent workspace tab.
+The settings sidebar has eight groups: 外观与阅读, 书库与本机文件, 文献加工, AI集成, 元数据来源, 搜索, 引用与题录, and 同步与快照. Library paths and managed local files share one page. 文献加工 contains 导入时设置, OCR 引擎, 多模态 OCR, and 文献翻译. AI集成 contains 模型连接, Agent 集成, and MCP 服务与权限. Providers and credentials remain shared by translation and OCR. Stable section ids route menu shortcuts independently of icons. A flat section registry owns loading, dirty state, save, and discard so navigation grouping never hides a draft from auto-save. Agent 集成 lists the compiled catalog's detection status, the default agent, per-agent custom paths and the OpenCode install action; the terminal itself lives in the Agent workspace tab.
 
 Incomplete provider connections persist with an explicit `IsAdded` flag; API keys remain in the credential store. Invalid library exclusion patterns, OCR engine choices, search rules, and incomplete sync bindings are saved as typed device-local drafts beside the user settings file (`.drafts.json`), with visible completion errors. They do not replace executable configuration until valid. Auto-save isolates failures per section and drains newer edits without falsely clearing their dirty state. Permission cells are disabled for unsupported resource verbs. Opening the Agent workspace tab and pressing start re-runs detection and probes the executable before launching it in the embedded terminal.
 
@@ -82,7 +81,7 @@ Settings writes preserve their ownership boundaries: ordinary preferences use `A
 
 **Chapter navigation editing**:
 PDF chapter controls live inside the chapters sidebar and work independently of OCR text
-edit mode. Users can add, rename, retarget, reorder and nest chapters, or explicitly scan
+edit mode. The page Box Tree is the only sidebar in OCR edit mode; chapter switching is disabled until leaving that mode. Users can add, rename, retarget, reorder and nest chapters, or explicitly scan
 committed OCR/manual Markdown headings into an editable preview. Scans do not run OCR.
 Applying a preview appends by default or explicitly replaces chapters; it preserves printed
 pagination rules and labels. Physical pages remain the fallback for stale logical targets.
@@ -194,7 +193,8 @@ _Avoid_: Library root, source folder, synced workspace
 
 **Run**:
 The volatile runtime projection of an OCR task or a direct translation run, observed through `patchouli://runs/`. `runs/ocr/` and `runs/translation/` report their own status and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is not part of snapshots and cannot be `put`. The built-in Agent session projection was removed in 0.3.13.
-_Avoid_: Job, task queue, unified run state, agent session
+The desktop 任务队列 is a presentation over independent OCR and translation services; it does not unify their lifecycle or persist translation runs.
+_Avoid_: Job, unified run state, agent session
 
 **Working Revision**:
 A previewable page-local revision produced by OCR import or manual editing. It becomes visible to search, evidence, and MCP only after in-place commit. A failed or cancelled working revision is deleted.
@@ -227,7 +227,7 @@ _Avoid_: Provider config, secret in shard
 API LLM providers use one active key per provider through ICredentialStore. OCR and translation
 share provider connections and credential storage. OCR, the default translation model and an
 optional translation-specific provider/model are selected independently. Translation's target
-language, window radius and previous-window backfill are ordinary settings in the 模型与翻译
+language, window radius and previous-window backfill are ordinary settings in the 文献加工 → 文献翻译
 card (ADR `0046`). Subscription authentication follows ADR 0037.
 
 MultimodalLlmOcrAdapter sends page/region images directly to the selected vision model and normalizes
@@ -264,7 +264,7 @@ and volatile run service are owned as described in [domain](domain.md).
 - **Trash / 回收站**: a library section with restore/permanent-purge actions; tag navigation and content-edit/OCR entry points are hidden.
 - **PDF Workspace / PDF 工作台**: page navigation, raster, Box Tree, text preview and page revision history. Document commit history is also available from the Item editor's file-management area. History restoration creates a new commit, never rolls HEAD backward.
 - **Agent Integration Page / Agent 集成**: the workspace page with the selected external agent in an embedded terminal, four editable preset prompts, the searchable item reference panel and the confirmed MCP-config write action. Closing the tab asks whether to stop the terminal or keep it running in the background.
-- **Translation Progress Window / 全文翻译**: the modeless window for a direct translation run. It polls the host once per second, shows per-page status and offers cancel; closing it does not stop the run.
+- **Task Queue / 任务队列**: the existing OCR queue view also displays volatile translation runs. A type selector filters both active and finished lists. Global task controls apply to both services; translation supports cooperative pause/resume, cancellation and idempotent failed-page retry. In-flight model requests settle when paused, while subsequent dispatches wait. Individual pauses survive a global resume. OCR and translation retain independent execution and can run concurrently. The default filter is all tasks; filtering changes display only. Closing the page does not stop either service. Processing settings group import, OCR engines, multimodal OCR and translation; shared model connections remain under AI integration.
 - **ConfirmDialog**: shared confirmation window; danger mode is used for destructive local-file/tag operations.
 - **ItemMergePreviewDialog**: explicit target and field-conflict selection before merging Items.
 - **PurgeConfirmDialog**: blocking permanent-delete confirmation with expandable dependency details.

@@ -475,7 +475,9 @@ public sealed class PageTranslationService : IPageTranslationService
         }
 
         if (source.Payload is TableBoxPayload sourceTable && replacement is TableBoxPayload replacementTable &&
-            !string.Equals(sourceTable.Html, replacementTable.Html, StringComparison.Ordinal))
+            !string.Equals(sourceTable.Html, replacementTable.Html, StringComparison.Ordinal) &&
+            !(sourceTable.Markdown.Trim() == "[Table]" && replacementTable.Html is null &&
+              replacementTable.Markdown.Trim() != "[Table]"))
         {
             return BoxPayloadFailure(source.BoxId, "The replacement cannot change diagnostic table HTML.");
         }
@@ -490,6 +492,16 @@ public sealed class PageTranslationService : IPageTranslationService
             equation.HasImage != changedEquation.HasImage)
         {
             return BoxPayloadFailure(source.BoxId, "The formula image region cannot be changed by translation.");
+        }
+
+        // A validated pipe table may replace an HTML-only placeholder in the derived translation.
+        // Its source HTML remains unchanged in the document tree; placeholder paragraph structure
+        // cannot be compared to the newly translated table structure.
+        if (source.Payload is TableBoxPayload { Markdown: var sourceMarkdown, Html: not null } &&
+            sourceMarkdown.Trim() == "[Table]" && replacement is TableBoxPayload { Html: null } translatedTable &&
+            translatedTable.Markdown.Trim() != "[Table]")
+        {
+            return Result<string>.Success(translatedTable.Markdown);
         }
 
         DocumentBox renderSource = source with

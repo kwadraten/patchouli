@@ -5,6 +5,7 @@ using Patchouli.Core.Results;
 namespace Patchouli.Core.Actions;
 
 public sealed record ActionDescriptor(
+    string Endpoint,
     string Id,
     IReadOnlyList<string> TargetTypes,
     JsonElement InputSchema,
@@ -16,7 +17,8 @@ public sealed record ActionDescriptor(
 public sealed record ActionInvocation(
     string Target,
     string TargetType,
-    JsonElement Args);
+    JsonElement Args,
+    string? RequestId = null);
 
 public sealed record ActionOutcome(
     string State,
@@ -25,9 +27,9 @@ public sealed record ActionOutcome(
 
 public sealed class ActionRegistry
 {
-    private readonly ConcurrentDictionary<string, (ActionDescriptor Descriptor,
+    private readonly ConcurrentDictionary<(string Endpoint, string Action), (ActionDescriptor Descriptor,
         Func<ActionInvocation, CancellationToken, Task<Result<ActionOutcome>>> Handler)> _actions =
-        new(StringComparer.Ordinal);
+        new();
 
     public void Register(
         ActionDescriptor descriptor,
@@ -41,7 +43,7 @@ public sealed class ActionRegistry
             throw new ArgumentException("Action ID is required.", nameof(descriptor));
         }
 
-        if (!_actions.TryAdd(descriptor.Id, (descriptor, handler)))
+        if (!_actions.TryAdd((descriptor.Endpoint, descriptor.Id), (descriptor, handler)))
         {
             throw new InvalidOperationException($"An action with ID '{descriptor.Id}' is already registered.");
         }
@@ -52,14 +54,14 @@ public sealed class ActionRegistry
         return _actions.Values.Select(static entry => entry.Descriptor).ToArray();
     }
 
-    public ActionDescriptor? Find(string id)
+    public ActionDescriptor? Find(string endpoint, string id)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
             return null;
         }
 
-        return _actions.TryGetValue(id,
+        return _actions.TryGetValue((endpoint, id),
             out (ActionDescriptor Descriptor, Func<ActionInvocation, CancellationToken, Task<Result<ActionOutcome>>>
             Handler) entry)
             ? entry.Descriptor
@@ -67,6 +69,7 @@ public sealed class ActionRegistry
     }
 
     public async Task<Result<ActionOutcome>> InvokeAsync(
+        string endpoint,
         string id,
         ActionInvocation invocation,
         Func<ActionDescriptor, ActionInvocation, bool> authorize,
@@ -75,7 +78,7 @@ public sealed class ActionRegistry
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(authorize);
 
-        if (string.IsNullOrWhiteSpace(id) || !_actions.TryGetValue(id,
+        if (string.IsNullOrWhiteSpace(id) || !_actions.TryGetValue((endpoint, id),
                 out (ActionDescriptor Descriptor, Func<ActionInvocation, CancellationToken, Task<Result<ActionOutcome>>>
                 Handler) entry))
         {
@@ -109,7 +112,7 @@ public sealed class ActionRegistry
         return await entry.Handler(invocation, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string? ValidateArgs(JsonElement schema, JsonElement args)
+    public static string? ValidateArgs(JsonElement schema, JsonElement args)
     {
         if (schema.ValueKind != JsonValueKind.Object)
         {
@@ -299,7 +302,7 @@ public sealed class ActionRegistry
 
     private static bool HasDuplicatePropertyNames(JsonElement value)
     {
-        HashSet<string> seen = new(StringComparer.Ordinal);
+        HashSet<string> seen = new();
         foreach (JsonProperty property in value.EnumerateObject())
         {
             if (!seen.Add(property.Name))

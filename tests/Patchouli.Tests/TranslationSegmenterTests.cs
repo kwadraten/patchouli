@@ -39,6 +39,18 @@ public sealed class TranslationSegmenterTests
     }
 
     [Fact]
+    public void Oversized_html_table_remains_one_complete_segment_and_one_batch()
+    {
+        string html = "<table><tr><td>" + new string('a', 1500) + "</td></tr></table>";
+        TranslationSettings settings = new(MaxBatchCharacters: 1000);
+        IReadOnlyList<TranslationSegment> segments = new DefaultTranslationSegmenter().Segment(
+            [new TranslationSourceBox(DocumentBoxId.New(), DocumentBoxType.Table, html)], settings);
+        segments.Should().ContainSingle().Which.Text.Should().Be(html);
+        new DefaultTranslationBatcher().CreateBatches(segments, settings).Should().ContainSingle()
+            .Which.Segments.Single().Text.Should().Be(html);
+    }
+
+    [Fact]
     public void Oversized_text_is_split_into_bounded_ordered_parts_that_reconstruct_the_source()
     {
         const int limit = 10;

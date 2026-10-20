@@ -1,3 +1,5 @@
+using Patchouli.Core.Actions;
+using Patchouli.Core.Mcp;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -50,7 +52,7 @@ internal static class CliArguments
             "add" => BuildAdd(args, json),
             "view" => BuildView(args, json),
             "ocr" => throw new CliUsageException(
-                "the top-level 'ocr' command has been removed; use 'send <target> ocr.<action> [--args JSON]' instead."),
+                "the top-level 'ocr' command has been removed; use 'send runs/ocr/control <action> <target> [domain options]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -67,7 +69,7 @@ internal static class CliArguments
             "add" => Add,
             "view" => View,
             "ocr" => throw new CliUsageException(
-                "the top-level 'ocr' command has been removed; use 'send <target> ocr.<action> [--args JSON]' instead."),
+                "the top-level 'ocr' command has been removed; use 'send runs/ocr/control <action> <target> [domain options]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -322,101 +324,125 @@ internal static class CliArguments
 
     private static CliToolCall BuildSend(IReadOnlyList<string> args, bool json)
     {
-        string? target = null;
-        string? action = null;
-        JsonElement? parsedArgs = null;
-        bool sawArgs = false;
-
-        for (int index = 0; index < args.Count; index++)
+        const string usage =
+            "send requires ENDPOINT ACTION TARGET; e.g. send runs/ocr/control start texts/<document-id>/ --pages 1,3-5.";
+        if (args.Count < 3 || args.Take(3).Any(value => value.StartsWith("--", StringComparison.Ordinal)))
         {
-            string current = args[index];
-            switch (current)
+            throw new CliUsageException(usage);
+        }
+
+        if (!McpVfsAddress.TryNormalize(args[0], out string endpoint) ||
+            !RunEndpointCatalog.Messages.Any(value => value.Endpoint == endpoint))
+        {
+            throw new CliUsageException(usage);
+        }
+
+        ActionDescriptor? descriptor = RunEndpointCatalog.Find(endpoint, args[1]);
+        if (descriptor is null)
+        {
+            throw new CliUsageException("Unsupported endpoint action. " + usage);
+        }
+
+        JsonElement properties = descriptor.InputSchema.GetProperty("properties");
+        Dictionary<string, object?> values = new(StringComparer.Ordinal);
+        string? requestId = null;
+        bool sawArgs = false;
+        for (int index = 3; index < args.Count; index++)
+        {
+            string option = args[index];
+            if (option == "--request-id")
             {
-                case "--args":
-                    if (sawArgs)
-                    {
-                        throw new CliUsageException("duplicate --args option.");
-                    }
+                if (requestId is not null)
+                {
+                    throw new CliUsageException("Duplicate --request-id.");
+                }
 
-                    string jsonText = TakeValue(args, ref index, "--args");
-                    try
-                    {
-                        using JsonDocument document = JsonDocument.Parse(jsonText);
-                        if (document.RootElement.ValueKind != JsonValueKind.Object)
-                        {
-                            throw new CliUsageException("--args must be a JSON object.");
-                        }
+                requestId = TakeValue(args, ref index, option);
+                if (string.IsNullOrWhiteSpace(requestId) || requestId.Trim().Length > 256)
+                {
+                    throw new CliUsageException("request_id must contain 1 through 256 non-blank characters.");
+                }
 
-                        parsedArgs = document.RootElement.Clone();
-                    }
-                    catch (JsonException)
+                continue;
+            }
+
+            if (option == "--args")
+            {
+                if (sawArgs)
+                {
+                    throw new CliUsageException("Duplicate --args.");
+                }
+
+                sawArgs = true;
+                string raw = TakeValue(args, ref index, option);
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(raw);
+                    if (document.RootElement.ValueKind != JsonValueKind.Object)
                     {
                         throw new CliUsageException("--args must be a JSON object.");
                     }
 
-                    sawArgs = true;
-                    break;
-
-                case "--workflow":
-                case "--session":
-                case "--message-id":
-                case "--text":
-                case "--param":
-                    throw new CliUsageException(
-                        $"option '{current}' is from legacy send; use 'send <target> <action> [--args JSON]' instead.");
-
-                case var _ when current.StartsWith("--", StringComparison.Ordinal):
-                    throw new CliUsageException($"unknown option '{current}' for send.");
-
-                default:
-                    if (target is null)
+                    foreach (JsonProperty property in document.RootElement.EnumerateObject())
                     {
-                        if (string.Equals(current, "start", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(current, "message", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(current, "cancel", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(current, "resume", StringComparison.OrdinalIgnoreCase))
+                        if (!values.TryAdd(property.Name, property.Value.Clone()))
                         {
-                            throw new CliUsageException(
-                                $"legacy 'send {current}' has been removed; use 'send <target> <action> [--args JSON]' instead.");
+                            throw new CliUsageException("Duplicate argument: " + property.Name);
                         }
+                    }
+                }
+                catch (JsonException)
+                {
+                    throw new CliUsageException("--args must be a JSON object.");
+                }
 
-                        target = current;
-                    }
-                    else if (action is null)
-                    {
-                        action = current;
-                    }
-                    else
-                    {
-                        throw new CliUsageException($"unexpected positional argument '{current}' for send.");
-                    }
+                continue;
+            }
 
-                    break;
+            string[] names = properties.EnumerateObject().Select(value => value.Name)
+                .Where(name => option == "--" + name.Replace('_', '-')).ToArray();
+            if (names.Length != 1)
+            {
+                throw new CliUsageException("Unknown or ambiguous send option: " + option);
+            }
+
+            string name = names[0];
+            if (name is "endpoint" or "action" or "target" or "request_id" or "format" or "args")
+            {
+                throw new CliUsageException("Domain option conflicts with a reserved field: " + name);
+            }
+
+            string text = TakeValue(args, ref index, option);
+            object value = properties.GetProperty(name).GetProperty("type").GetString() switch
+            {
+                "string" => text,
+                "boolean" when bool.TryParse(text, out bool flag) => flag,
+                "integer" when long.TryParse(text, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out long number) => number,
+                _ => throw new CliUsageException(
+                    "Invalid value for " + option + "; use --args JSON for complex values.")
+            };
+            if (!values.TryAdd(name, value))
+            {
+                throw new CliUsageException("Duplicate argument: " + name);
             }
         }
 
-        if (target is null)
+        JsonElement parameters = JsonSerializer.SerializeToElement(values);
+        string? error = ActionRegistry.ValidateArgs(descriptor.InputSchema, parameters);
+        if (error is not null)
         {
-            throw new CliUsageException("send requires TARGET and ACTION arguments.");
-        }
-
-        if (action is null)
-        {
-            throw new CliUsageException("send requires an ACTION argument.");
-        }
-
-        if (!parsedArgs.HasValue)
-        {
-            using JsonDocument defaultDocument = JsonDocument.Parse("{}");
-            parsedArgs = defaultDocument.RootElement.Clone();
+            throw new CliUsageException(error);
         }
 
         Dictionary<string, object?> arguments = new(StringComparer.Ordinal)
         {
-            ["target"] = target,
-            ["action"] = action,
-            ["args"] = parsedArgs.Value
+            ["endpoint"] = endpoint, ["action"] = args[1], ["target"] = args[2], ["args"] = parameters
         };
+        if (requestId is not null)
+        {
+            arguments["request_id"] = requestId.Trim();
+        }
 
         return new CliToolCall(Send, WithFormat(arguments, json));
     }

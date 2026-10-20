@@ -91,7 +91,8 @@ public sealed class TranslationRunEngine
     public async Task<TranslationRunResult> RunAsync(
         TranslationRunRequest request,
         IProgress<TranslationRunProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TranslationExecutionGate? executionGate = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Pages);
@@ -132,6 +133,11 @@ public sealed class TranslationRunEngine
             }
 
             return new TranslationRunResult([.. outcomes], false);
+        }
+
+        if (executionGate is not null)
+        {
+            providers = providers with { ModelInvoker = new GatedModelInvoker(providers.ModelInvoker, executionGate) };
         }
 
         // Load every page first: a page's neighbours are reference context even when they are skipped,
@@ -253,6 +259,17 @@ public sealed class TranslationRunEngine
         }
 
         return new TranslationRunResult([.. outcomes], cancelled);
+    }
+
+    private sealed class GatedModelInvoker(ITranslationModelInvoker inner, TranslationExecutionGate gate)
+        : ITranslationModelInvoker
+    {
+        public async Task<Result<TranslationBatchResult>> InvokeAsync(TranslationBatch batch,
+            TranslationInvocationContext context, CancellationToken cancellationToken = default)
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await inner.InvokeAsync(batch, context, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static TranslationRunResult CancelRemaining(
@@ -420,7 +437,9 @@ public sealed class TranslationRunEngine
         {
             TextBoxPayload textBox => textBox.Markdown ?? string.Empty,
             ListBoxPayload listBox => listBox.Markdown ?? string.Empty,
-            TableBoxPayload tableBox => tableBox.Markdown ?? string.Empty,
+            TableBoxPayload tableBox => !string.IsNullOrWhiteSpace(tableBox.Html)
+                ? tableBox.Html
+                : tableBox.Markdown ?? string.Empty,
             AlgorithmBoxPayload algorithmBox => algorithmBox.Markdown ?? string.Empty,
             CodeBoxPayload codeBox => codeBox.Code ?? string.Empty,
             EquationBoxPayload equationBox => equationBox.Latex ?? string.Empty,
@@ -763,7 +782,7 @@ public sealed class TranslationRunEngine
     }
 
     /// <summary>
-    /// Rebuilds a translated payload with the exact source payload type, keeping table HTML and the source
+    /// Rebuilds a translated payload with the exact source payload type, keeping diagnostic HTML only for table placeholders and the source
     /// annotations. Other payload kinds return null and are never submitted as replacements.
     /// </summary>
     private static DocumentBoxPayload? CreateTranslatedPayload(
@@ -780,7 +799,8 @@ public sealed class TranslationRunEngine
             {
                 Annotations = listBox.Annotations
             },
-            TableBoxPayload tableBox => new TableBoxPayload(translated, tableBox.Html)
+            TableBoxPayload tableBox => new TableBoxPayload(translated,
+                translated.Trim() == "[Table]" ? tableBox.Html : null)
             {
                 Annotations = tableBox.Annotations
             },

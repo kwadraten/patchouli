@@ -1,3 +1,4 @@
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Translation;
 
@@ -10,6 +11,7 @@ namespace Patchouli.Infrastructure.Translation;
 /// of the source text, so concatenating the parts in <see cref="TranslationSegment.PartIndex"/> order
 /// reproduces the original text exactly. Splitting prefers a line break, then a sentence terminator, then
 /// whitespace, and only falls back to a hard character cut when the text offers no natural boundary.
+/// Tables remain whole, including oversized HTML, so the model always receives their complete structure.
 /// </summary>
 public sealed class DefaultTranslationSegmenter : ITranslationSegmenter
 {
@@ -31,7 +33,7 @@ public sealed class DefaultTranslationSegmenter : ITranslationSegmenter
             }
 
             string text = box.Text;
-            if (text.Length <= maxCharacters)
+            if (text.Length <= maxCharacters || box.Type == DocumentBoxType.Table)
             {
                 segments.Add(CreateSegment(box.BoxId, 1, text));
                 continue;

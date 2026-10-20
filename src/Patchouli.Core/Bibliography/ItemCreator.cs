@@ -81,21 +81,7 @@ public sealed record ItemCreator(
     int SequenceIndex,
     DateTimeOffset CreatedAt)
 {
-    public string DisplayName
-    {
-        get
-        {
-            if (!string.IsNullOrWhiteSpace(Literal))
-            {
-                return Literal.Trim();
-            }
-
-            IEnumerable<string> pieces = new[] { Given, Particles, Family, Suffix }
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value!.Trim());
-            return string.Join(" ", pieces);
-        }
-    }
+    public string DisplayName => ItemCreatorNameFormatter.Format(Family, Given, Literal, Suffix, Particles);
 }
 
 public sealed record ItemCreatorInput(

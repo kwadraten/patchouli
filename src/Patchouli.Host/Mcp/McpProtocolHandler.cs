@@ -460,19 +460,23 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.send",
-                "Execute a typed action against a Library resource (e.g. ocr.start, ocr.cancel, ocr.retry, " +
-                "translation.start, translation.cancel, cite.render).",
-                ["target", "action", "args"],
+                "Send a typed message to runs/<domain>/control. Fetch the endpoint for message schemas; start accepts a document target, cancel/retry accept a same-domain task target.",
+                ["endpoint", "action", "target", "args"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["target"] = ToolSchemaProperty.String(
-                        "Target resource URI (e.g. texts/<document-id>/ for ocr.start or translation.start; " +
-                        "runs/ocr/<task-id>/status for ocr.cancel/retry; runs/translation/<run-id>/status for translation.cancel)."),
-                    ["action"] = ToolSchemaProperty.String(
-                        "Action identifier (e.g. \"ocr.start\", \"ocr.cancel\", \"ocr.retry\", \"translation.start\", " +
-                        "\"translation.cancel\", \"cite.render\")."),
-                    ["args"] = ToolSchemaProperty.Object("Action arguments object."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
+                    ["endpoint"] =
+                        ToolSchemaProperty.String(
+                            "Domain control endpoint URI, e.g. runs/ocr/control or runs/translation/control."),
+                    ["action"] =
+                        ToolSchemaProperty.String("Endpoint message action: start, cancel, or retry when supported."),
+                    ["target"] =
+                        ToolSchemaProperty.String(
+                            "Operation target URI: texts/<document-id>/ or runs/<domain>/<task-id>/."),
+                    ["args"] = ToolSchemaProperty.Object(
+                        "Domain arguments matching the endpoint message schema; use {} when empty."),
+                    ["request_id"] =
+                        ToolSchemaProperty.String("Optional process-local idempotency key, 1 through 256 characters."),
+                    ["format"] = ToolSchemaProperty.String("Response encoding: toon (default) or json.")
                 },
                 false)
         ];
@@ -703,22 +707,25 @@ public sealed class McpProtocolHandler
     }
 
     private static readonly string[] SendArgumentKeys =
-        ["target", "action", "args", "format"];
+        ["endpoint", "target", "action", "args", "request_id", "format"];
 
     private async Task<object> SendAsync(JsonElement arguments, CancellationToken ct)
     {
         if (arguments.ValueKind != JsonValueKind.Object)
         {
-            throw new McpArgumentException("send requires a target/action/args object.");
+            throw new McpArgumentException(
+                "send requires endpoint/action/target/args; use runs/ocr/control start texts/<document-id>/.");
         }
 
         string? validation = ValidateToolArguments("patchouli.send", arguments);
         if (validation is not null)
         {
-            throw new McpArgumentException(validation);
+            throw new McpArgumentException(validation +
+                                           " Use endpoint/action/target/args, e.g. runs/ocr/control start texts/<document-id>/; retired Agent and combination-action requests are not supported.");
         }
 
         RejectUnknownArguments(arguments, SendArgumentKeys);
+        string endpoint = RequiredString(arguments, "endpoint");
         string target = RequiredString(arguments, "target");
         string action = RequiredString(arguments, "action");
         JsonElement args = arguments.GetProperty("args");
@@ -726,13 +733,13 @@ public sealed class McpProtocolHandler
         string format = ResponseFormat(arguments);
 
         McpCommandResult<McpActionSendMeta, McpActionSendResult> result = await _commands.SendAsync(
-            new McpActionSendRequest(target, action, args), ct);
+            new McpActionSendRequest(target, action, args, endpoint, OptionalString(arguments, "request_id")), ct);
 
         if (result.Envelope is null && result.Error is not null)
         {
             string revision = await CurrentLibraryRevisionAsync(ct);
             object envelope = McpEnvelope<McpActionSendMeta, object>.Create(
-                new McpActionSendMeta(revision, action, "rejected"),
+                new McpActionSendMeta(revision, action, "rejected", endpoint),
                 [], message: new McpMessage(result.Error.ToTerminalLine(), []));
             return ToolData(RenderText(envelope, format), true);
         }

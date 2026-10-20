@@ -10,7 +10,7 @@ using Patchouli.UI.ViewModels.Agents;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Issue #19 D3: the Agent workspace page. Preset prompts are editable text only and never send; the
+/// Issue #19 D3: the Agent workspace page. Preset prompts paste into a running terminal without submission; the
 /// item picker filters one client-side snapshot and the empty states explain why no agent can start.
 /// The view model has no service-injection seam, so the database-backed cases open a real isolated
 /// runtime database (the same pattern as the library UI tests). The shared session avoids resetting
@@ -27,9 +27,28 @@ public sealed class AgentWorkspaceViewModelTests
     }
 
     [Fact]
-    public async Task Applying_a_preset_only_fills_the_composer_and_never_launches_an_agent()
+    public async Task Closing_a_page_before_launch_releases_its_uninitialized_terminal()
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            workspace.Terminal.Should().NotBeNull();
+
+            workspace.OnPageClosed();
+
+            workspace.Terminal.Should().BeNull();
+            workspace.HasActiveSession.Should().BeFalse();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Applying_a_preset_without_a_running_terminal_reports_an_error_and_never_launches()
+    {
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
@@ -43,17 +62,14 @@ public sealed class AgentWorkspaceViewModelTests
             workspace.Presets.Select(preset => preset.Template)
                 .Should().OnlyContain(template => !string.IsNullOrWhiteSpace(template));
 
-            workspace.ApplyPreset("organize");
+            await workspace.ApplyPresetAsync("organize");
 
-            workspace.InputText.Should().Be(
-                workspace.Presets.Single(preset => preset.Key == "organize").Template);
-            workspace.CanCopyInput.Should().BeTrue();
-            workspace.CanInjectInput.Should().BeFalse();
             workspace.Terminal.Should().BeNull();
             workspace.HasLaunched.Should().BeFalse();
             workspace.IsRunning.Should().BeFalse();
-            main.Status.Should().Contain("已填入预置提示词").And.Contain("自行发送");
-            main.StatusIsError.Should().BeFalse();
+            main.Status.Should().Contain("尚未运行");
+            main.StatusIsError.Should().BeTrue();
+            return true;
         }, CancellationToken.None);
     }
 
@@ -64,24 +80,24 @@ public sealed class AgentWorkspaceViewModelTests
     [InlineData("not-a-preset")]
     public async Task An_unknown_or_blank_preset_is_ignored(string? key)
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             AgentWorkspaceViewModel workspace = main.AgentWorkspace;
-            workspace.InputText = "hand-written prompt";
+            string previousStatus = main.Status;
 
-            workspace.ApplyPreset(key);
+            await workspace.ApplyPresetAsync(key);
 
-            workspace.InputText.Should().Be("hand-written prompt");
-            main.Status.Should().NotContain("已填入预置提示词");
+            main.Status.Should().Be(previousStatus);
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Without_an_open_database_the_page_reports_the_unavailable_state()
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
@@ -98,13 +114,14 @@ public sealed class AgentWorkspaceViewModelTests
             workspace.ShowSettingsShortcut.Should().BeFalse(
                 "the settings shortcut needs a host service, which does not exist yet");
             workspace.ShowRetryShortcut.Should().BeTrue();
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task The_item_picker_filters_one_snapshot_and_commits_the_selection_without_sending()
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path)
@@ -115,7 +132,7 @@ public sealed class AgentWorkspaceViewModelTests
             main.HasOpenRuntimeDatabase.Should().BeTrue();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
-            Result<ItemMetadata> first = await services.Items.CreateItemAsync("book", "机器学习基础");
+            Result<ItemMetadata> first = await services.Items.CreateItemAsync("document", "机器学习基础");
             Result<ItemMetadata> second = await services.Items.CreateItemAsync(
                 "article-journal", "深度学习综述");
             first.IsSuccess.Should().BeTrue(first.ErrorMessage);
@@ -153,23 +170,20 @@ public sealed class AgentWorkspaceViewModelTests
             AgentItemReferenceViewModel selected =
                 workspace.FilteredItems.Single(item => item.Title == "深度学习综述");
             workspace.SelectedItem = selected;
-            workspace.CommitSelectedItem();
+            await workspace.CommitSelectedItemAsync();
 
-            workspace.InputText.Should().Contain(selected.Title)
-                .And.Contain(selected.ItemIdText)
-                .And.Contain(selected.CanonicalUri)
-                .And.Contain("Item ID:");
-            workspace.IsItemPickerOpen.Should().BeFalse();
-            workspace.CanInjectInput.Should().BeFalse("committing a reference must not send it");
+            selected.ReferenceText.Should().Be($"深度学习综述 (规范 URI: {selected.CanonicalUri})");
+            workspace.IsItemPickerOpen.Should().BeTrue("a failed paste must preserve the selection");
             workspace.HasLaunched.Should().BeFalse();
-            main.Status.Should().Contain("尚未发送");
+            main.Status.Should().Contain("尚未运行");
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Disabled_settings_render_the_disabled_empty_state()
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             WriteAgentsSettings(settings, new AgentIntegrationAppSettings(false, "opencode"));
@@ -190,13 +204,14 @@ public sealed class AgentWorkspaceViewModelTests
             workspace.ConnectionStatusText.Should().Be("已停用");
             workspace.CanStart.Should().BeFalse();
             workspace.ShowSettingsShortcut.Should().BeTrue();
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task A_missing_custom_executable_renders_the_not_installed_empty_state()
     {
-        await _headless.Session.Dispatch(async () =>
+        await _headless.Session.Dispatch<bool>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             string missing = Path.Combine(Path.GetTempPath(),
@@ -220,6 +235,7 @@ public sealed class AgentWorkspaceViewModelTests
             workspace.ConnectionStatusText.Should().Be("未安装");
             workspace.CanStart.Should().BeFalse();
             workspace.ShowSettingsShortcut.Should().BeTrue();
+            return true;
         }, CancellationToken.None);
     }
 

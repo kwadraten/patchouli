@@ -1,4 +1,4 @@
-namespace Patchouli.Terminal;
+﻿namespace Patchouli.Terminal;
 
 /// <summary>
 /// Describes a process to host in an <see cref="EmbeddedTerminal"/>.
@@ -30,12 +30,12 @@ public sealed class TerminalSessionOptions
     public IReadOnlyDictionary<string, string>? EnvironmentVariables { get; init; }
 
     /// <summary>
-    /// Gets the requested starting column count. The terminal layout remains the resize authority.
+    /// Gets the fallback starting column count when layout has not provided a size.
     /// </summary>
     public int InitialCols { get; init; } = DefaultInitialCols;
 
     /// <summary>
-    /// Gets the requested starting row count. The terminal layout remains the resize authority.
+    /// Gets the fallback starting row count when layout has not provided a size.
     /// </summary>
     public int InitialRows { get; init; } = DefaultInitialRows;
 

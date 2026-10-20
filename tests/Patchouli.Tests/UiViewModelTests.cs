@@ -415,7 +415,7 @@ public sealed class UiViewModelTests : IDisposable
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "引用与题录", "同步与快照");
+            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录", "同步与快照");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
             .Where(content => content is AboutViewModel)
@@ -1643,7 +1643,7 @@ public sealed class UiViewModelTests : IDisposable
         queueXaml.Should().Contain("IsEnabled=\"{Binding HasRetryableTasks}\"");
         queueXaml.Should().Contain("ActiveTaskRows");
         queueXaml.Should().Contain("FinishedTaskRows");
-        queueXaml.Should().Contain("StatusSummary");
+        queueXaml.Should().NotContain("StatusSummary");
         queueXaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
     }
 
@@ -2712,12 +2712,13 @@ public sealed class UiViewModelTests : IDisposable
         string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
         string scanRoot = Directory
             .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
+        MainWindowViewModel? vm = null;
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
             string betaPath = TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
             await File.AppendAllTextAsync(betaPath, "\n% Distinct beta PDF content.\n");
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
@@ -2735,6 +2736,11 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (vm is not null)
+            {
+                await vm.DisposeAsync();
+            }
+
             if (Directory.Exists(scanRoot))
             {
                 Directory.Delete(scanRoot, true);
@@ -3515,7 +3521,8 @@ public sealed class UiViewModelTests : IDisposable
             McpSettingsViewModel mcp = vm.Settings.McpSettings;
             await mcp.LoadAsync();
             mcp.Port = 4567;
-            mcp.PermissionRows.Should().HaveCount(McpPermissionPolicy.Domains.Count);
+            mcp.PermissionRows.Should()
+                .HaveCount(McpPermissionPolicy.Domains.Count - McpPermissionPolicy.RunSendDomains.Count);
             mcp.PermissionRows.Should().OnlyContain(row => row.Cells.Count == McpPermissionPolicy.Verbs.Count);
             mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[1].Enabled = false;
             mcp.IsDirty.Should().BeTrue();

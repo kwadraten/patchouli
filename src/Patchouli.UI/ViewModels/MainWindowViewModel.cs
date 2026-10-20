@@ -419,6 +419,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
+    public AsyncCommand OpenProcessingSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand OpenAgentTabCommand { get; }
 
@@ -975,6 +976,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         OpenAdvancedSearchCommand = new AsyncCommand(OpenAdvancedSearchAsync);
         OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("appearance"));
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
+        OpenProcessingSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("import"));
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
         OpenAgentTabCommand = new AsyncCommand(OpenAgentTabAsync);
@@ -2849,7 +2851,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     private async Task OpenOcrQueueAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.OcrQueue, "OcrQueue", "OCR 队列", "List", true, () => OcrQueue);
+        OcrQueue.SelectedTaskType = "全部任务";
+        await ActivateTabAsync(WorkspaceTabKind.OcrQueue, "OcrQueue", "任务队列", "List", true, () => OcrQueue);
         await OcrQueue.RefreshAsync();
     }
 

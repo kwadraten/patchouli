@@ -504,7 +504,10 @@ public sealed class OcrHostCommandIndependentTests
             using McpHttpClient client = new(server.Endpoint, null);
             await client.InitializeAsync();
             CliToolCall start = CliArguments.BuildToolCall("send",
-                [$"patchouli://texts/{context.DocumentId}/", "ocr.start", "--args", """{"engine":"mock"}"""], true);
+            [
+                "runs/ocr/control", "start", $"patchouli://texts/{context.DocumentId}/", "--args",
+                """{"engine":"mock"}"""
+            ], true);
 
             CliToolResponse response = await client.CallToolAsync(start.Tool, start.Arguments);
 
@@ -532,7 +535,10 @@ public sealed class OcrHostCommandIndependentTests
             using McpHttpClient client = new(server.Endpoint, null);
             await client.InitializeAsync();
             CliToolCall start = CliArguments.BuildToolCall("send",
-                [$"patchouli://texts/{context.DocumentId}/", "ocr.start", "--args", """{"engine":"mock"}"""], true);
+            [
+                "runs/ocr/control", "start", $"patchouli://texts/{context.DocumentId}/", "--args",
+                """{"engine":"mock"}"""
+            ], true);
 
             CliToolResponse response = await client.CallToolAsync(start.Tool, start.Arguments);
 
@@ -559,10 +565,10 @@ public sealed class OcrHostCommandIndependentTests
         try
         {
             string target = JsonSerializer.Serialize($"patchouli://texts/{context.DocumentId}/");
-            string duplicate = field switch { "target" => target, "action" => "\"ocr.start\"", _ => "{}" };
+            string duplicate = field switch { "target" => target, "action" => "\"start\"", _ => "{}" };
             string request =
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.send\",\"arguments\":{\"target\":"
-                + target + ",\"action\":\"ocr.start\",\"args\":{},\"format\":\"json\","
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.send\",\"arguments\":{\"endpoint\":\"runs/ocr/control\",\"target\":"
+                + target + ",\"action\":\"start\",\"args\":{},\"format\":\"json\","
                 + JsonSerializer.Serialize(field) + ":" + duplicate + "}}}";
             using HttpClient client = new();
             using HttpResponseMessage response = await client.PostAsync(server.Endpoint,
@@ -592,8 +598,7 @@ public sealed class OcrHostCommandIndependentTests
         {
             DomainPermissions =
             [
-                new McpDomainPermission("texts", "ocr.start", true),
-                new McpDomainPermission("runs", "ocr.cancel", true), new McpDomainPermission("runs", "ocr.retry", true)
+                new McpDomainPermission("runs/ocr", "send", true)
             ]
         });
         server.IsRunning.Should().BeTrue();
@@ -613,8 +618,8 @@ public sealed class OcrHostCommandIndependentTests
         {
             DomainPermissions =
             [
-                new McpDomainPermission("texts", "ocr.start", true),
-                new McpDomainPermission("runs", "ocr.cancel", true), new McpDomainPermission("runs", "ocr.retry", true)
+                new McpDomainPermission("runs/ocr", "send", true),
+                new McpDomainPermission("runs/translation", "send", true)
             ]
         };
         McpServerHost server = new(context.Services, (_, _, _) => { });
@@ -626,8 +631,8 @@ public sealed class OcrHostCommandIndependentTests
             await client.InitializeAsync();
             CliToolCall start = CliArguments.BuildToolCall("send",
             [
-                $"patchouli://texts/{context.DocumentId}/", "ocr.start", "--args",
-                """{"pages":"2","engine":"mock","request_id":"http-cli"}"""
+                "runs/ocr/control", "start", $"patchouli://texts/{context.DocumentId}/", "--args",
+                """{"pages":"2","engine":"mock"}""", "--request-id", "http-cli"
             ], true);
 
             CliToolResponse accepted = await client.CallToolAsync(start.Tool, start.Arguments);
@@ -663,6 +668,33 @@ public sealed class OcrHostCommandIndependentTests
             using JsonDocument bodyEnvelope = JsonDocument.Parse(body.Text);
             bodyEnvelope.RootElement.GetProperty("entries")[0].GetProperty("content").GetString()
                 .Should().Contain("<box");
+
+            CliToolCall translationStart = CliArguments.BuildToolCall("send",
+            [
+                "runs/translation/control", "start", $"texts/{context.DocumentId}/", "--pages", "2",
+                "--target-language", "zh-CN", "--force", "false", "--request-id", "http-translation"
+            ], true);
+            CliToolResponse translationAccepted =
+                await client.CallToolAsync(translationStart.Tool, translationStart.Arguments);
+            translationAccepted.IsError.Should().BeFalse(translationAccepted.Text);
+            using JsonDocument translationReceipt = JsonDocument.Parse(translationAccepted.Text);
+            string translationStatus = translationReceipt.RootElement.GetProperty("entries")[0].GetProperty("run_uri")
+                .GetString()!;
+            CliToolResponse translationReplay =
+                await client.CallToolAsync(translationStart.Tool, translationStart.Arguments);
+            translationReplay.IsError.Should().BeFalse(translationReplay.Text);
+            using JsonDocument replayReceipt = JsonDocument.Parse(translationReplay.Text);
+            replayReceipt.RootElement.GetProperty("entries")[0].GetProperty("result").GetProperty("reused").GetBoolean()
+                .Should().BeTrue();
+            replayReceipt.RootElement.GetProperty("entries")[0].GetProperty("run_uri").GetString().Should()
+                .Be(translationStatus);
+            CliToolCall translationFetch = CliArguments.BuildToolCall("fetch", [translationStatus], true);
+            (await client.CallToolAsync(translationFetch.Tool, translationFetch.Arguments)).IsError.Should().BeFalse();
+            CliToolCall translationCancel = CliArguments.BuildToolCall("send",
+                ["runs/translation/control", "cancel", translationStatus[..^"status".Length]], true);
+            CliToolResponse translationCancelled =
+                await client.CallToolAsync(translationCancel.Tool, translationCancel.Arguments);
+            translationCancelled.IsError.Should().BeFalse(translationCancelled.Text);
         }
         finally
         {

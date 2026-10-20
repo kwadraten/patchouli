@@ -68,8 +68,8 @@ public sealed class McpServerSettingsTests
         });
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
         loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false),
-            new McpDomainPermission("texts", "ocr.start", false), new McpDomainPermission("runs", "ocr.cancel", false),
-            new McpDomainPermission("runs", "ocr.retry", false));
+            new McpDomainPermission("runs/ocr", "send", false),
+            new McpDomainPermission("runs/translation", "send", false));
     }
 
     [Fact]

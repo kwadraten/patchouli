@@ -7,6 +7,8 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Infrastructure.Layout;
+using Patchouli.Infrastructure.Ocr;
+using Patchouli.Ocr;
 using Patchouli.Infrastructure.Translation;
 
 namespace Patchouli.Tests;
@@ -18,6 +20,123 @@ namespace Patchouli.Tests;
 /// </summary>
 public sealed class TranslationRunEngineTests
 {
+    private sealed class HeldOcrExecutor : IOcrQueueTaskExecutor
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+            IProgress<OcrTaskProgressReport>? progress = null)
+        {
+            Started.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return new OcrQueueExecutionResult(true, false);
+        }
+    }
+
+    [Fact]
+    public async Task Translation_and_ocr_execute_simultaneously_and_ocr_pause_does_not_block_translation()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        HeldOcrExecutor executor = new();
+        OcrQueueScheduler scheduler = new(LibraryId.New(), context.Clock, executor);
+        TaskCompletionSource modelStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource modelRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeInvoker invoker = new(async (batch, _, cancellationToken) =>
+        {
+            modelStarted.TrySetResult();
+            await modelRelease.Task.WaitAsync(cancellationToken);
+            return Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => "translated"));
+        });
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        Task<TranslationRunResult> translation = Engine(context, invoker).RunAsync(
+            Request(context, Settings(), Target(context.PageId, 1)), null, timeout.Token);
+        await modelStarted.Task.WaitAsync(timeout.Token);
+        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(context.DocumentId, OcrPresetId.New(),
+            [context.PageId], OcrQueuePriority.UserStartedDocument);
+        try
+        {
+            await scheduler.RunOneSchedulingTickAsync();
+            await executor.Started.Task.WaitAsync(timeout.Token);
+            translation.IsCompleted.Should().BeFalse("the model is still running while OCR executes");
+            await scheduler.PauseAsync(OcrPauseScope.Global);
+            modelRelease.TrySetResult();
+            TranslationRunResult result = await translation.WaitAsync(timeout.Token);
+            result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Committed);
+            (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value
+                .Single(task => task.TaskId == queued.Value.TaskId).State.Should().Be(OcrQueueTaskState.Running);
+        }
+        finally
+        {
+            modelRelease.TrySetResult();
+            executor.Release.TrySetResult();
+            await scheduler.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Pausing_between_batches_allows_inflight_result_but_blocks_next_model_dispatch()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "first"),
+            TextSeed(DocumentBoxId.New(), 1, "second"));
+        TranslationExecutionGate gate = new();
+        TaskCompletionSource firstCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int calls = 0;
+        FakeInvoker invoker = new((batch, _, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                gate.SetPaused(true);
+                firstCompleted.TrySetResult();
+            }
+
+            return Task.FromResult(
+                Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => "translated")));
+        });
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        Task<TranslationRunResult> run = Engine(context, invoker).RunAsync(
+            Request(context, Settings(1, 1), Target(context.PageId, 1)), null, timeout.Token, gate);
+        await firstCompleted.Task.WaitAsync(timeout.Token);
+        calls.Should().Be(1);
+        run.IsCompleted.Should().BeFalse();
+        gate.SetPaused(false);
+        TranslationRunResult result = await run.WaitAsync(timeout.Token);
+        calls.Should().Be(2);
+        result.Pages.Single().State.Should().Be(TranslationPageRunState.Committed);
+    }
+
+    [Fact]
+    public async Task Html_table_is_sent_whole_translated_committed_and_read_back_without_changing_source()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId tableId = DocumentBoxId.New();
+        const string html =
+            "<table><tr><th>Metric</th><th>Value</th></tr><tr><td>Accuracy</td><td>95%</td></tr></table>";
+        const string translated = "| 指标 | 数值 |\n| --- | --- |\n| 准确率 | 95% |";
+        DocumentTreeRevision revision =
+            await context.CommitAsync(Seed(tableId, 0, DocumentBoxType.Table, new TableBoxPayload("[Table]", html)));
+        FakeInvoker invoker = new((batch, _, _) =>
+        {
+            batch.Segments.Should().ContainSingle();
+            batch.Segments[0].Text.Should().Be(html, "the raw table must reach the model instead of a placeholder");
+            return Task.FromResult(Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => translated)));
+        });
+        TranslationRunResult result = await Engine(context, invoker).RunAsync(Request(context,
+            Settings() with { MaxBatchCharacters = 16 }, Target(context.PageId, 1)));
+        result.Pages.Single().State.Should().Be(TranslationPageRunState.Committed);
+        (await context.ListTranslationRowsAsync()).Single().TranslatedMd.Should().Be(translated);
+        TableBoxPayload? source = (await context.ListBoxesAsync(revision.TreeRevisionId)).Single().Payload.Should()
+            .BeOfType<TableBoxPayload>().Subject;
+        source.Markdown.Should().Be("[Table]");
+        source.Html.Should().Be(html);
+        Result<TranslatedPageMarkdown> compiled =
+            await context.TranslationCompiler.CompilePageTranslationAsync(context.PageId, revision.TreeRevisionId, 1);
+        compiled.IsSuccess.Should().BeTrue(compiled.ErrorMessage);
+        compiled.Value.Markdown.Should().Contain("准确率").And.NotContain("[Table]");
+    }
+
     [Fact]
     public async Task A_committed_page_keeps_payload_types_table_html_and_annotations()
     {

@@ -29,7 +29,7 @@ public sealed class McpRunsAndSendTests
             [
                 new McpDomainPermission("texts", "find", false), new McpDomainPermission("texts", "fetch", false),
                 new McpDomainPermission("translations", "put", false), new McpDomainPermission("items", "cite", false),
-                new McpDomainPermission("runs", "ocr.cancel", false)
+                new McpDomainPermission("runs/ocr", "send", false)
             ]
         };
         McpServerSettings[] currentSettings = [settings];
@@ -46,10 +46,10 @@ public sealed class McpRunsAndSendTests
         (await commands.CiteAsync(new McpCiteRequest(["patchouli://items/item.bib"], null, null, false, false))).Error!
             .Name.Should().Be("PERMISSION_DENIED");
         (await commands.SendAsync(new McpActionSendRequest("patchouli://texts/11111111-1111-1111-1111-111111111111/",
-                "ocr.start", JsonSerializer.SerializeToElement(new { })))).Error!.Name.Should()
+                "start", JsonSerializer.SerializeToElement(new { }), "runs/ocr/control"))).Error!.Name.Should()
             .Be("PERMISSION_DENIED");
         (await commands.SendAsync(new McpActionSendRequest("patchouli://runs/ocr/22222222-2222-2222-2222-222222222222/",
-                "ocr.cancel", JsonSerializer.SerializeToElement(new { }))))
+                "cancel", JsonSerializer.SerializeToElement(new { }), "runs/ocr/control")))
             .Error!.Name.Should().Be("PERMISSION_DENIED");
         writes.CallCount.Should().Be(0);
         McpCommandResult<McpFindMeta, object> root = await commands.FindAsync(new McpFindRequest(null, null, null));
@@ -81,7 +81,7 @@ public sealed class McpRunsAndSendTests
     }
 
     [Fact]
-    public async Task Root_discovery_lists_action_and_existing_domain_directories_and_library_file()
+    public async Task Root_discovery_lists_existing_domain_directories_and_library_file()
     {
         McpCommandService commands = CreateService(new StubReadApi());
 
@@ -92,8 +92,8 @@ public sealed class McpRunsAndSendTests
         result.Envelope!.Continuation.Should().BeNull();
         result.Envelope.Message.Should().BeNull();
         List<McpFindEntry> entries = result.Envelope.Entries.Cast<McpFindEntry>().ToList();
-        entries.Should().HaveCount(7);
-        entries.Count(entry => entry.Type == "directory").Should().Be(6);
+        entries.Should().HaveCount(6);
+        entries.Count(entry => entry.Type == "directory").Should().Be(5);
         entries.Count(entry => entry.Type == "file").Should().Be(1);
         entries.Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
@@ -101,11 +101,10 @@ public sealed class McpRunsAndSendTests
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
-            "patchouli://actions/",
             "patchouli://library.yml");
-        result.Envelope.Meta.DomainTotal.Should().Be(7);
-        result.Envelope.Meta.FilteredTotal.Should().Be(7);
-        result.Envelope.Meta.ShownTotal.Should().Be(7);
+        result.Envelope.Meta.DomainTotal.Should().Be(6);
+        result.Envelope.Meta.FilteredTotal.Should().Be(6);
+        result.Envelope.Meta.ShownTotal.Should().Be(6);
     }
 
     [Fact]
@@ -211,24 +210,23 @@ public sealed class McpRunsAndSendTests
         {
             DomainPermissions =
             [
-                new McpDomainPermission("texts", "translation.start", true),
-                new McpDomainPermission("runs", "translation.cancel", true)
+                new McpDomainPermission("runs/translation", "send", true)
             ]
         };
         McpCommandService commands = CreateService(new StubReadApi(), translation: translation,
             permissions: _ => Task.FromResult(settings));
 
         McpCommandResult<McpFindMeta, object> actions = await commands.FindAsync(
-            new McpFindRequest(null, "patchouli://actions/", null));
+            new McpFindRequest(null, "patchouli://runs/translation/", null));
         actions.Envelope!.Entries.Cast<McpFindEntry>().Select(entry => entry.Title).Should()
-            .Contain(["translation.start", "translation.cancel"]);
+            .Contain("control");
 
         McpCommandResult<McpActionSendMeta, McpActionSendResult> started = await commands.SendAsync(
             new McpActionSendRequest(McpResourceUris.DocumentUri(new DocumentInstanceId(documentId)),
-                "translation.start", JsonSerializer.SerializeToElement(new
+                "start", JsonSerializer.SerializeToElement(new
                 {
                     pages = "1,3-5", target_language = "zh", force = true
-                })));
+                }), "runs/translation/control"));
 
         started.Error.Should().BeNull();
         McpActionSendResult startEntry = started.Envelope!.Entries.Should().ContainSingle().Subject;
@@ -241,8 +239,8 @@ public sealed class McpRunsAndSendTests
         request.ForceRetranslate.Should().BeTrue();
 
         McpCommandResult<McpActionSendMeta, McpActionSendResult> cancelled = await commands.SendAsync(
-            new McpActionSendRequest(McpResourceUris.TranslationRunStatusUri(RunId), "translation.cancel",
-                JsonSerializer.SerializeToElement(new { })));
+            new McpActionSendRequest(McpResourceUris.TranslationRunStatusUri(RunId), "cancel",
+                JsonSerializer.SerializeToElement(new { }), "runs/translation/control"));
 
         cancelled.Error.Should().BeNull();
         cancelled.Envelope!.Entries.Should().ContainSingle().Which.State.Should().Be("completed");
@@ -278,15 +276,15 @@ public sealed class McpRunsAndSendTests
         McpCommandService commands = CreateService(new StubReadApi(), ocr, sendEnabled: false);
 
         McpCommandResult<McpActionSendMeta, McpActionSendResult> denied = await commands.SendAsync(
-            new McpActionSendRequest("patchouli://runs/ocr/22222222-2222-2222-2222-222222222222/", "ocr.cancel",
-                JsonSerializer.SerializeToElement(new { })));
+            new McpActionSendRequest("patchouli://runs/ocr/22222222-2222-2222-2222-222222222222/", "cancel",
+                JsonSerializer.SerializeToElement(new { }), "runs/ocr/control"));
         denied.Error.Should().NotBeNull();
         denied.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
         denied.Error.Name.Should().Be("PERMISSION_DENIED");
 
         McpCommandResult<McpFindMeta, object> find = await commands.FindAsync(new McpFindRequest(null, null, null));
         find.IsSuccess.Should().BeTrue();
-        find.Envelope!.Entries.Should().HaveCount(7);
+        find.Envelope!.Entries.Should().HaveCount(6);
 
         McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.OcrRunStatusUri("task-1")], null, null));

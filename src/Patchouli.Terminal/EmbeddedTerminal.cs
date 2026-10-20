@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Iciclecreek.Terminal;
@@ -116,7 +116,7 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
     /// <remarks>
     /// Iciclecreek.Avalonia.Terminal has no public PTY resize API: subsequent size changes are
     /// driven by the control's layout, not by <see cref="TerminalSessionOptions.InitialCols"/> and
-    /// <see cref="TerminalSessionOptions.InitialRows"/>, which only seed the grid before launch.
+    /// <see cref="TerminalSessionOptions.InitialRows"/>, which only seed the grid when no layout size is available.
     /// </remarks>
     public async Task StartAsync(TerminalSessionOptions options, CancellationToken cancellationToken = default)
     {
@@ -167,13 +167,14 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
         _pid = 0;
         _started = true;
 
-        // Known limitation: Iciclecreek.Avalonia.Terminal 4.1.0 exposes no method that resizes
-        // the PTY directly. The grid follows the control's measured size, so the host panel or
-        // window is the resize authority. InitialCols/InitialRows seed the emulator grid just
-        // before launch; a later layout pass may replace that seed. To support an exact size,
-        // size the hosting panel before calling StartAsync.
-        // See .tmp/spike-terminal/REPORT.md sections 4.3 and 6.5.
-        ApplyInitialGrid(options.InitialCols, options.InitialRows);
+        // LaunchProcess takes the PTY dimensions from the emulator. Preserve the grid
+        // calculated by layout: replacing it with the default 120x30 here also starts
+        // full-screen applications at that smaller size, without another layout to fix it.
+        UpdateLayout();
+        if (_terminal.Bounds.Width <= 0 || _terminal.Bounds.Height <= 0)
+        {
+            ApplyInitialGrid(options.InitialCols, options.InitialRows);
+        }
 
         try
         {
@@ -194,7 +195,7 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
     /// </summary>
     public void Stop()
     {
-        if (_disposed)
+        if (_disposed || !IsRunning)
         {
             return;
         }
@@ -306,6 +307,21 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
             : _terminal.SendInputAsync(text, cancellationToken);
     }
 
+    /// <summary>Pastes text without submitting it, honoring the application's bracketed-paste mode.</summary>
+    public Task PasteTextAsync(string text, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        if (string.IsNullOrEmpty(text) || !IsRunning)
+        {
+            return Task.CompletedTask;
+        }
+
+        string input = _terminal.Terminal.BracketedPasteMode
+            ? $"\u001b[200~{text}\u001b[201~"
+            : text;
+        return _terminal.SendInputAsync(input, cancellationToken);
+    }
+
     /// <summary>
     /// Captures the visible terminal contents, including the active alternate screen. Useful for
     /// diagnostics and assertions; it is not a complete scrollback dump.
@@ -353,15 +369,6 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
         _started = false;
         _terminal.OutputReceived -= OnTerminalOutputReceived;
         _terminal.ProcessExited -= OnTerminalProcessExited;
-
-        try
-        {
-            _terminal.Kill();
-        }
-        catch (InvalidOperationException)
-        {
-            // The process already exited.
-        }
 
         try
         {

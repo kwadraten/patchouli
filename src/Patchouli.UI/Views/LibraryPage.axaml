@@ -7,6 +7,21 @@
              xmlns:converters="using:Avalonia.Data.Converters"
              x:DataType="vm:LibraryShellViewModel">
   <UserControl.Styles>
+    <Style Selector="Path.LibraryLoadingSpinner.spinning">
+      <Style.Animations>
+        <Animation Duration="0:0:0.85" IterationCount="Infinite">
+          <KeyFrame Cue="0%">
+            <Setter Property="RotateTransform.Angle" Value="0" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="RotateTransform.Angle" Value="360" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
+    <Style Selector="DataGrid.refreshing">
+      <Setter Property="Opacity" Value="0.4" />
+    </Style>
     <Style Selector="TextBlock.ListHeader">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="SemiBold" />
@@ -213,6 +228,7 @@
     </Border>
     <Grid Grid.Column="1">
       <DataGrid x:Name="LibraryGrid" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
+                IsEnabled="{Binding !IsRefreshingItems}" Classes.refreshing="{Binding IsRefreshingItems}"
                 SelectionMode="Extended" SelectionChanged="OnDataGridSelectionChanged"
                 CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="False"
                 IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped"
@@ -242,11 +258,13 @@
                 </MultiBinding>
               </MenuItem.IsVisible>
             </MenuItem>
-            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}"
-                      ToolTip.Tip="翻译所选题录主文档的全部页面" />
+            <MenuItem Header="文献加工" IsVisible="{Binding Sidebar.IsActiveSelected}">
+              <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}"
+                        ToolTip.Tip="翻译所选题录主文档的全部页面" />
+            </MenuItem>
             <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
                       IsEnabled="{Binding HasCollections}" ItemsSource="{Binding CollectionContextItems}"
                       x:CompileBindings="False">
@@ -348,6 +366,20 @@
                               Width="150" />
         </DataGrid.Columns>
       </DataGrid>
+      <Border x:Name="LibraryLoadingOverlay" IsVisible="{Binding IsRefreshingItems}"
+              Background="#30808080" Cursor="Wait" ZIndex="2">
+        <Grid Width="36" Height="36" HorizontalAlignment="Center" VerticalAlignment="Center"
+              AutomationProperties.Name="正在加载书库列表">
+          <Ellipse Stroke="{DynamicResource OutlineVariantBrush}" StrokeThickness="3" />
+          <Path Classes="LibraryLoadingSpinner" Classes.spinning="{Binding IsRefreshingItems}"
+                Data="M 18,2 A 16,16 0 0 1 34,18" Stroke="{DynamicResource PrimaryBrush}"
+                StrokeThickness="3" StrokeLineCap="Round" RenderTransformOrigin="50%,50%">
+            <Path.RenderTransform>
+              <RotateTransform Angle="0" />
+            </Path.RenderTransform>
+          </Path>
+        </Grid>
+      </Border>
       <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Padding="12,6"
               CornerRadius="6" Background="{DynamicResource SurfaceContainerHighBrush}"
               IsVisible="{Binding IsLoadingMoreItems}">

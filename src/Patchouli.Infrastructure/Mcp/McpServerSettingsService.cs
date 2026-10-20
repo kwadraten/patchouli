@@ -248,11 +248,8 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     }
 
     /// <summary>
-    /// Issue #11 §11 & Issue #16: old settings files predate patchouli.add/patchouli.view/ocr action verbs.
-    /// The permission model is deny-list based (missing entry = allowed) for legacy verbs, while
-    /// ocr action verbs (ocr.start, ocr.cancel, ocr.retry) require explicit grants.
-    /// The migration writes explicit disabled entries; users opt in via the settings UI.
-    /// Legacy patchouli.ocr and unnamespaced ocr rows are removed.
+    /// New send subdomains require explicit grants. Retired Agent/action permissions never
+    /// promote to endpoint permissions; missing children are materialized as disabled.
     /// </summary>
     private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
     {
@@ -281,18 +278,18 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             changed = true;
         }
 
-        (string Domain, string Verb)[] requiredActionRows =
-        [
-            ("texts", "ocr.start"),
-            ("runs", "ocr.cancel"),
-            ("runs", "ocr.retry")
-        ];
-
-        foreach ((string domain, string verb) in requiredActionRows)
+        // New send domains are opt-in. A parent or retired action grant cannot promote them.
+        if (permissions.RemoveAll(value =>
+                value.Verb == "send" && !McpPermissionPolicy.RunSendDomains.Contains(value.Domain)) > 0)
         {
-            if (permissions.All(value => !(value.Domain == domain && value.Verb == verb)))
+            changed = true;
+        }
+
+        foreach (string domain in McpPermissionPolicy.RunSendDomains)
+        {
+            if (permissions.All(value => value.Domain != domain || value.Verb != "send"))
             {
-                permissions.Add(new McpDomainPermission(domain, verb, false));
+                permissions.Add(new McpDomainPermission(domain, "send", false));
                 changed = true;
             }
         }

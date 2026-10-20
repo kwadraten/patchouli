@@ -123,7 +123,7 @@ public sealed partial class McpCommandService
     public async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteAsync(McpCiteRequest request,
         CancellationToken cancellationToken = default)
     {
-        return WithLegacyWarnings(await CiteThroughRegistryAsync(request, cancellationToken), request.Refs ?? [],
+        return WithLegacyWarnings(await CiteCoreAsync(request, cancellationToken), request.Refs ?? [],
             new McpCiteMeta("lib:0", null, null, "text", null));
     }
 
@@ -674,7 +674,7 @@ public sealed partial class McpCommandService
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
-            or McpUriKind.ActionsScope or McpUriKind.Action)
+            or McpUriKind.RunEndpoint)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
@@ -996,7 +996,7 @@ public sealed partial class McpCommandService
 
         McpFetchResult fetched = parsed.Value.Kind switch
         {
-            McpUriKind.Action or McpUriKind.ActionsScope => await FetchActionDescriptionAsync(parsed.Value,
+            McpUriKind.RunEndpoint => await FetchEndpointDescriptionAsync(parsed.Value,
                 range, limitBytes, state, cancellationToken),
             McpUriKind.Item => await FetchItemAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Document => await FetchDocumentAsync(parsed.Value, range, limitBytes, state, cancellationToken),
@@ -1737,17 +1737,6 @@ public sealed partial class McpCommandService
     {
         switch (kind)
         {
-            case McpUriKind.ActionsScope:
-            {
-                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
-                object[] all = VisibleActions(permissions).Select(value => (object)new McpFindEntry(
-                    McpResourceUris.ActionUri(value.Id), value.Id, "file")).ToArray();
-                object[] entries = all.Skip(offset).Take(limit).ToArray();
-                string? next = offset + entries.Length < all.Length
-                    ? EncodeCursor(scopeUri, null, false, null, offset + entries.Length, null)
-                    : null;
-                return new FindPage(entries, next, all.Length, all.Length);
-            }
             case McpUriKind.ItemsScope:
             {
                 Result<McpBrowseItemPage> page = await _read.BrowseItemsAsync(offset, limit, where,
@@ -1867,18 +1856,14 @@ public sealed partial class McpCommandService
 
             case McpUriKind.RunsOcrScope:
             {
-                if (_ocrRuns is null)
-                {
-                    return FindPage.Failed(McpErrorCode.Unavailable,
-                        "OCR run projections are unavailable on this host.");
-                }
-
-                Result<IReadOnlyList<McpOcrTaskStatusProjection>> tasks =
-                    await _ocrRuns.ListTasksAsync(cancellationToken);
+                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+                Result<IReadOnlyList<McpOcrTaskStatusProjection>> tasks = _ocrRuns is null
+                    ? Result<IReadOnlyList<McpOcrTaskStatusProjection>>.Success([])
+                    : await _ocrRuns.ListTasksAsync(cancellationToken);
                 if (tasks.IsFailure)
                 {
                     return FindPage.Failed(McpErrorMappings.ToReadError(tasks.ErrorCode),
-                        tasks.ErrorMessage ?? tasks.ErrorCode ?? "List OCR tasks failed.");
+                        tasks.ErrorMessage ?? "Cannot list runs.");
                 }
 
                 object[] all = tasks.Value
@@ -1886,6 +1871,10 @@ public sealed partial class McpCommandService
                         McpResourceUris.OcrRunStatusUri(task.TaskId),
                         string.IsNullOrWhiteSpace(task.ItemTitle) ? task.TaskId : task.ItemTitle,
                         "file"))
+                    .Concat(EndpointVisible(permissions, Core.Actions.RunEndpointCatalog.Uri("ocr"))
+                        ? new object[]
+                            { new McpFindEntry(Core.Actions.RunEndpointCatalog.Uri("ocr"), "control", "endpoint") }
+                        : [])
                     .ToArray();
                 object[] page = all.Skip(offset).Take(limit).ToArray();
                 string? continuation = offset + page.Length < all.Length
@@ -1896,18 +1885,14 @@ public sealed partial class McpCommandService
 
             case McpUriKind.RunsTranslationScope:
             {
-                if (_translationRuns is null)
-                {
-                    return FindPage.Failed(McpErrorCode.Unavailable,
-                        "Translation run projections are unavailable on this host.");
-                }
-
-                Result<IReadOnlyList<McpTranslationRunStatusProjection>> runs =
-                    await _translationRuns.ListRunsAsync(cancellationToken);
+                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+                Result<IReadOnlyList<McpTranslationRunStatusProjection>> runs = _translationRuns is null
+                    ? Result<IReadOnlyList<McpTranslationRunStatusProjection>>.Success([])
+                    : await _translationRuns.ListRunsAsync(cancellationToken);
                 if (runs.IsFailure)
                 {
                     return FindPage.Failed(McpErrorMappings.ToReadError(runs.ErrorCode),
-                        runs.ErrorMessage ?? runs.ErrorCode ?? "List translation runs failed.");
+                        runs.ErrorMessage ?? "Cannot list runs.");
                 }
 
                 object[] all = runs.Value
@@ -1915,6 +1900,12 @@ public sealed partial class McpCommandService
                         McpResourceUris.TranslationRunStatusUri(run.TaskId),
                         string.IsNullOrWhiteSpace(run.DocumentId) ? run.TaskId : run.DocumentId,
                         "file"))
+                    .Concat(EndpointVisible(permissions, Core.Actions.RunEndpointCatalog.Uri("translation"))
+                        ? new object[]
+                        {
+                            new McpFindEntry(Core.Actions.RunEndpointCatalog.Uri("translation"), "control", "endpoint")
+                        }
+                        : [])
                     .ToArray();
                 object[] page = all.Skip(offset).Take(limit).ToArray();
                 string? continuation = offset + page.Length < all.Length
@@ -2130,13 +2121,14 @@ public sealed partial class McpCommandService
     {
         switch (target.Kind)
         {
-            case McpUriKind.Action:
+            case McpUriKind.RunEndpoint:
             {
                 McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
-                return VisibleActions(permissions).Any(value => value.Id == target.ActionId)
-                    ? new SingletonResource(target.CanonicalUri, target.ActionId!, "file", false)
+                return EndpointVisible(permissions, target.CanonicalUri)
+                    ? new SingletonResource(target.CanonicalUri, "control", "endpoint", false)
                     : null;
             }
+
             case McpUriKind.Item:
             {
                 Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(target.ItemId!.Value,
@@ -2668,12 +2660,9 @@ public sealed partial class McpCommandService
             new("patchouli://translations/", "/translations", "directory"),
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
-            new(McpResourceUris.LibraryUri(), "/library.yml", "file"),
-            new(McpResourceUris.ActionsScopeUri(), "/actions", "directory")
+            new(McpResourceUris.LibraryUri(), "/library.yml", "file")
         ];
-        all = all.Where(entry => Allowed(permissions, "find", entry.Uri) &&
-                                 (entry.Uri != McpResourceUris.ActionsScopeUri() ||
-                                  VisibleActions(permissions).Count > 0)).ToArray();
+        all = all.Where(entry => Allowed(permissions, "find", entry.Uri)).ToArray();
         int from = Math.Clamp(offset, 0, all.Length);
         object[] page = all.Skip(from).Take(limit).Cast<object>().ToArray();
         string? continuation = from + page.Length < all.Length
@@ -2740,7 +2729,7 @@ public sealed partial class McpCommandService
             return null;
         }
 
-        if (kind is McpUriKind.Library or McpUriKind.ActionsScope or McpUriKind.Action)
+        if (kind is McpUriKind.Library or McpUriKind.RunEndpoint)
         {
             if (!string.IsNullOrWhiteSpace(query))
             {
@@ -2803,7 +2792,7 @@ public sealed partial class McpCommandService
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
             or McpUriKind.RunOcrStatus or McpUriKind.RunTranslationStatus
-            or McpUriKind.DocumentMap or McpUriKind.Action;
+            or McpUriKind.DocumentMap or McpUriKind.RunEndpoint;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,

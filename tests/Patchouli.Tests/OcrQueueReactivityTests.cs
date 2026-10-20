@@ -6,9 +6,16 @@ using Microsoft.Reactive.Testing;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Core.Translation;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
 using Avalonia.Headless;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Patchouli.Core.Bibliography;
+using Patchouli.Core.Documents;
+using Patchouli.UI.Views;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
@@ -23,6 +30,228 @@ public sealed class OcrQueueReactivityTests : IDisposable
     public void Dispose()
     {
         _settings.Dispose();
+    }
+
+    private static TranslationRunStatus Translation(TranslationRunLifecycle state = TranslationRunLifecycle.Running)
+    {
+        return new TranslationRunStatus(Guid.NewGuid(), DocumentInstanceId.New(), state, 4,
+            state == TranslationRunLifecycle.Running ? 1 : 4, 1, 0, 0, 0, 0, []);
+    }
+
+    private sealed class TranslationService : ITranslationRunService
+    {
+        public int Cancellations { get; private set; }
+
+        public Task<Result<TranslationRunStatus>> StartAsync(TranslationRunStartRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<TranslationRunStatus>.Success(Translation()));
+        }
+
+        public Task<Result<IReadOnlyList<TranslationRunStatus>>> ListAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<TranslationRunStatus>>.Success([]));
+        }
+
+        public Task<Result<TranslationRunStatus>> GetAsync(Guid runId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<TranslationRunStatus>.Success(Translation() with { RunId = runId }));
+        }
+
+        public Task<Result<TranslationRunStatus>> CancelAsync(Guid runId, CancellationToken cancellationToken = default)
+        {
+            Cancellations++;
+            return GetAsync(runId, cancellationToken);
+        }
+    }
+
+    [Fact]
+    public void Task_type_filter_updates_counts_preserves_running_rows_and_resets_on_library_detach()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        OcrQueueViewModel queue = main.OcrQueue;
+        TranslationService service = new();
+        TranslationRunStatus running = Translation();
+        TranslationRunStatus finished = Translation(TranslationRunLifecycle.Completed);
+        queue.UpdateTranslations([running, finished], service);
+        OcrQueueTaskViewModel row = queue.ActiveTaskRows.Single();
+        row.TaskTypeText.Should().Be("翻译");
+        row.ProgressValue.Should().Be(25);
+        row.SupportsPause.Should().BeFalse();
+        row.CancelCommand.CanExecute(null).Should().BeTrue();
+        queue.SelectedTaskType = "OCR";
+        queue.ActiveTaskCount.Should().Be(0);
+        queue.FinishedTaskCount.Should().Be(0);
+        queue.NoActiveTasks.Should().BeTrue();
+        queue.SelectedTaskType = "翻译";
+        queue.ActiveTaskRows.Single().Should().BeSameAs(row);
+        queue.ActiveTabHeader.Should().Be("进行中 (1)");
+        queue.FinishedTabHeader.Should().Be("已完成 (1)");
+        queue.UpdateTranslations(
+            [running with { State = TranslationRunLifecycle.Failed, ErrorMessage = "model unavailable" }, finished],
+            service);
+        queue.ActiveTaskCount.Should().Be(0);
+        queue.FinishedTaskCount.Should().Be(2);
+        queue.FinishedTaskRows.Should().Contain(task => task.ErrorText == "model unavailable" && !task.CanRetry);
+        queue.HasRetryableTasks.Should().BeFalse();
+        queue.DetachLibraryContext();
+        queue.SelectedTaskType = "全部任务";
+        queue.ActiveTaskRows.Should().BeEmpty();
+        queue.FinishedTaskRows.Should().BeEmpty();
+        service.Cancellations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Ocr_controls_and_refresh_keep_translation_tasks_independent()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            await using MainWindowViewModel main =
+                WithRuntimeDatabasePath(CreateMainWindow(), _settings.CreateDatabasePath("mixed-task-queue"));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+            await scheduler.PauseAsync(OcrPauseScope.Global);
+            (await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
+                OcrQueuePriority.UserStartedDocument)).IsSuccess.Should().BeTrue();
+            OcrQueueViewModel queue = main.OcrQueue;
+            await queue.RefreshAsync();
+            TranslationService translations = new();
+            TranslationRunStatus running = Translation();
+            queue.UpdateTranslations([running], translations);
+            queue.ActiveTaskRows.Should().HaveCount(2);
+            await queue.StopCommand.ExecuteAsync();
+            queue.ActiveTaskRows.Should().Contain(row => row.IsTranslation && row.IsActive);
+            await queue.ResumeGlobalCommand.ExecuteAsync();
+            await queue.PauseGlobalCommand.ExecuteAsync();
+            queue.ActiveTaskRows.Should().Contain(row => row.IsTranslation && row.IsActive);
+            translations.Cancellations.Should().Be(0);
+            queue.SelectedTaskType = "翻译";
+            queue.ActiveTaskRows.Should().ContainSingle().Which.IsTranslation.Should().BeTrue();
+            queue.SelectedTaskType = "OCR";
+            queue.ActiveTaskRows.Should().ContainSingle().Which.IsTranslation.Should().BeFalse();
+            queue.StopObserving();
+            queue.SelectedTaskType = "全部任务";
+            queue.ActiveTaskRows.Should().HaveCount(2);
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Queue_page_filter_and_active_tab_are_bound_and_closing_does_not_cancel_translation()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            await using MainWindowViewModel main = CreateMainWindow();
+            TranslationService service = new();
+            OcrQueueViewModel queue = main.OcrQueue;
+            queue.UpdateTranslations([Translation(), Translation(TranslationRunLifecycle.Completed)], service);
+            OcrQueuePage page = new() { DataContext = queue };
+            Window window = new() { Width = 1440, Height = 900, Content = page };
+            window.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Button[] buttons = page.GetVisualDescendants().OfType<Button>().ToArray();
+                buttons.Should().Contain(button => Equals(button.Content, "停止任务"));
+                buttons.Should().Contain(button => Equals(button.Content, "暂停全部任务"));
+                buttons.Select(button => button.Content).OfType<Patchouli.Lucide.Avalonia.Lucide>().Should()
+                    .Contain(icon => icon.Icon == "X");
+                page.GetVisualDescendants().OfType<TextBlock>().Should().NotContain(text =>
+                    text.Text == queue.StatusSummary && !string.IsNullOrEmpty(text.Text));
+                ComboBox filter = page.GetVisualDescendants().OfType<ComboBox>().Single();
+                filter.SelectedItem.Should().Be("全部任务");
+                filter.SelectedItem = "OCR";
+                queue.SelectedTaskType.Should().Be("OCR");
+                queue.ActiveTaskCount.Should().Be(0);
+                queue.FinishedTaskCount.Should().Be(0);
+                filter.SelectedItem = "翻译";
+                queue.ActiveTaskCount.Should().Be(1);
+                queue.FinishedTaskCount.Should().Be(1);
+                TabControl tabs = page.GetVisualDescendants().OfType<TabControl>().Single();
+                queue.SelectedTaskTabIndex = 1;
+                tabs.SelectedIndex.Should().Be(1);
+                tabs.SelectedIndex = 0;
+                queue.SelectedTaskTabIndex.Should().Be(0);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            service.Cancellations.Should().Be(0);
+            queue.ActiveTaskRows.Should().ContainSingle().Which.IsActive.Should().BeTrue();
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Task_queue_global_buttons_control_both_types_and_filter_does_not_limit_controls()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            await using MainWindowViewModel main =
+                WithRuntimeDatabasePath(CreateMainWindow(), _settings.CreateDatabasePath("generic-task-controls"));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            ItemMetadata item = (await services.Items.CreateItemAsync("document", "Translation source")).Value;
+            DocumentInstance document = (await services.Documents.AttachDocumentInstanceAsync(item.ItemId, null,
+                Core.Documents.DocumentInstanceType.PrimaryScan)).Value;
+            await services.Pages.CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
+                Core.Layout.CoordinateBasis.NormalizedPage, null, null, "test", null);
+            OcrQueueViewModel queue = main.OcrQueue;
+            await queue.RefreshAsync();
+            await queue.PauseGlobalCommand.ExecuteAsync();
+            TranslationRunStatus run =
+                (await services.TranslationRuns.StartAsync(
+                    new TranslationRunStartRequest(document.DocumentInstanceId, []))).Value;
+            run.IsPaused.Should().BeTrue();
+            await queue.RefreshAsync();
+            queue.ActiveTaskRows.Single().SupportsPause.Should().BeTrue();
+            OcrQueuePage page = new() { DataContext = queue };
+            Window window = new() { Width = 1440, Height = 600, Content = page };
+            window.Show();
+            try
+            {
+                window.UpdateLayout();
+                page.GetVisualDescendants().OfType<Patchouli.Lucide.Avalonia.Lucide>()
+                    .Select(icon => icon.Icon).Should().Contain(["Pause", "Play", "X"]);
+                using Avalonia.Media.Imaging.RenderTargetBitmap image = new(new Avalonia.PixelSize(1440, 600));
+                image.Render(page);
+                string path = TestPaths.FromRepositoryRoot(".tmp", "task-queue-controls", "queue.png");
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                image.Save(path);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            queue.SelectedTaskType = "OCR";
+            await queue.StopCommand.ExecuteAsync();
+            await queue.ResumeGlobalCommand.ExecuteAsync();
+            (await services.TranslationRuns.GetAsync(run.RunId)).Value.IsPaused.Should().BeTrue("the queue is stopped");
+            queue.SelectedTaskType = "翻译";
+            await queue.PauseGlobalCommand.ExecuteAsync();
+            await queue.StartCommand.ExecuteAsync();
+            (await services.TranslationRuns.GetAsync(run.RunId)).Value.IsPaused.Should()
+                .BeTrue("global pause survives start");
+            await services.TranslationRuns.CancelAsync(run.RunId);
+            await queue.RefreshAsync();
+            queue.SelectedTaskType = "OCR";
+            queue.HasFinishedTasks.Should().BeTrue("global actions cover hidden task types");
+            await queue.ClearFinishedCommand.ExecuteAsync();
+            queue.SelectedTaskType = "全部任务";
+            queue.FinishedTaskRows.Should().BeEmpty();
+            return 0;
+        }, CancellationToken.None);
     }
 
     private sealed class FakeClipboard : IClipboardService

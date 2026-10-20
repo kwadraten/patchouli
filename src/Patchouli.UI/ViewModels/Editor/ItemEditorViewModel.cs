@@ -160,9 +160,7 @@ public sealed partial class CreatorItemViewModel : ViewModelBase
             Suffix = creator.Suffix ?? "";
             Particles = creator.Particles ?? "";
             IsLiteral = !string.IsNullOrWhiteSpace(Literal);
-            Name = IsLiteral
-                ? Literal
-                : FormatPersonalName(Family, Given, Particles, Suffix);
+            Name = creator.DisplayName;
         }
         finally
         {
@@ -188,12 +186,6 @@ public sealed partial class CreatorItemViewModel : ViewModelBase
         {
             _isApplyingName = false;
         }
-    }
-
-    private static string FormatPersonalName(string family, string given, string particles, string suffix)
-    {
-        return string.Join(" ", new[] { given, particles, family, suffix }
-            .Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 }
 

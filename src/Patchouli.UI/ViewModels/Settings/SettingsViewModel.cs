@@ -109,9 +109,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("appearance", "外观与阅读", AppearanceSettings),
             new SettingsSectionEntryViewModel("library", "书库与源文件", LibrarySettings),
             new SettingsSectionEntryViewModel("local_files", "模型与临时文件", LocalFileManagement),
-            new SettingsSectionEntryViewModel("import", "导入规则", ImportSettings),
+            new SettingsSectionEntryViewModel("import", "导入时设置", ImportSettings),
             new SettingsSectionEntryViewModel("ocr", "OCR 引擎", OcrProviderSettings),
-            new SettingsSectionEntryViewModel("llm", "模型与翻译", LlmSettings),
+            new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
             new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),
@@ -133,7 +133,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         SettingsSectionGroupViewModel library = new(Entry("library"), Entry("local_files"));
         SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr"),
-            new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR 模型", new LlmOcrDefaultsViewModel(LlmSettings)));
+            new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR", new LlmOcrDefaultsViewModel(LlmSettings)),
+            new SettingsSectionEntryViewModel("translation", "文献翻译", new TranslationDefaultsViewModel(LlmSettings)));
         SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"));
@@ -141,7 +142,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         [
             new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
             new NavCategoryViewModel("书库与本机文件", "Database", library),
-            new NavCategoryViewModel("导入与识别", "ScanText", recognition),
+            new NavCategoryViewModel("文献加工", "ScanText", recognition),
             new NavCategoryViewModel("AI集成", "Sparkles", ai),
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
@@ -618,6 +619,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return group.ActiveEntry.Content switch
             {
                 LlmOcrDefaultsViewModel ocr => [ocr.Settings],
+                TranslationDefaultsViewModel translation => [translation.Settings],
                 ISettingsSection selectedSection => [selectedSection],
                 _ => []
             };
