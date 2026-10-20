@@ -2,8 +2,12 @@
 
 ## 0.3.13
 
-发布：2026-10-19 · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.12...0.3.13)
+发布：2026-10-20 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.13) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.12...0.3.13)
 
+- 新增“更新设置”和手动检查更新入口：启动后异步检查 GitHub Releases，支持检查频率限制、下载进度、完整性校验和安装前确认；仅确认的 Windows Inno Setup 安装支持内置安装，AppImage、DMG、外部管理及未知安装方式引导前往 Release 页面手动更新。
+- OCR 与全文翻译统一进入“文献加工”和任务队列，保留各自执行机制并可并行处理；支持按任务类型筛选，以及暂停、恢复、取消和重试操作。
+- 改进书库集合与标签切换时的加载反馈、东亚作者姓名显示、原始 HTML 表格翻译，以及写入 MCP 配置后的 Agent 自动重启。
+- 移除 Agent 页面中指向旧工具栏启动按钮的过时提示，完善阅读、编辑与章节入口和翻译语言选择。
 - 内置 Agent 与 F# 工作流系统移除，改为外部 Agent 集成：在嵌入式终端中直接运行 OpenCode（默认）、Claude Code、Codex、Kimi Code、Antigravity 等 CLI Agent；设置页「Agent 集成」可查看各 Agent 检测状态、选择默认项、指定自定义路径或暂不启用，OpenCode 支持一键安装（官方下载、原子落位、失败回滚）。
 - 新增「Agent 集成」工作区页面：终端内运行所选 Agent；四个预置提示词（整理题录、调查主题、梳理文献、反向提问）作为可编辑模板填入输入区，绝不自动发送；Zed 风格的可搜索题录引用面板插入标题、Item ID 与规范 URI（不含本地路径）；内容可复制或注入终端但不自动回车；可为 Agent 生成受限、可撤销的 Patchouli MCP 连接配置。
 - 新增不依赖 Agent 的全文直接翻译：按 Box 分段、批量并行请求大模型，支持目标语言、批量大小、并发、请求间隔、超时与重试设置；主窗口菜单、书库右键与阅读工具栏均可启动，进度窗口实时显示各页状态并可取消；冲突自动重读重试，已提交页面在取消或部分失败时保持不变。

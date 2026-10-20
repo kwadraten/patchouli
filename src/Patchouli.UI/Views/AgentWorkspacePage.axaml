@@ -118,6 +118,7 @@
                        Foreground="{DynamicResource OnSurfaceBrush}"
                        HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
             <TextBlock Text="{Binding EmptyStateMessage}" FontSize="13" TextWrapping="Wrap"
+                       IsVisible="{Binding EmptyStateMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}"
                        HorizontalAlignment="Center" TextAlignment="Center" />
             <ProgressBar IsIndeterminate="True" Width="200" Height="4" IsVisible="{Binding IsBusy}" />

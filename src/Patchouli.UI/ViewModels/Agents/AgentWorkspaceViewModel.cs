@@ -1110,7 +1110,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
                 ? "版本未知"
                 : detection.Version!;
             EmptyStateTitle = $"{entry.DisplayName} 已就绪";
-            EmptyStateMessage = "点击工具栏的启动按钮在终端中启动 Agent；也可以先编辑提示词或插入题录引用。";
+            EmptyStateMessage = "";
             if (IsRunning)
             {
                 ConnectionStatusText = "已连接";
