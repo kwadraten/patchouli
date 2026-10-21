@@ -115,7 +115,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("import", "导入时设置", ImportSettings),
             new SettingsSectionEntryViewModel("ocr", "OCR 引擎", OcrProviderSettings),
             new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
-            new SettingsSectionEntryViewModel("extensions", "扩展", ExtensionSettings),
+            new SettingsSectionEntryViewModel("extensions", "其他扩展", ExtensionSettings),
             new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),
@@ -149,7 +149,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("书库与本机文件", "Database", library),
             new NavCategoryViewModel("文献加工", "ScanText", recognition),
             new NavCategoryViewModel("AI集成", "Sparkles", ai),
-            new NavCategoryViewModel("扩展", "Blocks", ExtensionSettings),
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
             new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
@@ -202,6 +201,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public LlmSettingsViewModel LlmSettings { get; }
     public ExtensionSettingsViewModel ExtensionSettings { get; }
+
+    public ExtensionSettingsViewModel CreateExtensionEditor()
+    {
+        return new ExtensionSettingsViewModel(_main);
+    }
+
     public AgentIntegrationSettingsViewModel AgentIntegrationSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
@@ -600,6 +605,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     public async Task SelectSectionAsync(string id)
     {
+        if (id.Equals("extensions", StringComparison.OrdinalIgnoreCase))
+        {
+            id = "translation";
+        }
+
         if (id.Equals("mineru", StringComparison.OrdinalIgnoreCase))
         {
             id = "ocr";
@@ -646,9 +656,18 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     private async Task LoadActiveSectionsAsync()
     {
+        bool loadTranslationEngines = ActiveCategory.Content is SettingsSectionGroupViewModel
+        {
+            ActiveEntry.Content: TranslationDefaultsViewModel
+        };
         foreach (ISettingsSection section in ActiveSections().ToArray())
         {
             await section.LoadAsync();
+        }
+
+        if (loadTranslationEngines)
+        {
+            await LlmSettings.RefreshTranslationEnginesCommand.ExecuteAsync();
         }
     }
 }

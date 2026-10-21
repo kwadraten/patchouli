@@ -415,7 +415,7 @@ public sealed class UiViewModelTests : IDisposable
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "扩展", "元数据来源", "搜索", "引用与题录",
+            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录",
             "同步与快照", "更新设置");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))

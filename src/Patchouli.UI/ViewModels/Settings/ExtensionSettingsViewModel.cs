@@ -34,19 +34,20 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public ExtensionSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
-        RefreshCommand = new AsyncCommand(() => LoadAsync());
-        SaveConfigurationCommand = new AsyncCommand(SaveConfigurationAsync);
-        SaveSourceCommand = new AsyncCommand(SaveSourceAsync);
-        CheckCommand = new AsyncCommand(CheckAsync);
-        ActivateCommand = new AsyncCommand(ActivateAsync);
-        CopyCommand = new AsyncCommand(CopyAsync);
-        TestCommand = new AsyncCommand(TestAsync);
-        PromoteCommand = new AsyncCommand(PromoteAsync);
-        RollbackCommand = new AsyncCommand(RollbackAsync);
+        RefreshCommand = EditorCommand(() => LoadAsync());
+        SaveConfigurationCommand = EditorCommand(SaveConfigurationAsync);
+        SaveSourceCommand = EditorCommand(SaveSourceAsync);
+        CheckCommand = EditorCommand(CheckAsync);
+        ActivateCommand = EditorCommand(ActivateAsync);
+        CopyCommand = EditorCommand(CopyAsync);
+        TestCommand = EditorCommand(TestAsync);
+        PromoteCommand = EditorCommand(PromoteAsync);
+        RollbackCommand = EditorCommand(RollbackAsync);
         ResetCommand = new RelayCommand(_ => ResetConfiguration());
-        ClearCacheCommand = new AsyncCommand(ClearCacheAsync);
-        SaveAuthorizationCommand = new AsyncCommand(SaveAuthorizationAsync);
-        TestDraftCommand = new AsyncCommand(TestDraftAsync);
+        ClearCacheCommand = EditorCommand(ClearCacheAsync);
+        SaveAuthorizationCommand = EditorCommand(SaveAuthorizationAsync);
+        TestDraftCommand = EditorCommand(TestDraftAsync);
+        CheckAndSaveSourceCommand = EditorCommand(CheckAndSaveSourceAsync);
     }
 
     public ObservableCollection<ExtensionListItem> Extensions { get; } = [];
@@ -61,6 +62,11 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     [ObservableProperty] public partial string SampleResult { get; set; } = "";
     [ObservableProperty] public partial bool AllowHttp { get; set; }
     [ObservableProperty] public partial bool AllowLlm { get; set; }
+    [ObservableProperty] public partial bool IsEditorBusy { get; set; }
+    public bool CanEdit => !IsEditorBusy;
+    public bool IsTranslation => SelectedExtension?.Kind == ExtensionKind.Translation;
+    public string EditorTitle => (SelectedExtension?.Name ?? "扩展") + "配置";
+    public AsyncCommand CheckAndSaveSourceCommand { get; }
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SaveConfigurationCommand { get; }
     public AsyncCommand SaveSourceCommand { get; }
@@ -77,6 +83,67 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public override bool SupportsEditing => false;
     public override bool IsDirty => false;
     public override bool CanSave => false;
+
+    public async Task OpenAsync(string id)
+    {
+        SelectedExtension = new ExtensionListItem(id, id, "");
+        await LoadAsync();
+        if (SelectedExtension?.Id != id)
+        {
+            throw new InvalidOperationException("找不到扩展：" + id);
+        }
+    }
+
+    private AsyncCommand EditorCommand(Func<Task> operation)
+    {
+        return new AsyncCommand(() => RunEditorOperationAsync(operation));
+    }
+
+    public Task<bool> SaveDialogAsync()
+    {
+        return RunEditorOperationAsync(async () =>
+        {
+            if (_source is null || Draft().Fingerprint != _source.Fingerprint)
+            {
+                LastError = "源码还有未保存的修改，请先点击“检查并保存”，或放弃本次修改。";
+                Status = LastError;
+                return;
+            }
+
+            await SaveConfigurationAsync();
+            if (LastError is null)
+            {
+                await SaveAuthorizationAsync();
+            }
+        });
+    }
+
+    private async Task<bool> RunEditorOperationAsync(Func<Task> operation)
+    {
+        if (IsEditorBusy)
+        {
+            return false;
+        }
+
+        IsEditorBusy = true;
+        LastError = null;
+        try
+        {
+            await operation();
+            return LastError is null;
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "extension-editor", nameof(ExtensionSettingsViewModel));
+            LastError = exception.Message;
+            Status = "操作失败：" + exception.Message;
+            return false;
+        }
+        finally
+        {
+            IsEditorBusy = false;
+        }
+    }
 
     partial void OnSourceTextChanged(string value)
     {
@@ -98,6 +165,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
     partial void OnSelectedExtensionChanged(ExtensionListItem? value)
     {
+        Raise(nameof(EditorTitle));
+        Raise(nameof(IsTranslation));
         if (_source is { } previous)
         {
             bool changed = _draftSources.Count != previous.Sources.Count || _draftSources.Any(pair =>
@@ -182,7 +251,10 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         _selectionLoadTask = LoadSelectedAsync(SelectedExtension, selectionVersion, manager, services);
         _selectionLoadTask.Observe(nameof(ExtensionSettingsViewModel), "load-extension");
         await _selectionLoadTask;
-        Status = "选择扩展后填写配置，或编辑其源码。";
+        if (ValidationState != SettingsValidationState.Invalid)
+        {
+            Status = "填写配置，或编辑扩展源码。";
+        }
     }
 
     private async Task LoadSelectedAsync(ExtensionListItem? item, long version,
@@ -217,20 +289,37 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         SelectedSourceFile = null;
         SelectedSourceFile = SourceFiles.Contains("main.fsx") ? "main.fsx" : SourceFiles.FirstOrDefault();
-        ApplyFields(check.ConfigFields, config.Values);
+        IReadOnlyList<ConfigFieldDescriptor> descriptors = check.ConfigFields;
+        if (!check.Succeeded)
+        {
+            await using IExtensionLease? active = await manager.AcquireAsync(item.Id);
+            if (version != Volatile.Read(ref _selectionVersion))
+            {
+                return;
+            }
+
+            descriptors = active?.ConfigFields ?? [];
+        }
+
+        ApplyFields(descriptors, config.Values);
 
         ShowDiagnostics(check);
         CopyId = item.Id + ".custom";
     }
 
     private void ApplyFields(IReadOnlyList<ConfigFieldDescriptor> descriptors,
-        IReadOnlyDictionary<string, string> values)
+        IReadOnlyDictionary<string, string> values, bool keepOnlyValidValues = false)
     {
         Fields.Clear();
         foreach (ConfigFieldDescriptor field in descriptors)
         {
-            Fields.Add(new ExtensionConfigFieldViewModel(field,
-                values.GetValueOrDefault(field.Key) ?? field.DefaultValue ?? "",
+            string value = values.GetValueOrDefault(field.Key) ?? field.DefaultValue ?? "";
+            if (keepOnlyValidValues && !IsValidValue(field, value))
+            {
+                value = field.DefaultValue ?? "";
+            }
+
+            Fields.Add(new ExtensionConfigFieldViewModel(field, value,
                 _main.AppOptions.Llm.Providers.Select(provider => provider.ProviderId).ToArray(),
                 _credentialReferences,
                 _main.AppOptions.Llm.Providers.GroupBy(provider => provider.ProviderId, StringComparer.Ordinal)
@@ -240,6 +329,63 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
                             .ToArray(),
                         StringComparer.Ordinal)));
         }
+    }
+
+    private static bool IsValidValue(ConfigFieldDescriptor field, string value)
+    {
+        try
+        {
+            ExtensionConfiguration.Resolve([field], new ExtensionConfigSnapshot(
+                new Dictionary<string, string> { [field.Key] = value }, 0));
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private async Task CheckAndSaveSourceAsync()
+    {
+        if (_manager is null || _source is null || _services is null)
+        {
+            LastError = "扩展尚未加载。";
+            return;
+        }
+
+        long version = Volatile.Read(ref _selectionVersion);
+        ExtensionPackageSnapshot draft = Draft();
+        ExtensionCheckResult check = await _manager.CheckAsync(draft);
+        if (version != Volatile.Read(ref _selectionVersion))
+        {
+            return;
+        }
+
+        if (Draft().Fingerprint != draft.Fingerprint)
+        {
+            LastError = "检查期间源码已修改，请重新检查并保存。";
+            Status = LastError;
+            return;
+        }
+
+        ShowDiagnostics(check);
+        if (!check.Succeeded)
+        {
+            LastError = "检查未通过，已通过的配置表单和运行版本均已保留。";
+            Status = LastError;
+            return;
+        }
+
+        await _services.TranslationExtensions.SaveDraftAsync(draft);
+        if (version != Volatile.Read(ref _selectionVersion))
+        {
+            return;
+        }
+
+        _source = draft;
+        _pendingSources.Remove(draft.Id);
+        ApplyFields(check.ConfigFields, Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value), true);
+        Status = "检查通过，源码草稿已保存，表单已更新。点击“应用源码”后对后续任务生效。";
     }
 
     private ExtensionPackageSnapshot Draft()
@@ -339,9 +485,16 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        await _manager.SaveConfigAsync(_source.Id,
-            new ExtensionConfigSnapshot(Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value),
-                ++_configRevision));
+        ExtensionConfigSnapshot current = await _manager.ReadConfigAsync(_source.Id);
+        Dictionary<string, string> values = new(current.Values, StringComparer.Ordinal);
+        foreach (ExtensionConfigFieldViewModel field in Fields)
+        {
+            values[field.Descriptor.Key] = field.Value;
+        }
+
+        long revision = Math.Max(_configRevision, current.Revision) + 1;
+        await _manager.SaveConfigAsync(_source.Id, new ExtensionConfigSnapshot(values, revision));
+        _configRevision = revision;
         LastError = null;
         Status = "配置已保存，对之后启动的任务生效。";
     }
@@ -375,10 +528,19 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         ExtensionPackageSnapshot copy = new(id, sources);
         await _manager.SaveSourceAsync(id, sources);
+        ExtensionConfigSnapshot original = await _manager.ReadConfigAsync(_source.Id);
+        Dictionary<string, string> copiedValues = new(original.Values, StringComparer.Ordinal);
+        foreach (ExtensionConfigFieldViewModel field in Fields)
+        {
+            copiedValues[field.Descriptor.Key] = field.Value;
+        }
+
+        await _manager.SaveConfigAsync(id, new ExtensionConfigSnapshot(copiedValues, 1));
         HostServices services = await _main.ServicesAsync();
         ShowDiagnostics(await services.TranslationExtensions.ActivateAsync(copy));
         await LoadAsync();
         SelectedExtension = Extensions.FirstOrDefault(item => item.Id == id);
+        await _selectionLoadTask;
     }
 
     private async Task TestAsync()
@@ -495,8 +657,18 @@ public sealed record ExtensionListItem(
     string Name,
     string Fingerprint,
     ExtensionKind Kind = ExtensionKind.Translation,
-    bool IsActive = true)
+    bool IsActive = true,
+    string Description = "")
 {
+    public string Summary => Id switch
+    {
+        "translation.llm" => "使用已配置的大语言模型翻译文献，支持上下文与术语配置。",
+        "translation.google-free" => "使用 Google 翻译免费接口，无需 API 密钥。",
+        "translation.deepl-free" => "使用 DeepL 网页翻译免费接口，无需 API 密钥。",
+        "translation.deeplx" => "连接自定义 DeepLX 翻译服务，可配置服务地址与凭据。",
+        _ => string.IsNullOrWhiteSpace(Description) ? "自定义扩展，可配置参数并编辑源码。" : Description
+    };
+
     public override string ToString()
     {
         return Name;
@@ -607,6 +779,16 @@ public sealed partial class ExtensionConfigFieldViewModel : ViewModelBase
             {
                 return $"{Descriptor.Label}的数值或范围无效。";
             }
+        }
+
+        try
+        {
+            ExtensionConfiguration.Resolve([Descriptor], new ExtensionConfigSnapshot(
+                new Dictionary<string, string> { [Descriptor.Key] = Value }, 0));
+        }
+        catch (ArgumentException)
+        {
+            return $"{Descriptor.Label}的配置值无效。";
         }
 
         return null;

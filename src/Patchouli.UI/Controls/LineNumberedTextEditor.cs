@@ -5,7 +5,7 @@ using AvaloniaEdit;
 namespace Patchouli.UI.Controls;
 
 /// <summary>A plain multiline editor for bibliographic notes, with visible source line numbers.</summary>
-public sealed class LineNumberedTextEditor : TextEditor
+public class LineNumberedTextEditor : TextEditor
 {
     public static readonly StyledProperty<string> ContentTextProperty =
         AvaloniaProperty.Register<LineNumberedTextEditor, string>(nameof(ContentText), "",

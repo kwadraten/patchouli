@@ -1,0 +1,126 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+        xmlns:controls="using:Patchouli.UI.Controls"
+        x:Class="Patchouli.UI.Views.ExtensionConfigurationDialog"
+        x:DataType="settings:ExtensionSettingsViewModel"
+        Title="{Binding EditorTitle}" Icon="/Assets/AppIcon.ico"
+        Width="560" Height="740" MinWidth="480" MinHeight="480"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+  <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="16" Margin="24">
+    <StackPanel Spacing="6">
+      <TextBlock Text="{Binding EditorTitle}" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Text="修改配置后点击保存，对之后启动的任务生效。" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </StackPanel>
+    <Grid x:Name="EditorColumns" Grid.Row="1" ColumnDefinitions="*,0" ColumnSpacing="0"
+          IsEnabled="{Binding CanEdit}">
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="14" Margin="0,0,8,0">
+          <ItemsControl x:Name="ConfigurationFields" ItemsSource="{Binding Fields}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="settings:ExtensionConfigFieldViewModel">
+                <StackPanel Spacing="6" Margin="0,0,0,16">
+                  <TextBlock Text="{Binding Descriptor.Label}" FontWeight="Medium" TextWrapping="Wrap" />
+                  <TextBlock Text="此能力由下方联网授权控制。" IsVisible="{Binding IsCapability}" FontSize="12" />
+                  <TextBox Text="{Binding Value}" IsVisible="{Binding IsText}" AcceptsReturn="True"
+                           TextWrapping="Wrap" MinHeight="34" MaxHeight="180" />
+                  <CheckBox IsChecked="{Binding BooleanValue}" IsVisible="{Binding IsBoolean}" Content="启用" />
+                  <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Value}"
+                            IsVisible="{Binding IsChoice}" HorizontalAlignment="Stretch" />
+                  <ComboBox ItemsSource="{Binding CredentialReferences}" SelectedItem="{Binding Value}"
+                            IsVisible="{Binding IsCredential}" PlaceholderText="不使用凭据" HorizontalAlignment="Stretch" />
+                  <StackPanel IsVisible="{Binding IsModel}" Spacing="6">
+                    <ComboBox ItemsSource="{Binding Providers}" SelectedItem="{Binding ModelProvider}"
+                              PlaceholderText="跟随默认提供商" HorizontalAlignment="Stretch" />
+                    <ComboBox IsEditable="True" ItemsSource="{Binding ModelSuggestions}"
+                              Text="{Binding ModelName}" PlaceholderText="留空跟随默认模型" HorizontalAlignment="Stretch" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding Descriptor.Description}" TextWrapping="Wrap" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Expander Header="联网授权">
+            <StackPanel Spacing="8" Margin="8">
+              <TextBlock Text="仅为你信任的扩展开启，保存后生效。" TextWrapping="Wrap" FontSize="12" />
+              <CheckBox Content="允许 HTTP 联网请求" IsChecked="{Binding AllowHttp}" />
+              <CheckBox Content="允许调用已配置的模型" IsChecked="{Binding AllowLlm}" />
+            </StackPanel>
+          </Expander>
+          <Expander Header="高级操作">
+            <StackPanel Spacing="8" Margin="8">
+              <Button Content="填入默认配置" Command="{Binding ResetCommand}" />
+              <Button Content="清空派生缓存" Command="{Binding ClearCacheCommand}" />
+              <TextBlock Text="源码草稿独立保存。应用源码会切换后续任务使用的版本，已启动的任务保留原版本。"
+                         FontSize="12" TextWrapping="Wrap" />
+              <Button x:Name="ActivateSourceButton" Content="应用源码" Command="{Binding ActivateCommand}" />
+              <TextBox Text="{Binding CopyId}" PlaceholderText="新扩展 ID" />
+              <Button Content="复制为自定义扩展" Command="{Binding CopyCommand}" />
+              <Button Content="将运行版本保存为恢复副本" Command="{Binding PromoteCommand}" />
+              <Button Content="回滚运行版本" Command="{Binding RollbackCommand}" />
+            </StackPanel>
+          </Expander>
+          <Expander Header="样例翻译（会发送请求）" IsVisible="{Binding IsTranslation}">
+            <StackPanel Spacing="8" Margin="8">
+              <TextBox Text="{Binding SampleText}" AcceptsReturn="True" MinHeight="64" />
+              <Button Content="测试已应用的引擎" Command="{Binding TestCommand}" />
+              <Button Content="测试当前草稿" Command="{Binding TestDraftCommand}" />
+              <TextBlock Text="{Binding SampleResult}" TextWrapping="Wrap" FontSize="12" />
+            </StackPanel>
+          </Expander>
+        </StackPanel>
+      </ScrollViewer>
+      <Grid x:Name="SourcePanel" Grid.Column="1" IsVisible="False"
+            RowDefinitions="Auto,Auto,*,Auto" RowSpacing="10">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <ComboBox x:Name="SourceFileSelector" ItemsSource="{Binding SourceFiles}"
+                    SelectedItem="{Binding SelectedSourceFile, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                    AutomationProperties.Name="扩展源码文件" />
+          <Button x:Name="CheckAndSaveSourceButton" Grid.Column="1" Content="检查并保存"
+                  Command="{Binding CheckAndSaveSourceCommand}" />
+        </Grid>
+        <TextBlock Grid.Row="1" Text="检查通过后保存源码草稿并更新左侧表单；应用源码后才切换运行版本。"
+                   FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                CornerRadius="6" Background="{DynamicResource SurfaceContainerLowestBrush}" Padding="6">
+          <controls:FSharpSourceEditor x:Name="SourceEditor" ContentText="{Binding SourceText}"
+                                       ShowLineNumbers="True" FontSize="13"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       Background="Transparent" Foreground="{DynamicResource OnSurfaceBrush}"
+                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" />
+        </Border>
+        <ScrollViewer Grid.Row="3" MaxHeight="150" HorizontalScrollBarVisibility="Disabled">
+          <ItemsControl ItemsSource="{Binding Diagnostics}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:CompileBindings="False">
+                <StackPanel Spacing="3" Margin="0,4">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Severity}" FontSize="12" />
+                    <TextBlock Text="{Binding Code}" FontSize="12" />
+                    <TextBlock Text="{Binding Location.FileName}" FontSize="12" />
+                    <TextBlock Text="{Binding Location.Line, StringFormat='第 {0} 行'}" FontSize="12" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding Message}" TextWrapping="Wrap" FontSize="12" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+    <StackPanel Grid.Row="2" Spacing="6">
+      <TextBlock x:Name="EditorStatus" Text="{Binding Status}" TextWrapping="Wrap" FontSize="12"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      <TextBlock Text="放弃会丢弃未保存的修改；已独立保存的源码草稿和已应用的版本会保留。"
+                 TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </StackPanel>
+    <Grid Grid.Row="3" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8" IsEnabled="{Binding CanEdit}">
+      <Button x:Name="SaveConfigurationButton" Content="保存" Classes="Primary" Click="SaveClicked" />
+      <Button x:Name="DiscardConfigurationButton" Grid.Column="1" Content="放弃" Click="DiscardClicked" />
+      <Button x:Name="ToggleSourceButton" Grid.Column="3" Content="编辑扩展源码 &gt;&gt;" Click="ToggleSourceClicked" />
+    </Grid>
+  </Grid>
+</Window>

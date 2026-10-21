@@ -55,7 +55,8 @@ public sealed partial class LlmSettingsViewModel
             await using IExtensionLease? lease = await services.TranslationExtensions.Manager.AcquireAsync(item.Id);
             if (lease is not null && lease.Descriptor.Kind == ExtensionKind.Translation)
             {
-                TranslationEngineOptions.Add(new ExtensionListItem(item.Id, lease.Descriptor.Name, item.Fingerprint));
+                TranslationEngineOptions.Add(new ExtensionListItem(item.Id, lease.Descriptor.Name, item.Fingerprint,
+                    lease.Descriptor.Kind, Description: lease.Descriptor.Description));
             }
         }
 

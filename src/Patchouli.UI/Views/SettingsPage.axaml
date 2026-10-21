@@ -726,104 +726,6 @@
             </StackPanel>
           </DataTemplate>
 
-          <DataTemplate DataType="settings:ExtensionSettingsViewModel">
-            <StackPanel Spacing="16">
-              <TextBlock Classes="SectionTitle" Text="扩展" />
-              <TextBlock Text="选择实现、填写配置，或编辑 FSX 源码。配置与源码分别保存；激活仅影响后续任务。" TextWrapping="Wrap" />
-              <Grid ColumnDefinitions="240,*" ColumnSpacing="16">
-                <StackPanel Spacing="8">
-                  <Button Content="刷新列表" Command="{Binding RefreshCommand}" />
-                  <ListBox ItemsSource="{Binding Extensions}" SelectedItem="{Binding SelectedExtension}">
-                    <ListBox.ItemTemplate>
-                      <DataTemplate DataType="settings:ExtensionListItem">
-                        <StackPanel>
-                          <TextBlock Text="{Binding Name}" /><TextBlock Text="{Binding Id}" FontSize="11" />
-                        </StackPanel>
-                      </DataTemplate>
-                    </ListBox.ItemTemplate>
-                  </ListBox>
-                  <TextBox Text="{Binding CopyId}" PlaceholderText="新扩展 ID" />
-                  <Button Content="复制为自定义扩展" Command="{Binding CopyCommand}" />
-                </StackPanel>
-                <StackPanel Grid.Column="1" Spacing="12">
-                  <TextBlock Text="配置" Classes="CardTitle" />
-                  <TextBlock Text="宿主能力授权" FontWeight="SemiBold" />
-                  <TextBlock Text="声明能力不会自动授权。仅为你信任的扩展开启；模型调用可能产生服务费用。" TextWrapping="Wrap" FontSize="12" />
-                  <CheckBox Content="允许 HTTP 联网请求" IsChecked="{Binding AllowHttp}" />
-                  <CheckBox Content="允许调用已配置的模型" IsChecked="{Binding AllowLlm}" />
-                  <Button Content="保存能力授权" Command="{Binding SaveAuthorizationCommand}" HorizontalAlignment="Left" />
-                  <ItemsControl ItemsSource="{Binding Fields}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="settings:ExtensionConfigFieldViewModel">
-                        <StackPanel Spacing="4" Margin="0,0,0,12">
-                          <TextBlock Text="{Binding Descriptor.Label}" />
-                          <TextBlock Text="此能力由上方宿主授权控制。" IsVisible="{Binding IsCapability}" FontSize="12" />
-                          <TextBox Text="{Binding Value}" IsVisible="{Binding IsText}" AcceptsReturn="True"
-                                   TextWrapping="Wrap" />
-                          <CheckBox IsChecked="{Binding BooleanValue}" IsVisible="{Binding IsBoolean}" Content="启用" />
-                          <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Value}"
-                                    IsVisible="{Binding IsChoice}" />
-                          <ComboBox ItemsSource="{Binding CredentialReferences}" SelectedItem="{Binding Value}"
-                                    IsVisible="{Binding IsCredential}" PlaceholderText="不使用凭据" />
-                          <StackPanel IsVisible="{Binding IsModel}" Spacing="4">
-                            <ComboBox ItemsSource="{Binding Providers}" SelectedItem="{Binding ModelProvider}"
-                                      PlaceholderText="跟随默认提供商" />
-                            <ComboBox IsEditable="True" ItemsSource="{Binding ModelSuggestions}"
-                                      Text="{Binding ModelName}" PlaceholderText="留空跟随默认模型" />
-                          </StackPanel>
-                          <TextBlock Text="{Binding Descriptor.Description}" TextWrapping="Wrap" FontSize="12" />
-                        </StackPanel>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button Content="保存配置" Command="{Binding SaveConfigurationCommand}" />
-                    <Button Content="填入默认配置" Command="{Binding ResetCommand}" />
-                    <Button Content="清空派生缓存" Command="{Binding ClearCacheCommand}" />
-                  </StackPanel>
-                  <Expander Header="源码与诊断">
-                    <StackPanel Spacing="8">
-                      <ComboBox ItemsSource="{Binding SourceFiles}"
-                                SelectedItem="{Binding SelectedSourceFile, Mode=TwoWay}" MinWidth="180"
-                                HorizontalAlignment="Left" />
-                      <TextBox Text="{Binding SourceText}" FontFamily="monospace" AcceptsReturn="True"
-                               AcceptsTab="True"
-                               MinHeight="300" MaxHeight="600" TextWrapping="NoWrap" />
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="保存源码" Command="{Binding SaveSourceCommand}" />
-                        <Button Content="静态检查" Command="{Binding CheckCommand}" />
-                        <Button Content="草稿样例契约测试" Command="{Binding TestDraftCommand}" />
-                        <Button Content="激活版本" Command="{Binding ActivateCommand}" />
-                      </StackPanel>
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="确认当前版本可用并保存恢复副本" Command="{Binding PromoteCommand}" />
-                        <Button Content="回滚运行版本" Command="{Binding RollbackCommand}" />
-                      </StackPanel>
-                      <ItemsControl ItemsSource="{Binding Diagnostics}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:CompileBindings="False">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                              <TextBlock Text="{Binding Code}" /><TextBlock Text="{Binding Location.FileName}" />
-                              <TextBlock Text="{Binding Location.Line}" />
-                              <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
-                            </StackPanel>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    </StackPanel>
-                  </Expander>
-                  <Expander Header="连通性与样例翻译（会发送请求）">
-                    <StackPanel Spacing="8">
-                      <TextBox Text="{Binding SampleText}" AcceptsReturn="True" MinHeight="64" />
-                      <Button Content="测试已激活的引擎" Command="{Binding TestCommand}" />
-                      <TextBlock Text="{Binding SampleResult}" TextWrapping="Wrap" />
-                    </StackPanel>
-                  </Expander>
-                </StackPanel>
-              </Grid>
-              <TextBlock Text="{Binding Status}" TextWrapping="Wrap" />
-            </StackPanel>
-          </DataTemplate>
           <DataTemplate DataType="settings:TranslationDefaultsViewModel">
             <ContentControl Content="{Binding Settings}">
               <ContentControl.ContentTemplate>
@@ -832,18 +734,16 @@
                     <!-- Direct translation (issue #20): the persisted "Translation" subsection. -->
                     <Border Classes="Card">
                       <StackPanel Spacing="10">
-                        <TextBlock Text="翻译" Classes="CardTitle" />
+                        <TextBlock Text="文献翻译" Classes="CardTitle" />
                         <TextBlock
-                          Text="选择一套 FSX 翻译引擎；各引擎的专用配置与源码可在扩展页面编辑。修改对之后启动的翻译生效。"
+                          Text="选择文献翻译的默认引擎与目标语言。各引擎的详细设置可在下方配置。"
                           FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
-                        <TextBlock Text="翻译引擎" FontSize="13" FontWeight="Medium" />
+                        <TextBlock Text="默认引擎" FontSize="13" FontWeight="Medium" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                           <ComboBox ItemsSource="{Binding TranslationEngineOptions}"
                                     SelectedItem="{Binding SelectedTranslationEngine}"
                                     DisplayMemberBinding="{Binding Name}" Width="240" />
-                          <Button Content="配置与源码" Command="{Binding ConfigureTranslationEngineCommand}" />
-                          <Button Content="刷新实现" Command="{Binding RefreshTranslationEnginesCommand}" />
                         </StackPanel>
                         <TextBlock Text="默认目标语言（引擎未覆盖时）" FontSize="13" FontWeight="Medium" />
                         <ComboBox x:Name="TranslationTargetLanguageSelector"
@@ -857,8 +757,32 @@
                                    IsVisible="{Binding TranslationErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                       </StackPanel>
                     </Border>
-
-
+                    <Border Classes="Card">
+                      <StackPanel Spacing="12">
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBlock Text="翻译引擎" Classes="CardTitle" />
+                          <Button Grid.Column="1" Content="刷新列表" Command="{Binding RefreshTranslationEnginesCommand}" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding TranslationEngineOptions}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="settings:ExtensionListItem">
+                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Margin="0,8">
+                                <StackPanel Spacing="4" VerticalAlignment="Center">
+                                  <TextBlock Text="{Binding Name}" FontWeight="Medium" />
+                                  <TextBlock Text="{Binding Summary}" FontSize="12" TextWrapping="Wrap"
+                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                </StackPanel>
+                                <Button x:Name="ConfigureExtensionButton" Grid.Column="1" Tag="{Binding Id}"
+                                        Click="ConfigureExtensionClicked" VerticalAlignment="Center"
+                                        ToolTip.Tip="配置引擎" AutomationProperties.Name="配置引擎">
+                                  <lucide:Lucide Icon="Settings" Width="16" Height="16" />
+                                </Button>
+                              </Grid>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                    </Border>
                   </StackPanel>
                 </DataTemplate>
               </ContentControl.ContentTemplate>
