@@ -3,6 +3,19 @@
 Validation date: 2026-10-21. This records evidence for issues #8 and #26;
 it does not replace the contracts in [extension-contracts](extension-contracts.md).
 
+## Page retry follow-up
+
+The page retry regression passed 40/40 cases in 52s
+(`.tmp/tests/page-retry-20261021.log`), including 15 new cases for response/identity
+failures, transient and permanent errors, retry limits, the frozen extension budget,
+cancellation during backoff, independent commit-conflict limits, and lost commit
+acknowledgements. The existing partial-success test also verifies that an enabled
+page retry budget does not repeat an already committed partial page. The isolated
+build had zero warnings and errors (`.tmp/build/page-retry-20261021/build.log`).
+JetBrains 2026.1.4 inspection passed with zero blocking findings
+(`.tmp/build/page-retry-20261021/inspect.log`).
+No extension input/output contract or page scheduling mode changed.
+
 ## Translation settings and sidebar UI follow-up
 
 The focused configuration run passed both cases (`.tmp/tests/fsx-settings-dialog-focused.log`).

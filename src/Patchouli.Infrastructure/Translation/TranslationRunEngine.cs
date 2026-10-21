@@ -6,6 +6,10 @@ using Patchouli.Core.Translation;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Infrastructure.Documents;
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Security;
 
 namespace Patchouli.Infrastructure.Translation;
 
@@ -22,6 +26,8 @@ namespace Patchouli.Infrastructure.Translation;
 /// call settles. A page commit conflict reloads
 /// the page and retries the page at most
 /// <see cref="MaxConflictRetries"/> times instead of silently overwriting a concurrent change.
+/// Failures before commit have a separate bounded page retry budget from the frozen configuration;
+/// successful partial commits are kept and are never automatically replayed.
 /// </remarks>
 public sealed class TranslationRunEngine
 {
@@ -473,8 +479,19 @@ public sealed class TranslationRunEngine
         CancellationToken cancellationToken)
     {
         LoadedPage page = initialPage;
-        for (int attempt = 0;; attempt++)
+        int pageRetryBudget = ResolvePageRetryBudget(extensionRun.Config, settings);
+        int pageRetries = 0;
+        int conflictRetries = 0;
+        int attempt = 1;
+
+        while (true)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return FinishPageAttempt(Cancelled(page.Target), stepProgress, attempt);
+            }
+
+            ReportPageAttempt(stepProgress, page.Target.PageIndex, attempt, "Started");
             PageAttempt attemptResult = await TranslateExtensionAttemptAsync(
                 page,
                 contextSnapshot,
@@ -484,11 +501,40 @@ public sealed class TranslationRunEngine
                 settings,
                 stepProgress,
                 cancellationToken).ConfigureAwait(false);
-            if (!attemptResult.Conflict || attempt >= MaxConflictRetries)
+            if (!attemptResult.Conflict)
             {
-                return attemptResult.Outcome;
+                if (!attemptResult.Retryable ||
+                    attemptResult.Outcome.State != TranslationPageRunState.Failed ||
+                    attemptResult.Outcome.CommittedBoxCount != 0 || pageRetries >= pageRetryBudget)
+                {
+                    return FinishPageAttempt(attemptResult.Outcome, stepProgress, attempt);
+                }
+
+                pageRetries++;
+                attempt++;
+                ReportPageAttempt(stepProgress, page.Target.PageIndex, attempt, "Retrying",
+                    attemptResult.Outcome.ErrorMessage);
+                try
+                {
+                    // This budget belongs to response generation/validation only. A conflict below never
+                    // resets it, and a request that may have reached commit is never retried here.
+                    TimeSpan delay = TimeSpan.FromMilliseconds(250 * (1 << Math.Min(pageRetries - 1, 3)));
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return FinishPageAttempt(Cancelled(page.Target), stepProgress, attempt);
+                }
+
+                continue;
             }
 
+            if (conflictRetries >= MaxConflictRetries)
+            {
+                return FinishPageAttempt(attemptResult.Outcome, stepProgress, attempt);
+            }
+
+            conflictRetries++;
             // A concurrent writer changed the page revision or translation version. Reload the page and
             // retry the whole page against the new state; never overwrite the concurrent change.
             PageLoad reload;
@@ -503,24 +549,86 @@ public sealed class TranslationRunEngine
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return Cancelled(page.Target);
+                return FinishPageAttempt(Cancelled(page.Target), stepProgress, attempt);
             }
             catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
                                                   exception, "infrastructure.translation-run"))
             {
-                return Failure(
-                    page.Target,
-                    AppErrorCodes.InvalidState,
-                    $"The page could not be reloaded after a translation conflict: {exception.Message}");
+                return FinishPageAttempt(Failure(
+                        page.Target,
+                        AppErrorCodes.InvalidState,
+                        $"The page could not be reloaded after a translation conflict: {exception.Message}"),
+                    stepProgress,
+                    attempt);
             }
 
             if (reload.Outcome is not null)
             {
-                return reload.Outcome;
+                return FinishPageAttempt(reload.Outcome, stepProgress, attempt);
             }
 
             page = reload.Page!;
+            attempt++;
+            ReportPageAttempt(stepProgress, page.Target.PageIndex, attempt, "Retrying",
+                attemptResult.Outcome.ErrorMessage);
         }
+    }
+
+    private static TranslationPageOutcome FinishPageAttempt(TranslationPageOutcome outcome,
+        IProgress<TranslationStepProgress>? progress, int attempt)
+    {
+        string state = outcome.State switch
+        {
+            TranslationPageRunState.Failed => "Failed",
+            TranslationPageRunState.Cancelled => "Cancelled",
+            _ => "Completed"
+        };
+        ReportPageAttempt(progress, outcome.PageIndex, attempt, state, outcome.ErrorMessage);
+        return outcome;
+    }
+
+    private static int ResolvePageRetryBudget(ExtensionConfigSnapshot config, TranslationSettings settings)
+    {
+        return config.Values.TryGetValue("max-retries", out string? value) &&
+               int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int retries)
+            ? Math.Clamp(retries, TranslationSettings.MinMaxRetries, TranslationSettings.MaxMaxRetries)
+            : settings.MaxRetries;
+    }
+
+    private static void ReportPageAttempt(IProgress<TranslationStepProgress>? progress,
+        int pageIndex, int attempt, string state, string? message = null)
+    {
+        int settled = state is "Completed" or "Failed" or "Cancelled" ? 1 : 0;
+        ExtensionRunProgress.Report(progress,
+            new TranslationStepProgress("page-translation", settled, 1, state, message, pageIndex, attempt));
+    }
+
+    private static bool IsRetryableTranslationError(string? code)
+    {
+        return code is not (TranslationErrorCodes.InvokerUnavailable or AppErrorCodes.InvalidArgument or
+            AppErrorCodes.ValidationFailed or AppErrorCodes.UnsupportedOperation or AppErrorCodes.NotFound or
+            AppErrorCodes.LibraryMismatch or AppErrorCodes.MappingRequired or AppErrorCodes.StaleSettingsRevision or
+            AppErrorCodes.DatabaseError);
+    }
+
+    private static bool IsRetryableTranslationException(Exception exception)
+    {
+        if (exception is ArgumentException or UnauthorizedAccessException or SecurityException or
+            NotSupportedException or ObjectDisposedException or FileNotFoundException or DirectoryNotFoundException or
+            TypeLoadException or MissingMethodException)
+        {
+            return false;
+        }
+
+        if (exception is HttpRequestException { StatusCode: { } status })
+        {
+            return status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
+                   (int)status is >= 500 and <= 599;
+        }
+
+        // Worker and bundled-script errors can have already lost their original exception type.
+        // Keep those generic translation failures bounded; do not infer policy from message text.
+        return true;
     }
 
     private async Task<PageAttempt> TranslateExtensionAttemptAsync(
@@ -534,6 +642,7 @@ public sealed class TranslationRunEngine
         CancellationToken cancellationToken)
     {
         TranslationPageTarget target = page.Target;
+        bool commitStarted = false;
         try
         {
             ExtensionBox[] extensionBoxes = page.Boxes.Select(ToExtensionBox).ToArray();
@@ -590,7 +699,7 @@ public sealed class TranslationRunEngine
                 return new PageAttempt(
                     Failure(target, TranslationErrorCodes.BatchMismatch,
                         firstFailureMessage ?? "The translation extension returned invalid box outcomes."),
-                    false);
+                    false, true);
             }
 
             if (replacements.Count == 0)
@@ -601,10 +710,14 @@ public sealed class TranslationRunEngine
                             firstFailureMessage ?? "No translation box succeeded.")
                         : new TranslationPageOutcome(target.PageId, target.PageIndex,
                             hasSkipped ? TranslationPageRunState.Skipped : TranslationPageRunState.Committed, 0),
-                    false);
+                    false,
+                    hasFailures && extensionResult.Outcomes.All(boxOutcome =>
+                        boxOutcome.Kind != ExtensionBoxOutcomeKind.Failed ||
+                        IsRetryableTranslationError(boxOutcome.ErrorCode)));
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            commitStarted = true;
             Result<PageTranslationStatus> committed = await _pageTranslationService.PutPageBoxesAsync(
                 request.DocumentInstanceId,
                 target.PageId,
@@ -645,7 +758,7 @@ public sealed class TranslationRunEngine
         {
             return new PageAttempt(
                 Failure(target, AppErrorCodes.InvalidState, $"The translation extension failed: {exception.Message}"),
-                false);
+                false, !commitStarted && IsRetryableTranslationException(exception));
         }
     }
 
@@ -1087,7 +1200,7 @@ public sealed class TranslationRunEngine
     /// One whole-page translation attempt. <paramref name="Conflict"/> is set only when the page commit
     /// reported <see cref="AppErrorCodes.Conflict"/> and the page should be reloaded and retried.
     /// </summary>
-    private sealed record PageAttempt(TranslationPageOutcome Outcome, bool Conflict);
+    private sealed record PageAttempt(TranslationPageOutcome Outcome, bool Conflict, bool Retryable = false);
 
     private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
     {

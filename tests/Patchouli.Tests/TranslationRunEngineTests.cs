@@ -22,6 +22,224 @@ namespace Patchouli.Tests;
 /// </summary>
 public sealed class TranslationRunEngineTests
 {
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("duplicate")]
+    [InlineData("failed")]
+    [InlineData("timeout")]
+    public async Task Failed_page_retries_before_committing_and_publishes_one_final_outcome(string failure)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        RecordingPageTranslationService writes = new(context.Translations);
+        ProgressCollector progress = new();
+        List<TranslationStepProgress> steps = [];
+        int calls = 0;
+        TranslationRunEngine engine = Engine(context, (input, _, _) =>
+        {
+            calls++;
+            if (calls > 1)
+            {
+                return TranslateAllAsync(input, _ => "translated source");
+            }
+
+            ExtensionBox box = input.Boxes.Single();
+            return failure switch
+            {
+                "timeout" => throw new TimeoutException("temporary model timeout"),
+                "missing" => Task.FromResult(new TranslationExtensionResult([])),
+                "duplicate" => Task.FromResult(new TranslationExtensionResult([
+                    new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, "first"),
+                    new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, "duplicate")
+                ])),
+                _ => Task.FromResult(new TranslationExtensionResult([
+                    new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed,
+                        ErrorCode: TranslationErrorCodes.InvalidModelResponse, ErrorMessage: "invalid JSON")
+                ]))
+            };
+        }, writes);
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        TranslationRunResult result = await engine.RunAsync(
+            Request(context, Settings(maxRetries: 1), Target(context.PageId, 1)), progress, timeout.Token,
+            stepProgress: new CallbackStepProgress(steps.Add));
+
+        calls.Should().Be(2);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Committed);
+        writes.PageCommits.Should().ContainSingle();
+        progress.Items.Should().ContainSingle().Which.CompletedPages.Should().Be(1);
+        steps.Where(step => step.Phase == "page-translation" && step.State == "Started")
+            .Select(step => step.Attempt).Should().Equal(1, 2);
+        (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
+            .Which.TranslatedMd.Should().Be("translated source");
+        (await RequireHeaderAsync(context, context.PageId)).Version.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Failed_page_stops_at_its_retry_budget_without_writing(int retries)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        RecordingPageTranslationService writes = new(context.Translations);
+        int calls = 0;
+        TranslationRunResult result = await Engine(context, (_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(new TranslationExtensionResult([]));
+        }, writes).RunAsync(Request(context, Settings(maxRetries: retries), Target(context.PageId, 1)));
+
+        calls.Should().Be(retries + 1);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Failed);
+        writes.PageCommits.Should().BeEmpty();
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("argument")]
+    [InlineData("unauthorized")]
+    [InlineData("http-400")]
+    [InlineData("unsupported")]
+    public async Task Recognizable_permanent_page_failures_do_not_retry(string failure)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        int calls = 0;
+        TranslationRunResult result = await Engine(context, (_, _, _) =>
+        {
+            calls++;
+            throw failure switch
+            {
+                "argument" => new ArgumentException("bad extension configuration"),
+                "unauthorized" => new UnauthorizedAccessException("permission denied"),
+                "http-400" => new HttpRequestException("bad request", null, System.Net.HttpStatusCode.BadRequest),
+                _ => new NotSupportedException("unsupported operation")
+            };
+        }).RunAsync(Request(context, Settings(maxRetries: 2), Target(context.PageId, 1)));
+
+        calls.Should().Be(1);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Failed);
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Page_retry_uses_the_frozen_extension_budget_over_the_run_default()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        Dictionary<string, string> storedValues = new() { ["max-retries"] = "2" };
+        int calls = 0;
+        TranslationExtensionRunner runner = TranslationTestExtensionHarness.CreateRunner((input, _, _) =>
+        {
+            calls++;
+            storedValues["max-retries"] = "0";
+            return calls < 3
+                ? Task.FromResult(new TranslationExtensionResult([]))
+                : TranslateAllAsync(input, _ => "translated");
+        }, config: new ExtensionConfigSnapshot(storedValues, 1));
+        TranslationRunEngine engine = new(context.Trees, context.Translations, runner);
+
+        TranslationRunResult result = await engine.RunAsync(
+            Request(context, Settings(maxRetries: 0), Target(context.PageId, 1)));
+
+        calls.Should().Be(3);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Committed);
+        (await RequireHeaderAsync(context, context.PageId)).Version.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Cancelling_page_retry_backoff_does_not_dispatch_again_or_write()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(10));
+        CancelPageRetryProgress steps = new(cancellation);
+        int calls = 0;
+        TranslationRunResult result = await Engine(context, (_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(new TranslationExtensionResult([]));
+        }).RunAsync(Request(context, Settings(maxRetries: 2), Target(context.PageId, 1)),
+            cancellationToken: cancellation.Token, stepProgress: steps);
+
+        steps.CancelledRetry.Should().BeTrue();
+        calls.Should().Be(1);
+        result.Cancelled.Should().BeTrue();
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Cancelled);
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+    }
+
+    private sealed class CallbackStepProgress(Action<TranslationStepProgress> report)
+        : IProgress<TranslationStepProgress>
+    {
+        public void Report(TranslationStepProgress value)
+        {
+            report(value);
+        }
+    }
+
+    private sealed class CancelPageRetryProgress(CancellationTokenSource cancellation)
+        : IProgress<TranslationStepProgress>
+    {
+        public bool CancelledRetry { get; private set; }
+
+        public void Report(TranslationStepProgress value)
+        {
+            if (value is { Phase: "page-translation", State: "Retrying", Attempt: 2 })
+            {
+                CancelledRetry = true;
+                cancellation.Cancel();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Lost_commit_acknowledgement_does_not_retranslate_or_commit_the_page_again()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        LostAcknowledgementPageTranslationService writes = new(context.Translations);
+        int calls = 0;
+        TranslationRunResult result = await Engine(context, (input, _, _) =>
+        {
+            calls++;
+            return TranslateAllAsync(input, _ => "translated");
+        }, writes).RunAsync(Request(context, Settings(maxRetries: 2), Target(context.PageId, 1)));
+
+        calls.Should().Be(1);
+        writes.Attempts.Should().Be(1);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Failed);
+        (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
+            .Which.TranslatedMd.Should().Be("translated");
+        (await RequireHeaderAsync(context, context.PageId)).Version.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Page_retry_budget_does_not_restart_the_existing_commit_conflict_budget(bool conflict)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source"));
+        RejectingPageTranslationService writes = new(context.Translations,
+            conflict ? AppErrorCodes.Conflict : AppErrorCodes.InvalidState);
+        int calls = 0;
+        TranslationRunResult result = await Engine(context, (input, _, _) =>
+        {
+            calls++;
+            return calls == 1
+                ? Task.FromResult(new TranslationExtensionResult([]))
+                : TranslateAllAsync(input, _ => "translated");
+        }, writes).RunAsync(Request(context, Settings(maxRetries: 1), Target(context.PageId, 1)));
+
+        calls.Should().Be(conflict ? 4 : 2);
+        writes.Attempts.Should().Be(conflict ? 3 : 1);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Failed);
+        result.Pages[0].ErrorCode.Should().Be(conflict ? AppErrorCodes.Conflict : AppErrorCodes.InvalidState);
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Throwing_page_and_step_observers_do_not_change_committed_results()
     {
@@ -347,8 +565,10 @@ public sealed class TranslationRunEngineTests
         await context.CommitAsync(
             [.. boxIds.Select((boxId, index) => TextSeed(boxId, index, $"source {index}"))]);
         DocumentBoxId failedBoxId = boxIds[1];
+        int calls = 0;
         TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
         {
+            calls++;
             ExtensionBoxOutcome[] outcomes = extensionContext.Boxes.Select(box => box.Id == failedBoxId
                 ? new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed,
                     ErrorCode: TranslationErrorCodes.BatchMismatch, ErrorMessage: "simulated extension failure")
@@ -356,8 +576,9 @@ public sealed class TranslationRunEngineTests
                     "translated " + box.Text)).ToArray();
             return Task.FromResult(new TranslationExtensionResult(outcomes));
         }).RunAsync(
-            Request(context, Settings(1), Target(context.PageId, 1)));
+            Request(context, Settings(1, maxRetries: 2), Target(context.PageId, 1)));
 
+        calls.Should().Be(1, "a partial result has already committed its successful boxes");
         result.Pages[0].State.Should().Be(TranslationPageRunState.Partial);
         result.Pages[0].CommittedBoxCount.Should().Be(3);
         result.Pages[0].ErrorCode.Should().Be(TranslationErrorCodes.BatchMismatch);
@@ -1164,6 +1385,43 @@ public sealed class TranslationRunEngineTests
             CancellationToken cancellationToken = default)
         {
             return _inner.PutPageTranslationAsync(documentInstanceId, pageId, markdown, cancellationToken);
+        }
+    }
+
+    private sealed class RejectingPageTranslationService(IPageTranslationService inner, string errorCode)
+        : DelegatingPageTranslationService(inner)
+    {
+        public int Attempts { get; private set; }
+
+        public override Task<Result<PageTranslationStatus>> PutPageBoxesAsync(
+            DocumentInstanceId documentInstanceId, PageId pageId, DocumentTreeRevisionId expectedRevision,
+            int expectedTranslationVersion, IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+            CancellationToken cancellationToken = default, string? targetLanguage = null)
+        {
+            Attempts++;
+            return Task.FromResult(Result<PageTranslationStatus>.Failure(errorCode, "simulated commit failure"));
+        }
+    }
+
+    private sealed class LostAcknowledgementPageTranslationService(IPageTranslationService inner)
+        : DelegatingPageTranslationService(inner)
+    {
+        public int Attempts { get; private set; }
+
+        public override async Task<Result<PageTranslationStatus>> PutPageBoxesAsync(
+            DocumentInstanceId documentInstanceId, PageId pageId, DocumentTreeRevisionId expectedRevision,
+            int expectedTranslationVersion, IReadOnlyDictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+            CancellationToken cancellationToken = default, string? targetLanguage = null)
+        {
+            Attempts++;
+            Result<PageTranslationStatus> committed = await base.PutPageBoxesAsync(documentInstanceId, pageId,
+                expectedRevision, expectedTranslationVersion, replacements, cancellationToken, targetLanguage);
+            if (committed.IsFailure)
+            {
+                return committed;
+            }
+
+            throw new TimeoutException("The commit succeeded but its acknowledgement was lost.");
         }
     }
 

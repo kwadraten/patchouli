@@ -10,10 +10,11 @@ internal static class TranslationTestExtensionHarness
     public static TranslationExtensionRunner CreateRunner(
         Func<TranslationExtensionContext, IExtensionCapabilities, CancellationToken,
             Task<TranslationExtensionResult>> translate,
-        bool available = true)
+        bool available = true,
+        ExtensionConfigSnapshot? config = null)
     {
         FakeTranslationExtension extension = new(translate);
-        FakeExtensionManager manager = new(extension, available);
+        FakeExtensionManager manager = new(extension, available, config: config);
         return new TranslationExtensionRunner(manager, new FakeCapabilities());
     }
 
@@ -49,7 +50,8 @@ internal static class TranslationTestExtensionHarness
     private sealed class FakeExtensionManager(
         FakeTranslationExtension extension,
         bool available,
-        Func<CancellationToken, ValueTask<IExtensionLease?>>? acquireOverride = null) : IExtensionManager
+        Func<CancellationToken, ValueTask<IExtensionLease?>>? acquireOverride = null,
+        ExtensionConfigSnapshot? config = null) : IExtensionManager
     {
         public ValueTask<IExtensionLease?> AcquireAsync(string id, CancellationToken cancellationToken = default)
         {
@@ -60,7 +62,7 @@ internal static class TranslationTestExtensionHarness
             }
 
             return ValueTask.FromResult<IExtensionLease?>(available && id == extension.Descriptor.Id
-                ? new FakeExtensionLease(extension)
+                ? new FakeExtensionLease(extension, config)
                 : null);
         }
 
@@ -132,11 +134,15 @@ internal static class TranslationTestExtensionHarness
         }
     }
 
-    private sealed class FakeExtensionLease(FakeTranslationExtension extension) : IExtensionLease
+    private sealed class FakeExtensionLease(FakeTranslationExtension extension, ExtensionConfigSnapshot? config)
+        : IExtensionLease
     {
         public ExtensionDescriptor Descriptor => extension.Descriptor;
         public string Fingerprint => "test-extension-generation";
-        public ExtensionConfigSnapshot Config { get; } = new(new Dictionary<string, string>(), 0);
+
+        public ExtensionConfigSnapshot Config { get; } =
+            config ?? new ExtensionConfigSnapshot(new Dictionary<string, string>(), 0);
+
         public IReadOnlyList<ConfigFieldDescriptor> ConfigFields => extension.ConfigFields;
         public IExtensionDefinition Definition => extension;
         public ITranslationExtension Translation => extension;
