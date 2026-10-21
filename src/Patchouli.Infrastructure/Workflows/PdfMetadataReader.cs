@@ -1,12 +1,19 @@
-using PDFiumCore;
 using Patchouli.Core.Import;
 using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Workflows;
 
+/// <summary>
+/// Reads PDF metadata through the shared <see cref="PdfiumDocumentEngine"/>, which routes
+/// every native call through the single process-wide PDFium scheduler (issue #31). This
+/// reader owns no native gate and no native calls of its own.
+/// Page-count failures are not swallowed: a PDFium failure surfaces as a typed
+/// <see cref="PdfiumDocumentException"/> carrying the native error code and path, and
+/// cancellation propagates as <see cref="OperationCanceledException"/>. A missing file is
+/// the only case reported as <c>null</c> (there is nothing to read).
+/// </summary>
 public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
 {
-    private static readonly SemaphoreSlim NativeGate = new(1, 1);
     private readonly PdfiumDocumentEngine _engine;
 
     public PdfMetadataReader(PdfiumDocumentEngine? engine = null)
@@ -21,19 +28,14 @@ public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
             return null;
         }
 
-        try
+        int pageCount = await _engine.GetPageCountAsync(pdfPath, cancellationToken);
+        if (pageCount > 0)
         {
-            int pageCount = await _engine.GetPageCountAsync(pdfPath, cancellationToken);
-            return pageCount > 0 ? pageCount : null;
+            return pageCount;
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
+
+        throw new PdfiumDocumentException(
+            $"PDFium returned a non-positive page count ({pageCount}) for this PDF.", null, pdfPath);
     }
 
     public async Task<IReadOnlyList<PdfPageInfoResult>?> GetPageInfosAsync(
@@ -45,91 +47,12 @@ public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
             return null;
         }
 
-        try
-        {
-            int? pageCount = await GetPageCountAsync(pdfPath, cancellationToken);
-            if (pageCount is null or <= 0)
-            {
-                return null;
-            }
-
-            return await ReadPageInfosAsync(pdfPath, pageCount.Value, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
+        int? pageCount = await GetPageCountAsync(pdfPath, cancellationToken);
+        if (pageCount is null or <= 0)
         {
             return null;
         }
-    }
 
-    private static async Task<IReadOnlyList<PdfPageInfoResult>?> ReadPageInfosAsync(
-        string pdfPath,
-        int pageCount,
-        CancellationToken cancellationToken)
-    {
-        List<PdfPageInfoResult> results = new(pageCount);
-        await NativeGate.WaitAsync(cancellationToken);
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            FpdfDocumentT document = fpdfview.FPDF_LoadDocument(pdfPath, null!);
-            if (document.__Instance == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            try
-            {
-                for (int pageIndex = 0; pageIndex < pageCount; pageIndex++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    results.Add(ReadPageInfo(document, pageIndex));
-                }
-            }
-            finally
-            {
-                fpdfview.FPDF_CloseDocument(document);
-            }
-
-            return results;
-        }
-        finally
-        {
-            NativeGate.Release();
-        }
-    }
-
-    private static PdfPageInfoResult ReadPageInfo(FpdfDocumentT document, int pageIndex)
-    {
-        FpdfPageT page = fpdfview.FPDF_LoadPage(document, pageIndex);
-        if (page.__Instance == IntPtr.Zero)
-        {
-            return new PdfPageInfoResult(false, null, $"PDFium could not load page {pageIndex}.");
-        }
-
-        try
-        {
-            double width = fpdfview.FPDF_GetPageWidthF(page);
-            double height = fpdfview.FPDF_GetPageHeightF(page);
-            int rotation = fpdf_edit.FPDFPageGetRotation(page) switch
-            {
-                1 => 90,
-                2 => 180,
-                3 => 270,
-                _ => 0
-            };
-            return new PdfPageInfoResult(true, new PdfPageInfo(width, height, rotation), null);
-        }
-        catch (Exception exception) // Classified into the page failure result; the page records it (ADR 0035).
-        {
-            return new PdfPageInfoResult(false, null, exception.Message);
-        }
-        finally
-        {
-            fpdfview.FPDF_ClosePage(page);
-        }
+        return await _engine.GetPageInfosAsync(pdfPath, pageCount.Value, cancellationToken);
     }
 }

@@ -100,7 +100,10 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
             throw new InvalidOperationException("Render DPI must be between 50 and 600.");
         }
 
-        PdfiumPageBitmap raster = await _engine.RenderPageAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        // Stateless renders serve OCR / cache warming, not the interactive preview (which
+        // renders through sessions): schedule them as background work (issue #31).
+        PdfiumPageBitmap raster = await _engine.RenderPageAsync(pdfPath, pageIndex, dpi, PdfiumPriority.Background,
+            cancellationToken);
         return ToBufferOutput(raster, dpi);
     }
 

@@ -2083,10 +2083,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task RenderCurrentPageAsync()
     {
+        // Issue #31 render-then-swap: the current image stays on screen while the next page
+        // renders. It is only replaced after a new bitmap has been produced successfully, so
+        // a failed or slow render never flashes a blank page.
         int generation = ++_renderGeneration;
-        Image?.Dispose();
-        Image = null;
-        WidthPixels = 0;
         IsBusy = true;
         BeginSourceValidation();
         Status = "正在渲染 PDF 预览...";
@@ -2098,6 +2098,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
                 {
                     ClearSourceValidation();
+                    ClearPreviewImage();
                     Status = "该题录没有可预览的 PDF 文件。";
                     return;
                 }
@@ -2110,6 +2111,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             if (fileAssetId is null)
             {
                 ClearSourceValidation();
+                ClearPreviewImage();
                 Status = "该题录没有可预览的 PDF 文件。";
                 return;
             }
@@ -2127,6 +2129,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             if (PageCount == 0)
             {
                 ClearSourceValidation();
+                ClearPreviewImage();
                 Status = "该文档还没有页面记录。";
                 return;
             }
@@ -2136,11 +2139,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             _currentPageId = page.PageId;
             PageRenderRequest renderRequest = new(documentInstanceId, page.PageId, fileAssetId, 120,
                 Purpose: PageRenderPurpose.Preview);
-            Result<PdfPagePixelBufferLease> preview = PageRenderPreviewHandler is not null
-                ? await PageRenderPreviewHandler(renderRequest, CancellationToken.None)
-                : await services.PageRenders.RenderPreviewAsync(renderRequest);
+            Result<PdfPagePixelBufferLease> preview =
+                await RenderPreviewWithRetryAsync(services, renderRequest, generation);
             if (preview.IsFailure)
             {
+                // Keep the previous page on screen; the status line is the error surface and
+                // re-selecting the page (or Reload) is the retry entry point.
                 ApplyPreviewFailure(preview);
                 Status = $"ERROR {preview.ErrorCode}: {preview.ErrorMessage}";
                 return;
@@ -2153,7 +2157,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             using PdfPagePixelBufferLease raster = preview.Value;
-            Image = CreateBitmap(raster);
+            SwapPreviewImage(CreateBitmap(raster));
             WidthPixels = raster.WidthPixels;
             HeightPixels = raster.HeightPixels;
 
@@ -2188,8 +2192,13 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            ClearSourceValidation();
-            Status = $"PDF 预览失败：{ex.Message}";
+            // Render-then-swap: a failed render leaves the previous image untouched; only the
+            // current generation may publish its failure to the status line.
+            if (generation == _renderGeneration)
+            {
+                ClearSourceValidation();
+                Status = $"PDF 预览失败：{ex.Message}";
+            }
         }
         finally
         {
@@ -2197,6 +2206,61 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             {
                 IsBusy = false;
             }
+        }
+    }
+
+    // Transient preview failures are retried with a short exponential backoff (at most two
+    // retries, 200 ms then 400 ms). A superseded generation stops retrying immediately.
+    private async Task<Result<PdfPagePixelBufferLease>> RenderPreviewWithRetryAsync(HostServices services,
+        PageRenderRequest renderRequest, int generation)
+    {
+        const int maxRetries = 2;
+        for (int attempt = 0;; attempt++)
+        {
+            try
+            {
+                return PageRenderPreviewHandler is not null
+                    ? await PageRenderPreviewHandler(renderRequest, CancellationToken.None)
+                    : await services.PageRenders.RenderPreviewAsync(renderRequest);
+            }
+            catch (Exception) when (attempt < maxRetries && generation == _renderGeneration)
+            {
+                await Task.Delay(200 << attempt);
+                if (generation != _renderGeneration)
+                {
+                    throw;
+                }
+            }
+        }
+    }
+
+    /// <summary>Replaces the preview image on the UI thread and disposes the replaced bitmap.</summary>
+    private void SwapPreviewImage(Bitmap newImage)
+    {
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            Bitmap? oldImage = Image;
+            Image = newImage;
+            oldImage?.Dispose();
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(() => SwapPreviewImage(newImage));
+        }
+    }
+
+    private void ClearPreviewImage()
+    {
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            Image?.Dispose();
+            Image = null;
+            WidthPixels = 0;
+            HeightPixels = 0;
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(ClearPreviewImage);
         }
     }
 

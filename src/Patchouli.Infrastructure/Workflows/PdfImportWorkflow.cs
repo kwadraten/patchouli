@@ -11,6 +11,7 @@ using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Import;
+using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Workflows;
 
@@ -120,16 +121,26 @@ public sealed class PdfImportWorkflow : IPdfImportWorkflow
             return AlreadyImported(owner);
         }
 
-        int? pageCount = request.PageCount ??
-                         await _pdfMetadataReader.GetPageCountAsync(normalizedPath, cancellationToken);
-        if (pageCount is null or <= 0)
+        int? pageCount;
+        IReadOnlyList<PdfPageInfoResult>? pageInfoResults;
+        try
         {
-            return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null, null);
-        }
+            pageCount = request.PageCount ??
+                        await _pdfMetadataReader.GetPageCountAsync(normalizedPath, cancellationToken);
+            if (pageCount is null or <= 0)
+            {
+                return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null,
+                    null);
+            }
 
-        IReadOnlyList<PdfPageInfoResult>? pageInfoResults = _pageInfoReader is null
-            ? null
-            : await _pageInfoReader.GetPageInfosAsync(normalizedPath, cancellationToken);
+            pageInfoResults = _pageInfoReader is null
+                ? null
+                : await _pageInfoReader.GetPageInfosAsync(normalizedPath, cancellationToken);
+        }
+        catch (PdfiumDocumentException exception)
+        {
+            return new PdfImportResult(false, DescribePdfiumFailure(exception), null, null, null, null);
+        }
 
         DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
         List<PdfImportPageFailure> failures = [];
@@ -242,6 +253,24 @@ public sealed class PdfImportWorkflow : IPdfImportWorkflow
             commitResult.Value.FileAssetId.ToString(),
             documentInstance.DocumentInstanceId.ToString(),
             pageCount.Value, failedCount, failures);
+    }
+
+    // Issue #31: page-count failures carry the native PDFium error code, so the import
+    // message can name the actual cause. Code 3 is a format error (corrupt / not a PDF),
+    // not a lock or busy condition.
+    private static string DescribePdfiumFailure(PdfiumDocumentException exception)
+    {
+        return exception.Code switch
+        {
+            PdfiumErrorCodes.Password =>
+                "This PDF is password-protected and cannot be imported without its password.",
+            PdfiumErrorCodes.Format =>
+                "This PDF appears to be corrupted or is not a valid PDF file (PDFium format error).",
+            PdfiumErrorCodes.File =>
+                "This PDF file could not be read (missing, locked by another process, or inaccessible).",
+            { } code => $"PDFium could not read this PDF (PDFium error {code}).",
+            _ => $"PDFium could not read this PDF: {exception.Message}"
+        };
     }
 
     private static PdfImportResult AlreadyImported(FileImportOwner owner)

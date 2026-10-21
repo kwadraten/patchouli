@@ -232,7 +232,10 @@ public sealed class HostServices
         _rapidOcrModelHttpClient = new HttpClient();
         RapidOcrModelDownload =
             new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory);
-        PdfiumPdfPageRenderer pdfRenderer = new();
+        // Issue #31: one shared engine instance for rendering and metadata; every engine
+        // routes native work through the single process-wide PdfiumScheduler regardless.
+        PdfiumDocumentEngine pdfiumEngine = new();
+        PdfiumPdfPageRenderer pdfRenderer = new(pdfiumEngine);
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
             Path.Combine(appPaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
@@ -341,7 +344,7 @@ public sealed class HostServices
         PurgeItems =
             new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
-        PdfMetadataReader pdfMetadata = new();
+        PdfMetadataReader pdfMetadata = new(pdfiumEngine);
         PdfMetadata = pdfMetadata;
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
         PdfImport = new PdfImportWorkflow(
