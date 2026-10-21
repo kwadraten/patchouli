@@ -99,7 +99,7 @@ step.
 ### One-click install for OpenCode
 
 OpenCode is the default and the first agent with a managed install path. The installer
-downloads the official registry URL into a sibling staging directory, extracts the archive,
+downloads the official distribution URL into a sibling staging directory, extracts the archive,
 finds the executable, and promotes the extracted tree to the managed per-agent directory with
 an atomic swap that restores the previous installation if the final move fails. A failed or
 cancelled installation removes staging state. The installer never edits settings; the caller
@@ -109,6 +109,13 @@ This first version intentionally does **not** verify a SHA-256 digest: it relies
 official HTTPS URL and the registry metadata. That is a deliberate simplicity trade-off, not a
 claim of supply-chain verification; a future hardening change can pin hashes without changing
 the install/rollback flow.
+
+OpenCode managed installation pins official `@opencode/cli` V2 native npm archives independently
+of the ACP registry (which still advertises V1). x64 uses baseline binaries for CPU compatibility.
+Detection continues to accept user-installed V1 and V2 through `opencode`. The catalog generator
+preserves entries enclosed in `// <catalog-preserve id="opencode">` and
+`// </catalog-preserve>` markers, including when refreshing registry data. Malformed or duplicate
+markers stop generation. Keep the command and V1-compatible MCP config unchanged.
 
 ### Per-Library `agent-workspace/`
 

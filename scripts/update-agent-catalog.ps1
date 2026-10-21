@@ -16,7 +16,8 @@
       3. Emit src/Patchouli.Core/Agents/AgentCatalog.g.cs in the same shape as the original hand-written
          file (C# 12 collection expressions). Registry distribution data (binary download templates +
          sha256, npx/uvx packages) is written into per-entry comments for the future installer; no
-         runtime download logic is generated.
+         runtime download logic is generated. Entries enclosed in catalog-preserve markers in the
+         canonical catalog are retained verbatim instead of regenerated (also with -Refresh).
 
     Output is deterministic: there are no timestamps or other volatile fields, so two consecutive runs
     produce byte-identical files. Curated ids missing from the registry are an error; registry entries
@@ -553,6 +554,12 @@ function New-CatalogFileLines {
 
     for ($i = 0; $i -lt $Entries.Count; $i++) {
         $entry = $Entries[$i]
+        if ($preservedEntries.ContainsKey([string]$entry.Id)) {
+            foreach ($line in $preservedEntries[[string]$entry.Id]) {
+                $lines.Add($line)
+            }
+            continue
+        }
         $registryAgent = $RegistryById[[string]$entry.Id]
         $entryLines = New-CatalogEntryLines -Entry $entry -RegistryAgent $registryAgent
         $lastIndex = $entryLines.Count - 1
@@ -804,6 +811,26 @@ $skippedIds = @($registryById.Keys |
 # ---------------------------------------------------------------------------------------------------
 # Generate and write
 # ---------------------------------------------------------------------------------------------------
+
+# Explicit hand-maintained blocks survive regeneration, including -Refresh and -Check.
+# Read the canonical catalog even when generating an alternate output for verification.
+$preservedEntries = [System.Collections.Generic.Dictionary[string, string[]]]::new([StringComparer]::Ordinal)
+if (Test-Path -LiteralPath $defaultOutputPath) {
+    $existingCatalog = [IO.File]::ReadAllText($defaultOutputPath)
+    $blocks = [regex]::Matches($existingCatalog,
+        '(?ms)^        // <catalog-preserve id="(?<id>[^"\r\n]+)">\r?\n.*?^        // </catalog-preserve>\r?\n')
+    $markerCount = [regex]::Matches($existingCatalog, '// </?catalog-preserve\b').Count
+    if ($markerCount -ne 2 * $blocks.Count) {
+        throw 'Malformed catalog-preserve markers; refusing to overwrite the catalog.'
+    }
+    foreach ($block in $blocks) {
+        $id = $block.Groups['id'].Value
+        if (-not $curatedIds.Contains($id) -or $preservedEntries.ContainsKey($id)) {
+            throw "Unknown or duplicate catalog-preserve id: $id"
+        }
+        $preservedEntries.Add($id, [string[]]($block.Value.TrimEnd("`r", "`n") -split '\r?\n'))
+    }
+}
 
 $catalogLines = New-CatalogFileLines -Entries $curated -RegistryById $registryById -RegistryVersion $registryVersion
 $content = $catalogLines -join $newLine

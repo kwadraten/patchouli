@@ -13,23 +13,9 @@ public static partial class AgentCatalog
     /// <summary>Every catalogued agent, in display order.</summary>
     public static readonly AgentCatalogEntry[] All =
     [
-        // Registry distribution (ACP server form, not TUI launch args); never read at run time.
-        //   agent version 1.19.3 - https://github.com/anomalyco/opencode
-        //   icon: https://cdn.agentclientprotocol.com/registry/v1/latest/opencode.svg (not embedded yet)
-        //   npx: not published
-        //   uvx: not published
-        //   binary darwin-aarch64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-darwin-arm64.zip
-        //     sha256 c2d0fecd27acf6e08be02c1f5d384614d07495587766bcc4a6bff3971749bb64; cmd ./opencode; args acp
-        //   binary darwin-x86_64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-darwin-x64.zip
-        //     sha256 4e29dbe2f61ace728370523c88027d0742b3a79edcdd2c70e404f616d4ef8f36; cmd ./opencode; args acp
-        //   binary linux-aarch64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-linux-arm64.tar.gz
-        //     sha256 7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405; cmd ./opencode; args acp
-        //   binary linux-x86_64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-linux-x64.tar.gz
-        //     sha256 13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b; cmd ./opencode; args acp
-        //   binary windows-aarch64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-windows-arm64.zip
-        //     sha256 c1b9daf18c97564b2d171703279621f7edc3613e70750d796ef78db87257ad89; cmd ./opencode; args acp
-        //   binary windows-x86_64: https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-windows-x64.zip
-        //     sha256 e4ce9117f55fc068414513789f8c7d1049f855d7518bb4e350b9170a3a20d8c3; cmd ./opencode.exe; args acp
+        // <catalog-preserve id="opencode">
+        // Install source: official @opencode/cli V2 archives (AgentRegistryInstallOfferProvider).
+        // Keep accepting user-installed V1 and V2 through the same opencode command.
         new(
             Id: "opencode",
             DisplayName: "OpenCode",
@@ -46,6 +32,7 @@ public static partial class AgentCatalog
             LinuxPaths: ["~/.opencode/bin/opencode", "/usr/local/bin/opencode"],
             VersionArguments: ["--version"],
             IsDefault: true),
+        // </catalog-preserve>
         // Registry distribution (ACP server form, not TUI launch args); never read at run time.
         //   agent version 0.93.0 - https://github.com/agentclientprotocol/claude-agent-acp
         //   icon: https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg (not embedded yet)

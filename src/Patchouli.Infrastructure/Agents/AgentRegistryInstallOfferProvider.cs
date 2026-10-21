@@ -35,6 +35,12 @@ public sealed class AgentRegistryInstallOfferProvider : IAgentInstallOfferProvid
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.Equals(entry.Id, "opencode", StringComparison.Ordinal))
+        {
+            return GetOpenCodeV2Offer(entry);
+        }
+
         RegistryDocument? document = await LoadAsync(cancellationToken).ConfigureAwait(false);
         RegistryAgent? agent = FindAgent(document, entry.Id);
         if (agent is null)
@@ -82,6 +88,35 @@ public sealed class AgentRegistryInstallOfferProvider : IAgentInstallOfferProvid
             agent.Repository?.Trim(),
             agent.License?.Trim(),
             agent.LicenseUrl?.Trim());
+    }
+
+    // The ACP registry still distributes V1. Pin the official V2 native npm archives instead;
+    // detection deliberately continues to accept either major version from the user's PATH.
+    private AgentInstallOffer GetOpenCodeV2Offer(AgentCatalogEntry entry)
+    {
+        const string version = "2.1.2";
+        string? target = (_environment.Platform, _environment.Architecture) switch
+        {
+            (AgentPlatform.Windows, AgentArchitecture.X64) => "windows-x64-baseline",
+            (AgentPlatform.Windows, AgentArchitecture.Arm64) => "windows-arm64",
+            (AgentPlatform.MacOS, AgentArchitecture.X64) => "darwin-x64-baseline",
+            (AgentPlatform.MacOS, AgentArchitecture.Arm64) => "darwin-arm64",
+            (AgentPlatform.Linux, AgentArchitecture.X64) => "linux-x64-baseline",
+            (AgentPlatform.Linux, AgentArchitecture.Arm64) => "linux-arm64",
+            _ => null
+        };
+        string? url = target is null
+            ? null
+            : $"https://registry.npmjs.org/@opencode/cli-{target}/-/cli-{target}-{version}.tgz";
+        string command = _environment.Platform == AgentPlatform.Windows
+            ? "package/bin/opencode.exe"
+            : "package/bin/opencode";
+        return new AgentInstallOffer(entry.Id, entry.DisplayName, version,
+            AgentRegistryPlatformKey.TryGet(_environment.Platform, _environment.Architecture),
+            url, null, command, [],
+            [new AgentInstallPackageOffer("npm", $"@opencode/cli@{version}", [])],
+            "https://github.com/anomalyco/opencode", "MIT",
+            "https://github.com/anomalyco/opencode/blob/dev/LICENSE");
     }
 
     public async Task<IReadOnlyList<AgentInstallOffer>> GetAllOffersAsync(
