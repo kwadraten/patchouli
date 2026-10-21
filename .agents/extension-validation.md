@@ -3,6 +3,37 @@
 Validation date: 2026-10-21. This records evidence for issues #8 and #26;
 it does not replace the contracts in [extension-contracts](extension-contracts.md).
 
+## Translation settings and sidebar UI follow-up
+
+The focused configuration run passed both cases (`.tmp/tests/fsx-settings-dialog-focused.log`).
+It checks FCS failures preserving the previous form and Active generation, valid-value
+retention after schema changes, configuration validation, preservation of unlisted keys,
+and copying configuration without copying network authorization.
+
+The final UI regression passed 96/96 cases in 7m41s
+(`.tmp/tests/fsx-settings-dialog-final.log`). It covers the settings navigation and fixed
+headers, model settings and autosave, the engine gear opening a separate configuration
+dialog, source-file switching and draft retention, highlighted source with line numbers,
+and discarding without saving configuration or authorization. The reading sidebar test
+clicks the relocated cancel/apply actions: cancel leaves the chapter map unchanged,
+while apply writes the selected chapter. The translation action retains its command
+and appears only in the translation sidebar header; the export controls are absent.
+
+Headless screenshots were reviewed under `.tmp/ui/extension-dialog/` and
+`.tmp/tests/chapter-editor-previews/`. The settings gear and translation symbol use
+bundled `settings.svg` and `languages.svg` resources. The settings page has neither
+the standalone extension navigation item nor an “other extensions” entry. These are
+headless interaction/rendering results; the running desktop application was kept open.
+
+The final isolated test-project build passed with zero warnings and errors
+(`.tmp/build/fsx-settings-dialog-20261021-impl/build-final-fixtures-retry.log`).
+JetBrains 2026.1.4 inspection then passed with zero blocking findings
+(`.tmp/build/fsx-settings-dialog-20261021-impl/inspect-recheck.log`).
+After fixing the test predicate captures and switching the screenshot through the
+application's palette service, both affected interaction cases passed again
+(`.tmp/tests/fsx-settings-dialog-appearance.log`). The expanded source editor was
+visually checked in the application's dark palette as well as light mode.
+
 ## Current response contract
 
 Translation uses complete responses. The SDK LLM capability, shipped scripts, domain

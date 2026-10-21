@@ -22,6 +22,105 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class ChapterSidebarUiTests
 {
+    [Fact]
+    public async Task Sidebar_headers_expose_translation_and_replace_scan_actions_during_preview()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            await using PageMapTestDocument document = await PageMapTestDocument.CreateAsync();
+            await document.CommitPageAsync(0, PageMapTestDocument.TextSeed(DocumentBoxId.New(), 0, "# Header chapter"));
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path)
+                { RuntimeDatabasePath = document.Database.Path };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            LibraryItemViewModel item = new(ItemId.New().ToString(), "Book", "book", "", "", "", null,
+                document.DocumentId.ToString(), null, "book.pdf", "", 3, 0, "",
+                _ => Task.CompletedTask, _ => Task.CompletedTask);
+            using PdfWorkspaceViewModel workspace = new(main, item) { IsSidebarOpen = true };
+            await workspace.ShowChaptersTabCommand.ExecuteAsync();
+            PdfWorkspacePage page = new() { DataContext = workspace };
+            Window window = new() { Width = 1200, Height = 900, Content = page };
+            window.Show();
+            try
+            {
+                Pump(window);
+                Button add = page.FindControl<Button>("AddChapterButton")!;
+                Button scan = page.FindControl<Button>("ScanChaptersButton")!;
+                Button apply = page.FindControl<Button>("ApplyChapterScanButton")!;
+                Button discard = page.FindControl<Button>("CancelChapterPreviewButton")!;
+                Button translate = page.FindControl<Button>("StartDocumentTranslationButton")!;
+                StackPanel header = page.FindControl<StackPanel>("ChapterHeaderActions")!;
+                header.Children.Should().Contain(apply).And.Contain(discard);
+                add.IsEffectivelyVisible.Should().BeTrue();
+                scan.IsEffectivelyVisible.Should().BeTrue();
+                apply.IsEffectivelyVisible.Should().BeFalse();
+                translate.IsEffectivelyVisible.Should().BeFalse();
+
+                await workspace.ChapterEditor.ScanCommand.ExecuteAsync();
+                Pump(window);
+                workspace.ChapterEditor.HasPreview.Should().BeTrue();
+                add.IsEffectivelyVisible.Should().BeFalse();
+                scan.IsEffectivelyVisible.Should().BeFalse();
+                apply.IsEffectivelyVisible.Should().BeTrue();
+                discard.IsEffectivelyVisible.Should().BeTrue();
+                apply.Command.Should().BeSameAs(workspace.ChapterEditor.ApplyScanCommand);
+                discard.Command.Should().BeSameAs(workspace.ChapterEditor.CancelPreviewCommand);
+                page.GetVisualDescendants().OfType<TextBlock>().Should().NotContain(text => text.Text == "扫描预览");
+                SavePreview(window, 1200, "chapter-preview-header");
+                Click(discard);
+                workspace.ChapterEditor.HasPreview.Should().BeFalse();
+                (await document.CreateMapService().GetChapterEditingSnapshotAsync(document.DocumentId)).Value
+                    .Definition.Chapters.Should().BeEmpty();
+                add.IsEffectivelyVisible.Should().BeTrue();
+                scan.IsEffectivelyVisible.Should().BeTrue();
+
+                await workspace.ChapterEditor.ScanCommand.ExecuteAsync();
+                Pump(window);
+                Click(apply);
+                await workspace.ChapterEditor.ApplyScanCommand.ExecutionTask!;
+                workspace.ChapterEditor.HasPreview.Should().BeFalse();
+                (await document.CreateMapService().GetChapterEditingSnapshotAsync(document.DocumentId)).Value
+                    .Definition.Chapters.Should().ContainSingle(chapter => chapter.Title == "Header chapter");
+
+                await workspace.ShowTranslationTabCommand.ExecuteAsync();
+                Pump(window);
+                translate.IsEffectivelyVisible.Should().BeTrue();
+                translate.Command.Should().BeSameAs(workspace.StartDocumentTranslationCommand);
+                translate.GetVisualAncestors().OfType<Border>().Should()
+                    .Contain(border => border.Classes.Contains("SidebarHeader"));
+                Avalonia.Platform.AssetLoader.Exists(new Uri("avares://Patchouli.UI/Assets/Lucide/languages.svg"))
+                    .Should().BeTrue();
+                AsyncCommand exportCommand = workspace.ExportDocumentTranslationCommand;
+                IReadOnlyList<string> exportModes = workspace.TranslationExportModes;
+                page.GetVisualDescendants().OfType<Button>().Should()
+                    .NotContain(button => button.Command == exportCommand);
+                page.GetVisualDescendants().OfType<ComboBox>().Should()
+                    .NotContain(combo => ReferenceEquals(combo.ItemsSource, exportModes));
+                SavePreview(window, 1200, "translation-header");
+                workspace.ShowContentTabCommand.Execute(null);
+                Pump(window);
+                translate.IsEffectivelyVisible.Should().BeFalse();
+
+                void Click(Button button)
+                {
+                    Point point =
+                        button.TranslatePoint(new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), window)!
+                            .Value;
+                    window.MouseDown(point, MouseButton.Left);
+                    window.MouseUp(point, MouseButton.Left);
+                    Pump(window);
+                }
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
+        }, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

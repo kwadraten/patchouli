@@ -93,19 +93,8 @@
     </Border>
 
     <StackPanel Spacing="10" IsVisible="{Binding HasPreview}" IsEnabled="{Binding !IsBusy}">
-      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
-        <TextBlock Text="扫描预览" FontWeight="SemiBold" VerticalAlignment="Center"
-                   ToolTip.Tip="勾选要导入的章节；拖动手柄调整顺序，向右拖动设为子章节，向左拖动提升层级。" />
-        <Button Grid.Column="1" Classes="ChapterIcon" Command="{Binding ApplyScanCommand}"
-                IsEnabled="{Binding !IsFormOpen}" ToolTip.Tip="应用扫描结果" AutomationProperties.Name="应用扫描结果">
-          <lucide:Lucide Icon="Check" Width="16" Height="16" />
-        </Button>
-        <Button Grid.Column="2" Classes="ChapterIcon" Command="{Binding CancelPreviewCommand}"
-                IsEnabled="{Binding !IsFormOpen}" ToolTip.Tip="取消预览" AutomationProperties.Name="取消预览">
-          <lucide:Lucide Icon="X" Width="16" Height="16" />
-        </Button>
-      </Grid>
-      <ItemsControl ItemsSource="{Binding PreviewRows}">
+      <ItemsControl ItemsSource="{Binding PreviewRows}"
+                    ToolTip.Tip="勾选要导入的章节；拖动手柄调整顺序，向右拖动设为子章节，向左拖动提升层级。">
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:ChapterScanRowViewModel">
             <Border Margin="{Binding Indent}">
