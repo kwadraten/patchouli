@@ -43,7 +43,22 @@ public sealed record TranslationRunStatus(
     string? ErrorCode = null,
     string? ErrorMessage = null,
     bool Reused = false,
-    bool IsPaused = false);
+    bool IsPaused = false,
+    TranslationStepProgress? CurrentStep = null);
+
+/// <summary>Volatile progress within a page; counts describe this step and never imply a committed page.</summary>
+public sealed record TranslationStepProgress(
+    string Phase,
+    int Completed,
+    int Total,
+    string State,
+    string? Message = null,
+    int PageIndex = 0,
+    int? Attempt = null,
+    string? ParentPhase = null,
+    string? ExecutionId = null,
+    string? ParentExecutionId = null,
+    TimeSpan? Elapsed = null);
 
 /// <summary>
 /// Host-side entry point for the direct translation engine. It validates the request, resolves

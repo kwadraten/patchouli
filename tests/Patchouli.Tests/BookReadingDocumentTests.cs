@@ -116,6 +116,54 @@ public sealed class BookReadingDocumentTests
         source.Blocks.Select(block => block.PageIndex).Should().Equal(0, 0, 1);
     }
 
+    [Fact]
+    public void Translation_only_uses_translations_and_marks_missing_pages_without_exposing_source_text()
+    {
+        DocumentBoxId firstBox = DocumentBoxId.New();
+        DocumentBoxId missingBox = DocumentBoxId.New();
+        SortedDictionary<int, ReadingScene> sources = new()
+        {
+            [0] = new ReadingScene([new ReadingBlock(firstBox, "paragraph", 0, "secret source")]),
+            [1] = new ReadingScene([new ReadingBlock(missingBox, "paragraph", 0, "another secret")])
+        };
+        Dictionary<int, ReadingScene?> translations = new()
+        {
+            [0] = new ReadingScene([new ReadingBlock(firstBox, "paragraph", 0, "译文")]),
+            [9] = Scene(1, "stale translation")
+        };
+
+        (ReadingScene source, ReadingScene? translation) =
+            BookReadingDocument.Assemble(sources, translations, false, true);
+
+        translation.Should().BeNull("translation-only reading puts translated content in the primary scene");
+        source.Blocks.Should().HaveCount(2);
+        source.Blocks[0].Text.Should().Be("译文");
+        source.Blocks[1].Kind.Should().Be(ReadingBlock.UntranslatedKind);
+        source.Blocks[1].BoxId.Should().Be(missingBox);
+        source.Blocks.Select(block => block.Text).Should().NotContain("secret source").And.NotContain("another secret");
+        source.Blocks.Select(block => block.PageIndex).Should().Equal(0, 1);
+    }
+
+    [Fact]
+    public void Translation_only_all_missing_pages_are_placeholders_and_return_no_translation_scene()
+    {
+        SortedDictionary<int, ReadingScene> sources = new()
+        {
+            [0] = Scene(2, "private source"),
+            [1] = Scene(1, "private source")
+        };
+
+        (ReadingScene source, ReadingScene? translation) =
+            BookReadingDocument.Assemble(sources, new Dictionary<int, ReadingScene?>(), false,
+                true);
+
+        translation.Should().BeNull();
+        source.Blocks.Should().HaveCount(3);
+        source.Blocks.Should().OnlyContain(block => block.Kind == ReadingBlock.UntranslatedKind);
+        source.Blocks.Should().OnlyContain(block => !block.Text.Contains("private source", StringComparison.Ordinal));
+        source.Blocks.Select(block => block.PageIndex).Should().Equal(0, 0, 1);
+    }
+
     private static ReadingScene Scene(int blockCount, string textPrefix = "正文")
     {
         List<ReadingBlock> blocks = new(blockCount);

@@ -1,3 +1,4 @@
+using Patchouli.Core.Diagnostics;
 using LlmTornado;
 using LlmTornado.Chat;
 using LlmTornado.Chat.Models;

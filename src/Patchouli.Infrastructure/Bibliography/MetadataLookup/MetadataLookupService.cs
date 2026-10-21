@@ -42,41 +42,37 @@ public sealed class MetadataLookupService : IMetadataLookupService
     }
 
     public async Task<Result<MetadataLookupOutcome>> LookupAndMergeAsync(
-        ItemId itemId,
-        string scheme,
-        string value,
+        ItemId itemId, string scheme, string value,
         IReadOnlyList<MetadataSourcePreference>? preferences = null,
         CancellationToken cancellationToken = default)
     {
-        SemaphoreSlim itemGate = ItemGates.GetOrAdd(itemId, _ => new SemaphoreSlim(1, 1));
-        await itemGate.WaitAsync(cancellationToken);
-        try
-        {
-            return await LookupAndMergeCoreAsync(itemId, scheme, value, preferences, cancellationToken);
-        }
-        finally
-        {
-            itemGate.Release();
-        }
+        Result<MetadataCandidateProposal> proposal = await LookupCandidateAsync(itemId, scheme, value,
+            preferences, cancellationToken);
+        return proposal.IsFailure
+            ? Result<MetadataLookupOutcome>.Failure(proposal.ErrorCode!, proposal.ErrorMessage!)
+            : await ApplyCandidateAsync(proposal.Value, cancellationToken);
     }
 
-    private async Task<Result<MetadataLookupOutcome>> LookupAndMergeCoreAsync(
-        ItemId itemId,
-        string scheme,
-        string value,
-        IReadOnlyList<MetadataSourcePreference>? preferences,
-        CancellationToken cancellationToken)
+    public async Task<Result<MetadataCandidateProposal>> LookupCandidateAsync(ItemId itemId, string scheme,
+        string value, IReadOnlyList<MetadataSourcePreference>? preferences = null,
+        CancellationToken cancellationToken = default)
     {
         Result<NormalizedIdentifier> identifier = IdentifierNormalizer.Normalize(scheme, value);
         if (identifier.IsFailure)
         {
-            return Result<MetadataLookupOutcome>.Failure(identifier.ErrorCode!, identifier.ErrorMessage!);
+            return Result<MetadataCandidateProposal>.Failure(identifier.ErrorCode!, identifier.ErrorMessage!);
+        }
+
+        Result<ItemMetadata> original = await _items.GetItemAsync(itemId, cancellationToken);
+        if (original.IsFailure)
+        {
+            return Result<MetadataCandidateProposal>.Failure(original.ErrorCode!, original.ErrorMessage!);
         }
 
         IReadOnlyList<IMetadataSource> providers = _sources.Resolve(identifier.Value.Scheme, preferences);
         if (providers.Count == 0)
         {
-            return Result<MetadataLookupOutcome>.Failure(
+            return Result<MetadataCandidateProposal>.Failure(
                 MetadataLookupErrorCodes.UnsupportedIdentifier,
                 $"No enabled metadata source supports {identifier.Value.Scheme}.");
         }
@@ -138,80 +134,99 @@ public sealed class MetadataLookupService : IMetadataLookupService
             MetadataLookupAttempt significant =
                 attempts.LastOrDefault(attempt => attempt.ErrorCode is not MetadataLookupErrorCodes.NotFound)
                 ?? attempts[^1];
-            return Result<MetadataLookupOutcome>.Failure(
+            return Result<MetadataCandidateProposal>.Failure(
                 significant.ErrorCode ?? MetadataLookupErrorCodes.NotFound,
                 significant.ErrorMessage ?? "No metadata source found a matching record.");
         }
 
-        // Reload after network I/O so concurrent user edits are not overwritten by a stale snapshot.
-        Result<ItemMetadata> currentResult = await _items.GetItemAsync(itemId, cancellationToken);
-        if (currentResult.IsFailure)
-        {
-            return Result<MetadataLookupOutcome>.Failure(currentResult.ErrorCode!, currentResult.ErrorMessage!);
-        }
+        // Edits made while remote sources were being queried must also conflict on application.
+        return Result<MetadataCandidateProposal>.Success(new MetadataCandidateProposal(itemId,
+            original.Value.UpdatedAt, candidate, attempts.ToArray()));
+    }
 
-        ItemMetadata current = currentResult.Value;
-        UpdateItemRequest update = CreateUpdate(current, candidate);
-        cancellationToken.ThrowIfCancellationRequested();
-        Result<ItemMetadata> updated = await _items.UpdateItemAsync(itemId, update, CancellationToken.None);
-        if (updated.IsFailure)
+    public async Task<Result<MetadataLookupOutcome>> ApplyCandidateAsync(MetadataCandidateProposal proposal,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(proposal);
+        SemaphoreSlim itemGate = ItemGates.GetOrAdd(proposal.ItemId, _ => new SemaphoreSlim(1, 1));
+        await itemGate.WaitAsync(cancellationToken);
+        try
         {
-            return Result<MetadataLookupOutcome>.Failure(updated.ErrorCode!, updated.ErrorMessage!);
-        }
-
-        HashSet<string> existingIdentifiers = current.Identifiers
-            .Select(existing => IdentifierNormalizer.Normalize(existing.Scheme, existing.Value))
-            .Where(result => result.IsSuccess)
-            .Select(result => Key(result.Value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        List<ItemIdentifier> added = new();
-        foreach (MetadataIdentifier raw in candidate.Identifiers ?? Array.Empty<MetadataIdentifier>())
-        {
-            Result<NormalizedIdentifier> normalized = IdentifierNormalizer.Normalize(raw.Scheme, raw.Value);
-            if (normalized.IsFailure || !existingIdentifiers.Add(Key(normalized.Value)))
+            Result<ItemMetadata> currentResult = await _items.GetItemAsync(proposal.ItemId, cancellationToken);
+            if (currentResult.IsFailure)
             {
-                continue;
+                return Result<MetadataLookupOutcome>.Failure(currentResult.ErrorCode!, currentResult.ErrorMessage!);
             }
 
-            Result<ItemIdentifier> addedResult = await _items.AddIdentifierAsync(
-                itemId,
-                normalized.Value.Scheme,
-                normalized.Value.Value,
-                $"Metadata source: {candidate.SourceId}",
-                CancellationToken.None);
-            if (addedResult.IsFailure)
+            ItemMetadata current = currentResult.Value;
+            if (current.UpdatedAt != proposal.ExpectedUpdatedAt)
             {
-                attempts.Add(new MetadataLookupAttempt(candidate.SourceId, addedResult.ErrorCode,
-                    $"Metadata was applied, but an identifier could not be added: {addedResult.ErrorMessage}"));
-                continue;
+                return Result<MetadataLookupOutcome>.Failure(AppErrorCodes.Conflict,
+                    "Item metadata changed after the candidate was fetched. Fetch a new proposal.");
             }
 
-            added.Add(addedResult.Value);
-        }
+            MetadataCandidate candidate = proposal.Candidate;
+            if (string.IsNullOrWhiteSpace(candidate.SourceId) || string.IsNullOrWhiteSpace(candidate.Title))
+            {
+                return Result<MetadataLookupOutcome>.Failure(AppErrorCodes.ValidationFailed,
+                    "A metadata candidate requires its source and title.");
+            }
 
-        if (_typeInferences is not null
-            && candidate.TypeConfidence >= 0.9
-            && !string.IsNullOrWhiteSpace(candidate.SuggestedItemType)
-            && !string.Equals(candidate.SuggestedItemType, current.ItemType, StringComparison.Ordinal))
+            List<ItemIdentifierInput> identifiers = new();
+            HashSet<NormalizedIdentifier> seenIdentifiers = new();
+            foreach (MetadataIdentifier raw in candidate.Identifiers ?? Array.Empty<MetadataIdentifier>())
+            {
+                Result<NormalizedIdentifier> normalized = IdentifierNormalizer.Normalize(raw.Scheme, raw.Value);
+                if (normalized.IsFailure)
+                {
+                    return Result<MetadataLookupOutcome>.Failure(normalized.ErrorCode!, normalized.ErrorMessage!);
+                }
+
+                if (seenIdentifiers.Add(normalized.Value))
+                {
+                    identifiers.Add(new ItemIdentifierInput(normalized.Value.Scheme, normalized.Value.Value,
+                        $"Metadata source: {candidate.SourceId}"));
+                }
+            }
+
+            UpdateItemRequest update = CreateUpdate(current, candidate) with
+            {
+                ExpectedUpdatedAt = proposal.ExpectedUpdatedAt
+            };
+            cancellationToken.ThrowIfCancellationRequested();
+            Result<ItemMetadata> applied = await _items.UpdateAndAddIdentifiersAsync(proposal.ItemId, update,
+                identifiers, CancellationToken.None);
+            if (applied.IsFailure)
+            {
+                return Result<MetadataLookupOutcome>.Failure(applied.ErrorCode!, applied.ErrorMessage!);
+            }
+
+            List<MetadataLookupAttempt> attempts = proposal.Attempts.ToList();
+            if (_typeInferences is not null && candidate.TypeConfidence >= 0.9 &&
+                !string.IsNullOrWhiteSpace(candidate.SuggestedItemType) &&
+                !string.Equals(candidate.SuggestedItemType, current.ItemType, StringComparison.Ordinal))
+            {
+                Result<ItemTypeInference> suggestion = await _typeInferences.SuggestAsync(proposal.ItemId,
+                    candidate.SuggestedItemType, candidate.TypeConfidence, ItemTypeInferenceSources.IdentifierLookup,
+                    $"Suggested by {candidate.SourceId}.", CancellationToken.None);
+                if (suggestion.IsFailure)
+                {
+                    attempts.Add(new MetadataLookupAttempt(candidate.SourceId, suggestion.ErrorCode,
+                        $"Metadata was committed, but the separate type suggestion failed: {suggestion.ErrorMessage}"));
+                }
+            }
+
+            HashSet<IdentifierId> previousIdentifiers =
+                current.Identifiers.Select(item => item.IdentifierId).ToHashSet();
+            ItemIdentifier[] added = applied.Value.Identifiers
+                .Where(item => !previousIdentifiers.Contains(item.IdentifierId)).ToArray();
+            return Result<MetadataLookupOutcome>.Success(new MetadataLookupOutcome(applied.Value, candidate,
+                attempts, added));
+        }
+        finally
         {
-            Result<ItemTypeInference> suggestion = await _typeInferences.SuggestAsync(
-                itemId,
-                candidate.SuggestedItemType,
-                candidate.TypeConfidence,
-                ItemTypeInferenceSources.IdentifierLookup,
-                $"Suggested by {candidate.SourceId}.",
-                CancellationToken.None);
-            if (suggestion.IsFailure)
-            {
-                attempts.Add(new MetadataLookupAttempt(candidate.SourceId, suggestion.ErrorCode,
-                    $"Metadata was applied, but type inference could not be recorded: {suggestion.ErrorMessage}"));
-            }
+            itemGate.Release();
         }
-
-        Result<ItemMetadata> final = await _items.GetItemAsync(itemId, CancellationToken.None);
-        return final.IsFailure
-            ? Result<MetadataLookupOutcome>.Failure(final.ErrorCode!, final.ErrorMessage!)
-            : Result<MetadataLookupOutcome>.Success(new MetadataLookupOutcome(final.Value, candidate, attempts, added));
     }
 
     public async Task<Result<MetadataBatchResult>> LookupAndApplyBatchAsync(

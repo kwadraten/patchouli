@@ -97,32 +97,11 @@ public sealed class LlmChatClient : ILlmChatClient
                 "A conversation key is required to track the deterministic prefix.");
         }
 
-        LlmCacheOptions cache = request.Cache ?? LlmCacheOptions.Default;
-        LlmChatRequestOptions options = request.Options ?? new LlmChatRequestOptions();
-
         LlmTransportRequest transportRequest;
         string signature;
         try
         {
-            IReadOnlyList<string> tools = request.ToolDefinitions ?? request.History.ToolDefinitions;
-            IReadOnlyList<LlmTransportMessage> messages = BuildMessages(request.History, vision);
-            EnsurePrefixUnchanged(conversationKey, messages, tools);
-            signature = ComputeSignature(request.History, tools);
-            transportRequest = new LlmTransportRequest(
-                _provider,
-                string.IsNullOrWhiteSpace(options.Model) ? _provider.Model : options.Model.Trim(),
-                messages,
-                tools,
-                options.Temperature,
-                options.MaxTokens,
-                cache.AutoCache,
-                cache.PromptCacheKey,
-                cache.CacheRetention)
-            {
-                ReasoningEffort = options.ReasoningEffort is { } effort
-                    ? LlmAppSettings.NormalizeReasoningEffort(effort)
-                    : _reasoningEffort
-            };
+            (transportRequest, signature) = PrepareTransportRequest(conversationKey, request, vision);
         }
         catch (LlmChatException exception)
         {
@@ -166,9 +145,42 @@ public sealed class LlmChatClient : ILlmChatClient
             _provider.ProviderId,
             transportResult.FinishReason,
             transportResult.Usage,
+            transportRequest.AutoCache,
+            transportRequest.PromptCacheKey,
+            signature) { ToolCalls = transportResult.ToolCalls, ProviderMetadata = transportResult.ProviderMetadata });
+    }
+
+    private (LlmTransportRequest Request, string Signature) PrepareTransportRequest(string conversationKey,
+        LlmChatRequest request, LlmVisionInput? vision)
+    {
+        if (string.IsNullOrWhiteSpace(conversationKey))
+        {
+            throw new LlmChatException(LlmFailureCodes.HistoryInvariantViolated,
+                "A conversation key is required to track the deterministic prefix.");
+        }
+
+        LlmCacheOptions cache = request.Cache ?? LlmCacheOptions.Default;
+        LlmChatRequestOptions options = request.Options ?? new LlmChatRequestOptions();
+        IReadOnlyList<string> tools = request.ToolDefinitions ?? request.History.ToolDefinitions;
+        IReadOnlyList<LlmTransportMessage> messages = BuildMessages(request.History, vision);
+        EnsurePrefixUnchanged(conversationKey, messages, tools);
+        string signature = ComputeSignature(request.History, tools);
+        LlmTransportRequest transportRequest = new(
+            _provider,
+            string.IsNullOrWhiteSpace(options.Model) ? _provider.Model : options.Model.Trim(),
+            messages,
+            tools,
+            options.Temperature,
+            options.MaxTokens,
             cache.AutoCache,
             cache.PromptCacheKey,
-            signature) { ToolCalls = transportResult.ToolCalls, ProviderMetadata = transportResult.ProviderMetadata });
+            cache.CacheRetention)
+        {
+            ReasoningEffort = options.ReasoningEffort is { } effort
+                ? LlmAppSettings.NormalizeReasoningEffort(effort)
+                : _reasoningEffort
+        };
+        return (transportRequest, signature);
     }
 
     /// <summary>

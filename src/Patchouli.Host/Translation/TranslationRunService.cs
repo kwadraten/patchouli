@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Patchouli.Core.Credentials;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
@@ -8,6 +7,8 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Infrastructure.Translation;
 using Patchouli.Llm;
+using Patchouli.Host.Extensions;
+using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Host.Translation;
 
@@ -29,6 +30,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     private readonly TranslationRunEngine _engine;
     private readonly Func<LlmAppSettings> _settings;
     private readonly CancellationToken _hostLifetime;
+    private readonly TranslationExtensionRunner _extensionRunner;
+    private readonly Func<CancellationToken, Task>? _initializeExtensions;
     private readonly ConcurrentDictionary<Guid, RunState> _runs = new();
     private readonly object _startGate = new();
     private readonly SemaphoreSlim _requestGate = new(1, 1);
@@ -46,31 +49,29 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     /// <param name="documents">Reads each page's current committed revision and boxes.</param>
     /// <param name="pageTranslations">Reads page translation state and commits box payloads.</param>
     /// <param name="settings">Reads the live LLM settings; called for every started run.</param>
-    /// <param name="credentials">Supplies provider credentials to the default model invoker.</param>
-    /// <param name="timeProvider">Clock used for retry backoff and request throttling; defaults to the system clock.</param>
+    /// <param name="extensionRunner">Acquires the selected pinned translation extension.</param>
+    /// <param name="initializeExtensions">Initializes extension packages before a run starts.</param>
     /// <param name="hostLifetime">Cancels every in-flight run when the host shuts down.</param>
     public TranslationRunService(
         IPageService pages,
         IDocumentTreeService documents,
         IPageTranslationService pageTranslations,
         Func<LlmAppSettings> settings,
-        ICredentialStore credentials,
-        TimeProvider? timeProvider = null,
+        TranslationExtensionRunner extensionRunner,
+        Func<CancellationToken, Task>? initializeExtensions = null,
         CancellationToken hostLifetime = default)
     {
         ArgumentNullException.ThrowIfNull(pages);
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(pageTranslations);
         ArgumentNullException.ThrowIfNull(settings);
-        ArgumentNullException.ThrowIfNull(credentials);
+        ArgumentNullException.ThrowIfNull(extensionRunner);
         _pages = pages;
         _settings = settings;
         _hostLifetime = hostLifetime;
-        _engine = new TranslationRunEngine(
-            documents,
-            pageTranslations,
-            TranslationDefaults.CreateRegistry(settings, credentials),
-            timeProvider);
+        _extensionRunner = extensionRunner;
+        _initializeExtensions = initializeExtensions;
+        _engine = new TranslationRunEngine(documents, pageTranslations, extensionRunner);
     }
 
     /// <inheritdoc />
@@ -126,6 +127,11 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (_initializeExtensions is not null)
+        {
+            await _initializeExtensions(cancellationToken).ConfigureAwait(false);
+        }
+
         Result<IReadOnlyList<Page>> pages = await _pages.ListPagesAsync(request.DocumentInstanceId, cancellationToken)
             .ConfigureAwait(false);
         if (pages.IsFailure)
@@ -147,7 +153,9 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             request.DocumentInstanceId,
             targets.Value,
             settings,
-            ForceRetranslate: request.ForceRetranslate);
+            ForceRetranslate: request.ForceRetranslate,
+            DocumentPages: pages.Value.OrderBy(static page => page.PageIndex)
+                .Select(static page => new TranslationPageTarget(page.PageId, page.PageIndex + 1)).ToArray());
 
         Guid runId = Guid.NewGuid();
         CancellationTokenSource cancellation = _hostLifetime.CanBeCanceled
@@ -155,21 +163,73 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             : new CancellationTokenSource();
         RunState state = new(runId, request.DocumentInstanceId, Interlocked.Increment(ref _runSequence), targets.Value,
             cancellation, request with { TargetLanguage = settings.TargetLanguage });
+        try
+        {
+            state.ExtensionRun = await _extensionRunner.AcquireAsync(settings.EngineId, state.ExecutionGate,
+                cancellationToken).ConfigureAwait(false);
+            if (state.ExtensionRun is null)
+            {
+                cancellation.Dispose();
+                return Result<TranslationRunStatus>.Failure(AppErrorCodes.InvalidState,
+                    $"Translation engine '{settings.EngineId}' is not active.");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.TargetLanguage) &&
+                state.ExtensionRun.Config.Values.TryGetValue("target-language", out string? language) &&
+                !string.IsNullOrWhiteSpace(language))
+            {
+                settings = settings with { TargetLanguage = language.Trim() };
+                runRequest = runRequest with { Settings = settings };
+                state.Request = request with { TargetLanguage = settings.TargetLanguage };
+            }
+        }
+        catch (ExtensionAuthorizationException exception)
+        {
+            cancellation.Dispose();
+            return Result<TranslationRunStatus>.Failure("extension_capability_denied", exception.Message);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                                              or System.Text.Json.JsonException)
+        {
+            cancellation.Dispose();
+            return Result<TranslationRunStatus>.Failure("extension_binding_failed", exception.Message);
+        }
+        catch
+        {
+            if (state.ExtensionRun is not null)
+            {
+                await state.ExtensionRun.DisposeAsync().ConfigureAwait(false);
+            }
+
+            cancellation.Dispose();
+            throw;
+        }
+
+        bool rejected = false;
         lock (_startGate)
         {
             if (_disposed)
             {
                 cancellation.Dispose();
-                return Result<TranslationRunStatus>.Failure(
-                    AppErrorCodes.InvalidState,
-                    "The translation run service has been disposed.");
+                rejected = true;
+            }
+            else
+            {
+                state.ExecutionGate.SetPaused(!_queueRunning || _globallyPaused);
+                state.RunTask = Task.Run(() => ExecuteAsync(state, runRequest), CancellationToken.None);
+                _runs[runId] = state;
+            }
+        }
+
+        if (rejected)
+        {
+            if (state.ExtensionRun is not null)
+            {
+                await state.ExtensionRun.DisposeAsync().ConfigureAwait(false);
             }
 
-            // Start the background execution before publishing the run so a concurrent dispose always
-            // observes a task to await instead of a placeholder.
-            state.ExecutionGate.SetPaused(!_queueRunning || _globallyPaused);
-            state.RunTask = Task.Run(() => ExecuteAsync(state, runRequest), CancellationToken.None);
-            _runs[runId] = state;
+            return Result<TranslationRunStatus>.Failure(AppErrorCodes.InvalidState,
+                "The translation run service has been disposed.");
         }
 
         return Result<TranslationRunStatus>.Success(state.Snapshot());
@@ -359,9 +419,10 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         {
             await state.ExecutionGate.WaitAsync(state.Cancellation.Token).ConfigureAwait(false);
             TranslationRunResult result = await _engine.RunAsync(
-                request,
-                new RunProgress(state),
-                state.Cancellation.Token, state.ExecutionGate).ConfigureAwait(false);
+                    request,
+                    new RunProgress(state),
+                    state.Cancellation.Token, state.ExecutionGate, new StepProgress(state), state.ExtensionRun)
+                .ConfigureAwait(false);
             state.Complete(result);
         }
         catch (OperationCanceledException) when (state.Cancellation.IsCancellationRequested)
@@ -372,6 +433,14 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                                               exception, "host.translation-run"))
         {
             state.Fail(AppErrorCodes.InvalidState, $"The translation run failed: {exception.Message}");
+        }
+        finally
+        {
+            if (state.ExtensionRun is { } lease)
+            {
+                state.ExtensionRun = null;
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -452,6 +521,14 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         }
     }
 
+    private sealed class StepProgress(RunState state) : IProgress<TranslationStepProgress>
+    {
+        public void Report(TranslationStepProgress value)
+        {
+            state.RecordStep(value);
+        }
+    }
+
     /// <summary>One volatile run: immutable identity plus a lock-guarded progress and lifecycle buffer.</summary>
     private sealed class RunState
     {
@@ -462,6 +539,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         private TranslationRunLifecycle _state = TranslationRunLifecycle.Running;
         private string? _errorCode;
         private string? _errorMessage;
+        private TranslationStepProgress? _currentStep;
 
         public RunState(
             Guid runId,
@@ -485,7 +563,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             Cancellation = cancellation;
         }
 
-        public TranslationRunStartRequest Request { get; }
+        public TranslationRunStartRequest Request { get; set; }
+        public TranslationExtensionRun? ExtensionRun { get; set; }
         public TranslationExecutionGate ExecutionGate { get; } = new();
         public bool LocallyPaused { get; set; }
         public Guid RunId { get; }
@@ -493,6 +572,14 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         public long Sequence { get; }
         public CancellationTokenSource Cancellation { get; }
         public Task RunTask { get; set; } = Task.CompletedTask;
+
+        public void RecordStep(TranslationStepProgress step)
+        {
+            lock (_gate)
+            {
+                _currentStep = step;
+            }
+        }
 
         public void RecordProgress(TranslationRunProgress progress)
         {
@@ -594,7 +681,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                     settled.Count(static outcome => outcome.State == TranslationPageRunState.Cancelled),
                     settled,
                     _errorCode,
-                    _errorMessage, IsPaused: _state == TranslationRunLifecycle.Running && ExecutionGate.IsPaused);
+                    _errorMessage, IsPaused: _state == TranslationRunLifecycle.Running && ExecutionGate.IsPaused,
+                    CurrentStep: _currentStep);
             }
         }
     }

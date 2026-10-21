@@ -6,6 +6,8 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
+using Patchouli.Extensions;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Ocr;
@@ -14,12 +16,58 @@ using Patchouli.Infrastructure.Translation;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Issue #20: end-to-end tests for <see cref="TranslationRunEngine"/> over the real migrated SQLite
-/// database and the real <see cref="PageTranslationService"/>. Only the model invoker is faked, so the
-/// tests exercise segmentation, batching, merging and the atomic whole-page commit without a network call.
+/// End-to-end host tests for <see cref="TranslationRunEngine"/> over the real migrated SQLite
+/// database and <see cref="PageTranslationService"/>. A typed test extension returns controlled outcomes,
+/// so the tests exercise host validation, cancellation, and atomic whole-page commits without a network call.
 /// </summary>
 public sealed class TranslationRunEngineTests
 {
+    [Fact]
+    public async Task Throwing_page_and_step_observers_do_not_change_committed_results()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source paragraph"));
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        TranslationRunEngine engine = Engine(context, (extensionContext, _, _) =>
+        {
+            extensionContext.Progress?.Report(new ExtensionProgress("test-step", 1, 1));
+            ExtensionBoxOutcome[] outcomes = extensionContext.Boxes.Select(box =>
+                new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, "translated paragraph")).ToArray();
+            return Task.FromResult(new TranslationExtensionResult(outcomes));
+        });
+
+        TranslationRunResult result = await engine.RunAsync(
+            Request(context, Settings(), Target(context.PageId, 1)),
+            new ThrowingProgress<TranslationRunProgress>(), timeout.Token,
+            stepProgress: new ThrowingProgress<TranslationStepProgress>());
+
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Committed);
+        (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
+            .Which.TranslatedMd.Should().Be("translated paragraph");
+    }
+
+    [Fact]
+    public async Task Cancelling_while_acquiring_the_extension_returns_cancelled_page_outcomes()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source paragraph"));
+        TaskCompletionSource acquireStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TranslationExtensionRunner runner = TranslationTestExtensionHarness.CreateAcquireCancellationRunner(
+            acquireStarted);
+        TranslationRunEngine engine = new(context.Trees, context.Translations, runner);
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        using CancellationTokenSource runCancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+
+        Task<TranslationRunResult> run = engine.RunAsync(
+            Request(context, Settings(), Target(context.PageId, 1)), cancellationToken: runCancellation.Token);
+        await acquireStarted.Task.WaitAsync(timeout.Token);
+        runCancellation.Cancel();
+
+        TranslationRunResult result = await run.WaitAsync(timeout.Token);
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Cancelled);
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+    }
+
     private sealed class HeldOcrExecutor : IOcrQueueTaskExecutor
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -43,14 +91,13 @@ public sealed class TranslationRunEngineTests
         OcrQueueScheduler scheduler = new(LibraryId.New(), context.Clock, executor);
         TaskCompletionSource modelStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource modelRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        FakeInvoker invoker = new(async (batch, _, cancellationToken) =>
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        Task<TranslationRunResult> actualTranslation = Engine(context, async (extensionContext, _, cancellationToken) =>
         {
             modelStarted.TrySetResult();
             await modelRelease.Task.WaitAsync(cancellationToken);
-            return Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => "translated"));
-        });
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
-        Task<TranslationRunResult> translation = Engine(context, invoker).RunAsync(
+            return await TranslateAllAsync(extensionContext, _ => "translated");
+        }).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)), null, timeout.Token);
         await modelStarted.Task.WaitAsync(timeout.Token);
         Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(context.DocumentId, OcrPresetId.New(),
@@ -59,10 +106,10 @@ public sealed class TranslationRunEngineTests
         {
             await scheduler.RunOneSchedulingTickAsync();
             await executor.Started.Task.WaitAsync(timeout.Token);
-            translation.IsCompleted.Should().BeFalse("the model is still running while OCR executes");
+            actualTranslation.IsCompleted.Should().BeFalse("the extension is still running while OCR executes");
             await scheduler.PauseAsync(OcrPauseScope.Global);
             modelRelease.TrySetResult();
-            TranslationRunResult result = await translation.WaitAsync(timeout.Token);
+            TranslationRunResult result = await actualTranslation.WaitAsync(timeout.Token);
             result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Committed);
             (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value
                 .Single(task => task.TaskId == queued.Value.TaskId).State.Should().Be(OcrQueueTaskState.Running);
@@ -76,34 +123,27 @@ public sealed class TranslationRunEngineTests
     }
 
     [Fact]
-    public async Task Pausing_between_batches_allows_inflight_result_but_blocks_next_model_dispatch()
+    public async Task Pausing_the_extension_execution_gate_blocks_its_next_capability_dispatch()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "first"),
             TextSeed(DocumentBoxId.New(), 1, "second"));
         TranslationExecutionGate gate = new();
-        TaskCompletionSource firstCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        int calls = 0;
-        FakeInvoker invoker = new((batch, _, _) =>
-        {
-            if (Interlocked.Increment(ref calls) == 1)
-            {
-                gate.SetPaused(true);
-                firstCompleted.TrySetResult();
-            }
-
-            return Task.FromResult(
-                Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => "translated")));
-        });
+        TaskCompletionSource firstDispatch = new(TaskCreationOptions.RunContinuationsAsynchronously);
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
-        Task<TranslationRunResult> run = Engine(context, invoker).RunAsync(
-            Request(context, Settings(1, 1), Target(context.PageId, 1)), null, timeout.Token, gate);
-        await firstCompleted.Task.WaitAsync(timeout.Token);
-        calls.Should().Be(1);
-        run.IsCompleted.Should().BeFalse();
+        Task<TranslationRunResult> translatedRun = Engine(context, async (extensionContext, capabilities,
+            cancellationToken) =>
+        {
+            await capabilities.WaitToProceedAsync(cancellationToken);
+            firstDispatch.TrySetResult();
+            gate.SetPaused(true);
+            await capabilities.WaitToProceedAsync(cancellationToken);
+            return await TranslateAllAsync(extensionContext, _ => "translated");
+        }).RunAsync(Request(context, Settings(), Target(context.PageId, 1)), null, timeout.Token, gate);
+        await firstDispatch.Task.WaitAsync(timeout.Token);
+        translatedRun.IsCompleted.Should().BeFalse();
         gate.SetPaused(false);
-        TranslationRunResult result = await run.WaitAsync(timeout.Token);
-        calls.Should().Be(2);
+        TranslationRunResult result = await translatedRun.WaitAsync(timeout.Token);
         result.Pages.Single().State.Should().Be(TranslationPageRunState.Committed);
     }
 
@@ -114,22 +154,25 @@ public sealed class TranslationRunEngineTests
         DocumentBoxId tableId = DocumentBoxId.New();
         const string html =
             "<table><tr><th>Metric</th><th>Value</th></tr><tr><td>Accuracy</td><td>95%</td></tr></table>";
-        const string translated = "| 指标 | 数值 |\n| --- | --- |\n| 准确率 | 95% |";
-        DocumentTreeRevision revision =
-            await context.CommitAsync(Seed(tableId, 0, DocumentBoxType.Table, new TableBoxPayload("[Table]", html)));
-        FakeInvoker invoker = new((batch, _, _) =>
+        const string translatedHtml =
+            "<table><tr><th>指标</th><th>数值</th></tr><tr><td>准确率</td><td>95%</td></tr></table>";
+        DocumentTreeRevision revision = await context.CommitAsync(
+            Seed(tableId, 0, DocumentBoxType.Table, TableContentAdapter.CreateHtml(html).Value));
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
         {
-            batch.Segments.Should().ContainSingle();
-            batch.Segments[0].Text.Should().Be(html, "the raw table must reach the model instead of a placeholder");
-            return Task.FromResult(Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, _ => translated)));
-        });
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(Request(context,
-            Settings() with { MaxBatchCharacters = 16 }, Target(context.PageId, 1)));
-        result.Pages.Single().State.Should().Be(TranslationPageRunState.Committed);
-        (await context.ListTranslationRowsAsync()).Single().TranslatedMd.Should().Be(translated);
+            ExtensionBox box = extensionContext.Boxes.Should().ContainSingle().Which;
+            box.Text.Should().Be(html, "the authoritative HTML must reach the extension instead of a placeholder");
+            TableBoxPayload translatedPayload = TableContentAdapter.CreateHtml(translatedHtml).Value;
+            return Task.FromResult(new TranslationExtensionResult(
+                [ExtensionBoxOutcome.FromPayload(box.Id, translatedPayload)]));
+        }).RunAsync(Request(context,
+            Settings(), Target(context.PageId, 1)));
+        result.Pages.Single().State.Should().Be(TranslationPageRunState.Committed,
+            result.Pages.Single().ErrorMessage ?? "");
+        (await context.ListTranslationRowsAsync()).Single().TranslatedMd.Should().Be(translatedHtml);
         TableBoxPayload? source = (await context.ListBoxesAsync(revision.TreeRevisionId)).Single().Payload.Should()
             .BeOfType<TableBoxPayload>().Subject;
-        source.Markdown.Should().Be("[Table]");
+        source.Markdown.Should().BeEmpty("authoritative HTML tables do not also store a legacy Markdown authority");
         source.Html.Should().Be(html);
         Result<TranslatedPageMarkdown> compiled =
             await context.TranslationCompiler.CompilePageTranslationAsync(context.PageId, revision.TreeRevisionId, 1);
@@ -148,20 +191,19 @@ public sealed class TranslationRunEngineTests
         const string tableHtml = "<table><tr><td>A</td></tr></table>";
         await context.CommitAsync(
             TextSeed(textId, 0, "source paragraph", [annotation]),
-            Seed(tableId, 1, DocumentBoxType.Table, new TableBoxPayload("[Table]", tableHtml)),
+            Seed(tableId, 1, DocumentBoxType.Table, TableContentAdapter.CreateHtml(tableHtml).Value),
             Seed(listId, 2, DocumentBoxType.List, new ListBoxPayload("- one\n- two")));
 
         RecordingPageTranslationService recorder = new(context.Translations);
-        FakeInvoker invoker = Translating(segment =>
-            segment.BoxId == tableId ? "[Table]" :
-            segment.BoxId == listId ? "- uno\n- dos" :
-            "translated paragraph");
-
-        TranslationRunResult result = await Engine(context, invoker, recorder).RunAsync(
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            return TranslateAllPayloadsAsync(extensionContext, box =>
+                box.Id == listId ? "- uno\n- dos" : "translated paragraph");
+        }, recorder).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)));
 
         result.Pages.Should().ContainSingle();
-        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
+        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed, result.Pages[0].ErrorMessage ?? "");
         result.Pages[0].CommittedBoxCount.Should().Be(3);
         recorder.BoxCommits.Should().BeEmpty();
         recorder.PageCommits.Should().ContainSingle();
@@ -172,7 +214,7 @@ public sealed class TranslationRunEngineTests
         textReplacement.Markdown.Should().Be("translated paragraph");
         textReplacement.Annotations.Should().Equal(annotation);
         TableBoxPayload tableReplacement = replacements[tableId].Should().BeOfType<TableBoxPayload>().Subject;
-        tableReplacement.Markdown.Should().Be("[Table]");
+        tableReplacement.Markdown.Should().BeEmpty();
         tableReplacement.Html.Should().Be(tableHtml);
         replacements[listId].Should().BeOfType<ListBoxPayload>().Which.Markdown.Should().Be("- uno\n- dos");
         recorder.PageCommits[0].TargetLanguage.Should().Be("en");
@@ -180,7 +222,7 @@ public sealed class TranslationRunEngineTests
         IReadOnlyList<TranslationRow> rows = await ListRowsAsync(context, context.PageId);
         rows.Should().HaveCount(3);
         rows.Should().Contain(row => row.BoxId == textId.ToString() && row.TranslatedMd == "translated paragraph");
-        rows.Should().Contain(row => row.BoxId == tableId.ToString() && row.TranslatedMd == "[Table]");
+        rows.Should().Contain(row => row.BoxId == tableId.ToString() && row.TranslatedMd == tableHtml);
         rows.Should().Contain(row => row.BoxId == listId.ToString() && row.TranslatedMd == "- uno\n- dos");
         (int Version, string? TargetLanguage) header = await RequireHeaderAsync(context, context.PageId);
         header.Version.Should().Be(1);
@@ -196,14 +238,18 @@ public sealed class TranslationRunEngineTests
         Result<PageTranslationStatus> seeded = await SeedTranslationAsync(
             context, revision, "existing translation");
         seeded.IsSuccess.Should().BeTrue(seeded.ErrorMessage);
-        FakeInvoker invoker = Translating(_ => "must not be called");
+        int extensionCalls = 0;
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, _ => "must not be called");
+        }).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)));
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Skipped);
         result.Pages[0].CommittedBoxCount.Should().Be(0);
-        invoker.CallCount.Should().Be(0);
+        extensionCalls.Should().Be(0);
         (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
             .Which.TranslatedMd.Should().Be("existing translation");
         (await RequireHeaderAsync(context, context.PageId)).Version.Should().Be(1);
@@ -223,13 +269,17 @@ public sealed class TranslationRunEngineTests
         Result<PageTranslationStatus> seeded = await SeedTranslationAsync(
             context, revision, "existing translation");
         seeded.IsSuccess.Should().BeTrue(seeded.ErrorMessage);
-        FakeInvoker invoker = Translating(_ => "must not be called");
+        int extensionCalls = 0;
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, _ => "must not be called");
+        }).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)));
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Skipped);
-        invoker.CallCount.Should().Be(0);
+        extensionCalls.Should().Be(0);
         (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
             .Which.BoxId.Should().Be(textId.ToString());
     }
@@ -243,13 +293,16 @@ public sealed class TranslationRunEngineTests
         Result<PageTranslationStatus> seeded = await SeedTranslationAsync(
             context, revision, "traduction existante", "fr");
         seeded.IsSuccess.Should().BeTrue(seeded.ErrorMessage);
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
-
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        int extensionCalls = 0;
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }).RunAsync(
             Request(context, Settings(targetLanguage: "en"), Target(context.PageId, 1)));
 
-        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
-        invoker.CallCount.Should().Be(1);
+        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed, result.Pages[0].ErrorMessage ?? "");
+        extensionCalls.Should().Be(1);
         (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
             .Which.TranslatedMd.Should().Be("translated source paragraph");
         (int Version, string? TargetLanguage) header = await RequireHeaderAsync(context, context.PageId);
@@ -266,44 +319,49 @@ public sealed class TranslationRunEngineTests
         Result<PageTranslationStatus> seeded = await SeedTranslationAsync(
             context, revision, "existing translation");
         seeded.IsSuccess.Should().BeTrue(seeded.ErrorMessage);
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
+        int extensionCalls = 0;
         TranslationRunRequest request = new(
             context.DocumentId,
             [Target(context.PageId, 1)],
             Settings(),
             ForceRetranslate: true);
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(request);
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }).RunAsync(request);
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
-        invoker.CallCount.Should().Be(1);
+        extensionCalls.Should().Be(1);
         (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
             .Which.TranslatedMd.Should().Be("translated source paragraph");
         (await RequireHeaderAsync(context, context.PageId)).Version.Should().Be(2);
     }
 
     [Fact]
-    public async Task Partial_batch_failure_commits_the_successful_boxes_and_reports_partial()
+    public async Task Partial_extension_failure_commits_successful_boxes_and_reports_partial()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         DocumentBoxId[] boxIds = [DocumentBoxId.New(), DocumentBoxId.New(), DocumentBoxId.New(), DocumentBoxId.New()];
         await context.CommitAsync(
             [.. boxIds.Select((boxId, index) => TextSeed(boxId, index, $"source {index}"))]);
         DocumentBoxId failedBoxId = boxIds[1];
-        FakeInvoker invoker = new((batch, _, _) => Task.FromResult(batch.Index == 1
-            ? Result<TranslationBatchResult>.Failure(
-                TranslationErrorCodes.BatchMismatch,
-                "simulated batch mismatch")
-            : Result<TranslationBatchResult>.Success(
-                FakeInvoker.Success(batch, segment => "translated " + segment.Text))));
-
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            ExtensionBoxOutcome[] outcomes = extensionContext.Boxes.Select(box => box.Id == failedBoxId
+                ? new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed,
+                    ErrorCode: TranslationErrorCodes.BatchMismatch, ErrorMessage: "simulated extension failure")
+                : new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated,
+                    "translated " + box.Text)).ToArray();
+            return Task.FromResult(new TranslationExtensionResult(outcomes));
+        }).RunAsync(
             Request(context, Settings(1), Target(context.PageId, 1)));
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Partial);
         result.Pages[0].CommittedBoxCount.Should().Be(3);
         result.Pages[0].ErrorCode.Should().Be(TranslationErrorCodes.BatchMismatch);
-        result.Pages[0].ErrorMessage.Should().NotBeNullOrWhiteSpace();
+        result.Pages[0].ErrorMessage.Should().Be("simulated extension failure");
         IReadOnlyList<TranslationRow> rows = await ListRowsAsync(context, context.PageId);
         rows.Should().HaveCount(3);
         rows.Should().NotContain(row => row.BoxId == failedBoxId.ToString());
@@ -311,18 +369,170 @@ public sealed class TranslationRunEngineTests
     }
 
     [Fact]
-    public async Task A_page_whose_batches_all_fail_is_failed_without_being_committed()
+    public async Task Real_fsx_partial_and_invalid_outcomes_commit_only_valid_translations()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        string[] modes =
+            ["mixed-failed", "mixed-skipped", "all-skipped", "all-failed", "duplicate", "unknown", "blank"];
+        List<(PageId PageId, DocumentBoxId[] BoxIds)> pages = [];
+        for (int index = 0; index < modes.Length; index++)
+        {
+            PageId pageId = index == 0
+                ? context.PageId
+                : (await CreatePageAsync(context, index)).PageId;
+            DocumentBoxId[] boxIds = [DocumentBoxId.New(), DocumentBoxId.New()];
+            DocumentBoxSeed[] seeds =
+            [
+                TextSeed(boxIds[0], 0, modes[index]),
+                TextSeed(boxIds[1], 1, "second")
+            ];
+            await CommitPageAsync(context, pageId, seeds);
+            pages.Add((pageId, boxIds));
+        }
+
+        const string script = """
+                              open System.Threading.Tasks
+                              open Patchouli.Core.Ids
+                              open Patchouli.Extensions.Contracts
+
+                              let extension : ITranslationExtension =
+                                  { new ITranslationExtension with
+                                      member _.Descriptor = ExtensionDescriptor("test.partial", "Partial outcomes", "1.0", "")
+                                      member _.ConfigFields = [||]
+                                      member _.TranslateAsync(context: TranslationExtensionContext, _, _) = task {
+                                          let mode =
+                                              match context.Boxes[0].Text with
+                                              | null -> ""
+                                              | value -> value
+                                          let failed (box: ExtensionBox) = ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null, "simulated", "simulated failure")
+                                          let skipped (box: ExtensionBox) = ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Skipped)
+                                          let translated (box: ExtensionBox) (text: string) = ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, text)
+                                          let outcomes =
+                                              if mode = "duplicate" then
+                                                  [| translated context.Boxes[0] "first"; translated context.Boxes[0] "duplicate" |]
+                                              elif mode = "unknown" then
+                                                  [| ExtensionBoxOutcome(DocumentBoxId.New(), ExtensionBoxOutcomeKind.Translated, "unknown"); translated context.Boxes[0] "first" |]
+                                              elif mode = "blank" then
+                                                  [| translated context.Boxes[0] ""; translated context.Boxes[1] "second" |]
+                                              else
+                                                  context.Boxes |> Seq.mapi (fun index box ->
+                                                      if mode = "all-failed" then failed box
+                                                      elif mode = "all-skipped" then skipped box
+                                                      elif index = 0 then translated box ("translated-" + mode)
+                                                      elif mode = "mixed-failed" then failed box
+                                                      else skipped box) |> Seq.toArray
+                                          return TranslationExtensionResult(outcomes)
+                                      }
+                                  }
+                              """;
+        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-fsx-partial-{Guid.NewGuid():N}");
+        try
+        {
+            NoopExtensionCapabilities capabilities = new();
+            await using IExtensionManager manager = new ExtensionManager(runtimeDirectory, capabilities,
+                new FileExtensionStore(runtimeDirectory), new FsiExtensionGenerationLoader(runtimeDirectory));
+            ExtensionPackageSnapshot package = new("test.partial", new Dictionary<string, string>
+            {
+                ["main.fsx"] = script
+            });
+            ExtensionCheckResult activation = await manager.ActivateAsync(package.Id, package, CancellationToken.None);
+            activation.Succeeded.Should().BeTrue(string.Join(Environment.NewLine,
+                activation.Diagnostics.Select(issue =>
+                    $"{issue.Code} {issue.Location.FileName}:{issue.Location.Line}:{issue.Location.Column}: {issue.Message}")));
+            TranslationRunEngine engine = new(context.Trees, context.Translations,
+                new TranslationExtensionRunner(manager, capabilities));
+            TranslationPageTarget[] targets = pages.Select((page, index) => Target(page.PageId, index + 1)).ToArray();
+
+            TranslationRunResult result = await engine.RunAsync(Request(context,
+                Settings() with { EngineId = package.Id }, targets));
+
+            result.Pages.Select(page => page.State).Should().Equal(
+                [
+                    TranslationPageRunState.Partial,
+                    TranslationPageRunState.Partial,
+                    TranslationPageRunState.Skipped,
+                    TranslationPageRunState.Failed,
+                    TranslationPageRunState.Failed,
+                    TranslationPageRunState.Failed,
+                    TranslationPageRunState.Failed
+                ],
+                "page outcomes: {0}",
+                string.Join(" | ", result.Pages.Select(page =>
+                    $"{page.PageIndex}:{page.State}:{page.ErrorCode}:{page.ErrorMessage}")));
+            result.Pages.Select(page => page.CommittedBoxCount).Should().Equal(1, 1, 0, 0, 0, 0, 0);
+            for (int index = 0; index < pages.Count; index++)
+            {
+                IReadOnlyList<TranslationRow> rows = await ListRowsAsync(context, pages[index].PageId);
+                if (index < 2)
+                {
+                    rows.Should().ContainSingle().Which.BoxId.Should().Be(pages[index].BoxIds[0].ToString());
+                    rows[0].TranslatedMd.Should()
+                        .Be(index == 0 ? "translated-mixed-failed" : "translated-mixed-skipped");
+                }
+                else
+                {
+                    rows.Should().BeEmpty("all non-translated or malformed outcomes must leave the page untouched");
+                }
+
+                DocumentTreeRevision revision = (await context.Trees.GetCurrentRevisionAsync(
+                    context.DocumentId, pages[index].PageId)).Value;
+                IReadOnlyList<DocumentBox> sourceBoxes = await context.ListBoxesAsync(revision.TreeRevisionId);
+                string[] sourceTexts = sourceBoxes.Select(box => box.Payload is TextBoxPayload textPayload
+                        ? textPayload.Markdown
+                        : throw new InvalidOperationException("The fixture source box must be text."))
+                    .ToArray();
+                sourceTexts.Should().Equal(modes[index], "second");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(runtimeDirectory))
+            {
+                Directory.Delete(runtimeDirectory, true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Host_rejects_payload_type_mismatch_or_two_translation_payload_authorities(bool duplicateAuthority)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId boxId = DocumentBoxId.New();
+        await context.CommitAsync(TextSeed(boxId, 0, "source paragraph"));
+
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            ExtensionBox box = extensionContext.Boxes.Should().ContainSingle().Which;
+            ExtensionBoxOutcome outcome = duplicateAuthority
+                ? new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated,
+                    TranslatedPayloadJson: "{}")
+                {
+                    TranslatedPayload = new TextBoxPayload("typed answer")
+                }
+                : ExtensionBoxOutcome.FromPayload(box.Id, new ListBoxPayload("wrong payload type"));
+            return Task.FromResult(new TranslationExtensionResult([outcome]));
+        }).RunAsync(Request(context, Settings(), Target(context.PageId, 1)));
+
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Failed);
+        result.Pages[0].ErrorCode.Should().Be(TranslationErrorCodes.BatchMismatch);
+        (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+        (await GetHeaderAsync(context, context.PageId)).HasValue.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_page_with_only_failed_extension_outcomes_is_failed_without_being_committed()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         await context.CommitAsync(
             TextSeed(DocumentBoxId.New(), 0, "source zero"),
             TextSeed(DocumentBoxId.New(), 1, "source one"));
-        FakeInvoker invoker = new((_, _, _) => Task.FromResult(
-            Result<TranslationBatchResult>.Failure(
-                TranslationErrorCodes.InvalidModelResponse,
-                "simulated invalid response")));
-
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+            Task.FromResult(new TranslationExtensionResult(extensionContext.Boxes.Select(box =>
+                new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed,
+                    ErrorCode: TranslationErrorCodes.InvalidModelResponse,
+                    ErrorMessage: "simulated invalid response")).ToArray()))).RunAsync(
             Request(context, Settings(1), Target(context.PageId, 1)));
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Failed);
@@ -333,46 +543,25 @@ public sealed class TranslationRunEngineTests
     }
 
     [Fact]
-    public async Task A_failed_batch_is_retried_and_then_committed()
+    public async Task Concurrent_page_calls_never_exceed_the_configured_concurrency()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
-        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "source paragraph"));
-        int attempts = 0;
-        FakeInvoker invoker = new((batch, _, _) =>
+        const int pageCount = 4;
+        const int concurrency = 2;
+        Page firstPage = await CreatePageAsync(context, 1);
+        List<(Page Page, int Index)> pages = [(firstPage, 1)];
+        await CommitPageAsync(context, firstPage.PageId, TextSeed(DocumentBoxId.New(), 0, "page 1 source"));
+        for (int index = 2; index <= pageCount; index++)
         {
-            int attempt = Interlocked.Increment(ref attempts);
-            return Task.FromResult(attempt == 1
-                ? Result<TranslationBatchResult>.Failure(
-                    TranslationErrorCodes.InvalidModelResponse,
-                    "simulated first-attempt failure")
-                : Result<TranslationBatchResult>.Success(
-                    FakeInvoker.Success(batch, segment => "translated " + segment.Text)));
-        });
+            Page page = await CreatePageAsync(context, index);
+            await CommitPageAsync(context, page.PageId, TextSeed(DocumentBoxId.New(), 0, $"page {index} source"));
+            pages.Add((page, index));
+        }
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
-            Request(context, Settings(maxRetries: 1), Target(context.PageId, 1)));
-
-        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
-        attempts.Should().Be(2);
-        (await ListRowsAsync(context, context.PageId)).Should().ContainSingle()
-            .Which.TranslatedMd.Should().Be("translated source paragraph");
-    }
-
-    [Fact]
-    public async Task Concurrent_batch_calls_never_exceed_the_configured_concurrency()
-    {
-        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
-        const int boxCount = 9;
-        const int concurrency = 3;
-        await context.CommitAsync(
-        [
-            .. Enumerable.Range(0, boxCount).Select(index =>
-                TextSeed(DocumentBoxId.New(), index, $"source {index}"))
-        ]);
         object gate = new();
         int active = 0;
         int maxActive = 0;
-        FakeInvoker invoker = new(async (batch, _, cancellationToken) =>
+        TranslationRunResult result = await Engine(context, async (extensionContext, _, cancellationToken) =>
         {
             lock (gate)
             {
@@ -392,17 +581,17 @@ public sealed class TranslationRunEngineTests
                 }
             }
 
-            return Result<TranslationBatchResult>.Success(
-                FakeInvoker.Success(batch, segment => "translated " + segment.Text));
-        });
+            return await TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }).RunAsync(Request(context, Settings(concurrency: concurrency),
+            [.. pages.Select(pair => Target(pair.Page.PageId, pair.Index))]));
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
-            Request(context, Settings(1, concurrency), Target(context.PageId, 1)));
-
-        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
+        result.Pages.Should().OnlyContain(page => page.State == TranslationPageRunState.Committed);
         maxActive.Should().BeLessThanOrEqualTo(concurrency);
-        maxActive.Should().BeGreaterThan(1, "batches must actually overlap");
-        (await ListRowsAsync(context, context.PageId)).Should().HaveCount(boxCount);
+        maxActive.Should().BeGreaterThan(1, "page calls should overlap when worker capacity allows it");
+        foreach ((Page page, _) in pages)
+        {
+            (await ListRowsAsync(context, page.PageId)).Should().ContainSingle();
+        }
     }
 
     [Fact]
@@ -413,28 +602,19 @@ public sealed class TranslationRunEngineTests
         await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "first page source"));
         await CommitPageAsync(context, secondPage.PageId, TextSeed(DocumentBoxId.New(), 0, "second page source"));
         TaskCompletionSource secondPageStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        FakeInvoker invoker = new(async (batch, _, cancellationToken) =>
+        using CancellationTokenSource cancellation = new();
+        Task<TranslationRunResult> run = Engine(context, async (extensionContext, _, cancellationToken) =>
         {
-            if (batch.Context?.PageId == secondPage.PageId)
+            if (extensionContext.Page.PageId == secondPage.PageId)
             {
                 secondPageStarted.TrySetResult();
                 await Task.Delay(Timeout.Infinite, cancellationToken);
-                return Result<TranslationBatchResult>.Failure(
-                    TranslationErrorCodes.InvalidModelResponse,
-                    "unreachable");
+                throw new InvalidOperationException("Cancellation should stop this extension call.");
             }
 
-            return Result<TranslationBatchResult>.Success(
-                FakeInvoker.Success(batch, segment => "translated " + segment.Text));
-        });
-        using CancellationTokenSource cancellation = new();
-
-        Task<TranslationRunResult> run = Engine(context, invoker).RunAsync(
-            Request(
-                context,
-                Settings(concurrency: 1),
-                Target(context.PageId, 1),
-                Target(secondPage.PageId, 2)),
+            return await TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }).RunAsync(
+            Request(context, Settings(concurrency: 1), Target(context.PageId, 1), Target(secondPage.PageId, 2)),
             null,
             cancellation.Token);
         await secondPageStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -451,11 +631,8 @@ public sealed class TranslationRunEngineTests
         (await GetHeaderAsync(context, secondPage.PageId)).HasValue.Should().BeFalse();
     }
 
-    // Product defect (issue #20): when the caller cancels while pages are still being loaded, RunAsync
-    // resumes cancellation at the page whose load was interrupted, so pages loaded before it keep a null
-    // outcome instead of Cancelled. This test is intentionally red until every unresolved page is settled.
     [Fact]
-    public async Task Cancelling_while_pages_are_loading_still_returns_one_outcome_per_page()
+    public async Task Cancelling_during_physical_context_capture_settles_all_targets_before_dispatch()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         Page secondPage = await CreatePageAsync(context, 1);
@@ -476,13 +653,17 @@ public sealed class TranslationRunEngineTests
                 secondPageLoadStarted.TrySetResult();
                 await Task.Delay(Timeout.Infinite, cancellationToken);
             });
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
+        int extensionCalls = 0;
         using CancellationTokenSource cancellation = new();
 
-        Task<TranslationRunResult> run = Engine(context, invoker, translations).RunAsync(
+        Task<TranslationRunResult> run = Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }, translations).RunAsync(
             Request(
                 context,
-                Settings(),
+                Settings(concurrency: 1),
                 Target(context.PageId, 1),
                 Target(secondPage.PageId, 2),
                 Target(thirdPage.PageId, 3)),
@@ -496,10 +677,46 @@ public sealed class TranslationRunEngineTests
         result.Pages.Should().HaveCount(3);
         result.Pages.Should().NotContainNulls(
             "the run contract requires exactly one outcome for every requested page");
-        result.Pages.Should().OnlyContain(page => page.State == TranslationPageRunState.Cancelled);
+        result.Pages.Select(page => page.State)
+            .Should().OnlyContain(state => state == TranslationPageRunState.Cancelled);
         result.CancelledCount.Should().Be(3);
-        invoker.CallCount.Should().Be(0);
+        extensionCalls.Should().Be(0);
         (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
+        (await ListRowsAsync(context, secondPage.PageId)).Should().BeEmpty();
+        (await ListRowsAsync(context, thirdPage.PageId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Cancelling_during_physical_context_capture_returns_cancelled_targets_without_extension_calls()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        Page previousPage = await CreatePageAsync(context, 1);
+        await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "previous page source"));
+        await CommitPageAsync(context, previousPage.PageId, TextSeed(DocumentBoxId.New(), 0, "target page source"));
+        TaskCompletionSource contextReadStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        BlockingContextSnapshotTranslationService translations = new(
+            context.Translations, context.PageId, contextReadStarted);
+        int extensionCalls = 0;
+        using CancellationTokenSource cancellation = new();
+        TranslationRunRequest request = Request(context, Settings(), Target(previousPage.PageId, 2)) with
+        {
+            DocumentPages = [Target(context.PageId, 1), Target(previousPage.PageId, 2)]
+        };
+
+        Task<TranslationRunResult> run = Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, box => "translated " + box.Text);
+        }, translations).RunAsync(request, cancellationToken: cancellation.Token);
+        await contextReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+        TranslationRunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+
+        result.Cancelled.Should().BeTrue();
+        result.Pages.Should().ContainSingle().Which.State.Should().Be(TranslationPageRunState.Cancelled);
+        result.CancelledCount.Should().Be(1);
+        extensionCalls.Should().Be(0);
+        (await ListRowsAsync(context, previousPage.PageId)).Should().BeEmpty();
     }
 
     [Fact]
@@ -509,10 +726,10 @@ public sealed class TranslationRunEngineTests
         Page secondPage = await CreatePageAsync(context, 1);
         await context.CommitAsync(TextSeed(DocumentBoxId.New(), 0, "first page source"));
         await CommitPageAsync(context, secondPage.PageId, TextSeed(DocumentBoxId.New(), 0, "second page source"));
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
         ProgressCollector collector = new();
 
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        TranslationRunResult result = await Engine(context,
+            (extensionContext, _, _) => TranslateAllAsync(extensionContext, box => "translated " + box.Text)).RunAsync(
             Request(
                 context,
                 Settings(),
@@ -531,16 +748,16 @@ public sealed class TranslationRunEngineTests
     }
 
     [Fact]
-    public async Task An_incomplete_provider_registry_fails_every_page_with_invoker_unavailable()
+    public async Task A_missing_translation_extension_fails_every_page_without_writes()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         Page secondPage = await CreatePageAsync(context, 1);
-        FakeInvoker invoker = Translating(_ => "must not be called");
-        TranslationProviderRegistry registry = new();
-        registry.Register(new DefaultTranslationSegmenter());
-        registry.Register(new DefaultTranslationBatcher());
-        registry.Register(invoker);
-        TranslationRunEngine engine = new(context.Trees, context.Translations, registry);
+        int extensionCalls = 0;
+        TranslationRunEngine engine = Engine(context, (extensionContext, _, _) =>
+        {
+            Interlocked.Increment(ref extensionCalls);
+            return TranslateAllAsync(extensionContext, _ => "must not be called");
+        }, extensionAvailable: false);
 
         TranslationRunResult result = await engine.RunAsync(
             Request(
@@ -553,7 +770,7 @@ public sealed class TranslationRunEngineTests
         result.Pages.Should().OnlyContain(page =>
             page.State == TranslationPageRunState.Failed &&
             page.ErrorCode == TranslationErrorCodes.InvokerUnavailable);
-        invoker.CallCount.Should().Be(0);
+        extensionCalls.Should().Be(0);
         (await ListRowsAsync(context, context.PageId)).Should().BeEmpty();
     }
 
@@ -568,10 +785,11 @@ public sealed class TranslationRunEngineTests
                 TextSeed(DocumentBoxId.New(), index, $"source box {index}"))
         ]);
         RecordingPageTranslationService recorder = new(context.Translations);
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
-
-        TranslationRunResult result = await Engine(context, invoker, recorder).RunAsync(
-            Request(context, Settings(), Target(context.PageId, 1)));
+        TranslationRunResult result = await Engine(context,
+                (extensionContext, _, _) => TranslateAllAsync(extensionContext, box => "translated " + box.Text),
+                recorder)
+            .RunAsync(
+                Request(context, Settings(), Target(context.PageId, 1)));
 
         result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
         result.Pages[0].CommittedBoxCount.Should().Be(boxCount);
@@ -596,15 +814,22 @@ public sealed class TranslationRunEngineTests
             new DocumentBoxSeed(
                 secondChildId, parentId, 1, DocumentBoxType.Text, null, BBox,
                 new TextBoxPayload("second child source")));
-        FakeInvoker invoker = Translating(segment => "translated " + segment.Text);
-
-        TranslationRunResult result = await Engine(context, invoker).RunAsync(
+        DocumentBoxId[] extensionBoxIds = [];
+        TranslationRunResult result = await Engine(context, (extensionContext, _, _) =>
+        {
+            ExtensionBox[] translatableChildren = extensionContext.Boxes
+                .Where(box => box.Id != parentId)
+                .ToArray();
+            extensionBoxIds = translatableChildren.Select(box => box.Id).ToArray();
+            return Task.FromResult(new TranslationExtensionResult(translatableChildren.Select(box =>
+                    new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, "translated " + box.Text))
+                .ToArray()));
+        }).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)));
 
-        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed);
+        result.Pages[0].State.Should().Be(TranslationPageRunState.Committed, result.Pages[0].ErrorMessage ?? "");
         result.Pages[0].CommittedBoxCount.Should().Be(2);
-        invoker.Batches.SelectMany(batch => batch.Segments).Select(segment => segment.BoxId)
-            .Should().BeEquivalentTo(new[] { firstChildId, secondChildId });
+        extensionBoxIds.Should().BeEquivalentTo(new[] { firstChildId, secondChildId });
         IReadOnlyList<TranslationRow> rows = await ListRowsAsync(context, context.PageId);
         rows.Select(row => row.BoxId).Should().BeEquivalentTo(
             new[] { firstChildId.ToString(), secondChildId.ToString() });
@@ -705,13 +930,72 @@ public sealed class TranslationRunEngineTests
 
     private static TranslationRunEngine Engine(
         TranslationTestContext context,
-        ITranslationModelInvoker invoker,
-        IPageTranslationService? translations = null)
+        Func<TranslationExtensionContext, IExtensionCapabilities, CancellationToken,
+            Task<TranslationExtensionResult>> translate,
+        IPageTranslationService? translations = null,
+        bool extensionAvailable = true)
     {
-        return new TranslationRunEngine(
-            context.Trees,
-            translations ?? context.Translations,
-            TranslationDefaults.CreateRegistry(invoker));
+        TranslationExtensionRunner runner = TranslationTestExtensionHarness.CreateRunner(translate, extensionAvailable);
+        return new TranslationRunEngine(context.Trees, translations ?? context.Translations, runner);
+    }
+
+    private static Task<TranslationExtensionResult> TranslateAllAsync(
+        TranslationExtensionContext context,
+        Func<ExtensionBox, string> translate)
+    {
+        return Task.FromResult(new TranslationExtensionResult(context.Boxes.Select(box =>
+            new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, translate(box))).ToArray()));
+    }
+
+    private static Task<TranslationExtensionResult> TranslateAllPayloadsAsync(
+        TranslationExtensionContext context,
+        Func<ExtensionBox, string> translate)
+    {
+        return Task.FromResult(new TranslationExtensionResult(context.Boxes.Select(box =>
+        {
+            DocumentBoxPayload source = box.Payload!;
+            DocumentBoxPayload translated = source switch
+            {
+                TextBoxPayload text => text with { Markdown = translate(box) },
+                ListBoxPayload list => list with { Markdown = translate(box) },
+                TableBoxPayload table => table,
+                AlgorithmBoxPayload algorithm => algorithm with { Markdown = translate(box) },
+                _ => source
+            };
+            return ExtensionBoxOutcome.FromPayload(box.Id, translated);
+        }).ToArray()));
+    }
+
+    private sealed class NoopExtensionCapabilities : IExtensionCapabilities
+    {
+        public ILlmCapability Llm { get; } = new NoopLlmCapability();
+        public IHttpCapability Http { get; } = new NoopHttpCapability();
+
+        public IExtensionCapabilities ForRun(ExtensionConfigSnapshot config)
+        {
+            return this;
+        }
+
+        public Task WaitToProceedAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoopLlmCapability : ILlmCapability
+    {
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("The FSX partial-outcome test does not use an LLM.");
+        }
+    }
+
+    private sealed class NoopHttpCapability : IHttpCapability
+    {
+        public Task<HttpResponse> SendAsync(HttpRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("The FSX partial-outcome test does not use HTTP.");
+        }
     }
 
     private static async Task<Result<PageTranslationStatus>> SeedTranslationAsync(
@@ -805,73 +1089,6 @@ public sealed class TranslationRunEngineTests
         (int Version, string? TargetLanguage)? header = await GetHeaderAsync(context, pageId);
         header.HasValue.Should().BeTrue("the page translation header is expected to exist");
         return header!.Value;
-    }
-
-    private static FakeInvoker Translating(Func<TranslationSegment, string> translate)
-    {
-        return new FakeInvoker((batch, _, _) => Task.FromResult(
-            Result<TranslationBatchResult>.Success(FakeInvoker.Success(batch, translate))));
-    }
-
-    private delegate Task<Result<TranslationBatchResult>> InvokeHandler(
-        TranslationBatch batch,
-        TranslationInvocationContext context,
-        CancellationToken cancellationToken);
-
-    private sealed class FakeInvoker : ITranslationModelInvoker
-    {
-        private readonly InvokeHandler _handler;
-        private readonly object _gate = new();
-        private readonly List<TranslationBatch> _batches = [];
-        private int _callCount;
-
-        public FakeInvoker(InvokeHandler handler)
-        {
-            _handler = handler;
-        }
-
-        public int CallCount => Volatile.Read(ref _callCount);
-
-        public IReadOnlyList<TranslationBatch> Batches
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return [.. _batches];
-                }
-            }
-        }
-
-        public async Task<Result<TranslationBatchResult>> InvokeAsync(
-            TranslationBatch batch,
-            TranslationInvocationContext context,
-            CancellationToken cancellationToken = default)
-        {
-            Interlocked.Increment(ref _callCount);
-            lock (_gate)
-            {
-                _batches.Add(batch);
-            }
-
-            return await _handler(batch, context, cancellationToken);
-        }
-
-        public static TranslationBatchResult Success(
-            TranslationBatch batch,
-            Func<TranslationSegment, string> translate)
-        {
-            return new TranslationBatchResult(
-                batch.Index,
-                batch.SegmentIds,
-                [
-                    .. batch.Segments.Select(segment => new TranslationSegmentTranslation(
-                        segment.SegmentId,
-                        segment.BoxId,
-                        segment.PartIndex,
-                        translate(segment)))
-                ]);
-        }
     }
 
     private abstract class DelegatingPageTranslationService : IPageTranslationService
@@ -1048,6 +1265,34 @@ public sealed class TranslationRunEngineTests
         }
     }
 
+    private sealed class BlockingContextSnapshotTranslationService : DelegatingPageTranslationService
+    {
+        private readonly PageId _blockedPageId;
+        private readonly TaskCompletionSource _readStarted;
+
+        public BlockingContextSnapshotTranslationService(IPageTranslationService inner, PageId blockedPageId,
+            TaskCompletionSource readStarted)
+            : base(inner)
+        {
+            _blockedPageId = blockedPageId;
+            _readStarted = readStarted;
+        }
+
+        public override async Task<TranslatedPageMarkdown?> GetPageTranslationAsync(
+            DocumentInstanceId documentInstanceId,
+            PageId pageId,
+            CancellationToken cancellationToken = default)
+        {
+            if (pageId == _blockedPageId)
+            {
+                _readStarted.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            return await base.GetPageTranslationAsync(documentInstanceId, pageId, cancellationToken);
+        }
+    }
+
     private sealed class ProgressCollector : IProgress<TranslationRunProgress>
     {
         private readonly object _gate = new();
@@ -1070,6 +1315,14 @@ public sealed class TranslationRunEngineTests
             {
                 _items.Add(value);
             }
+        }
+    }
+
+    private sealed class ThrowingProgress<T> : IProgress<T>
+    {
+        public void Report(T value)
+        {
+            throw new InvalidOperationException("The test progress observer must be isolated.");
         }
     }
 

@@ -118,6 +118,20 @@ public sealed record MetadataBatchResult(
 
 public interface IMetadataLookupService
 {
+    Task<Result<MetadataCandidateProposal>> LookupCandidateAsync(ItemId itemId, string scheme, string value,
+        IReadOnlyList<MetadataSourcePreference>? preferences = null, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<MetadataCandidateProposal>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Metadata candidate lookup is unavailable."));
+    }
+
+    Task<Result<MetadataLookupOutcome>> ApplyCandidateAsync(MetadataCandidateProposal proposal,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<MetadataLookupOutcome>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Metadata candidate application is unavailable."));
+    }
+
     bool CanLookup(string scheme);
 
     Task<Result<MetadataLookupOutcome>> LookupAndApplyAsync(
@@ -137,3 +151,10 @@ public interface IMetadataLookupService
         IProgress<MetadataBatchProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>A read-only proposal bound to one item version; applying it still requires host validation.</summary>
+public sealed record MetadataCandidateProposal(
+    ItemId ItemId,
+    DateTimeOffset ExpectedUpdatedAt,
+    MetadataCandidate Candidate,
+    IReadOnlyList<MetadataLookupAttempt> Attempts);

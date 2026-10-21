@@ -70,6 +70,14 @@ public interface IItemService
         IReadOnlyList<ItemIdentifierInput> identifiers,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Updates fields and appends identifiers in the same optimistic transaction, preserving existing identifier identities.</summary>
+    Task<Result<ItemMetadata>> UpdateAndAddIdentifiersAsync(ItemId itemId, UpdateItemRequest request,
+        IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<ItemMetadata>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Atomic metadata candidate application is unavailable."));
+    }
+
     Task<Result> DeleteItemAsync(
         ItemId itemId,
         CancellationToken cancellationToken = default);

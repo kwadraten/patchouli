@@ -54,6 +54,9 @@ public class ViewModelArchitectureTests
         Regex reporterFilter = new(
             @"\Acatch\s*\(Exception\s+\w+\)\s*when\s*\([^{}]{0,500}?UnexpectedExceptionReporter\.ReportCatch",
             RegexOptions.Singleline);
+        Regex classifiedFilter = new(
+            @"\Acatch\s*\(Exception\s+(?<name>\w+)\)\s*when\s*\(\s*\k<name>\s+is\s+(?:IOException\s+or\s+UnauthorizedAccessException(?:\s+or\s+(?:JsonException|PlatformNotSupportedException(?:\s+or\s+ArgumentOutOfRangeException)?|ArgumentException(?:\s+or\s+NotSupportedException)?|NotSupportedException|ArgumentOutOfRangeException))?|JsonException\s+or\s+InvalidOperationException(?:\s+or\s+(?:KeyNotFoundException|FormatException|System\.Xml\.XmlException))*|XmlException\s+or\s+InvalidOperationException(?:\s+or\s+ArgumentException)?)\s*\)",
+            RegexOptions.Singleline);
         string[] violations = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .SelectMany(path =>
             {
@@ -66,14 +69,9 @@ public class ViewModelArchitectureTests
                 });
             })
             .Where(entry => !reporterFilter.IsMatch(entry.source[entry.catchIndex..]) &&
+                            !classifiedFilter.IsMatch(entry.source[entry.catchIndex..]) &&
                             !(entry.line.Contains("// Reported below", StringComparison.Ordinal) ||
                               entry.line.Contains("// Classified into the page failure result",
-                                  StringComparison.Ordinal) ||
-                              entry.line.Contains("exception is IOException or UnauthorizedAccessException",
-                                  StringComparison.Ordinal) ||
-                              entry.line.Contains("exception is JsonException or InvalidOperationException",
-                                  StringComparison.Ordinal) ||
-                              entry.line.Contains("exception is XmlException or InvalidOperationException",
                                   StringComparison.Ordinal)))
             .Select(entry => $"{Path.GetRelativePath(root, entry.path)}:{entry.lineNumber}: {entry.line.Trim()}")
             .ToArray();

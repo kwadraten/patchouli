@@ -1,9 +1,10 @@
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Translation;
-using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Layout;
+using Patchouli.Infrastructure.Translation;
 using Patchouli.Llm;
 using Patchouli.UI.ViewModels;
 
@@ -15,8 +16,7 @@ public sealed class TaskQueueControlTests
     public async Task Global_resume_preserves_local_pause_and_stopped_runs_can_be_cancelled()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
-        using TemporaryAppSettingsFile settings = new();
-        await using TranslationRunService service = CreateService(context, settings);
+        await using TranslationRunService service = CreateService(context);
         (await service.SetPausedAsync(true)).IsSuccess.Should().BeTrue();
         TranslationRunStartRequest request = new(context.DocumentId, []);
         TranslationRunStatus first = (await service.StartAsync(request)).Value;
@@ -42,8 +42,7 @@ public sealed class TaskQueueControlTests
     public async Task Retrying_failed_run_is_idempotent_and_inherits_queue_pause()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
-        using TemporaryAppSettingsFile settings = new();
-        await using TranslationRunService service = CreateService(context, settings);
+        await using TranslationRunService service = CreateService(context);
         TranslationRunStatus first =
             (await service.StartAsync(new TranslationRunStartRequest(context.DocumentId, [1], "zh-CN"))).Value;
         TranslationRunStatus failed = await WaitForFinishAsync(service, first.RunId);
@@ -132,11 +131,13 @@ public sealed class TaskQueueControlTests
         await next.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    private static TranslationRunService CreateService(TranslationTestContext context,
-        TemporaryAppSettingsFile settings)
+    private static TranslationRunService CreateService(TranslationTestContext context)
     {
         return new TranslationRunService(new PageService(context.ConnectionFactory, context.Clock), context.Trees,
-            context.Translations, LlmAppSettings.Default, new CredentialStore(settings.Path));
+            context.Translations, () => LlmAppSettings.Default(),
+            TranslationTestExtensionHarness.CreateRunner((_, _, _) =>
+                Task.FromResult(new TranslationExtensionResult([]))),
+            _ => Task.CompletedTask);
     }
 
     private static async Task<TranslationRunStatus> WaitForFinishAsync(TranslationRunService service, Guid id)

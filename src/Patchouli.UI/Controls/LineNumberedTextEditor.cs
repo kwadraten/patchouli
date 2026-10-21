@@ -16,6 +16,7 @@ public sealed class LineNumberedTextEditor : TextEditor
     public LineNumberedTextEditor()
     {
         ShowLineNumbers = true;
+        WordWrap = true;
         TextChanged += OnTextChanged;
     }
 

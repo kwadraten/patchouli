@@ -20,7 +20,9 @@ public sealed record TranslationAppSettings(
     int WindowRadius = TranslationSettings.DefaultWindowRadius,
     bool BackfillPreviousWindowTranslation = TranslationAppSettings.DefaultBackfillPreviousWindowTranslation,
     string? ProviderId = null,
-    string? Model = null)
+    string? Model = null,
+    string EngineId = "translation.llm",
+    string SourceLanguage = "auto")
 {
     /// <summary>Delay between batch requests; zero disables throttling, matching the runtime default.</summary>
     public const int DefaultRequestIntervalSeconds = 0;
@@ -58,7 +60,9 @@ public sealed record TranslationAppSettings(
             WindowRadius = Math.Clamp(WindowRadius, TranslationSettings.MinWindowRadius,
                 TranslationSettings.MaxWindowRadius),
             ProviderId = string.IsNullOrWhiteSpace(ProviderId) ? null : ProviderId.Trim(),
-            Model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim()
+            Model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim(),
+            EngineId = string.IsNullOrWhiteSpace(EngineId) ? "translation.llm" : EngineId.Trim(),
+            SourceLanguage = string.IsNullOrWhiteSpace(SourceLanguage) ? "auto" : SourceLanguage.Trim()
         };
     }
 
@@ -80,7 +84,9 @@ public sealed record TranslationAppSettings(
             normalized.WindowRadius,
             normalized.BackfillPreviousWindowTranslation,
             normalized.ProviderId,
-            normalized.Model);
+            normalized.Model,
+            normalized.EngineId,
+            normalized.SourceLanguage);
     }
 
     /// <summary>Captures runtime settings into the persisted shape, expanding the timeout defaults.</summary>
@@ -102,6 +108,8 @@ public sealed record TranslationAppSettings(
             normalized.WindowRadius,
             normalized.BackfillPreviousWindowTranslation,
             normalized.ProviderId,
-            normalized.Model).Normalize();
+            normalized.Model,
+            normalized.EngineId,
+            normalized.SourceLanguage).Normalize();
     }
 }

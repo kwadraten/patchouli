@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
   </ItemGroup>
@@ -19,6 +20,20 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="migrations\*.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Translation\Extensions\Support.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.Support.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.llm\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.llm.main.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.google-free\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.google-free.main.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.deepl-free\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.deepl-free.main.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.deeplx\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.deeplx.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.crossref\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.crossref.main.fsx" />
   </ItemGroup>
 
   <PropertyGroup>

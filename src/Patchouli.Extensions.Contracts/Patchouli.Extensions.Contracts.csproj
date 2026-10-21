@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Blake3" />
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -30,9 +30,13 @@ public sealed record TranslationSettings(
     int WindowRadius = 1,
     bool BackfillPreviousWindowTranslation = true,
     string? ProviderId = null,
-    string? Model = null)
+    string? Model = null,
+    string EngineId = TranslationSettings.DefaultEngineId,
+    string SourceLanguage = TranslationSettings.DefaultSourceLanguage)
 {
     public const string DefaultTargetLanguage = "en";
+    public const string DefaultSourceLanguage = "auto";
+    public const string DefaultEngineId = "translation.llm";
     public const int MinBatchSize = 1;
     public const int MaxBatchSize = 64;
     public const int DefaultBatchSize = 8;
@@ -67,9 +71,14 @@ public sealed record TranslationSettings(
         string language = string.IsNullOrWhiteSpace(TargetLanguage)
             ? DefaultTargetLanguage
             : TargetLanguage.Trim();
+        string sourceLanguage = string.IsNullOrWhiteSpace(SourceLanguage)
+            ? DefaultSourceLanguage
+            : SourceLanguage.Trim();
         return this with
         {
             TargetLanguage = language,
+            SourceLanguage = sourceLanguage,
+            EngineId = string.IsNullOrWhiteSpace(EngineId) ? DefaultEngineId : EngineId.Trim(),
             BatchSize = Math.Clamp(BatchSize, MinBatchSize, MaxBatchSize),
             MaxBatchCharacters = Math.Clamp(MaxBatchCharacters, MinMaxBatchCharacters, MaxMaxBatchCharacters),
             MaxBatchTokens = MaxBatchTokens is > 0 ? MaxBatchTokens : null,

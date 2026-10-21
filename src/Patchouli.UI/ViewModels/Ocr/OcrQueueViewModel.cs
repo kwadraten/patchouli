@@ -1030,6 +1030,12 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         ProgressValue = run.TotalPages == 0 ? 0 : 100.0 * run.CompletedPages / run.TotalPages;
         StageText =
             $"{run.CompletedPages}/{run.TotalPages} 页 · 成功 {run.Succeeded} · 部分 {run.Partial} · 失败 {run.Failed} · 跳过 {run.Skipped} · 取消 {run.CancelledPages}";
+        if (IsActive && run.CurrentStep is { } step)
+        {
+            string count = step.Total > 0 ? $" {step.Completed}/{step.Total}" : "";
+            StageText += $" · 第 {step.PageIndex} 页 {step.Phase}{count}";
+        }
+
         ErrorText = string.Join("\n", new[] { run.ErrorMessage }.Concat(run.Pages
                 .Where(page => page.ErrorMessage is not null || page.ErrorCode is not null)
                 .Select(page => $"第 {page.PageIndex} 页：{page.ErrorMessage ?? page.ErrorCode}"))

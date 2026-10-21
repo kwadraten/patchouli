@@ -1474,7 +1474,9 @@ public sealed record PatchouliAppSettings(
             ReadInt(translation, "WindowRadius", fallback.WindowRadius),
             ReadBool(translation, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation),
             ReadString(translation, "ProviderId", fallback.ProviderId ?? ""),
-            ReadString(translation, "Model", fallback.Model ?? "")).Normalize();
+            ReadString(translation, "Model", fallback.Model ?? ""),
+            ReadString(translation, "EngineId", fallback.EngineId),
+            ReadString(translation, "SourceLanguage", fallback.SourceLanguage)).Normalize();
     }
 
     /// <summary>

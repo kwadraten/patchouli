@@ -415,7 +415,8 @@ public sealed class UiViewModelTests : IDisposable
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录", "同步与快照");
+            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "扩展", "元数据来源", "搜索", "引用与题录",
+            "同步与快照", "更新设置");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
             .Where(content => content is AboutViewModel)
@@ -428,10 +429,12 @@ public sealed class UiViewModelTests : IDisposable
         vm.Settings.SectionEntries.Select(entry => entry.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
+        ((ISettingsSection)vm.Settings.SectionEntries.Single(entry => entry.Id == "extensions").Content)
+            .SupportsEditing.Should().BeFalse("Extensions applies its own configuration and activation actions");
 
         // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "csl_installed" or "csl_online"))
+            .Where(entry => entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
@@ -714,9 +717,10 @@ public sealed class UiViewModelTests : IDisposable
     public async Task FileDocumentViewModel_RegisterMissingFile_creates_missing_asset()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.FileDocument.FilePath = Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}.pdf");
@@ -725,6 +729,11 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (vm is not null)
+            {
+                await vm.ShutdownAsync();
+            }
+
             if (File.Exists(path))
             {
                 SqliteConnection.ClearAllPools();
@@ -3204,177 +3213,212 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Item_workspace_tabs_use_page_name_item_title_and_truncate_long_titles()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
-        string firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
-        string secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
-        string longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
-        MainWindowViewModel? vm = null;
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        bool completed = await session.Dispatch<bool>(async () =>
         {
-            File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
-            File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
-            File.AppendAllText(secondPdf, "\n% distinct PDF fixture for the second item\n");
-            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await vm.ServicesAsync();
-            PdfImportResult firstImport =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1));
-            firstImport.Success.Should().BeTrue();
-            PdfImportResult secondImport =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1));
-            secondImport.Success.Should().BeTrue();
-            await vm.Shell.RefreshItemsAsync();
-
-            vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == "短标题");
-            await vm.ShowReadingCommand.ExecuteAsync();
-            WorkspaceTabViewModel firstTab = vm.ActiveTab!;
-
-            vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == longTitle);
-            await vm.ShowReadingCommand.ExecuteAsync();
-            WorkspaceTabViewModel secondTab = vm.ActiveTab!;
-
-            firstTab.Title.Should().Be("PDF 工作台：短标题");
-            secondTab.Title.Should().StartWith("PDF 工作台：");
-            secondTab.Title.Should().EndWith("...");
-            secondTab.Title.Length.Should().BeLessThanOrEqualTo(32);
-
-            await vm.EditSelectedItemCommand.ExecuteAsync();
-            vm.ActiveTab!.Title.Should().StartWith("编辑题录：");
-            vm.ActiveTab.Title.Should().EndWith("...");
-            vm.ActiveTab.Title.Length.Should().BeLessThanOrEqualTo(32);
-            await services.PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(firstImport.CreatedDocumentInstanceId!));
-            await services.PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(secondImport.CreatedDocumentInstanceId!));
-        }
-        finally
-        {
-            if (vm is not null)
+            string path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
+            string firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
+            string secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
+            string longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
+            MainWindowViewModel? vm = null;
+            try
             {
-                vm.Workspace.CloseKind(WorkspaceTabKind.PdfWorkspace);
-                await vm.ShutdownAsync();
+                File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
+                File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
+                File.AppendAllText(secondPdf, "\n% distinct PDF fixture for the second item\n");
+                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                HostServices services = await vm.ServicesAsync();
+                PdfImportResult firstImport =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1));
+                firstImport.Success.Should().BeTrue();
+                PdfImportResult secondImport =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1));
+                secondImport.Success.Should().BeTrue();
+                await vm.Shell.RefreshItemsAsync();
+
+                vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == "短标题");
+                await vm.ShowReadingCommand.ExecuteAsync();
+                WorkspaceTabViewModel firstTab = vm.ActiveTab!;
+
+                vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == longTitle);
+                await vm.ShowReadingCommand.ExecuteAsync();
+                WorkspaceTabViewModel secondTab = vm.ActiveTab!;
+
+                firstTab.Title.Should().Be("PDF 工作台：短标题");
+                secondTab.Title.Should().StartWith("PDF 工作台：");
+                secondTab.Title.Should().EndWith("...");
+                secondTab.Title.Length.Should().BeLessThanOrEqualTo(32);
+
+                await vm.EditSelectedItemCommand.ExecuteAsync();
+                vm.ActiveTab!.Title.Should().StartWith("编辑题录：");
+                vm.ActiveTab.Title.Should().EndWith("...");
+                vm.ActiveTab.Title.Length.Should().BeLessThanOrEqualTo(32);
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(firstImport.CreatedDocumentInstanceId!));
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(secondImport.CreatedDocumentInstanceId!));
+            }
+            finally
+            {
+                if (vm is not null)
+                {
+                    vm.Workspace.CloseKind(WorkspaceTabKind.PdfWorkspace);
+                    await vm.ShutdownAsync();
+                }
+
+                if (File.Exists(firstPdf))
+                {
+                    File.Delete(firstPdf);
+                }
+
+                if (File.Exists(secondPdf))
+                {
+                    File.Delete(secondPdf);
+                }
+
+                if (File.Exists(path))
+                {
+                    SqliteConnection.ClearAllPools();
+                    File.Delete(path);
+                }
             }
 
-            if (File.Exists(firstPdf))
-            {
-                File.Delete(firstPdf);
-            }
-
-            if (File.Exists(secondPdf))
-            {
-                File.Delete(secondPdf);
-            }
-
-            if (File.Exists(path))
-            {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
-            }
-        }
+            return true;
+        }, CancellationToken.None);
+        completed.Should().BeTrue();
     }
 
     [Fact]
     public async Task MainWindow_close_pdf_tab_keeps_library_selection()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        bool completed = await session.Dispatch<bool>(async () =>
         {
-            File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            await using MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await vm.ServicesAsync();
-            PdfImportResult import =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
-            import.Success.Should().BeTrue(import.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
-            await vm.ShowReadingCommand.ExecuteAsync();
-            vm.ShowSelectedDocumentTab.Should().BeTrue();
-            await vm.ClosePdfWorkspaceTabCommand.ExecuteAsync();
+            string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+            string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
 
-            vm.Shell.SelectedItem.Should().NotBeNull();
-            vm.ShowSelectedDocumentTab.Should().BeFalse();
-            vm.IsLibraryTabActive.Should().BeTrue();
-            await services.PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
-        }
-        finally
-        {
-            if (File.Exists(pdf))
+            try
             {
-                File.Delete(pdf);
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                try
+                {
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    HostServices services = await vm.ServicesAsync();
+                    PdfImportResult import =
+                        await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
+                    import.Success.Should().BeTrue(import.ErrorMessage);
+                    await vm.Shell.RefreshItemsAsync();
+                    await vm.ShowReadingCommand.ExecuteAsync();
+                    Dispatcher.UIThread.RunJobs();
+                    vm.ShowSelectedDocumentTab.Should().BeTrue();
+                    await vm.ClosePdfWorkspaceTabCommand.ExecuteAsync();
+                    vm.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.PdfWorkspace);
+                    Dispatcher.UIThread.RunJobs();
+
+                    vm.Shell.SelectedItem.Should().NotBeNull();
+                    vm.ShowSelectedDocumentTab.Should().BeFalse();
+                    vm.IsLibraryTabActive.Should().BeTrue();
+                    await services.PageRenders.ReleaseDocumentSessionAsync(
+                        DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
+                }
+                finally
+                {
+                    await vm.DisposeAsync();
+                }
+            }
+            finally
+            {
+                if (File.Exists(pdf))
+                {
+                    File.Delete(pdf);
+                }
+
+                if (File.Exists(path))
+                {
+                    SqliteConnection.ClearAllPools();
+                    File.Delete(path);
+                }
             }
 
-            if (File.Exists(path))
-            {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
-            }
-        }
+            return true;
+        }, CancellationToken.None);
+        completed.Should().BeTrue();
     }
 
     [Fact]
     public async Task MainWindow_tabs_persist_across_switches_until_closed()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
-        MainWindowViewModel? vm = null;
-        HostServices? services = null;
-        PdfImportResult? import = null;
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        bool completed = await session.Dispatch<bool>(async () =>
         {
-            SynchronizationContext.SetSynchronizationContext(null);
-            File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            services = await vm.ServicesAsync();
-            import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
-            import.Success.Should().BeTrue(import.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
-
-            vm.IsLibraryTabActive.Should().BeTrue();
-            vm.ShowSelectedDocumentTab.Should().BeFalse();
-            vm.ShowSettingsTab.Should().BeFalse();
-
-            await vm.ShowReadingCommand.ExecuteAsync();
-            vm.ShowSelectedDocumentTab.Should().BeTrue();
-            vm.IsReaderTabActive.Should().BeTrue();
-
-            await vm.OpenSettingsAsync("mineru");
-            vm.ShowSelectedDocumentTab.Should().BeTrue();
-            vm.ShowSettingsTab.Should().BeTrue();
-            vm.IsSettingsVisible.Should().BeTrue();
-
-            await vm.ShowReadingCommand.ExecuteAsync();
-            vm.IsReaderTabActive.Should().BeTrue();
-            vm.ShowSettingsTab.Should().BeTrue();
-
-            await vm.CloseSettingsTabCommand.ExecuteAsync();
-            vm.ShowSettingsTab.Should().BeFalse();
-            vm.ShowSelectedDocumentTab.Should().BeTrue();
-            vm.IsReaderTabActive.Should().BeTrue();
-            await services.PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
-        }
-        finally
-        {
-            if (vm is not null)
+            string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+            string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+            MainWindowViewModel? vm = null;
+            HostServices? services = null;
+            PdfImportResult? import = null;
+            try
             {
-                await vm.ShutdownAsync();
-            }
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                services = await vm.ServicesAsync();
+                import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
+                import.Success.Should().BeTrue(import.ErrorMessage);
+                await vm.Shell.RefreshItemsAsync();
 
-            if (services is not null && import?.CreatedDocumentInstanceId is not null)
-            {
+                vm.IsLibraryTabActive.Should().BeTrue();
+                vm.ShowSelectedDocumentTab.Should().BeFalse();
+                vm.ShowSettingsTab.Should().BeFalse();
+
+                await vm.ShowReadingCommand.ExecuteAsync();
+                Dispatcher.UIThread.RunJobs();
+                vm.ShowSelectedDocumentTab.Should().BeTrue();
+                vm.IsReaderTabActive.Should().BeTrue();
+
+                await vm.OpenSettingsAsync("mineru");
+                Dispatcher.UIThread.RunJobs();
+                vm.ShowSelectedDocumentTab.Should().BeTrue();
+                vm.ShowSettingsTab.Should().BeTrue();
+                vm.IsSettingsVisible.Should().BeTrue();
+
+                await vm.ShowReadingCommand.ExecuteAsync();
+                Dispatcher.UIThread.RunJobs();
+                vm.IsReaderTabActive.Should().BeTrue();
+                vm.ShowSettingsTab.Should().BeTrue();
+
+                await vm.CloseSettingsTabCommand.ExecuteAsync();
+                Dispatcher.UIThread.RunJobs();
+                vm.ShowSettingsTab.Should().BeFalse();
+                vm.ShowSelectedDocumentTab.Should().BeTrue();
+                vm.IsReaderTabActive.Should().BeTrue();
                 await services.PageRenders.ReleaseDocumentSessionAsync(
-                    DocumentInstanceId.Parse(import.CreatedDocumentInstanceId));
+                    DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
+            }
+            finally
+            {
+                if (vm is not null)
+                {
+                    await vm.ShutdownAsync();
+                }
+
+                if (services is not null && import?.CreatedDocumentInstanceId is not null)
+                {
+                    await services.PageRenders.ReleaseDocumentSessionAsync(
+                        DocumentInstanceId.Parse(import.CreatedDocumentInstanceId));
+                }
+
+                TestTempFileCleanup.DeleteFileWithRetry(pdf);
+                TestTempFileCleanup.DeleteFileWithRetry(path);
             }
 
-            TestTempFileCleanup.DeleteFileWithRetry(pdf);
-            TestTempFileCleanup.DeleteFileWithRetry(path);
-        }
+            return true;
+        }, CancellationToken.None);
+        completed.Should().BeTrue();
     }
 
     [Fact]

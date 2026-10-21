@@ -1,4 +1,5 @@
 using Patchouli.Core.Ids;
+
 namespace Patchouli.Core.Translation;
 
 /// <summary>One page to translate in a direct batch translation run.</summary>
@@ -28,7 +29,8 @@ public sealed record TranslationRunRequest(
     TranslationSettings Settings,
     string? DocumentTitle = null,
     IReadOnlyList<TranslationGlossaryEntry>? Glossary = null,
-    bool ForceRetranslate = false);
+    bool ForceRetranslate = false,
+    IReadOnlyList<TranslationPageTarget>? DocumentPages = null);
 
 /// <summary>Terminal state of one page in a translation run.</summary>
 public enum TranslationPageRunState

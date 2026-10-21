@@ -1,3 +1,4 @@
+using System.Net;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
@@ -376,17 +377,17 @@ public sealed class LlmChatClientTests
     [Fact]
     public void Transport_failure_mapping_covers_status_codes_and_exception_kinds()
     {
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.Unauthorized)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.Unauthorized)
             .Should().Be(LlmFailureCodes.AuthFailed);
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.Forbidden)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.Forbidden)
             .Should().Be(LlmFailureCodes.AuthFailed);
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.TooManyRequests)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.TooManyRequests)
             .Should().Be(LlmFailureCodes.RateLimited);
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.NotFound)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.NotFound)
             .Should().Be(LlmFailureCodes.ModelNotFound);
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.RequestEntityTooLarge)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.RequestEntityTooLarge)
             .Should().Be(LlmFailureCodes.ContextLengthExceeded);
-        LlmFailureMapper.FromStatusCode(System.Net.HttpStatusCode.BadGateway)
+        LlmFailureMapper.FromStatusCode(HttpStatusCode.BadGateway)
             .Should().Be(LlmFailureCodes.TemporaryProviderError);
         LlmFailureMapper.FromException(new TimeoutException())
             .Should().Be(LlmFailureCodes.NetworkTimeout);
@@ -395,7 +396,7 @@ public sealed class LlmChatClientTests
         LlmFailureMapper.FromException(new HttpRequestException("tls"))
             .Should().Be(LlmFailureCodes.TemporaryProviderError);
         LlmFailureMapper.FromException(new HttpRequestException("throttled", null,
-                System.Net.HttpStatusCode.TooManyRequests))
+                HttpStatusCode.TooManyRequests))
             .Should().Be(LlmFailureCodes.RateLimited);
         LlmFailureMapper.FromException(new InvalidOperationException("boom"))
             .Should().Be(LlmFailureCodes.UnknownProviderError);

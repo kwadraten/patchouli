@@ -227,11 +227,18 @@ public sealed class ItemService : IItemService
         return await UpdateItemCoreAsync(itemId, request, identifiers, cancellationToken);
     }
 
+    public Task<Result<ItemMetadata>> UpdateAndAddIdentifiersAsync(ItemId itemId, UpdateItemRequest request,
+        IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
+    {
+        return UpdateItemCoreAsync(itemId, request, null, cancellationToken, identifiers);
+    }
+
     private async Task<Result<ItemMetadata>> UpdateItemCoreAsync(
         ItemId itemId,
         UpdateItemRequest request,
         IReadOnlyList<ItemIdentifierInput>? replacementIdentifiers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<ItemIdentifierInput>? appendedIdentifiers = null)
     {
         if (string.IsNullOrWhiteSpace(request.Title))
         {
@@ -363,6 +370,29 @@ public sealed class ItemService : IItemService
                              .DistinctBy(static value => (value.Scheme, value.Value)))
                 {
                     await InsertIdentifierAsync(connection, transaction, itemId, identifier, now);
+                }
+            }
+
+            if (appendedIdentifiers is not null)
+            {
+                foreach (ItemIdentifierInput raw in appendedIdentifiers)
+                {
+                    ItemIdentifierInput? identifier = NormalizeIdentifier(raw);
+                    if (identifier is null)
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed,
+                            "A metadata candidate contains an invalid identifier.");
+                    }
+
+                    int exists = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                        "select count(*) from item_identifiers where item_id = @ItemId and scheme = @Scheme collate nocase and value = @Value;",
+                        new { ItemId = itemId.ToString(), identifier.Scheme, identifier.Value }, transaction,
+                        cancellationToken: cancellationToken));
+                    if (exists == 0)
+                    {
+                        await InsertIdentifierAsync(connection, transaction, itemId, identifier, updated.UpdatedAt);
+                    }
                 }
             }
 

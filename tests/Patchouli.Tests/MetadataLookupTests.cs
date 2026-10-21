@@ -502,6 +502,35 @@ public sealed class MetadataLookupTests
             return Task.FromResult(Result<ItemMetadata>.Success(Item));
         }
 
+        public async Task<Result<ItemMetadata>> UpdateAndAddIdentifiersAsync(ItemId itemId, UpdateItemRequest request,
+            IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
+        {
+            Result<ItemMetadata> updated = await UpdateItemAsync(itemId, request, cancellationToken);
+            if (updated.IsFailure)
+            {
+                return updated;
+            }
+
+            foreach (ItemIdentifierInput identifier in identifiers)
+            {
+                if (Item.Identifiers.Any(existing =>
+                        string.Equals(existing.Scheme, identifier.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(existing.Value, identifier.Value, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                Result<ItemIdentifier> added = await AddIdentifierAsync(itemId, identifier.Scheme,
+                    identifier.Value, identifier.Note, cancellationToken);
+                if (added.IsFailure)
+                {
+                    return Result<ItemMetadata>.Failure(added.ErrorCode!, added.ErrorMessage!);
+                }
+            }
+
+            return Result<ItemMetadata>.Success(Item);
+        }
+
         public Task<Result<ItemMetadata>> ReplaceItemAsync(ItemId itemId, UpdateItemRequest request,
             IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
         {

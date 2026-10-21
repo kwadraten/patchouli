@@ -3,30 +3,30 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
+using Patchouli.Extensions.Contracts;
+using Patchouli.Infrastructure.Documents;
+using System.Collections.Concurrent;
 
 namespace Patchouli.Infrastructure.Translation;
 
 /// <summary>
-/// Host-side orchestration for direct batch translation. The engine fixes one
-/// <see cref="TranslationProviderSet"/> snapshot for a run, reads each page's current committed revision,
-/// segments and batches its translatable boxes, invokes the model under one global concurrency and request
-/// throttle, merges the successful batch results, and commits one page at a time with a single atomic
+/// Host-side orchestration for direct extension translation. The engine pins one extension generation for
+/// a run, reads each page's current committed revision, validates extension results, and commits one page
+/// at a time with a single atomic
 /// <see cref="IPageTranslationService.PutPageBoxesAsync"/> call. A page therefore never exposes a
 /// half-applied translation.
 /// </summary>
 /// <remarks>
-/// The engine keeps no persistent task ledger, actor or scheduler: a run is plain async/await over a
-/// <see cref="SemaphoreSlim"/>. Batches are the unit of parallel model work; pages commit as soon as all of
-/// their batches settle. A page commit conflict reloads the page and retries the page at most
+/// The engine keeps no persistent task ledger, actor or scheduler. Extensions own translation strategy,
+/// batching and request pacing; the host bounds page execution and commits each page as soon as its extension
+/// call settles. A page commit conflict reloads
+/// the page and retries the page at most
 /// <see cref="MaxConflictRetries"/> times instead of silently overwriting a concurrent change.
 /// </remarks>
 public sealed class TranslationRunEngine
 {
     /// <summary>How many times a page is retried after its commit reports a conflict.</summary>
     private const int MaxConflictRetries = 2;
-
-    private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan RetryMaxDelay = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Box types whose payload text is translated. Code, equations, images, charts, media, logical pages,
@@ -57,32 +57,28 @@ public sealed class TranslationRunEngine
 
     private readonly IDocumentTreeService _documentTreeService;
     private readonly IPageTranslationService _pageTranslationService;
-    private readonly TranslationProviderRegistry _providerRegistry;
-    private readonly TimeProvider _timeProvider;
+    private readonly TranslationExtensionRunner _extensionRunner;
 
-    /// <summary>Creates the engine over the document reads, page translation writes and provider registry.</summary>
+    /// <summary>Creates the engine over the document reads, page translation writes and extension runner.</summary>
     /// <param name="documentTreeService">Reads the current committed revision and its boxes.</param>
     /// <param name="pageTranslationService">Reads page translation status and commits box payloads.</param>
-    /// <param name="providerRegistry">Supplies one consistent segmenter/batcher/invoker/processor set.</param>
-    /// <param name="timeProvider">Clock used for retry backoff and request throttling; defaults to the system clock.</param>
+    /// <param name="extensionRunner">Acquires one pinned extension generation for each run.</param>
     public TranslationRunEngine(
         IDocumentTreeService documentTreeService,
         IPageTranslationService pageTranslationService,
-        TranslationProviderRegistry providerRegistry,
-        TimeProvider? timeProvider = null)
+        TranslationExtensionRunner extensionRunner)
     {
         _documentTreeService = documentTreeService ??
                                throw new ArgumentNullException(nameof(documentTreeService));
         _pageTranslationService = pageTranslationService ??
                                   throw new ArgumentNullException(nameof(pageTranslationService));
-        _providerRegistry = providerRegistry ?? throw new ArgumentNullException(nameof(providerRegistry));
-        _timeProvider = timeProvider ?? TimeProvider.System;
+        _extensionRunner = extensionRunner ?? throw new ArgumentNullException(nameof(extensionRunner));
     }
 
     /// <summary>
     /// Translates every requested page. Errors are reported through per-page outcomes rather than thrown, so
     /// the caller always receives one outcome per requested page. Cancellation stops new batch dispatch,
-    /// cancels in-flight batches, keeps pages that were already committed, and marks the rest
+    /// cancels in-flight extension calls, keeps pages that were already committed, and marks the rest
     /// <see cref="TranslationPageRunState.Cancelled"/>.
     /// </summary>
     /// <param name="request">The pages, settings and optional prompt context.</param>
@@ -92,42 +88,65 @@ public sealed class TranslationRunEngine
         TranslationRunRequest request,
         IProgress<TranslationRunProgress>? progress = null,
         CancellationToken cancellationToken = default,
-        TranslationExecutionGate? executionGate = null)
+        TranslationExecutionGate? executionGate = null,
+        IProgress<TranslationStepProgress>? stepProgress = null,
+        TranslationExtensionRun? pinnedExtensionRun = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Pages);
 
         TranslationPageTarget[] targets = [.. request.Pages];
         TranslationPageOutcome[] outcomes = new TranslationPageOutcome[targets.Length];
+        TranslationSettings settings = (request.Settings ?? new TranslationSettings()).Normalize();
         if (targets.Length == 0)
         {
+            if (pinnedExtensionRun is not null)
+            {
+                await pinnedExtensionRun.DisposeAsync().ConfigureAwait(false);
+            }
+
             return new TranslationRunResult([], cancellationToken.IsCancellationRequested);
         }
 
-        TranslationSettings settings = (request.Settings ?? new TranslationSettings()).Normalize();
         int completed = 0;
 
         void Publish(TranslationPageOutcome outcome)
         {
             int settled = Interlocked.Increment(ref completed);
-            progress?.Report(new TranslationRunProgress(settled, targets.Length, outcome));
+            ExtensionRunProgress.Report(progress, new TranslationRunProgress(settled, targets.Length, outcome));
         }
 
         if (cancellationToken.IsCancellationRequested)
         {
+            if (pinnedExtensionRun is not null)
+            {
+                await pinnedExtensionRun.DisposeAsync().ConfigureAwait(false);
+            }
+
             return CancelRemaining(targets, outcomes, Publish);
         }
 
-        TranslationProviderSet? providers = _providerRegistry.Snapshot();
-        if (providers is null)
+        TranslationExtensionRun? acquiredRun;
+        try
+        {
+            acquiredRun = pinnedExtensionRun ??
+                          await _extensionRunner.AcquireAsync(settings.EngineId, executionGate, cancellationToken)
+                              .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return CancelRemaining(targets, outcomes, Publish);
+        }
+
+        await using TranslationExtensionRun? extensionRun = acquiredRun;
+        if (extensionRun is null)
         {
             for (int index = 0; index < targets.Length; index++)
             {
                 TranslationPageOutcome outcome = Failure(
                     targets[index],
                     TranslationErrorCodes.InvokerUnavailable,
-                    "No complete translation provider set is registered. Register a segmenter, batcher, " +
-                    "model invoker and result processor before running translation.");
+                    $"Translation engine '{settings.EngineId}' is not loaded.");
                 outcomes[index] = outcome;
                 Publish(outcome);
             }
@@ -135,10 +154,18 @@ public sealed class TranslationRunEngine
             return new TranslationRunResult([.. outcomes], false);
         }
 
-        if (executionGate is not null)
+        Dictionary<int, TranslationContextSnapshot> contextSnapshots;
+        try
         {
-            providers = providers with { ModelInvoker = new GatedModelInvoker(providers.ModelInvoker, executionGate) };
+            contextSnapshots = await BuildContextSnapshotsAsync(request, targets, cancellationToken)
+                .ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return CancelRemaining(targets, outcomes, Publish);
+        }
+
+        ConcurrentDictionary<int, TranslationContextTranslationSnapshot> previousRunTranslations = new();
 
         // Load every page first: a page's neighbours are reference context even when they are skipped,
         // and a page that is already current must not be loaded by the model at all.
@@ -197,18 +224,19 @@ public sealed class TranslationRunEngine
 
         if (pending.Count > 0)
         {
-            using SemaphoreSlim batchGate = new(settings.Concurrency, settings.Concurrency);
-            using RequestPacer pacer = new(settings.RequestIntervalValue, _timeProvider);
+            int pageConcurrency = extensionRun.Descriptor.PageExecutionMode == ExtensionPageExecutionMode.Sequential
+                ? 1
+                : settings.Concurrency;
             int nextPage = -1;
-            Task[] workers = new Task[Math.Min(settings.Concurrency, pending.Count)];
+            Task[] workers = new Task[Math.Min(pageConcurrency, pending.Count)];
             for (int worker = 0; worker < workers.Length; worker++)
             {
-                workers[worker] = WorkAsync(batchGate, pacer);
+                workers[worker] = WorkAsync(extensionRun);
             }
 
             await Task.WhenAll(workers).ConfigureAwait(false);
 
-            async Task WorkAsync(SemaphoreSlim gate, RequestPacer pace)
+            async Task WorkAsync(TranslationExtensionRun run)
             {
                 while (true)
                 {
@@ -228,13 +256,13 @@ public sealed class TranslationRunEngine
                     {
                         outcome = await ExecutePageAsync(
                             loadedPages[pageIndex]!,
-                            pageIndex,
-                            loadedPages,
-                            providers,
+                            contextSnapshots.GetValueOrDefault(targets[pageIndex].PageIndex,
+                                new TranslationContextSnapshot([])),
+                            previousRunTranslations,
+                            run,
                             request,
                             settings,
-                            gate,
-                            pace,
+                            stepProgress,
                             cancellationToken).ConfigureAwait(false);
                     }
 
@@ -259,17 +287,6 @@ public sealed class TranslationRunEngine
         }
 
         return new TranslationRunResult([.. outcomes], cancelled);
-    }
-
-    private sealed class GatedModelInvoker(ITranslationModelInvoker inner, TranslationExecutionGate gate)
-        : ITranslationModelInvoker
-    {
-        public async Task<Result<TranslationBatchResult>> InvokeAsync(TranslationBatch batch,
-            TranslationInvocationContext context, CancellationToken cancellationToken = default)
-        {
-            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return await inner.InvokeAsync(batch, context, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     private static TranslationRunResult CancelRemaining(
@@ -376,7 +393,6 @@ public sealed class TranslationRunEngine
             .Where(static box => box.ParentBoxId is not null)
             .Select(static box => box.ParentBoxId!.Value)
             .ToHashSet();
-        List<TranslationSourceBox> sourceBoxes = new(boxes.Count);
         HashSet<DocumentBoxId> translatableLeafBoxIds = [];
         List<string> referenceTexts = [];
         foreach (DocumentBox box in boxes)
@@ -388,7 +404,6 @@ public sealed class TranslationRunEngine
                 translatableLeafBoxIds.Add(box.BoxId);
             }
 
-            sourceBoxes.Add(new TranslationSourceBox(box.BoxId, box.BoxType, text, translatable));
             if (!string.IsNullOrWhiteSpace(text))
             {
                 referenceTexts.Add(text);
@@ -399,7 +414,6 @@ public sealed class TranslationRunEngine
             target,
             revision,
             boxes,
-            [.. sourceBoxes],
             string.Join("\n\n", referenceTexts),
             status,
             translatableLeafBoxIds);
@@ -437,9 +451,9 @@ public sealed class TranslationRunEngine
         {
             TextBoxPayload textBox => textBox.Markdown ?? string.Empty,
             ListBoxPayload listBox => listBox.Markdown ?? string.Empty,
-            TableBoxPayload tableBox => !string.IsNullOrWhiteSpace(tableBox.Html)
-                ? tableBox.Html
-                : tableBox.Markdown ?? string.Empty,
+            TableBoxPayload tableBox => TableContentAdapter.TryGetHtml(tableBox, out string html)
+                ? html
+                : tableBox.Markdown,
             AlgorithmBoxPayload algorithmBox => algorithmBox.Markdown ?? string.Empty,
             CodeBoxPayload codeBox => codeBox.Code ?? string.Empty,
             EquationBoxPayload equationBox => equationBox.Latex ?? string.Empty,
@@ -450,27 +464,25 @@ public sealed class TranslationRunEngine
 
     private async Task<TranslationPageOutcome> ExecutePageAsync(
         LoadedPage initialPage,
-        int pageIndex,
-        LoadedPage?[] pages,
-        TranslationProviderSet providers,
+        TranslationContextSnapshot contextSnapshot,
+        ConcurrentDictionary<int, TranslationContextTranslationSnapshot> previousRunTranslations,
+        TranslationExtensionRun extensionRun,
         TranslationRunRequest request,
         TranslationSettings settings,
-        SemaphoreSlim batchGate,
-        RequestPacer pacer,
+        IProgress<TranslationStepProgress>? stepProgress,
         CancellationToken cancellationToken)
     {
         LoadedPage page = initialPage;
         for (int attempt = 0;; attempt++)
         {
-            PageAttempt attemptResult = await TranslateAttemptAsync(
+            PageAttempt attemptResult = await TranslateExtensionAttemptAsync(
                 page,
-                pageIndex,
-                pages,
-                providers,
+                contextSnapshot,
+                previousRunTranslations,
+                extensionRun,
                 request,
                 settings,
-                batchGate,
-                pacer,
+                stepProgress,
                 cancellationToken).ConfigureAwait(false);
             if (!attemptResult.Conflict || attempt >= MaxConflictRetries)
             {
@@ -508,283 +520,448 @@ public sealed class TranslationRunEngine
             }
 
             page = reload.Page!;
-            pages[pageIndex] = page;
         }
     }
 
-    private async Task<PageAttempt> TranslateAttemptAsync(
+    private async Task<PageAttempt> TranslateExtensionAttemptAsync(
         LoadedPage page,
-        int pageIndex,
-        LoadedPage?[] pages,
-        TranslationProviderSet providers,
+        TranslationContextSnapshot contextSnapshot,
+        ConcurrentDictionary<int, TranslationContextTranslationSnapshot> previousRunTranslations,
+        TranslationExtensionRun extensionRun,
         TranslationRunRequest request,
         TranslationSettings settings,
-        SemaphoreSlim batchGate,
-        RequestPacer pacer,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return new PageAttempt(Cancelled(page.Target), false);
-            }
-
-            IReadOnlyList<TranslationReferenceContext> references = await BuildReferencesAsync(
-                pageIndex,
-                pages,
-                request.DocumentInstanceId,
-                settings,
-                cancellationToken).ConfigureAwait(false);
-            return await TranslatePageAsync(
-                page,
-                providers,
-                request,
-                settings,
-                references,
-                batchGate,
-                pacer,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return new PageAttempt(Cancelled(page.Target), false);
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                              exception, "infrastructure.translation-run"))
-        {
-            return new PageAttempt(
-                Failure(
-                    page.Target,
-                    AppErrorCodes.InvalidState,
-                    $"The page translation failed: {exception.Message}"),
-                false);
-        }
-    }
-
-    private async Task<IReadOnlyList<TranslationReferenceContext>> BuildReferencesAsync(
-        int pageIndex,
-        LoadedPage?[] pages,
-        DocumentInstanceId documentInstanceId,
-        TranslationSettings settings,
-        CancellationToken cancellationToken)
-    {
-        if (settings.WindowRadius <= 0)
-        {
-            return [];
-        }
-
-        List<TranslationReferenceContext> references = [];
-        int radius = settings.WindowRadius;
-        for (int previousIndex = Math.Max(0, pageIndex - radius); previousIndex < pageIndex; previousIndex++)
-        {
-            LoadedPage? previous = pages[previousIndex];
-            if (previous is not null && !string.IsNullOrWhiteSpace(previous.SourceText))
-            {
-                references.Add(new TranslationReferenceContext(
-                    TranslationReferenceKind.PreviousPageSource,
-                    previous.SourceText,
-                    $"page {previous.Target.PageIndex}"));
-            }
-        }
-
-        if (settings.BackfillPreviousWindowTranslation &&
-            pageIndex > 0 &&
-            pages[pageIndex - 1] is { } immediatePrevious)
-        {
-            TranslatedPageMarkdown? translation = await _pageTranslationService.GetPageTranslationAsync(
-                documentInstanceId, immediatePrevious.Target.PageId, cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(translation?.Markdown))
-            {
-                references.Add(new TranslationReferenceContext(
-                    TranslationReferenceKind.PreviousWindowTranslation,
-                    translation.Markdown,
-                    $"page {immediatePrevious.Target.PageIndex}"));
-            }
-        }
-
-        for (int nextIndex = pageIndex + 1;
-             nextIndex <= Math.Min(pages.Length - 1, pageIndex + radius);
-             nextIndex++)
-        {
-            LoadedPage? next = pages[nextIndex];
-            if (next is not null && !string.IsNullOrWhiteSpace(next.SourceText))
-            {
-                references.Add(new TranslationReferenceContext(
-                    TranslationReferenceKind.NextPageSource,
-                    next.SourceText,
-                    $"page {next.Target.PageIndex}"));
-            }
-        }
-
-        return references;
-    }
-
-    private async Task<PageAttempt> TranslatePageAsync(
-        LoadedPage page,
-        TranslationProviderSet providers,
-        TranslationRunRequest request,
-        TranslationSettings settings,
-        IReadOnlyList<TranslationReferenceContext> references,
-        SemaphoreSlim batchGate,
-        RequestPacer pacer,
+        IProgress<TranslationStepProgress>? stepProgress,
         CancellationToken cancellationToken)
     {
         TranslationPageTarget target = page.Target;
-        IReadOnlyList<TranslationSegment> segments = providers.Segmenter.Segment(
-            page.SourceBoxes, settings);
-        TranslationBatchContext batchContext = new(
-            request.DocumentInstanceId,
-            target.PageId,
-            Math.Max(0, target.PageIndex - 1));
-        IReadOnlyList<TranslationBatch> batches = providers.Batcher.CreateBatches(
-            segments, settings, batchContext);
-        if (batches.Count == 0)
+        try
         {
-            return new PageAttempt(
-                new TranslationPageOutcome(
-                    target.PageId, target.PageIndex, TranslationPageRunState.Committed, 0),
-                false);
-        }
-
-        TranslationInvocationContext invocationContext = new(
-            settings.TargetLanguage,
-            settings.RequestTimeoutValue,
-            request.DocumentTitle,
-            request.Glossary is { Count: > 0 } glossary ? glossary : null,
-            references.Count > 0 ? references : null,
-            settings.ProviderId,
-            settings.Model);
-
-        BatchExecution[] executions = await RunBatchesAsync(
-            batches,
-            invocationContext,
-            providers.ModelInvoker,
-            settings,
-            batchGate,
-            pacer,
-            cancellationToken).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        List<TranslationBatchResult> successfulResults = [];
-        List<BatchFailure> failures = [];
-        HashSet<DocumentBoxId> incompleteBoxes = [];
-        foreach (BatchExecution execution in executions)
-        {
-            if (execution.Failure is not null)
+            ExtensionBox[] extensionBoxes = page.Boxes.Select(ToExtensionBox).ToArray();
+            ExtensionGlossaryEntry[]? glossary = request.Glossary is { Count: > 0 }
+                ? request.Glossary.Select(static term => new ExtensionGlossaryEntry(
+                    term.SourceTerm, term.TargetTerm, term.Note)).ToArray()
+                : null;
+            TranslationExtensionOptions options = new(
+                settings.BatchSize,
+                settings.MaxBatchCharacters,
+                settings.MaxBatchTokens,
+                settings.Concurrency,
+                settings.RequestIntervalValue,
+                settings.RequestTimeoutValue,
+                settings.MaxRetries,
+                0,
+                false,
+                request.DocumentTitle,
+                glossary,
+                ProviderId: settings.ProviderId,
+                Model: settings.Model);
+            TranslationContextTranslationSnapshot? previousRunTranslation = null;
+            if (previousRunTranslations.TryGetValue(target.PageIndex - 1,
+                    out TranslationContextTranslationSnapshot? committedTranslation))
             {
-                failures.Add(execution.Failure);
-                foreach (DocumentBoxId boxId in execution.Failure.BoxIds)
-                {
-                    incompleteBoxes.Add(boxId);
-                }
+                previousRunTranslation = committedTranslation;
             }
-            else if (execution.Result is not null)
-            {
-                successfulResults.Add(execution.Result);
-            }
-        }
 
-        BatchFailure? firstFailure = failures.Count == 0
-            ? null
-            : failures.OrderBy(static failure => failure.BatchIndex).First();
-
-        if (successfulResults.Count == 0)
-        {
-            return new PageAttempt(
-                firstFailure is null
-                    ? Failure(target, AppErrorCodes.InvalidState, "No translation batch produced a result.")
-                    : Failure(target, firstFailure.ErrorCode, firstFailure.ErrorMessage),
-                false);
-        }
-
-        Result<IReadOnlyDictionary<DocumentBoxId, string>> merged =
-            providers.ResultProcessor.Merge(successfulResults);
-        if (merged.IsFailure)
-        {
-            return new PageAttempt(
-                Failure(
-                    target,
-                    merged.ErrorCode ?? TranslationErrorCodes.BatchMismatch,
-                    merged.ErrorMessage ?? "The translation batch results could not be merged."),
-                false);
-        }
-
-        Dictionary<DocumentBoxId, DocumentBoxPayload> replacements =
-            BuildReplacements(page, merged.Value, incompleteBoxes);
-        if (replacements.Count == 0)
-        {
-            return new PageAttempt(
-                firstFailure is null
-                    ? new TranslationPageOutcome(
-                        target.PageId, target.PageIndex, TranslationPageRunState.Committed, 0)
-                    : Failure(target, firstFailure.ErrorCode, firstFailure.ErrorMessage),
-                false);
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        Result<PageTranslationStatus> committed = await _pageTranslationService.PutPageBoxesAsync(
-            request.DocumentInstanceId,
-            target.PageId,
-            page.Revision.TreeRevisionId,
-            page.Status.Version,
-            replacements,
-            cancellationToken,
-            settings.TargetLanguage).ConfigureAwait(false);
-        if (committed.IsFailure)
-        {
-            return new PageAttempt(
-                Failure(
-                    target,
-                    committed.ErrorCode ?? AppErrorCodes.InvalidState,
-                    committed.ErrorMessage ?? "The page translation could not be committed."),
-                string.Equals(committed.ErrorCode, AppErrorCodes.Conflict, StringComparison.Ordinal));
-        }
-
-        return new PageAttempt(
-            firstFailure is null
-                ? new TranslationPageOutcome(
-                    target.PageId, target.PageIndex, TranslationPageRunState.Committed, replacements.Count)
-                : new TranslationPageOutcome(
+            TranslationExtensionContext context = new(
+                new ExtensionPageIdentity(
+                    request.DocumentInstanceId,
                     target.PageId,
-                    target.PageIndex,
-                    TranslationPageRunState.Partial,
-                    replacements.Count,
-                    firstFailure.ErrorCode,
-                    firstFailure.ErrorMessage),
-            false);
+                    page.Revision.TreeRevisionId,
+                    target.PageIndex),
+                settings.SourceLanguage,
+                settings.TargetLanguage,
+                extensionBoxes,
+                extensionRun.Config,
+                new InlineProgress<ExtensionProgress>(value => stepProgress?.Report(
+                    new TranslationStepProgress(value.Phase, value.Completed, value.Total,
+                        value.Status.ToString(), value.Message, target.PageIndex, value.Attempt,
+                        value.ParentPhase, value.ExecutionId, value.ParentExecutionId, value.Elapsed))),
+                null,
+                options,
+                contextSnapshot with { PreviousRunTranslation = previousRunTranslation });
+
+            TranslationExtensionResult extensionResult = await extensionRun.TranslateAsync(
+                context, cancellationToken).ConfigureAwait(false);
+            if (!TryBuildExtensionReplacements(page, extensionResult,
+                    out Dictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+                    out string? firstFailureCode, out string? firstFailureMessage, out bool hasFailures,
+                    out bool hasSkipped))
+            {
+                return new PageAttempt(
+                    Failure(target, TranslationErrorCodes.BatchMismatch,
+                        firstFailureMessage ?? "The translation extension returned invalid box outcomes."),
+                    false);
+            }
+
+            if (replacements.Count == 0)
+            {
+                return new PageAttempt(
+                    hasFailures
+                        ? Failure(target, firstFailureCode ?? AppErrorCodes.InvalidState,
+                            firstFailureMessage ?? "No translation box succeeded.")
+                        : new TranslationPageOutcome(target.PageId, target.PageIndex,
+                            hasSkipped ? TranslationPageRunState.Skipped : TranslationPageRunState.Committed, 0),
+                    false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Result<PageTranslationStatus> committed = await _pageTranslationService.PutPageBoxesAsync(
+                request.DocumentInstanceId,
+                target.PageId,
+                page.Revision.TreeRevisionId,
+                page.Status.Version,
+                replacements,
+                cancellationToken,
+                settings.TargetLanguage).ConfigureAwait(false);
+            if (committed.IsFailure)
+            {
+                return new PageAttempt(
+                    Failure(target,
+                        committed.ErrorCode ?? AppErrorCodes.InvalidState,
+                        committed.ErrorMessage ?? "The page translation could not be committed."),
+                    string.Equals(committed.ErrorCode, AppErrorCodes.Conflict, StringComparison.Ordinal));
+            }
+
+            await PublishCommittedContextAsync(page, settings.TargetLanguage, previousRunTranslations)
+                .ConfigureAwait(false);
+
+            TranslationPageOutcome outcome = hasFailures || hasSkipped
+                ? new TranslationPageOutcome(target.PageId, target.PageIndex,
+                    TranslationPageRunState.Partial, replacements.Count,
+                    firstFailureCode ?? (hasSkipped ? AppErrorCodes.InvalidState : null),
+                    firstFailureMessage ?? (hasSkipped
+                        ? "The translation extension skipped one or more eligible boxes."
+                        : null))
+                : new TranslationPageOutcome(target.PageId, target.PageIndex,
+                    TranslationPageRunState.Committed, replacements.Count);
+            return new PageAttempt(outcome, false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new PageAttempt(Cancelled(target), false);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception, "infrastructure.translation-extension"))
+        {
+            return new PageAttempt(
+                Failure(target, AppErrorCodes.InvalidState, $"The translation extension failed: {exception.Message}"),
+                false);
+        }
     }
 
-    private static Dictionary<DocumentBoxId, DocumentBoxPayload> BuildReplacements(
-        LoadedPage page,
-        IReadOnlyDictionary<DocumentBoxId, string> translations,
-        HashSet<DocumentBoxId> incompleteBoxes)
+    private async Task<Dictionary<int, TranslationContextSnapshot>> BuildContextSnapshotsAsync(
+        TranslationRunRequest request,
+        IReadOnlyList<TranslationPageTarget> targets,
+        CancellationToken cancellationToken)
     {
-        Dictionary<DocumentBoxId, DocumentBoxPayload> replacements = [];
+        TranslationPageTarget[] physicalPages = (request.DocumentPages ?? targets)
+            .OrderBy(static page => page.PageIndex)
+            .ToArray();
+        Dictionary<int, TranslationPageTarget> byIndex = physicalPages
+            .GroupBy(static page => page.PageIndex)
+            .Where(static group => group.Count() == 1)
+            .ToDictionary(static group => group.Key, static group => group.Single());
+        HashSet<int> requiredIndexes = [];
+        foreach (TranslationPageTarget target in targets)
+        {
+            for (int index = Math.Max(1, target.PageIndex - 5);
+                 index <= target.PageIndex + 5;
+                 index++)
+            {
+                if (index != target.PageIndex && byIndex.ContainsKey(index))
+                {
+                    requiredIndexes.Add(index);
+                }
+            }
+        }
+
+        Dictionary<int, (TranslationContextPageSnapshot Snapshot, DocumentTreeRevision Revision)> frozenPages = [];
+        foreach (int pageIndex in requiredIndexes.Order())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            TranslationPageTarget physicalPage = byIndex[pageIndex];
+            try
+            {
+                Result<DocumentTreeRevision> revisionResult = await _documentTreeService.GetCurrentRevisionAsync(
+                    request.DocumentInstanceId, physicalPage.PageId, cancellationToken).ConfigureAwait(false);
+                if (revisionResult.IsFailure)
+                {
+                    continue;
+                }
+
+                DocumentTreeRevision revision = revisionResult.Value;
+                Result<IReadOnlyList<DocumentBox>> boxesResult = await _documentTreeService.ListBoxesAsync(
+                    revision.TreeRevisionId, cancellationToken).ConfigureAwait(false);
+                if (boxesResult.IsFailure)
+                {
+                    continue;
+                }
+
+                string sourceText = string.Join("\n\n", boxesResult.Value
+                    .Select(ReadBoxText)
+                    .Where(static text => !string.IsNullOrWhiteSpace(text)));
+                ExtensionPageIdentity identity = new(request.DocumentInstanceId, physicalPage.PageId,
+                    revision.TreeRevisionId, physicalPage.PageIndex);
+                frozenPages[pageIndex] = (new TranslationContextPageSnapshot(identity, sourceText), revision);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                  exception, "infrastructure.translation-context"))
+            {
+                // Context is optional. A page read failure must not make its target page untranslatable.
+            }
+        }
+
+        Dictionary<int, TranslationContextSnapshot> snapshots = [];
+        foreach (TranslationPageTarget target in targets)
+        {
+            TranslationContextPageSnapshot[] neighbors = frozenPages
+                .Where(pair => Math.Abs(pair.Key - target.PageIndex) <= 5 && pair.Key != target.PageIndex)
+                .OrderBy(static pair => pair.Key)
+                .Select(static pair => pair.Value.Snapshot)
+                .ToArray();
+            TranslationContextTranslationSnapshot? previousStored = null;
+            if (byIndex.TryGetValue(target.PageIndex - 1, out TranslationPageTarget? previousTarget) &&
+                previousTarget is not null &&
+                frozenPages.TryGetValue(previousTarget.PageIndex,
+                    out (TranslationContextPageSnapshot Snapshot, DocumentTreeRevision Revision) previousPage))
+            {
+                try
+                {
+                    TranslatedPageMarkdown? translation = await _pageTranslationService.GetPageTranslationAsync(
+                        request.DocumentInstanceId, previousTarget.PageId, cancellationToken).ConfigureAwait(false);
+                    if (translation is not null && translation.Status.IsCurrent &&
+                        translation.Status.SourceTreeRevisionId == previousPage.Revision.TreeRevisionId &&
+                        !string.IsNullOrWhiteSpace(translation.Markdown))
+                    {
+                        previousStored = new TranslationContextTranslationSnapshot(
+                            previousPage.Snapshot.Page,
+                            translation.Markdown,
+                            translation.Status.TargetLanguage,
+                            translation.Status.Version);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                      exception, "infrastructure.translation-context"))
+                {
+                    // A missing stored neighbor translation is represented as an empty optional snapshot.
+                }
+            }
+
+            snapshots[target.PageIndex] = new TranslationContextSnapshot(neighbors, previousStored);
+        }
+
+        return snapshots;
+    }
+
+    private async Task PublishCommittedContextAsync(
+        LoadedPage page,
+        string targetLanguage,
+        ConcurrentDictionary<int, TranslationContextTranslationSnapshot> previousRunTranslations)
+    {
+        try
+        {
+            TranslatedPageMarkdown? translation = await _pageTranslationService.GetPageTranslationAsync(
+                page.Revision.DocumentInstanceId,
+                page.Target.PageId,
+                CancellationToken.None).ConfigureAwait(false);
+            if (translation is null || !translation.Status.IsCurrent ||
+                translation.Status.SourceTreeRevisionId != page.Revision.TreeRevisionId ||
+                !string.Equals(translation.Status.TargetLanguage, targetLanguage, StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(translation.Markdown))
+            {
+                return;
+            }
+
+            ExtensionPageIdentity identity = new(page.Revision.DocumentInstanceId, page.Target.PageId,
+                page.Revision.TreeRevisionId, page.Target.PageIndex);
+            previousRunTranslations[page.Target.PageIndex] = new TranslationContextTranslationSnapshot(
+                identity, translation.Markdown, translation.Status.TargetLanguage, translation.Status.Version);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception, "infrastructure.translation-context"))
+        {
+            // Context backfill is optional; a page already committed remains successful if the read fails.
+        }
+    }
+
+    private static ExtensionBox ToExtensionBox(DocumentBox box)
+    {
+        return new ExtensionBox(
+            box.BoxId,
+            box.ParentBoxId,
+            box.BoxType,
+            box.SubType,
+            ReadBoxText(box),
+            DocumentBoxPayloadSerializer.Serialize(box.Payload) ?? "null",
+            box.BBox,
+            box.HeadingLevel,
+            box.CodeLanguage,
+            box.Suppressed)
+        {
+            Payload = SnapshotPayload(box.Payload)
+        };
+    }
+
+    private static DocumentBoxPayload? SnapshotPayload(DocumentBoxPayload? payload)
+    {
+        if (payload is null)
+        {
+            return null;
+        }
+
+        IReadOnlyList<DocumentAnnotation>? annotations = payload.Annotations is { } values
+            ? Array.AsReadOnly(values.ToArray())
+            : null;
+        return payload switch
+        {
+            TextBoxPayload text => text with { Annotations = annotations },
+            EquationBoxPayload equation => equation with { Annotations = annotations },
+            ListBoxPayload list => list with { Annotations = annotations },
+            TableBoxPayload table => table with { Annotations = annotations },
+            AlgorithmBoxPayload algorithm => algorithm with { Annotations = annotations },
+            CodeBoxPayload code => code with { Annotations = annotations },
+            MediaBoxPayload media => media with { Annotations = annotations },
+            _ => null
+        };
+    }
+
+    private static bool TryBuildExtensionReplacements(
+        LoadedPage page,
+        TranslationExtensionResult? result,
+        out Dictionary<DocumentBoxId, DocumentBoxPayload> replacements,
+        out string? firstFailureCode,
+        out string? firstFailureMessage,
+        out bool hasFailures,
+        out bool hasSkipped)
+    {
+        replacements = [];
+        firstFailureCode = null;
+        firstFailureMessage = null;
+        hasFailures = false;
+        hasSkipped = false;
+        if (result?.Outcomes is null)
+        {
+            firstFailureCode = TranslationErrorCodes.BatchMismatch;
+            firstFailureMessage = "The translation extension returned no outcome list.";
+            return false;
+        }
+
+        Dictionary<DocumentBoxId, ExtensionBoxOutcome> byId = [];
+        foreach (ExtensionBoxOutcome outcome in result.Outcomes)
+        {
+            if (outcome is null ||
+                !byId.TryAdd(outcome.BoxId, outcome))
+            {
+                firstFailureCode = TranslationErrorCodes.BatchMismatch;
+                firstFailureMessage = "The translation extension returned an empty or duplicate box id.";
+                return false;
+            }
+
+            if (!page.TranslatableLeafBoxIds.Contains(outcome.BoxId))
+            {
+                firstFailureCode = TranslationErrorCodes.BatchMismatch;
+                firstFailureMessage =
+                    $"The translation extension returned an unknown or non-translatable box id '{outcome.BoxId}'.";
+                return false;
+            }
+        }
+
+        if (byId.Count != page.TranslatableLeafBoxIds.Count ||
+            page.TranslatableLeafBoxIds.Any(boxId => !byId.ContainsKey(boxId)))
+        {
+            firstFailureCode = TranslationErrorCodes.BatchMismatch;
+            firstFailureMessage = "The translation extension omitted one or more eligible box outcomes.";
+            return false;
+        }
+
         foreach (DocumentBox box in page.Boxes)
         {
-            if (incompleteBoxes.Contains(box.BoxId) ||
-                !page.TranslatableLeafBoxIds.Contains(box.BoxId) ||
-                !translations.TryGetValue(box.BoxId, out string? translated) ||
-                translated is null)
+            if (!page.TranslatableLeafBoxIds.Contains(box.BoxId))
             {
                 continue;
             }
 
-            DocumentBoxPayload? replacement = CreateTranslatedPayload(box.Payload, translated);
-            if (replacement is not null)
+            ExtensionBoxOutcome outcome = byId[box.BoxId];
+
+            if (outcome.Kind == ExtensionBoxOutcomeKind.Failed)
             {
-                replacements[box.BoxId] = replacement;
+                hasFailures = true;
+                firstFailureCode ??= outcome.ErrorCode ?? AppErrorCodes.InvalidState;
+                firstFailureMessage ??=
+                    outcome.ErrorMessage ?? $"The translation extension failed to translate box '{box.BoxId}'.";
+                continue;
             }
+
+            if (outcome.Kind == ExtensionBoxOutcomeKind.Skipped)
+            {
+                hasSkipped = true;
+                continue;
+            }
+
+            if (outcome.Kind != ExtensionBoxOutcomeKind.Translated)
+            {
+                firstFailureCode = TranslationErrorCodes.BatchMismatch;
+                firstFailureMessage =
+                    $"The translation extension returned an unsupported outcome for box '{box.BoxId}'.";
+                return false;
+            }
+
+            DocumentBoxPayload? translatedPayload = CreateExtensionTranslatedPayload(box, outcome);
+            if (translatedPayload is null)
+            {
+                firstFailureCode = TranslationErrorCodes.BatchMismatch;
+                firstFailureMessage =
+                    $"The translation extension returned a malformed translation for box '{box.BoxId}'.";
+                return false;
+            }
+
+            replacements[box.BoxId] = translatedPayload;
         }
 
-        return replacements;
+        return true;
     }
 
-    /// <summary>
-    /// Rebuilds a translated payload with the exact source payload type, keeping diagnostic HTML only for table placeholders and the source
-    /// annotations. Other payload kinds return null and are never submitted as replacements.
-    /// </summary>
+    private static DocumentBoxPayload? CreateExtensionTranslatedPayload(
+        DocumentBox source,
+        ExtensionBoxOutcome outcome)
+    {
+        DocumentBoxPayload? original = source.Payload;
+        bool hasJsonPayload = !string.IsNullOrWhiteSpace(outcome.TranslatedPayloadJson);
+        if (outcome.TranslatedPayload is { } typedPayload)
+        {
+            if (hasJsonPayload || outcome.TranslatedText is not null)
+            {
+                return null;
+            }
+
+            return ValidateExtensionPayload(original, SnapshotPayload(typedPayload));
+        }
+
+        if (hasJsonPayload && outcome.TranslatedText is not null)
+        {
+            return null;
+        }
+
+        if (outcome.TranslatedPayloadJson is { Length: > 0 } payloadJson)
+        {
+            DocumentBoxPayload? candidate = DocumentBoxPayloadSerializer.Deserialize(
+                source.BoxType, source.SubType, payloadJson);
+            return ValidateExtensionPayload(original, SnapshotPayload(candidate));
+        }
+
+        return outcome.TranslatedText is { } translatedContent && !string.IsNullOrWhiteSpace(translatedContent)
+            ? CreateTranslatedPayload(original, translatedContent)
+            : null;
+    }
+
     private static DocumentBoxPayload? CreateTranslatedPayload(
         DocumentBoxPayload? payload,
         string translated)
@@ -812,117 +989,66 @@ public sealed class TranslationRunEngine
         };
     }
 
-    private async Task<BatchExecution[]> RunBatchesAsync(
-        IReadOnlyList<TranslationBatch> batches,
-        TranslationInvocationContext invocationContext,
-        ITranslationModelInvoker invoker,
-        TranslationSettings settings,
-        SemaphoreSlim batchGate,
-        RequestPacer pacer,
-        CancellationToken cancellationToken)
+    private static DocumentBoxPayload? ValidateExtensionPayload(
+        DocumentBoxPayload? original,
+        DocumentBoxPayload? candidate)
     {
-        Task<BatchExecution>[] tasks = new Task<BatchExecution>[batches.Count];
-        for (int index = 0; index < batches.Count; index++)
+        if (candidate is null || original is null || candidate.GetType() != original.GetType())
         {
-            tasks[index] = ExecuteBatchAsync(
-                batches[index],
-                invocationContext,
-                invoker,
-                settings,
-                batchGate,
-                pacer,
-                cancellationToken);
+            return null;
         }
 
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
-    }
-
-    private async Task<BatchExecution> ExecuteBatchAsync(
-        TranslationBatch batch,
-        TranslationInvocationContext invocationContext,
-        ITranslationModelInvoker invoker,
-        TranslationSettings settings,
-        SemaphoreSlim batchGate,
-        RequestPacer pacer,
-        CancellationToken cancellationToken)
-    {
-        BatchFailure? lastFailure = null;
-        for (int attempt = 0; attempt <= settings.MaxRetries; attempt++)
+        string? candidateText = candidate switch
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (attempt > 0)
-            {
-                await DelayBeforeRetryAsync(attempt - 1, cancellationToken).ConfigureAwait(false);
-            }
+            TextBoxPayload text => text.Markdown,
+            ListBoxPayload list => list.Markdown,
+            TableBoxPayload table => TableContentAdapter.TryGetHtml(table, out string html) ? html : table.Markdown,
+            AlgorithmBoxPayload algorithm => algorithm.Markdown,
+            _ => null
+        };
+        if (string.IsNullOrWhiteSpace(candidateText))
+        {
+            return null;
+        }
 
-            await batchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+        if (original is TableBoxPayload sourceTable && candidate is TableBoxPayload translatedTable &&
+            (TableContentAdapter.TryGetHtml(sourceTable, out _) ||
+             TableContentAdapter.TryGetHtml(translatedTable, out _)))
+        {
+            Result<TableBoxPayload> tableValidation =
+                TableContentAdapter.ValidateTranslation(sourceTable, translatedTable);
+            return tableValidation.IsSuccess
+                ? tableValidation.Value with { Annotations = SnapshotAnnotations(sourceTable.Annotations) }
+                : null;
+        }
+
+        return (original, candidate) switch
+        {
+            (TextBoxPayload sourceText, TextBoxPayload translatedText) => translatedText with
             {
-                await pacer.WaitAsync(cancellationToken).ConfigureAwait(false);
-                Result<TranslationBatchResult> result = await invoker.InvokeAsync(
-                    batch, invocationContext, cancellationToken).ConfigureAwait(false);
-                if (result.IsSuccess)
+                Annotations = SnapshotAnnotations(sourceText.Annotations)
+            },
+            (ListBoxPayload sourceList, ListBoxPayload translatedList) => translatedList with
+            {
+                Annotations = SnapshotAnnotations(sourceList.Annotations)
+            },
+            (TableBoxPayload sourceLegacyTable, TableBoxPayload translatedLegacyTable) => translatedLegacyTable with
+            {
+                Annotations = SnapshotAnnotations(sourceLegacyTable.Annotations)
+            },
+            (AlgorithmBoxPayload sourceAlgorithm, AlgorithmBoxPayload translatedAlgorithm) => translatedAlgorithm
+                with
                 {
-                    return new BatchExecution(result.Value, null);
-                }
-
-                lastFailure = CreateFailure(batch, result.ErrorCode, result.ErrorMessage);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException exception)
-            {
-                lastFailure = CreateFailure(
-                    batch,
-                    AppErrorCodes.InvalidState,
-                    $"The translation batch was cancelled before it completed: {exception.Message}");
-            }
-            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                                  exception, "infrastructure.translation-run"))
-            {
-                lastFailure = CreateFailure(
-                    batch,
-                    AppErrorCodes.InvalidState,
-                    $"The translation batch failed: {exception.Message}");
-            }
-            finally
-            {
-                batchGate.Release();
-            }
-        }
-
-        return new BatchExecution(
-            null,
-            lastFailure ?? CreateFailure(
-                batch,
-                AppErrorCodes.InvalidState,
-                "The translation batch produced no result."));
+                    Annotations = SnapshotAnnotations(sourceAlgorithm.Annotations)
+                },
+            _ => null
+        };
     }
 
-    private static BatchFailure CreateFailure(
-        TranslationBatch batch,
-        string? errorCode,
-        string? errorMessage)
+    private static IReadOnlyList<DocumentAnnotation>? SnapshotAnnotations(
+        IReadOnlyList<DocumentAnnotation>? annotations)
     {
-        return new BatchFailure(
-            batch.Index,
-            string.IsNullOrWhiteSpace(errorCode) ? AppErrorCodes.InvalidState : errorCode,
-            string.IsNullOrWhiteSpace(errorMessage) ? "The translation batch failed." : errorMessage,
-            [.. batch.Segments.Select(static segment => segment.BoxId).Distinct()]);
-    }
-
-    private async Task DelayBeforeRetryAsync(int retryIndex, CancellationToken cancellationToken)
-    {
-        long ticks = RetryBaseDelay.Ticks;
-        for (int index = 0; index < retryIndex && ticks < RetryMaxDelay.Ticks; index++)
-        {
-            ticks = Math.Min(RetryMaxDelay.Ticks, ticks * 2);
-        }
-
-        TimeSpan delay = TimeSpan.FromTicks(Math.Min(ticks, RetryMaxDelay.Ticks));
-        await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
+        return annotations is null ? null : Array.AsReadOnly(annotations.ToArray());
     }
 
     private static TranslationPageOutcome Failure(
@@ -945,12 +1071,11 @@ public sealed class TranslationRunEngine
             target.PageId, target.PageIndex, TranslationPageRunState.Cancelled, 0);
     }
 
-    /// <summary>One page after loading: its current revision, boxes, source boxes and translation status.</summary>
+    /// <summary>One target page after loading: its current revision, boxes and translation status.</summary>
     private sealed record LoadedPage(
         TranslationPageTarget Target,
         DocumentTreeRevision Revision,
         IReadOnlyList<DocumentBox> Boxes,
-        IReadOnlyList<TranslationSourceBox> SourceBoxes,
         string SourceText,
         PageTranslationStatus Status,
         IReadOnlySet<DocumentBoxId> TranslatableLeafBoxIds);
@@ -964,62 +1089,11 @@ public sealed class TranslationRunEngine
     /// </summary>
     private sealed record PageAttempt(TranslationPageOutcome Outcome, bool Conflict);
 
-    /// <summary>One batch attempt path: a validated result or the terminal failure after retries.</summary>
-    private sealed record BatchExecution(TranslationBatchResult? Result, BatchFailure? Failure);
-
-    /// <summary>A batch that exhausted its retries; <paramref name="BoxIds"/> are the boxes it covered.</summary>
-    private sealed record BatchFailure(
-        int BatchIndex,
-        string ErrorCode,
-        string ErrorMessage,
-        IReadOnlyList<DocumentBoxId> BoxIds);
-
-    /// <summary>
-    /// Spaces request starts by <see cref="Interval"/> across all batches of a run. The lock is held while
-    /// waiting so concurrent batches cannot start closer together than the configured interval.
-    /// </summary>
-    private sealed class RequestPacer : IDisposable
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
     {
-        private readonly SemaphoreSlim _gate = new(1, 1);
-        private readonly TimeProvider _timeProvider;
-        private DateTimeOffset _nextStart = DateTimeOffset.MinValue;
-
-        public RequestPacer(TimeSpan interval, TimeProvider timeProvider)
+        public void Report(T value)
         {
-            Interval = interval > TimeSpan.Zero ? interval : TimeSpan.Zero;
-            _timeProvider = timeProvider;
-        }
-
-        public TimeSpan Interval { get; }
-
-        public async Task WaitAsync(CancellationToken cancellationToken)
-        {
-            if (Interval <= TimeSpan.Zero)
-            {
-                return;
-            }
-
-            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                DateTimeOffset now = _timeProvider.GetUtcNow();
-                DateTimeOffset start = _nextStart > now ? _nextStart : now;
-                _nextStart = start + Interval;
-                TimeSpan delay = start - now;
-                if (delay > TimeSpan.Zero)
-                {
-                    await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                _gate.Release();
-            }
-        }
-
-        public void Dispose()
-        {
-            _gate.Dispose();
+            report(value);
         }
     }
 }

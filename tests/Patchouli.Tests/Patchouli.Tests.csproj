@@ -14,6 +14,8 @@
     <ProjectReference Include="..\..\src\Patchouli.Reading\Patchouli.Reading.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.UI\Patchouli.UI.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.McpServer\Patchouli.McpServer.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
     <ProjectReference Include="..\..\src\Patchouli.Cli\Patchouli.Cli.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.UI.Generators\Patchouli.UI.Generators.csproj" />
     <ProjectReference Include="..\Patchouli.Performance\Patchouli.Performance.csproj" />

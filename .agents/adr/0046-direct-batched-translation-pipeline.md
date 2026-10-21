@@ -12,6 +12,10 @@ ADR replaces the built-in translation workflow that ADR `0036` described with a 
 does not depend on an Agent; ADR `0047` removes that workflow and the rest of the built-in
 Agent system.
 
+ADR [0049](0049-fsx-extension-pipelines.md) supersedes this ADR's fixed provider registry
+and C# batch orchestration with complete FSX translation engines. Its domain acceptance,
+task controls, identity validation and atomic page commit boundaries remain applicable.
+
 ## Context
 
 ADR `0034` treats a translation as derived data over the committed page-local Box Tree and

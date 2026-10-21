@@ -1,10 +1,11 @@
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Translation;
-using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Layout;
+using Patchouli.Infrastructure.Translation;
 using Patchouli.Llm;
 using Patchouli.Mcp;
 
@@ -16,7 +17,6 @@ public sealed class TranslationRunIdentityTests
     public async Task Concurrent_replays_across_transport_adapters_start_once_and_keep_original_receipt()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
-        using TemporaryAppSettingsFile settingsFile = new();
         int settingsReads = 0;
         await using TranslationRunService service = new(new PageService(context.ConnectionFactory, context.Clock),
             context.Trees, context.Translations, () =>
@@ -24,7 +24,9 @@ public sealed class TranslationRunIdentityTests
                 Interlocked.Increment(ref settingsReads);
                 return LlmAppSettings.Default();
             },
-            new CredentialStore(settingsFile.Path));
+            TranslationTestExtensionHarness.CreateRunner((_, _, _) =>
+                Task.FromResult(new TranslationExtensionResult([]))),
+            _ => Task.CompletedTask);
         McpHostTranslationRunsApi first = new(service);
         McpHostTranslationRunsApi second = new(service);
         McpTranslationRunStartRequest request = new(context.DocumentId, "1", "zh-CN", RequestId: "stable");

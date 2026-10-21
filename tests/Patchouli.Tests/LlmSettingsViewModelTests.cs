@@ -749,6 +749,28 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Selecting_a_translation_engine_updates_the_saved_translation_options()
+    {
+        (MainWindowViewModel main, LlmSettingsViewModel section) = CreateSection(new RecordingCredentialStore());
+        await using (main)
+        {
+            await section.LoadAsync();
+
+            section.TranslationEngineOptions.Select(option => option.Id).Should().Equal(
+                "translation.llm", "translation.google-free", "translation.deepl-free", "translation.deeplx");
+            section.SelectedTranslationEngine = section.TranslationEngineOptions.Single(option =>
+                option.Id == "translation.deeplx");
+            section.TranslationEngineId.Should().Be("translation.deeplx");
+            section.IsDirty.Should().BeTrue();
+
+            await section.SaveAsync();
+
+            PatchouliAppSettings.Load(_settings.Path).Llm.Translation.EngineId.Should().Be("translation.deeplx");
+            section.IsDirty.Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public async Task Discard_reverts_the_llm_draft_without_writing_the_settings_file()
     {
         RecordingCredentialStore store = new();

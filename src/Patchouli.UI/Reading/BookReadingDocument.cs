@@ -13,7 +13,8 @@ internal static class BookReadingDocument
     public static (ReadingScene Source, ReadingScene? Translation) Assemble(
         IEnumerable<KeyValuePair<int, ReadingScene>> sourcePages,
         IReadOnlyDictionary<int, ReadingScene?> translationPages,
-        bool comparing)
+        bool comparing,
+        bool translationOnly = false)
     {
         List<ReadingBlock> sourceBlocks = [];
         List<ReadingBlock> translationBlocks = [];
@@ -24,6 +25,14 @@ internal static class BookReadingDocument
             if (translation is not null)
             {
                 anyTranslation = true;
+            }
+
+            if (translationOnly)
+            {
+                IEnumerable<ReadingBlock> blocks = translation?.Blocks ?? scene.Blocks
+                    .Select(block => ReadingBlock.Untranslated(block.BoxId, pageIndex)).ToArray();
+                sourceBlocks.AddRange(blocks.Select(block => block with { PageIndex = pageIndex }));
+                continue;
             }
 
             int pageRows = comparing

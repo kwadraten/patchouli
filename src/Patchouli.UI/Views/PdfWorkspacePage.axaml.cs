@@ -958,7 +958,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         double scrollRatio = extentBefore > 0 ? BookReadingScroller.Offset.Y / extentBefore : 0;
 
         (ReadingScene sourceScene, ReadingScene? translationScene) = BookReadingDocument.Assemble(
-            _bookReadingSourceScenes, _bookReadingTranslationScenes, _workspace.IsTranslationCompareVisible);
+            _bookReadingSourceScenes, _bookReadingTranslationScenes, _workspace.IsTranslationCompareVisible,
+            _workspace.SelectedReadingContentMode == "译文");
         BookReadingView.SourceScene = sourceScene;
         // The translation column exists only while the compare toggle is on and at least one
         // page carried a translation; otherwise the view stays single-column.
@@ -1120,6 +1121,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
             if (e.PropertyName is nameof(PdfWorkspaceViewModel.BookReadingFontSize) or
                 nameof(PdfWorkspaceViewModel.BookReadingFontFamily) or
                 nameof(PdfWorkspaceViewModel.IsTranslationCompareVisible) or
+                nameof(PdfWorkspaceViewModel.SelectedReadingContentMode) or
                 nameof(PdfWorkspaceViewModel.BookReadingCompareMode))
             {
                 _bookReadingScenesDirty = true;
@@ -1150,6 +1152,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
                 ApplyBookReadingFont();
                 break;
             case nameof(PdfWorkspaceViewModel.IsTranslationCompareVisible):
+            case nameof(PdfWorkspaceViewModel.SelectedReadingContentMode):
             case nameof(PdfWorkspaceViewModel.BookReadingCompareMode):
                 ApplyTranslationCompareVisibility();
                 break;

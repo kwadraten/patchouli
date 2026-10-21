@@ -1,0 +1,30 @@
+<Project>
+  <!-- The command-line JetBrains host has no F# source model. In no-build analysis,
+       consume the normally built public metadata instead of empty source stubs. -->
+  <ItemGroup Condition="'$(PatchouliUseBuiltExtensionAssembly)' == 'true' and ('$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.Extensions.Worker' or '$(MSBuildProjectName)' == 'Patchouli.Tests')">
+    <ProjectReference Remove="..\Patchouli.Extensions\Patchouli.Extensions.fsproj;..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
+    <Reference Include="Patchouli.Extensions">
+      <HintPath>$(MSBuildThisFileDirectory)src\Patchouli.Extensions\bin\$(Configuration)\net10.0\Patchouli.Extensions.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <!-- Executable project references can be built with both RID and non-RID properties.
+       Publish the worker once as an independent bundle instead of merging those apphosts. -->
+  <Target Name="KeepExtensionWorkerEntrypointInBundle" BeforeTargets="_HandleFileConflictsForPublish"
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
+    <ItemGroup>
+      <!-- The host references Worker.dll as a library. Only its separately published bundle owns executable metadata. -->
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.runtimeconfig.json' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.deps.json' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.exe' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker'" />
+    </ItemGroup>
+  </Target>
+  <Target Name="PublishExtensionWorkerBundle" AfterTargets="Publish"
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
+    <PropertyGroup>
+      <_ExtensionHostPublishDirectory>$([System.IO.Path]::GetFullPath('$(PublishDir)', '$(MSBuildProjectDirectory)'))</_ExtensionHostPublishDirectory>
+      <_ExtensionWorkerPublishDirectory>$([System.IO.Path]::Combine('$(_ExtensionHostPublishDirectory)', 'extension-worker'))/</_ExtensionWorkerPublishDirectory>
+    </PropertyGroup>
+    <MSBuild Projects="$(MSBuildThisFileDirectory)src/Patchouli.Extensions.Worker/Patchouli.Extensions.Worker.csproj"
+             Targets="Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishWorkerBundle=true;PublishDir=$(_ExtensionWorkerPublishDirectory)" />
+  </Target>
+</Project>

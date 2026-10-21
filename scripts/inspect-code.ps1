@@ -36,6 +36,7 @@ if ($UseExistingBuild) {
     # InspectCode cannot resolve F# project metadata reliably in SDK artifacts output. After a
     # normal build, use its resolved assemblies without triggering another solution build.
     $additionalArguments += '--no-build'
+    $additionalArguments += '--properties=PatchouliUseBuiltExtensionAssembly=true'
 } else {
     $additionalArguments += "--properties=ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
 }

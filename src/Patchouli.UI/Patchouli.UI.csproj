@@ -19,6 +19,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
     <ProjectReference Include="..\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />

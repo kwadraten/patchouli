@@ -61,6 +61,8 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         AddProviderCommand =
             new ToolkitRelayCommand(AddProvider, () => SelectedProviderToAdd is not null && !HasPendingProvider);
         CancelAddProviderCommand = new ToolkitRelayCommand(CancelAddProvider, () => HasPendingProvider);
+        ConfigureTranslationEngineCommand = new AsyncCommand(ConfigureTranslationEngineAsync);
+        RefreshTranslationEnginesCommand = new AsyncCommand(RefreshTranslationEnginesAsync);
         BuildProviders();
         SyncFromPersisted();
         _isConstructing = false;
@@ -976,6 +978,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     private void SyncTranslationFromSettings(TranslationAppSettings settings)
     {
         TranslationAppSettings translation = settings.Normalize();
+        TranslationEngineId = translation.EngineId;
         TranslationTargetLanguage = translation.TargetLanguage;
         TranslationBatchSizeText = FormatTranslationNumber(translation.BatchSize);
         TranslationMaxBatchCharactersText = FormatTranslationNumber(translation.MaxBatchCharacters);

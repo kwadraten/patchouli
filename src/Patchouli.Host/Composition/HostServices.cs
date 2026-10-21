@@ -61,6 +61,7 @@ using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Translation;
+using Patchouli.Host.Extensions;
 using Patchouli.Host.Settings;
 using Patchouli.UI;
 using Patchouli.Llm;
@@ -90,11 +91,19 @@ public sealed class HostServices
     private LlmAppSettings _llmSettings;
     private AgentIntegrationAppSettings _agentSettings;
     private HttpClient? _cslCatalogHttpClient;
+
+    private readonly HttpClient _extensionHttpClient = new(new SocketsHttpHandler
+    {
+        AutomaticDecompression = System.Net.DecompressionMethods.All
+    }) { Timeout = Timeout.InfiniteTimeSpan };
+
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
+
     private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
+
     // Issue #15: dedicated clients for update checks (short timeout) and installer
     // downloads (long timeout for ~100MB installers).
     private readonly HttpClient _updateApiHttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
@@ -151,8 +160,6 @@ public sealed class HostServices
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings.MetadataLookup);
         _metadataLookupHttpClient = new HttpClient();
         MetadataSources = MetadataSourceRegistry.CreateDefault(_metadataLookupHttpClient);
-        MetadataLookup =
-            new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
         LibrarySettingCoordinator = new LibrarySettingCoordinator(LibrarySettings, LibrarySettingRecords);
@@ -277,13 +284,23 @@ public sealed class HostServices
         // Issue #20 (B1): the direct batch translation engine is host-owned state, not an Agent or
         // workflow. Every run reads the live LLM/Translation settings when it starts; runs are
         // volatile and keep the engine's per-page outcomes for MCP observation and cancellation.
+        ExtensionCapabilities = new HostExtensionCapabilities(() => LlmSettings, Credentials, _extensionHttpClient);
+        TranslationExtensions = new TranslationExtensionCatalog(
+            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
+            () => LlmSettings, ExtensionCapabilities);
+        ExtensionDomains = new ExtensionDomainService(TranslationExtensions, Pages, PageRenders, DocumentTrees,
+            ocrTreeImporter, Search);
+        MetadataSources = new ExtensionMetadataRegistry(MetadataSources, () => TranslationExtensions.MetadataSources);
+        MetadataLookup =
+            new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         TranslationRuns = new TranslationRunService(
             Pages,
             DocumentTrees,
             PageTranslations,
             () => LlmSettings,
-            Credentials,
-            hostLifetime: LifetimeToken);
+            TranslationExtensions.Runner,
+            TranslationExtensions.InitializeAsync,
+            LifetimeToken);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
             LibraryRevisions);
@@ -351,7 +368,7 @@ public sealed class HostServices
             new UpdateDownloader(_updateDownloadHttpClient),
             new UpdateLauncher(),
             Clock,
-            Patchouli.Core.BuildInfo.Version);
+            Core.BuildInfo.Version);
         CslLocalInstall = new CslLocalFileInstallService(CslStore);
         FileImport = new FileImportService(
             PdfImport,
@@ -459,6 +476,9 @@ public sealed class HostServices
     public IOcrRunCoordinator Ocr { get; }
     public IMcpOcrCommandApi OcrCommands { get; }
     public ITranslationRunService TranslationRuns { get; }
+    public TranslationExtensionCatalog TranslationExtensions { get; }
+    public ExtensionDomainService ExtensionDomains { get; }
+    public HostExtensionCapabilities ExtensionCapabilities { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public IDocumentPageMapService DocumentPageMaps { get; }
@@ -918,6 +938,8 @@ public sealed class HostServices
         }
 
         await LibraryRevisionMonitor.DisposeAsync();
+        await TranslationExtensions.DisposeAsync();
+        _extensionHttpClient.Dispose();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
         _updateApiHttpClient.Dispose();

@@ -33,6 +33,7 @@ if ($UseExistingBuild) {
     # Reuse normally built F# metadata; SDK artifacts output can leave InspectCode/CleanupCode
     # unable to resolve cross-language references. The caller must build before using this mode.
     $additionalArguments += '--no-build'
+    $additionalArguments += '--properties=PatchouliUseBuiltExtensionAssembly=true'
 } elseif (-not [string]::IsNullOrWhiteSpace($ArtifactsPath)) {
     $resolvedArtifactsPath = [IO.Path]::GetFullPath($ArtifactsPath, $root)
     $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
