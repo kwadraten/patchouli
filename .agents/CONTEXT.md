@@ -2,13 +2,18 @@
 
 Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, immutable page-local Document Box Trees, searchable units, and text-only evidence references.
 
-The **AI集成 → 模型连接** settings hold shared provider connections and the default model, used when a translation run does not select its own provider/model. **文献加工 → 文献翻译** holds the direct translation parameters: target language (selected by readable language name, stored as a BCP 47 tag, default
-`en`), batch size 1–64, character/token caps, concurrency 1–16, request interval, per-request
-timeout, retries 0–10, window radius 0–5 and previous-window translation backfill. Changes save
-automatically and apply to later runs; an active run keeps the settings snapshot it started
-with. Translation runs do not use an Agent, a chat session or an F# workflow; see
-[ADR 0046](adr/0046-direct-batched-translation-pipeline.md). OCR has its own provider, model and
-reasoning selection and is independent of these translation parameters.
+The **AI集成 → 模型连接** settings hold shared provider connections and the global default model.
+**文献加工 → 文献翻译** selects a complete FSX translation engine; its extension configuration
+declares language, batching, limits and engine-specific options through static typed bindings.
+The LLM capability resolves an empty selection through the translation default and then the
+global default. A run freezes its engine generation, resolved configuration and capabilities.
+Translation uses complete responses without streaming or provisional content previews.
+Runs do not use an Agent or chat session. FSX execution uses one
+host-managed worker process per FSX package generation, with static checking and
+credential-bearing capabilities retained by the host; acceptance status is recorded
+in [Extension validation](extension-validation.md). Trusted FSX extensions are described by
+[ADR 0049](adr/0049-fsx-extension-pipelines.md), superseding ADR 0046's fixed orchestration.
+OCR has its own provider, model and reasoning selection.
 
 Provider cards use masked password inputs to load saved API keys from `ICredentialStore`. A saved baseline distinguishes loading from replacement edits, so reopening does not rewrite credentials and in-flight saves preserve newer input. Secret values stay out of the `Llm` configuration, translation run state and diagnostics. Provider authentication and subscription-model selectors use guarded selection properties; null selections during control creation, detachment or list refresh cannot overwrite stored configuration. Async headless UI tests must explicitly use `Dispatch<T>(Func<Task<T>>, ...)` (or unwrap the returned nested task) so assertions after awaited operations actually execute.
 
@@ -49,7 +54,7 @@ The document model is provider-neutral: only canonical box types and meaningful 
 Equations carry LaTeX and/or `HasImage`, which denotes the box's existing page region. Empty LaTeX is valid only with an image. Sidebar and whole-book reading crop the existing page bitmap. Agent XML includes an immutable `<image kind="page-region" page_id="…" x="…" y="…" width="…" height="…"/>` descriptor alongside the LaTeX payload; annotations are immutable siblings. XML carries no binary pixels, local paths or producer information. Migration 048 removes the old fallback column and normalizes historical type/payload representations while retaining revision IDs, box IDs, geometry and sibling links. Missing historical LaTeX cannot be reconstructed; reimport is needed. See ADR 0045.
 
 OCR text and list Markdown may contain literal HTML-looking placeholders such as `<option>` in research prompts. The shared document-tree importer escapes forbidden raw HTML tags in these payloads before validation, preserving code spans, code blocks and typed code/LaTeX. Markdown validation distinguishes actual HTML nodes from escaped literals and code; raw complex-table HTML retains its validation boundary. Native preview and reading models decode Markdown entity nodes once into plain text, so escaped placeholders display as `<option>` without a WebView or a second HTML interpretation.
-MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and creates working page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. An irregular table retains only its raw HTML source as diagnostic payload alongside the canonical `[Table]` placeholder. A physical page on which the engine succeeded but returned no text is likewise not a failure: the importer creates a `DocumentBoxType.LogicalPage` placeholder (payload `Blank page (OCR returned no content).`, diagnostic `blank_page_placeholder`), the page result counts as `Succeeded`, and the run can complete and commit normally.
+MinerU v4's shared Middle JSON 2.0 model defines OCR content semantics; other engines normalize to the same model. Its JSON is an import representation rather than the database schema. The shared mapper produces a short-lived `OcrDocumentTreeCandidate`; the importer validates and creates working page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. Valid HTML table content can use the explicit HTML/version-1 payload with no parallel editable Markdown. Legacy `[Table]` diagnostic payloads remain readable; unsupported new HTML is retained in the candidate with a blocking diagnostic rather than flattened into GFM. Historical reads do not migrate stored rows. Verified OCR mode and style boundaries are in [OCR normalization](ocr-normalization.md); the table decision is ADR 0050. A physical page on which the engine succeeded but returned no text is likewise not a failure: the importer creates a `DocumentBoxType.LogicalPage` placeholder (payload `Blank page (OCR returned no content).`, diagnostic `blank_page_placeholder`), the page result counts as `Succeeded`, and the run can complete and commit normally.
 
 **PDF import fault tolerance**:
 A PDF import is atomic: FileAsset registration, Item creation, DocumentInstance attachment, every `pages` row, and the placeholder page revisions are built in memory and committed together under one write lease in a single transaction (pages inserted with batched multi-row `INSERT ... VALUES`), so a failed import leaves no partial rows. A physical page whose import-time page-info extraction (width/height/rotation) fails is likewise not a failure: the page still receives its `pages` row so page order stays complete, and a committed `DocumentBoxType.LogicalPage` placeholder (payload `Import failed for this page: <reason>`, diagnostic `import_page_placeholder`) records the failure on the page itself — the same product principle as `blank_page_placeholder`. Only when `failedPages / pageCount` exceeds `MaxFailedPageRatio` does the whole import fail and write nothing; at or below the threshold the book imports normally. The threshold defaults to 0.2 with range [0, 0.9], stored as `ImportAppSettings.MaxFailedPageRatio` in the settings JSON `"Import"` section and edited as a percentage in the settings 导入 section. Startup maintenance additionally runs `ImportResidueGcService` to remove pre-atomic half-imported residue (zero-page DocumentInstances, orphaned Item/FileAsset pairs) under a conservative all-rows-older-than-one-hour rule, delegating remaining unreferenced FileAssets to `FileAssetGcService`.
@@ -176,7 +181,7 @@ An immutable version of an OCR Preset used for OCR provenance. Rebinding paths, 
 An attempt to produce OCR/HTR output for a DocumentInstance, page set, or region using a specific OCR Preset Version.
 
 **Translation Run**:
-One in-product direct full-text translation execution over a document or a one-based page set. It is not an Agent session or workflow: the Host keeps a volatile in-memory run registry, the engine translates box segments in bounded concurrent batches, and each page is committed atomically through the same box-derived translation storage used by an external-agent write. A run reports `running`/`completed`/`cancelled`/`failed` plus per-page outcomes; runs are not snapshots and disappear with the host process, while committed translations persist. See ADR `0046` and ADR `0034`.
+One in-product full-text translation execution over a document or a one-based page set. The Host keeps a volatile run registry; the selected FSX engine owns segmentation, batching and translation policy, while the Host validates candidates and commits each page atomically through the same box-derived storage used by external-agent writes. A run reports `running`/`completed`/`cancelled`/`failed` plus per-page outcomes; runs disappear with the host process, while committed translations persist. See ADR `0049` and ADR `0034`.
 _Avoid_: Agent session, workflow run, durable task, page blob
 
 **Agent Catalog**:
@@ -227,8 +232,8 @@ _Avoid_: Provider config, secret in shard
 API LLM providers use one active key per provider through ICredentialStore. OCR and translation
 share provider connections and credential storage. OCR, the default translation model and an
 optional translation-specific provider/model are selected independently. Translation's target
-language, window radius and previous-window backfill are ordinary settings in the 文献加工 → 文献翻译
-card (ADR `0046`). Subscription authentication follows ADR 0037.
+language, window radius and previous-window backfill are LLM extension configuration fields
+(ADR `0049`). Subscription authentication follows ADR 0037.
 
 MultimodalLlmOcrAdapter sends page/region images directly to the selected vision model and normalizes
 the response to OcrEnginePageResult. OcrRunEngine converts it to OcrDocumentTreeCandidate for the
@@ -256,9 +261,9 @@ Switching modes keeps input and filter rows. Enter and the search button use the
 ## Desktop View And Dialog Vocabulary
 
 External agents run as separate user-installed CLI processes in the embedded terminal; Patchouli
-does not host an agent model loop, session store, FSI interpreter or workflow engine (ADR `0047`).
-Direct translation is the only in-product model loop and is described by ADR `0046`; its engine
-and volatile run service are owned as described in [domain](domain.md).
+does not host an agent model loop, session store or persistent workflow engine (ADR `0047`).
+ADR `0049` restores FSI only for trusted extension implementations. Translation engines and
+the volatile run service are owned as described in [domain](domain.md).
 
 - **Library / 书库**: the ProDataGrid Item list, tag and collection sidebars and selected-Item inspector. The collection section lists one-level playlists sorted by name, filters the grid to a selected collection, and accepts Item drag/drop, rename, and dissolve actions. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
 - **Trash / 回收站**: a library section with restore/permanent-purge actions; tag navigation and content-edit/OCR entry points are hidden.

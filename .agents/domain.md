@@ -87,7 +87,12 @@ own commits.
 
 ## External agent and translation runtime ownership
 
-The built-in Agent, workflow, chat and FSI runtime has been removed (ADR `0047`).
+The built-in Agent, workflow and chat runtime has been removed (ADR `0047`).
+ADR `0049` restores FSI solely for trusted, replaceable Extension implementations;
+it does not restore Agent sessions or a durable workflow scheduler.
+The revised execution boundary is a host-managed worker process per package generation,
+with source checking, credentials, managed capability dispatch and data commits owned by
+the host. See [Extension validation](extension-validation.md) for migration evidence.
 `Patchouli.Core/Agents` owns the compiled catalog (`AgentCatalog.g.cs`), detection, launch
 and integration-settings contracts. `Patchouli.Terminal` owns the PTY session and embedded
 terminal host. `Patchouli.Host/Agents` owns workspace location, launch preparation and
@@ -98,16 +103,19 @@ agents own their conversations, credentials and history, and keep their native c
 Patchouli supplies detection, a per-library workspace, a terminal and a revocable MCP
 connection.
 
-Direct translation is owned by the four extension contracts in `Patchouli.Core/Translation`,
-the default segment/batch/model/merge implementations and `TranslationRunEngine` in
-`Patchouli.Infrastructure/Translation`, and the volatile `TranslationRunService` in
-`Patchouli.Host/Translation`. MCP exposes start/cancel messages at `runs/translation/control` and
+Direct translation uses a pinned FSX engine from `Patchouli.Extensions` and its typed
+contracts in `Patchouli.Extensions.Contracts`. The bundled LLM, Google, DeepL and DeepLX
+source packages own translation policy; `TranslationRunEngine` retains source/version validation
+and atomic page commits. The four earlier contracts remain reusable compatibility steps.
+`Patchouli.Host/Extensions` owns capability authorization, frozen model/transport settings,
+source watching and desktop/headless composition. The volatile `TranslationRunService` in
+`Patchouli.Host/Translation` owns run acceptance and control. MCP exposes start/cancel messages at `runs/translation/control` and
 `runs/translation/{id}/status`; the processing settings card and shared task queue page are thin
 clients. Runs are in-memory only; committed translations follow ADR `0034`/`0044`.
 
 MCP/CLI parameters, runtime roots and regression obligations are in
-[mcp-protocol](mcp-protocol.md). Agent integration rationale is ADR `0047`; direct
-translation rationale is ADR `0046`.
+[mcp-protocol](mcp-protocol.md). Agent integration rationale is ADR `0047`; extension
+translation rationale is ADR `0049`, which supersedes ADR `0046`'s fixed orchestration.
 Code/contract delivery does not establish real-device end-to-end acceptance or full-scale performance budgets.
 
 ## UI Layer
