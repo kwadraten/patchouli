@@ -1,13 +1,97 @@
 using FluentAssertions;
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Hashing;
+using System.Xml.Linq;
 
 namespace Patchouli.Tests;
 
 public sealed class TranslationRealignerTests
 {
+    [Fact]
+    public async Task Legacy_gfm_translation_survives_equivalent_html_revision_and_expires_after_text_change()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId tableId = DocumentBoxId.New();
+        const string legacyGfm = "| Metric | Value |\n|---|---|\n| Revenue | 10 |";
+        const string translatedGfm = "| Kennzahl | Wert |\n|---|---|\n| Umsatz | 10 |";
+        const string equivalentHtml = "<table><thead><tr><th>Metric</th><th>Value</th></tr></thead>" +
+                                      "<tbody><tr><td>Revenue</td><td>10</td></tr></tbody></table>";
+
+        await context.CommitAsync(TableBox(tableId, legacyGfm));
+        await PutAsync(context, translatedGfm);
+        await SeedLegacyTableHashAsync(context, tableId, legacyGfm);
+        TranslationTestContext.TranslationBoxRowSnapshot oldRow =
+            (await context.ListTranslationRowsAsync()).Should().ContainSingle().Which;
+        await context.CommitAsync(TableBox(tableId, equivalentHtml, true));
+
+        TranslatedPageMarkdown? projected = await context.Translations.GetPageTranslationAsync(
+            context.DocumentId, context.PageId);
+        projected.Should().NotBeNull();
+        projected!.Status.TranslatedBoxCount.Should().Be(1);
+        projected.Status.StaleBoxIds.Should().BeEmpty();
+        projected.Markdown.Should().Contain("Umsatz").And.NotContain("Revenue");
+
+        Result<PageXmlTranslation> pageXml = await context.Translations.GetPageXmlAsync(
+            context.DocumentId, context.PageId, 1);
+        pageXml.IsSuccess.Should().BeTrue(pageXml.ErrorMessage);
+        XElement xmlBox = XDocument.Parse(pageXml.Value.Xml).Descendants("box").Single();
+        xmlBox.Attribute("translated")!.Value.Should().Be("true");
+        XElement translatedPayload = xmlBox.Element("payload")!;
+        translatedPayload.Attribute("format")!.Value.Should().Be("html-table-v1");
+        translatedPayload.Value.Should().Contain("Umsatz").And.NotContain("Revenue");
+
+        TranslationTestContext.TranslationBoxRowSnapshot migratedRow =
+            (await context.ListTranslationRowsAsync()).Should().ContainSingle().Which;
+        migratedRow.TranslatedMd.Should().Be(translatedGfm);
+        migratedRow.SourceHash.Should().NotBe(oldRow.SourceHash);
+
+        const string changedHtml = "<table><thead><tr><th>Metric</th><th>Value</th></tr></thead>" +
+                                   "<tbody><tr><td>Sales</td><td>10</td></tr></tbody></table>";
+        await context.CommitAsync(TableBox(tableId, changedHtml, true));
+
+        TranslatedPageMarkdown? stale = await context.Translations.GetPageTranslationAsync(
+            context.DocumentId, context.PageId);
+        stale.Should().NotBeNull();
+        stale!.Status.TranslatedBoxCount.Should().Be(0);
+        stale.Status.StaleBoxIds.Should().Equal(tableId);
+        stale.Markdown.Should().Contain("Sales").And.NotContain("Umsatz");
+        (await context.ListTranslationRowsAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Legacy_gfm_translation_expires_when_authoritative_html_changes_cell_spans()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId tableId = DocumentBoxId.New();
+        const string legacyGfm = "| Metric | Value |\n|---|---|\n| Revenue | 10 |";
+        const string translatedGfm = "| Kennzahl | Wert |\n|---|---|\n| Umsatz | 10 |";
+        const string equivalentHtml = "<table><thead><tr><th>Metric</th><th>Value</th></tr></thead>" +
+                                      "<tbody><tr><td>Revenue</td><td>10</td></tr></tbody></table>";
+        const string changedSpanHtml = "<table><thead><tr><th colspan=\"2\">Metric Value</th></tr></thead>" +
+                                       "<tbody><tr><td colspan=\"2\">Revenue 10</td></tr></tbody></table>";
+
+        await context.CommitAsync(TableBox(tableId, legacyGfm));
+        await PutAsync(context, translatedGfm);
+        await context.CommitAsync(TableBox(tableId, equivalentHtml, true));
+        (await context.Translations.GetPageTranslationAsync(context.DocumentId, context.PageId))
+            .Should().NotBeNull();
+        await context.CommitAsync(TableBox(tableId, changedSpanHtml, true));
+
+        TranslatedPageMarkdown? stale = await context.Translations.GetPageTranslationAsync(
+            context.DocumentId, context.PageId);
+
+        stale.Should().NotBeNull();
+        stale!.Status.TranslatedBoxCount.Should().Be(0);
+        stale.Status.StaleBoxIds.Should().Contain(tableId);
+        stale.Markdown.Should().Contain("Metric").And.NotContain("Umsatz");
+        (await context.ListTranslationRowsAsync()).Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Unchanged_boxes_keep_their_translation_across_a_tree_revision()
     {
@@ -153,6 +237,31 @@ public sealed class TranslationRealignerTests
     {
         return new DocumentBoxSeed(boxId, null, order, DocumentBoxType.Text, null,
             new NormalizedBBox(.1, .1 + order * .1, .8, .05), new TextBoxPayload(text));
+    }
+
+    private static DocumentBoxSeed TableBox(DocumentBoxId boxId, string content, bool isHtml = false)
+    {
+        DocumentBoxPayload payload = isHtml
+            ? TableContentAdapter.CreateHtml(content).Value
+            : new TableBoxPayload(content);
+        return new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Table, null,
+            new NormalizedBBox(.1, .1, .8, .2), payload);
+    }
+
+    private static async Task SeedLegacyTableHashAsync(
+        TranslationTestContext context,
+        DocumentBoxId boxId,
+        string legacyMarkdown)
+    {
+        await using SqliteConnection connection = context.ConnectionFactory.CreateWriteConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            "update translation_boxes set source_hash = @SourceHash where box_id = @BoxId;",
+            new
+            {
+                BoxId = boxId.ToString(),
+                SourceHash = Blake3Hash.ComputeUtf8($"table\u001f{legacyMarkdown}")
+            });
     }
 
     private static async Task PutAsync(TranslationTestContext context, string markdown)

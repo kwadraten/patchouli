@@ -3,12 +3,13 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:Patchouli.UI.ViewModels"
-        mc:Ignorable="d" d:DesignWidth="460" d:DesignHeight="420"
+        xmlns:rte="using:AvaloniaRichEditor.Controls"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="700"
         x:Class="Patchouli.UI.Views.BoxEditorDialog"
         x:DataType="vm:PdfBBoxViewModel"
         Title="编辑边界框"
         Icon="/Assets/AppIcon.ico"
-        Width="460" SizeToContent="Height"
+        Width="900" Height="700"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
         Topmost="True"
@@ -17,6 +18,8 @@
 
   <Border Padding="16">
     <StackPanel Spacing="8">
+      <TextBlock x:Name="TableEditorError" IsVisible="False" TextWrapping="Wrap"
+                 Foreground="{DynamicResource ErrorBrush}" />
       <Border IsVisible="{Binding Workspace.HasCandidate}" Padding="10" CornerRadius="6"
               BorderThickness="1"
               BorderBrush="{DynamicResource OutlineVariantBrush}">
@@ -48,19 +51,32 @@
         </StackPanel>
       </Border>
       <ComboBox ItemsSource="{Binding Workspace.EditableBoxTypeOptions}"
-                SelectedItem="{Binding BoxType}" HorizontalAlignment="Stretch" />
+                SelectedItem="{Binding BoxType}" SelectionChanged="OnBoxTypeChanged"
+                HorizontalAlignment="Stretch" />
       <NumericUpDown Value="{Binding HeadingLevel}" Minimum="1" Maximum="6"
                      IsVisible="{Binding IsTitle}" PlaceholderText="标题级别 1-6" />
       <TextBox Text="{Binding CodeLanguage}" IsVisible="{Binding IsCode}"
                PlaceholderText="代码语言（可选）" />
       <TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}"
                AcceptsReturn="True"
-               TextWrapping="Wrap" MinHeight="120" />
+               TextWrapping="Wrap" MinHeight="120" IsVisible="{Binding !IsTable}" />
+      <StackPanel IsVisible="{Binding IsTable}" Spacing="6">
+        <TextBlock Text="表格可视编辑（HTML 是唯一权威内容）" FontWeight="SemiBold" />
+        <TextBlock Text="保留原始行列与合并结构，可编辑单元格文字；新增、删除或合并行列的更改无法保存。"
+                   TextWrapping="Wrap" FontSize="12"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <Button Content="撤销" Click="OnTableUndoClicked" />
+          <Button Content="重做" Click="OnTableRedoClicked" />
+        </StackPanel>
+        <rte:RichEditorView x:Name="TableEditorView" Height="480"
+                            ShowStatusBar="False" ShowFileActions="False" />
+      </StackPanel>
       <TextBox Text="{Binding AssetId}" IsVisible="{Binding IsMedia}"
                PlaceholderText="资源引用（可选）" />
       <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
         <Button Content="关闭" Click="OnCloseClicked" />
-        <Button Content="保存" Click="OnSaveClicked"
+        <Button x:Name="SaveButton" Content="保存" Click="OnSaveClicked"
                 Background="{DynamicResource PrimaryBrush}"
                 Foreground="{DynamicResource OnPrimaryBrush}" />
       </StackPanel>

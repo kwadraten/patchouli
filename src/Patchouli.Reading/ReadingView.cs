@@ -926,7 +926,12 @@ public sealed class ReadingView : Control, ICustomHitTest
                     AppendChildren(inline, style with { Link = true }, foreground, bodySize, builder, spans);
                     break;
                 case "superscript":
-                    AppendRun(Flatten(inline.Children), style, foreground, bodySize, builder, spans);
+                    AppendChildren(inline, style with { Baseline = BaselineAlignment.Superscript }, foreground,
+                        bodySize, builder, spans);
+                    break;
+                case "subscript":
+                    AppendChildren(inline, style with { Baseline = BaselineAlignment.Subscript }, foreground,
+                        bodySize, builder, spans);
                     break;
                 default:
                     AppendChildren(inline, style, foreground, bodySize, builder, spans);
@@ -992,14 +997,9 @@ public sealed class ReadingView : Control, ICustomHitTest
 
         IBrush runForeground = style.Link ? _link : foreground;
         IBrush? background = style.Code ? _codeBackground : null;
-        return new GenericTextRunProperties(typeface, bodySize, decorations, runForeground, background);
-    }
-
-    private static string Flatten(IReadOnlyList<MarkdownInlineModel>? inlines)
-    {
-        return inlines is null
-            ? string.Empty
-            : string.Concat(inlines.Select(inline => inline.Text + Flatten(inline.Children)));
+        double fontSize = style.Baseline == BaselineAlignment.Baseline ? bodySize : bodySize * 0.8;
+        return new GenericTextRunProperties(typeface, fontSize, decorations, runForeground, background,
+            style.Baseline, null, null);
     }
 
     private TableLayout BuildTable(ReadingTable table, double width, double bodySize)
@@ -1012,26 +1012,43 @@ public sealed class ReadingView : Control, ICustomHitTest
         }
 
         double available = Math.Max(MinColumnWidth, width - 1);
-        // Pass 1: each column's natural width from unshaped wrapping ("no wrap" measurement).
+        ReadingTableCell[] cells = (table.Cells ?? table.Rows.SelectMany((row, rowIndex) =>
+                row.Select((text, columnIndex) => new ReadingTableCell(rowIndex, columnIndex, text,
+                    IsHeader: table.HasHeader && rowIndex == 0))))
+            .ToArray();
         double[] natural = new double[columns];
+        Array.Fill(natural, MinColumnWidth);
+        // Pass 1: each column's natural width from unshaped wrapping ("no wrap" measurement).
         for (int column = 0; column < columns; column++)
         {
-            double best = MinColumnWidth;
-            for (int row = 0; row < rows; row++)
+            foreach (ReadingTableCell cell in cells.Where(cell => cell.Column == column && cell.ColumnSpan == 1))
             {
-                string text = CellText(table.Rows[row], column);
-                if (text.Length == 0)
+                if (cell.Text.Length == 0)
                 {
                     continue;
                 }
 
                 TextLayout measure = BuildRawLayout(
-                    text, BodyTypeface(), bodySize, _foreground, double.PositiveInfinity,
+                    cell.Text, BodyTypeface(), bodySize, _foreground, double.PositiveInfinity,
                     wrapping: TextWrapping.NoWrap);
-                best = Math.Max(best, measure.Width + 2 * TableCellPadX);
+                natural[column] = Math.Max(natural[column], measure.Width + 2 * TableCellPadX);
             }
+        }
 
-            natural[column] = best;
+        foreach (ReadingTableCell cell in cells.Where(cell => cell.ColumnSpan > 1))
+        {
+            TextLayout measure = BuildRawLayout(cell.Text, BodyTypeface(), bodySize, _foreground,
+                double.PositiveInfinity, wrapping: TextWrapping.NoWrap);
+            double current = natural.Skip(cell.Column).Take(cell.ColumnSpan).Sum();
+            double required = measure.Width + 2 * TableCellPadX;
+            if (current < required)
+            {
+                double extra = (required - current) / cell.ColumnSpan;
+                for (int column = cell.Column; column < Math.Min(columns, cell.Column + cell.ColumnSpan); column++)
+                {
+                    natural[column] += extra;
+                }
+            }
         }
 
         // Cap each column, then share the full width proportionally so the grid spans the viewport.
@@ -1068,28 +1085,40 @@ public sealed class ReadingView : Control, ICustomHitTest
             Columns = columns,
             ColumnWidths = columnWidths,
             RowHeights = new double[rows],
-            Cells = new TextLayout?[rows * columns],
-            HasHeader = table.HasHeader,
+            Cells = [],
             Width = available
         };
-        for (int row = 0; row < rows; row++)
+        Array.Fill(result.RowHeights, 18);
+        List<ReadingCellLayout> layouts = [];
+        foreach (ReadingTableCell cell in cells)
         {
-            bool header = table.HasHeader && row == 0;
-            double rowHeight = 0;
-            for (int column = 0; column < columns; column++)
+            if (cell.Row < 0 || cell.Row >= rows || cell.Column < 0 || cell.Column >= columns)
             {
-                TextLayout cell = BuildRawLayout(
-                    CellText(table.Rows[row], column),
-                    header ? BodyBoldTypeface() : BodyTypeface(),
-                    bodySize,
-                    _foreground,
-                    Math.Max(8, columnWidths[column] - 2 * TableCellPadX));
-                result.Cells[row * columns + column] = cell;
-                rowHeight = Math.Max(rowHeight, cell.Height);
+                continue;
             }
 
-            result.RowHeights[row] = Math.Max(18, rowHeight + 2 * TableCellPadY);
+            int columnSpan = Math.Clamp(cell.ColumnSpan, 1, columns - cell.Column);
+            int rowSpan = Math.Clamp(cell.RowSpan, 1, rows - cell.Row);
+            double cellWidth = columnWidths.Skip(cell.Column).Take(columnSpan).Sum();
+            TextLayout textLayout = BuildRawLayout(cell.Text,
+                cell.IsHeader ? BodyBoldTypeface() : BodyTypeface(), bodySize, _foreground,
+                Math.Max(8, cellWidth - 2 * TableCellPadX));
+            double requiredHeight = Math.Max(18, textLayout.Height + 2 * TableCellPadY);
+            double currentHeight = result.RowHeights.Skip(cell.Row).Take(rowSpan).Sum();
+            if (currentHeight < requiredHeight)
+            {
+                double extra = (requiredHeight - currentHeight) / rowSpan;
+                for (int row = cell.Row; row < cell.Row + rowSpan; row++)
+                {
+                    result.RowHeights[row] += extra;
+                }
+            }
+
+            layouts.Add(new ReadingCellLayout(cell.Row, cell.Column, rowSpan, columnSpan, cell.IsHeader,
+                textLayout));
         }
+
+        result.Cells = layouts.ToArray();
 
         double tableHeight = 0;
         foreach (double rowHeight in result.RowHeights)
@@ -1272,46 +1301,20 @@ public sealed class ReadingView : Control, ICustomHitTest
 
     private void DrawTable(DrawingContext context, BlockLayout layout, TableLayout table)
     {
-        double y = layout.Top;
-        for (int row = 0; row < table.Rows; row++)
+        foreach (ReadingCellLayout cell in table.Cells)
         {
-            if (table.HasHeader && row == 0)
+            double x = layout.Left + table.ColumnWidths.Take(cell.Column).Sum();
+            double y = layout.Top + table.RowHeights.Take(cell.Row).Sum();
+            double width = table.ColumnWidths.Skip(cell.Column).Take(cell.ColumnSpan).Sum();
+            double height = table.RowHeights.Skip(cell.Row).Take(cell.RowSpan).Sum();
+            Rect bounds = new(x, y, width, height);
+            if (cell.IsHeader)
             {
-                context.FillRectangle(_surfaceHigh,
-                    new Rect(layout.Left, y, table.Width, table.RowHeights[row]));
+                context.FillRectangle(_surfaceHigh, bounds);
             }
 
-            double x = layout.Left;
-            for (int column = 0; column < table.Columns; column++)
-            {
-                table.Cells[row * table.Columns + column]?.Draw(
-                    context, new Point(x + TableCellPadX, y + TableCellPadY));
-                x += table.ColumnWidths[column];
-            }
-
-            y += table.RowHeights[row];
-        }
-
-        double lineY = layout.Top;
-        for (int row = 0; row <= table.Rows; row++)
-        {
-            context.DrawLine(_gridPen, new Point(layout.Left, lineY),
-                new Point(layout.Left + table.Width, lineY));
-            if (row < table.Rows)
-            {
-                lineY += table.RowHeights[row];
-            }
-        }
-
-        double lineX = layout.Left;
-        for (int column = 0; column <= table.Columns; column++)
-        {
-            context.DrawLine(_gridPen, new Point(lineX, layout.Top),
-                new Point(lineX, layout.Top + table.Height));
-            if (column < table.Columns)
-            {
-                lineX += table.ColumnWidths[column];
-            }
+            cell.Text.Draw(context, new Point(x + TableCellPadX, y + TableCellPadY));
+            context.DrawRectangle(null, _gridPen, bounds);
         }
     }
 
@@ -1667,11 +1670,6 @@ public sealed class ReadingView : Control, ICustomHitTest
         return bodySize * scale;
     }
 
-    private static string CellText(IReadOnlyList<string> row, int column)
-    {
-        return column < row.Count ? row[column] ?? string.Empty : string.Empty;
-    }
-
     private static string TablePlainText(ReadingTable table)
     {
         return string.Join("\n", table.Rows.Select(row => string.Join("\t", row)));
@@ -1736,14 +1734,27 @@ public sealed class ReadingView : Control, ICustomHitTest
         public int Columns;
         public double[] ColumnWidths = [];
         public double[] RowHeights = [];
-        public TextLayout?[] Cells = [];
-        public bool HasHeader;
+        public ReadingCellLayout[] Cells = [];
         public double Width;
         public double Height;
     }
 
-    private readonly record struct InlineStyle(bool Bold, bool Italic, bool Strikethrough, bool Code, bool Link)
+    private sealed record ReadingCellLayout(
+        int Row,
+        int Column,
+        int RowSpan,
+        int ColumnSpan,
+        bool IsHeader,
+        TextLayout Text);
+
+    private readonly record struct InlineStyle(
+        bool Bold,
+        bool Italic,
+        bool Strikethrough,
+        bool Code,
+        bool Link,
+        BaselineAlignment Baseline)
     {
-        public static readonly InlineStyle Default = new(false, false, false, false, false);
+        public static readonly InlineStyle Default = new(false, false, false, false, false, BaselineAlignment.Baseline);
     }
 }

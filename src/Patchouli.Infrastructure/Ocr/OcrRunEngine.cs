@@ -1013,24 +1013,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 }
                 else if (output.Value.TextBoxes is { Count: > 0 } textBoxes)
                 {
-                    List<OcrBoxCandidate> boxCandidates = new();
-                    for (int i = 0; i < textBoxes.Count; i++)
-                    {
-                        OcrEngineTextBox box = textBoxes[i];
-                        boxCandidates.Add(new OcrBoxCandidate(
-                            DocumentBoxType.Text,
-                            null,
-                            i,
-                            new TextBoxPayload(box.Text.Trim()),
-                            box.BBox,
-                            null,
-                            box.Confidence,
-                            false));
-                    }
-
-                    candidate = new OcrDocumentTreeCandidate(
-                        [new OcrPageCandidate(page.PageId, page.PageIndex, boxCandidates)],
-                        []);
+                    candidate = new MinerUDocumentTreeCandidateMapper().MapTextBoxes(page, textBoxes);
                 }
                 else
                 {
@@ -1050,22 +1033,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
                         continue;
                     }
 
-                    candidate = new OcrDocumentTreeCandidate(
-                        [
-                            new OcrPageCandidate(page.PageId, page.PageIndex,
-                            [
-                                new OcrBoxCandidate(
-                                    DocumentBoxType.Text,
-                                    null,
-                                    0,
-                                    new TextBoxPayload(output.Value.Text!.Trim()),
-                                    bbox.Value,
-                                    null,
-                                    null,
-                                    false)
-                            ])
-                        ],
-                        []);
+                    candidate = new MinerUDocumentTreeCandidateMapper().MapTextBoxes(
+                        page, [new OcrEngineTextBox(output.Value.Text!, bbox.Value)]);
                 }
 
                 Result<OcrDocumentTreeImportResult> working = await _treeImporter.BeginWorkingAsync(
@@ -1607,13 +1576,35 @@ public sealed class OcrRunEngine : IOcrRunEngine
             return Result<OcrRegionCandidate>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!);
         }
 
-        Result<string> text = new MinerUResultParser().ParsePlainText(prepared.Value);
-        return text.IsFailure || string.IsNullOrWhiteSpace(text.Value)
-            ? Result<OcrRegionCandidate>.Failure(
-                text.ErrorCode ?? AppErrorCodes.InvalidState,
-                text.ErrorMessage ?? "OCR returned no text.")
-            : Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
-                page.PageId, regionBBox, DocumentBoxType.Text, new TextBoxPayload(text.Value.Trim())));
+        Result<OcrDocumentTreeCandidate> structured = new MinerUResultParser()
+            .ParseImageStructuredTree(prepared.Value, page);
+        if (structured.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(structured.ErrorCode!, structured.ErrorMessage!);
+        }
+
+        OcrPageCandidate? pageCandidate = structured.Value.Pages.SingleOrDefault(candidate =>
+            candidate.PageId == page.PageId);
+        if (pageCandidate is null || structured.Value.Diagnostics.Any(diagnostic => diagnostic.BlocksCommit) ||
+            pageCandidate.Boxes.Any(box => box.BoxType != DocumentBoxType.Text ||
+                                           box.SubType is not null || box.Payload is not TextBoxPayload))
+        {
+            return Result<OcrRegionCandidate>.Failure(AppErrorCodes.UnsupportedOperation,
+                "MinerU returned non-text or structured content for the selected region. Use full-page or " +
+                "structured OCR review so its document-tree structure can be preserved.");
+        }
+
+        string text = string.Join("\n", pageCandidate.Boxes.OrderBy(box => box.SourceOrder)
+            .Select(box => ((TextBoxPayload)box.Payload).Markdown)
+            .Where(markdown => !string.IsNullOrWhiteSpace(markdown)));
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Result<OcrRegionCandidate>.Failure(AppErrorCodes.InvalidState, "OCR returned no text.");
+        }
+
+        double? confidence = pageCandidate.Boxes.Count == 1 ? pageCandidate.Boxes[0].Confidence : null;
+        return Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
+            page.PageId, regionBBox, DocumentBoxType.Text, new TextBoxPayload(text.Trim()), Confidence: confidence));
     }
 
     private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken,

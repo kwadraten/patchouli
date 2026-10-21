@@ -3,6 +3,8 @@ using System.Text.Json.Nodes;
 
 namespace Patchouli.Infrastructure.Ocr.MinerU;
 
+internal sealed class UnsupportedMiddleJsonSemanticsException(string message) : InvalidOperationException(message);
+
 /// <summary>Adapts the shared Middle JSON 2.0 contract to the page-local import boundary.</summary>
 internal static class MinerUMiddleJsonParser
 {
@@ -197,6 +199,11 @@ internal static class MinerUMiddleJsonParser
                                 "bold" => "**" + text + "**",
                                 "italic" or "emphasis" => "*" + text + "*",
                                 "strikethrough" => "~~" + text + "~~",
+                                "superscript" => "^" + text + "^",
+                                "subscript" => "~" + text + "~",
+                                "underline" => throw new UnsupportedMiddleJsonSemanticsException(
+                                    "Middle JSON underline text spans cannot be represented by the current safe " +
+                                    "Markdown renderer; adoption was refused to avoid dropping the underline."),
                                 _ => text
                             };
                         }
@@ -210,7 +217,7 @@ internal static class MinerUMiddleJsonParser
 
     private static string EscapeText(string text)
     {
-        foreach (char character in "\\`*_{}[]$<>")
+        foreach (char character in "\\`*_{}[]$<>^~")
         {
             text = text.Replace(character.ToString(), "\\" + character, StringComparison.Ordinal);
         }

@@ -48,6 +48,23 @@ structure; payloads wrap existing Markdown, LaTeX, code, or descriptions. Suppre
 including page footnotes, are included. Only image-formula page-region geometry is exposed; local paths, media asset locations,
 and secrets are not exposed. XML processing disables DTDs and external entities.
 
+Versioned HTML tables use `<payload format="html-table-v1">` containing XML-escaped
+restricted HTML text, not nested XML payload elements. Their stored payload identifies
+`contentFormat: "html"` and `contentFormatVersion: 1`; `html` holds the only editable
+content and `markdown` is empty. Legacy payloads without these markers remain Markdown
+version 0. Recoverable legacy `[Table]` HTML can be projected through the HTML contract
+without rewriting its historical revision. Unknown formats or versions cannot be written
+as if they were Markdown.
+
+HTML supports validated table structure, merged cells and a restricted set of inline
+formatting, formulas and safe attributes. Scripts, event handlers, external resources and
+unsupported markup are rejected. Source XML box edits may change validated table content
+and its internal grid; Box Tree identity and geometry remain fixed. Translation edits must
+also preserve table structure, attributes and protected formula/code content. Legacy
+Markdown projections cannot silently overwrite HTML authority with a flattened table.
+All replacements are validated before any batch write. Markdown exports embed validated
+HTML to preserve complex structure; search text is derived from the table cells.
+
 New XML translation replacements are validated by box identity rather than Markdown position.
 `translated` distinguishes a stored translation from source fallback. A page without translations
 returns an editable version-zero view. UI Markdown remains an internal compiled projection.

@@ -228,7 +228,96 @@ public sealed class OcrLifecycleBoxTreeTests
         OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
         DocumentBox box = (await context.Trees.ListBoxesAsync(pageResult.WorkingTreeRevisionId!.Value)).Value.Single();
 
-        box.BBox.Should().Be(new NormalizedBBox(.1, .1, .3, .2));
+        box.BBox.X.Should().BeApproximately(.1, 1e-12);
+        box.BBox.Y.Should().BeApproximately(.1, 1e-12);
+        box.BBox.Width.Should().BeApproximately(.3, 1e-12);
+        box.BBox.Height.Should().BeApproximately(.2, 1e-12);
+    }
+
+    [Fact]
+    public async Task Text_boxes_output_uses_mineru_mapping_and_preserves_geometry_confidence_and_order()
+    {
+        NormalizedBBox firstBBox = new(.1, .2, .3, .1);
+        NormalizedBBox secondBBox = new(.5, .6, .2, .15);
+        await using Context context = await Context.CreateAsync(new StructuredTextEngine(page =>
+            new OcrEnginePageResult(page.PageId, true, null, null, null, null,
+                TextBoxes:
+                [
+                    new OcrEngineTextBox("first source block", firstBBox, .91),
+                    new OcrEngineTextBox("second source block", secondBBox, .72)
+                ])));
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Structured text", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnPagesAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, [context.Pages[0].PageId])).Value;
+        OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
+
+        pageResult.State.Should().Be(OcrPageResultState.Succeeded);
+        IReadOnlyList<DocumentBox> boxes =
+            (await context.Trees.ListBoxesAsync(pageResult.WorkingTreeRevisionId!.Value)).Value;
+        boxes.Select(box => ((TextBoxPayload)box.Payload!).Markdown)
+            .Should().Equal("first source block", "second source block");
+        foreach ((DocumentBox box, NormalizedBBox expected) in boxes.Zip([firstBBox, secondBBox]))
+        {
+            box.BBox.X.Should().BeApproximately(expected.X, 1e-12);
+            box.BBox.Y.Should().BeApproximately(expected.Y, 1e-12);
+            box.BBox.Width.Should().BeApproximately(expected.Width, 1e-12);
+            box.BBox.Height.Should().BeApproximately(expected.Height, 1e-12);
+        }
+
+        boxes.Select(box => box.Confidence).Should().Equal(.91, .72);
+    }
+
+    [Fact]
+    public async Task Single_text_output_uses_mineru_mapping_and_preserves_normalized_geometry()
+    {
+        NormalizedBBox bbox = new(.23, .34, .45, .12);
+        await using Context context = await Context.CreateAsync(new StructuredTextEngine(page =>
+            new OcrEnginePageResult(page.PageId, true, "single text result", bbox, null, null)));
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Single text", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnPagesAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, [context.Pages[0].PageId])).Value;
+        OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
+
+        pageResult.State.Should().Be(OcrPageResultState.Succeeded);
+        DocumentBox box = (await context.Trees.ListBoxesAsync(pageResult.WorkingTreeRevisionId!.Value)).Value
+            .Should().ContainSingle().Which;
+        box.Payload.Should().Be(new TextBoxPayload("single text result"));
+        box.BBox.X.Should().BeApproximately(bbox.X, 1e-12);
+        box.BBox.Y.Should().BeApproximately(bbox.Y, 1e-12);
+        box.BBox.Width.Should().BeApproximately(bbox.Width, 1e-12);
+        box.BBox.Height.Should().BeApproximately(bbox.Height, 1e-12);
+        box.Confidence.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Invalid_normalized_text_bbox_blocks_candidate_instead_of_clipping(bool multipleTextBoxes)
+    {
+        NormalizedBBox invalidBBox = new(.9, .2, .3, .1);
+        await using Context context = await Context.CreateAsync(new StructuredTextEngine(page =>
+            multipleTextBoxes
+                ? new OcrEnginePageResult(page.PageId, true, null, null, null, null,
+                    TextBoxes: [new OcrEngineTextBox("invalid box", invalidBBox)])
+                : new OcrEnginePageResult(page.PageId, true, "invalid box", invalidBBox, null, null)));
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Invalid text bbox", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnPagesAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, [context.Pages[0].PageId])).Value;
+        OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
+
+        pageResult.State.Should().Be(OcrPageResultState.Failed);
+        pageResult.ErrorCode.Should().Be(multipleTextBoxes
+            ? AppErrorCodes.ValidationFailed
+            : "bbox_invalid");
+        pageResult.WorkingTreeRevisionId.Should().BeNull();
+        (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, pageResult.PageId))
+            .IsFailure.Should().BeTrue();
     }
 
     [Fact]
@@ -452,6 +541,19 @@ public sealed class OcrLifecycleBoxTreeTests
             return Task.FromResult(new OcrEnginePageResult(page.PageId, true, "pixels",
                 new NormalizedBBox(0, 0, 1, 1), null, null,
                 new SourceBBox(10, 20, 30, 40, SourceBBoxCoordinateSystem.ImagePixels, 100, 200)));
+        }
+    }
+
+    private sealed class StructuredTextEngine(Func<Page, OcrEnginePageResult> resultFactory) : IOcrEngine
+    {
+        public string EngineId => OcrEngineIds.Mock;
+
+        public Task<OcrEnginePageResult> RunPageAsync(
+            Page page,
+            OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(resultFactory(page));
         }
     }
 

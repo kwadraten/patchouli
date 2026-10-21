@@ -99,6 +99,12 @@ internal sealed class MinerUResultParser
                 ? Result<MinerUContentListDocument>.Failure("no_content", "MinerU content list is empty.")
                 : Result<MinerUContentListDocument>.Success(contentList);
         }
+        catch (UnsupportedMiddleJsonSemanticsException exception)
+        {
+            return Result<MinerUContentListDocument>.Failure(
+                "unsupported_middle_semantics",
+                exception.Message);
+        }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
                                        "infrastructure.mineru-result-parser"))
         {

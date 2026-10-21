@@ -110,10 +110,12 @@ internal static class DocumentMarkdownRenderer
                 ? "[Equation image]"
                 : $"$$\n{equation.Latex.Trim()}\n$$",
             ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
-                                     !string.IsNullOrWhiteSpace(table.Html)
-                ? table.Html
-                : table.Markdown,
+            TableBoxPayload table => TableContentAdapter.IsHtml(table)
+                ? TableContentAdapter.ToMarkdown(table)
+                : includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
+                  TableContentAdapter.TryGetHtml(table, out string html)
+                    ? html
+                    : table.Markdown,
             CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
             MediaBoxPayload media => CompileMedia(box.BoxType, media),
             null when box.BoxType == DocumentBoxType.LogicalPage => null,

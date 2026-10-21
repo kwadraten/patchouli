@@ -105,7 +105,8 @@ public sealed class McpWriteApi : IMcpWriteApi
                     continue;
                 }
 
-                Result<DocumentBoxPayload> decoded = PageXmlCodec.DecodeBox(replacement.Content, source);
+                Result<DocumentBoxPayload> decoded = PageXmlCodec.DecodeBox(
+                    replacement.Content, source, translation);
                 if (decoded.IsFailure)
                 {
                     errors.Add(new BoxContentError(replacement.BoxId, decoded.ErrorMessage ?? "Invalid box content."));

@@ -25,10 +25,22 @@ public enum ReadingCompareMode
     Stacked
 }
 
-/// <summary>One row of a parsed GFM pipe table. Cells are raw inline-markdown text.</summary>
+/// <summary>A parsed GFM or HTML table grid. Cell positions can retain HTML row/column spans.</summary>
 public sealed record ReadingTable(
     IReadOnlyList<IReadOnlyList<string>> Rows,
-    bool HasHeader);
+    bool HasHeader)
+{
+    public IReadOnlyList<ReadingTableCell>? Cells { get; init; }
+}
+
+/// <summary>A source HTML cell positioned in the rendered table grid.</summary>
+public sealed record ReadingTableCell(
+    int Row,
+    int Column,
+    string Text,
+    int RowSpan = 1,
+    int ColumnSpan = 1,
+    bool IsHeader = false);
 
 /// <summary>A media block's image region: the normalized bbox region of the owning page that the
 /// block displays, drawn as a source sub-rect of the page's rendered pixel buffer. The image is

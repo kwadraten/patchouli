@@ -161,7 +161,7 @@ public sealed class ChapterScanService(
             {
                 TextBoxPayload text => text.Markdown,
                 ListBoxPayload list => list.Markdown,
-                TableBoxPayload table => table.Markdown,
+                TableBoxPayload table => TableContentAdapter.ToMarkdown(table),
                 AlgorithmBoxPayload algorithm => algorithm.Markdown,
                 CodeBoxPayload code => code.Code,
                 _ => null

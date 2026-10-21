@@ -697,13 +697,31 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         details: BoxContentDetails(boxId, message));
                 }
 
+                if (box.Payload is TableBoxPayload originalTable && payload is TableBoxPayload editedTable &&
+                    (TableContentAdapter.TryGetHtml(originalTable, out _) ||
+                     TableContentAdapter.IsHtml(originalTable)) &&
+                    !TableContentAdapter.IsHtml(editedTable))
+                {
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.ValidationFailed,
+                        "A table with authoritative or recoverable HTML must be saved as validated HTML.",
+                        details: BoxContentDetails(boxId,
+                            "A table with authoritative or recoverable HTML must be saved as validated HTML."));
+                }
+
                 DocumentBoxPayload replacement = (box.Payload, payload) switch
                 {
                     (EquationBoxPayload original, EquationBoxPayload edited) => edited with
                     {
                         HasImage = original.HasImage
                     },
-                    (TableBoxPayload original, TableBoxPayload edited) => edited with { Html = original.Html },
+                    (TableBoxPayload original, TableBoxPayload edited) => TableContentAdapter.IsHtml(edited)
+                        ? edited
+                        : edited with
+                        {
+                            Html = original.Html,
+                            ContentFormat = TableContentFormat.LegacyMarkdown,
+                            ContentFormatVersion = 0
+                        },
                     (MediaBoxPayload original, MediaBoxPayload edited) => edited with { AssetId = original.AssetId },
                     _ => payload
                 };
@@ -1209,7 +1227,9 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             EquationBoxPayload value => !string.IsNullOrWhiteSpace(value.Latex) || value.HasImage,
             AlgorithmBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             ListBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
-            TableBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
+            TableBoxPayload value => TableContentAdapter.IsHtml(value)
+                ? TableContentAdapter.TryGetHtml(value, out _)
+                : !string.IsNullOrWhiteSpace(value.Markdown),
             CodeBoxPayload value => !string.IsNullOrWhiteSpace(value.Code),
             MediaBoxPayload value => !string.IsNullOrWhiteSpace(value.AssetId) ||
                                      !string.IsNullOrWhiteSpace(value.Description),

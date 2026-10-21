@@ -106,7 +106,7 @@ public static class PageXmlCodec
                     return Failure<PageXmlDocument>("The page XML contains an unknown or duplicate box id.");
                 }
 
-                Result<DocumentBoxPayload?> payload = DecodePayload(element, source);
+                Result<DocumentBoxPayload?> payload = DecodePayload(element, source, true);
                 if (payload.IsFailure)
                 {
                     return Result<PageXmlDocument>.Failure(payload.ErrorCode!, payload.ErrorMessage!);
@@ -147,7 +147,10 @@ public static class PageXmlCodec
         }
     }
 
-    public static Result<DocumentBoxPayload> DecodeBox(string xml, DocumentBox source)
+    public static Result<DocumentBoxPayload> DecodeBox(
+        string xml,
+        DocumentBox source,
+        bool requireTranslationStructure = true)
     {
         try
         {
@@ -167,7 +170,7 @@ public static class PageXmlCodec
                 return Failure<DocumentBoxPayload>("A box payload replacement must not contain nested boxes.");
             }
 
-            Result<DocumentBoxPayload?> result = DecodePayload(element, source);
+            Result<DocumentBoxPayload?> result = DecodePayload(element, source, requireTranslationStructure);
             return result.IsFailure
                 ? Result<DocumentBoxPayload>.Failure(result.ErrorCode!, result.ErrorMessage!)
                 : result.Value is null
@@ -245,7 +248,10 @@ public static class PageXmlCodec
         return element;
     }
 
-    private static Result<DocumentBoxPayload?> DecodePayload(XElement element, DocumentBox source)
+    private static Result<DocumentBoxPayload?> DecodePayload(
+        XElement element,
+        DocumentBox source,
+        bool requireTranslationStructure)
     {
         string[] allowedAttributes =
         [
@@ -314,13 +320,38 @@ public static class PageXmlCodec
         }
 
         string value = children[0].Value;
+        if (source.Payload is TableBoxPayload sourceTable &&
+            expectedFormat == "html-table-v1")
+        {
+            Result<TableBoxPayload> html = TableContentAdapter.CreateHtml(value);
+            if (html.IsFailure)
+            {
+                return Failure<DocumentBoxPayload?>(html.ErrorMessage ?? "The HTML table payload is invalid.");
+            }
+
+            if (requireTranslationStructure)
+            {
+                Result<TableBoxPayload> valid = TableContentAdapter.ValidateTranslation(sourceTable, html.Value);
+                if (valid.IsFailure)
+                {
+                    return Failure<DocumentBoxPayload?>(valid.ErrorMessage ?? "The HTML table structure changed.");
+                }
+
+                return Result<DocumentBoxPayload?>.Success(
+                    valid.Value with { Annotations = sourceTable.Annotations });
+            }
+
+            return Result<DocumentBoxPayload?>.Success(
+                html.Value with { Annotations = sourceTable.Annotations });
+        }
+
         DocumentBoxPayload payload = source.Payload switch
         {
             TextBoxPayload => new TextBoxPayload(value),
             EquationBoxPayload equation => equation with { Latex = value },
             AlgorithmBoxPayload algorithm => algorithm with { Markdown = value },
             ListBoxPayload => new ListBoxPayload(value),
-            TableBoxPayload table => new TableBoxPayload(value, table.Html),
+            TableBoxPayload => new TableBoxPayload(value),
             CodeBoxPayload => new CodeBoxPayload(value),
             MediaBoxPayload media => new MediaBoxPayload(media.AssetId, isNull ? null : value),
             _ => throw new InvalidOperationException("Unsupported payload type.")
@@ -388,6 +419,7 @@ public static class PageXmlCodec
             AlgorithmBoxPayload => "markdown",
             CodeBoxPayload => "code",
             MediaBoxPayload => "description",
+            TableBoxPayload table when TableContentAdapter.TryGetHtml(table, out _) => "html-table-v1",
             TextBoxPayload or ListBoxPayload or TableBoxPayload => "markdown",
             _ => null
         };
@@ -399,7 +431,7 @@ public static class PageXmlCodec
         {
             TextBoxPayload text => text.Markdown,
             ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => table.Markdown,
+            TableBoxPayload table => TableContentAdapter.TryGetHtml(table, out string html) ? html : table.Markdown,
             EquationBoxPayload equation => equation.Latex,
             AlgorithmBoxPayload algorithm => algorithm.Markdown,
             CodeBoxPayload code => code.Code,

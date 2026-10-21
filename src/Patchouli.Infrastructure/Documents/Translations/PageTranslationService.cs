@@ -467,6 +467,21 @@ public sealed class PageTranslationService : IPageTranslationService
             return BoxPayloadFailure(source.BoxId, "The replacement payload type must match the source payload type.");
         }
 
+        if (source.Payload is TableBoxPayload authoritativeSourceTable &&
+            replacement is TableBoxPayload authoritativeTranslatedTable &&
+            TableContentAdapter.TryGetHtml(authoritativeSourceTable, out _))
+        {
+            Result<TableBoxPayload> tableValidation =
+                TableContentAdapter.ValidateTranslation(authoritativeSourceTable, authoritativeTranslatedTable);
+            if (tableValidation.IsFailure)
+            {
+                return BoxPayloadFailure(source.BoxId,
+                    tableValidation.ErrorMessage ?? "The translated HTML table is invalid.");
+            }
+
+            return Result<string>.Success(TableContentAdapter.ToMarkdown(tableValidation.Value));
+        }
+
         string validationType = source.BoxType;
         Result leafValidation = _markdown.ValidateLeaf(validationType, replacement);
         if (leafValidation.IsFailure)
@@ -474,10 +489,11 @@ public sealed class PageTranslationService : IPageTranslationService
             return BoxPayloadFailure(source.BoxId, leafValidation.ErrorMessage ?? "The translated payload is invalid.");
         }
 
-        if (source.Payload is TableBoxPayload sourceTable && replacement is TableBoxPayload replacementTable &&
-            !string.Equals(sourceTable.Html, replacementTable.Html, StringComparison.Ordinal) &&
-            !(sourceTable.Markdown.Trim() == "[Table]" && replacementTable.Html is null &&
-              replacementTable.Markdown.Trim() != "[Table]"))
+        if (source.Payload is TableBoxPayload diagnosticSourceTable &&
+            replacement is TableBoxPayload diagnosticReplacementTable &&
+            !string.Equals(diagnosticSourceTable.Html, diagnosticReplacementTable.Html, StringComparison.Ordinal) &&
+            !(diagnosticSourceTable.Markdown.Trim() == "[Table]" && diagnosticReplacementTable.Html is null &&
+              diagnosticReplacementTable.Markdown.Trim() != "[Table]"))
         {
             return BoxPayloadFailure(source.BoxId, "The replacement cannot change diagnostic table HTML.");
         }
@@ -498,10 +514,11 @@ public sealed class PageTranslationService : IPageTranslationService
         // Its source HTML remains unchanged in the document tree; placeholder paragraph structure
         // cannot be compared to the newly translated table structure.
         if (source.Payload is TableBoxPayload { Markdown: var sourceMarkdown, Html: not null } &&
-            sourceMarkdown.Trim() == "[Table]" && replacement is TableBoxPayload { Html: null } translatedTable &&
-            translatedTable.Markdown.Trim() != "[Table]")
+            sourceMarkdown.Trim() == "[Table]" &&
+            replacement is TableBoxPayload { Html: null } placeholderTranslation &&
+            placeholderTranslation.Markdown.Trim() != "[Table]")
         {
-            return Result<string>.Success(translatedTable.Markdown);
+            return Result<string>.Success(placeholderTranslation.Markdown);
         }
 
         DocumentBox renderSource = source with
@@ -550,7 +567,7 @@ public sealed class PageTranslationService : IPageTranslationService
         {
             TextBoxPayload text => text.Markdown,
             ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => table.Markdown,
+            TableBoxPayload table => TableContentAdapter.ToMarkdown(table),
             AlgorithmBoxPayload algorithm => algorithm.Markdown,
             EquationBoxPayload equation => equation.Latex,
             CodeBoxPayload code => code.Code,

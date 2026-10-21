@@ -5,6 +5,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Markdig;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -132,6 +133,7 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             : Text.ReplaceLineEndings(" ").Trim();
 
     public bool IsLogicalPage => BoxType == DocumentBoxType.LogicalPage;
+    public bool IsTable => BoxType == DocumentBoxType.Table;
     public bool IsMedia => BoxType is DocumentBoxType.Image or DocumentBoxType.Chart;
     public bool IsTitle => BoxType == DocumentBoxType.Title;
     public bool IsCode => BoxType is DocumentBoxType.Code or DocumentBoxType.Algorithm;
@@ -217,6 +219,67 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
                 new MediaBoxPayload(AssetId, string.IsNullOrWhiteSpace(text) ? null : text),
             _ => new TextBoxPayload(text ?? string.Empty)
         };
+    }
+
+    public Result<string> GetTableEditorHtml()
+    {
+        if (Payload is not TableBoxPayload table)
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "选中的边界框没有表格内容。");
+        }
+
+        if (TableContentAdapter.TryGetHtml(table, out string storedHtml))
+        {
+            return Result<string>.Success(storedHtml);
+        }
+
+        if (TableContentAdapter.IsHtml(table))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "表格包含当前可视编辑器不支持的 HTML 结构。为避免丢失内容，已阻止编辑和保存。");
+        }
+
+        if (string.Equals(table.Markdown.Trim(), "[Table]", StringComparison.Ordinal))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "旧表格没有可恢复的 HTML 内容，无法安全打开可视编辑器。");
+        }
+
+        string converted = Markdown.ToHtml(table.Markdown,
+            new MarkdownPipelineBuilder().UsePipeTables().Build());
+        Result<TableBoxPayload> normalized = TableContentAdapter.CreateHtml(converted);
+        return normalized.IsSuccess
+            ? Result<string>.Success(normalized.Value.Html!)
+            : Result<string>.Failure(normalized.ErrorCode!, normalized.ErrorMessage!);
+    }
+
+    public async Task<Result> SaveTableHtmlAsync(string html)
+    {
+        PageEditSessionId? sessionId = Workspace.EditSessionId;
+        if (sessionId is null || !Workspace.IsEditMode)
+        {
+            return Result.Failure(AppErrorCodes.InvalidState, "请先在 PDF 工作台中打开页面编辑会话。");
+        }
+
+        Result<TableBoxPayload> payload = TableContentAdapter.CreateHtml(html);
+        if (payload.IsFailure)
+        {
+            Workspace.Status = $"表格包含不受支持的结构，未保存：{payload.ErrorMessage}";
+            return Result.Failure(payload.ErrorCode!, payload.ErrorMessage!);
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateLeafAsync(sessionId.Value,
+            new UpdateLeafCommand(BoxId, DocumentBoxType.Table, payload.Value));
+        if (result.IsFailure)
+        {
+            Workspace.Status = $"表格未写入页面草稿：{result.ErrorMessage}";
+            return result;
+        }
+
+        Workspace.Status = "表格已写入页面草稿；提交前不会影响当前版本。";
+        await Workspace.RefreshBoxesAsync();
+        await Workspace.RefreshPreviewAsync();
+        return Result.Success();
     }
 
     private async Task DeleteAsync()
@@ -314,7 +377,7 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         {
             TextBoxPayload value => value.Markdown,
             ListBoxPayload value => value.Markdown,
-            TableBoxPayload value => value.Markdown,
+            TableBoxPayload value => TableContentAdapter.GetPlainText(value),
             AlgorithmBoxPayload algorithm => algorithm.Markdown,
             EquationBoxPayload value => value.Latex,
             CodeBoxPayload value => value.Code,

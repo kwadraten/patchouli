@@ -514,6 +514,87 @@ public sealed class MinerUDocumentTreeTests
     }
 
     [Fact]
+    public async Task Imported_authoritative_html_table_can_be_edited_committed_and_reopened_with_identity_and_spans()
+    {
+        await using Context context = await Context.CreateAsync();
+        const string html = "<table><thead><tr><th rowspan=\"2\">Metric</th><th colspan=\"2\">Period</th></tr>" +
+                            "<tr><th>2024</th><th>2025</th></tr></thead><tbody><tr><td><strong>Revenue</strong></td>" +
+                            "<td><eq>LaTex</eq></td><td><em>10</em></td></tr></tbody></table>";
+        const string jsonTemplate = """
+                                    {"pages":[{"page_num":1,"width":800,"height":1000,"blocks":[{"type":"table","bbox":[0,0,800,500],"content":{"html":"__HTML__"}}]}]}
+                                    """;
+        string json = jsonTemplate.Replace("\"__HTML__\"", JsonSerializer.Serialize(html), StringComparison.Ordinal);
+        string zip = CreateZip("_content_list_v2.json", json);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
+            TableBoxPayload table = boxes.Should().ContainSingle().Which.Payload.Should()
+                .BeOfType<TableBoxPayload>().Subject;
+            table.ContentFormat.Should().Be(TableContentFormat.Html);
+            table.ContentFormatVersion.Should().Be(TableContentFormat.AuthoritativeHtmlVersion);
+            table.Markdown.Should().BeEmpty();
+            table.Html.Should().Be(html);
+
+            DocumentTreeRevisionId workingRevisionId =
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> workingBoxes = (await context.Trees.ListBoxesAsync(workingRevisionId)).Value;
+            DocumentBox importedBox = workingBoxes.Should().ContainSingle().Which;
+            PageId pageId;
+            await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection())
+            {
+                await connection.OpenAsync();
+                pageId = PageId.Parse(await connection.QuerySingleAsync<string>(
+                    "select page_id from document_tree_revisions where tree_revision_id = @RevisionId;",
+                    new { RevisionId = workingRevisionId.ToString() }));
+            }
+
+            DocumentTreeRevision initiallyCommitted =
+                (await context.Trees.CommitWorkingRevisionAsync(workingRevisionId)).Value;
+            PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, pageId)).Value;
+            const string editedHtml =
+                "<table><thead><tr><th rowspan=\"2\">Metric</th><th colspan=\"2\">Period</th></tr>" +
+                "<tr><th>2024</th><th>2025</th></tr></thead><tbody><tr><td><strong>Sales</strong></td>" +
+                "<td><eq>LaTex</eq></td><td><em>10</em></td></tr></tbody></table>";
+            TableBoxPayload editedPayload = TableContentAdapter.CreateHtml(editedHtml).Value;
+            (await context.Trees.UpdateLeafAsync(edit.SessionId,
+                    new UpdateLeafCommand(importedBox.BoxId, DocumentBoxType.Table, editedPayload))).IsSuccess.Should()
+                .BeTrue();
+            DocumentTreeRevision committed = (await context.Trees.CommitPageEditAsync(edit.SessionId)).Value;
+
+            IReadOnlyList<DocumentBox> reopenedBoxes =
+                (await context.Trees.ListBoxesAsync(committed.TreeRevisionId)).Value;
+            DocumentBox reopenedBox = reopenedBoxes.Should().ContainSingle().Which;
+            reopenedBox.BoxId.Should().Be(importedBox.BoxId);
+            reopenedBox.BBox.Should().Be(importedBox.BBox);
+            reopenedBox.Payload.Should().Be(editedPayload);
+            committed.ParentTreeRevisionId.Should().Be(initiallyCommitted.TreeRevisionId);
+
+            CompiledMarkdown compiled = (await new DocumentMarkdownCompiler(context.Trees, new MarkdigMarkdownEngine())
+                .CompilePageMarkdownAsync(committed.TreeRevisionId, includeComplexTableHtml: true)).Value;
+            ReadingScene scene = ReadingSceneBuilder.Build(compiled.Document!, compiled.SourceMap, reopenedBoxes,
+                "edited-page", markdownSource: compiled.Markdown);
+            ReadingBlock readingTable = scene.Blocks.Should().ContainSingle(block => block.Kind == "table").Which;
+            readingTable.BoxId.Should().Be(importedBox.BoxId);
+            ReadingTableCell[] cells = readingTable.Table!.Cells!.ToArray();
+            cells.Should().Contain(cell => cell.Text == "Sales" && cell.Row == 2);
+            cells.Should().Contain(cell => cell.Text == "Metric" && cell.RowSpan == 2);
+            cells.Should().Contain(cell => cell.Text == "Period" && cell.ColumnSpan == 2);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
     public async Task Importer_rejects_full_markdown_without_tree_artifact()
     {
         await using Context context = await Context.CreateAsync();
@@ -535,7 +616,7 @@ public sealed class MinerUDocumentTreeTests
     }
 
     [Fact]
-    public async Task Irregular_table_becomes_placeholder_with_diagnostic()
+    public async Task Valid_single_row_spanned_html_table_stays_authoritative_without_gfm_diagnostic()
     {
         await using Context context = await Context.CreateAsync();
         string zip = CreateZip("_content_list_v2.json", """
@@ -548,11 +629,11 @@ public sealed class MinerUDocumentTreeTests
                     new OcrDocumentTreeImporter(context.Trees))
                 .ImportResultZipAsync(new MinerUImportRequest(
                     zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
-            result.Value.Warnings.Should().Contain("table_not_representable_as_gfm");
+            result.Value.Warnings.Should().NotContain("table_not_representable_as_gfm");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
                 DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
-            boxes.Single().Payload.Should().Be(new TableBoxPayload(
-                "[Table]", "<table><tr><td rowspan=\"2\">Merged</td></tr></table>"));
+            boxes.Single().Payload.Should().Be(TableContentAdapter.CreateHtml(
+                "<table><tr><td rowspan=\"2\">Merged</td></tr></table>").Value);
         }
         finally
         {

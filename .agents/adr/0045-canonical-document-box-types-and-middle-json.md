@@ -2,9 +2,18 @@
 
 Status: accepted by user direction, 2026-10-17.
 
-Document boxes are application semantics independent of an OCR implementation. Import
-adapters accept shared Middle JSON 2.0 or legacy content lists, validate their shape,
-and normalize type aliases before creating page-local leaf candidates. No producer,
+Table representation is amended by [ADR 0050](0050-html-table-payloads.md), implementing
+issue #26: validated HTML can be the explicitly versioned, editable table authority.
+Legacy Markdown and diagnostic-placeholder payloads remain read-compatible; this does
+not change the payload decisions for other box types or permit rewriting history on read.
+
+The content vocabulary is based on MinerU v4's shared Middle JSON 2.0 model. By user
+direction on 2026-10-21, other OCR engines normalize to that same model rather than
+defining competing content semantics. Application-owned Box IDs, geometry and revisions
+remain independent of the producing engine. Import adapters accept the shared model or
+legacy content lists, validate their shape, and normalize type aliases before creating
+page-local leaf candidates. The evidence boundary is recorded in
+[OCR normalization](../ocr-normalization.md). No producer,
 provider, source-format or provenance fields are added to canonical document storage.
 Unmapped input types block adoption rather than silently degrading to ordinary text.
 

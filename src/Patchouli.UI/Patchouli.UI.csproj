@@ -31,6 +31,8 @@
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.AvaloniaEdit" />
     <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="AvaloniaRichEditor" />
+    <PackageReference Include="Markdig" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="LiveMarkdown.Avalonia" />
     <PackageReference Include="LiveMarkdown.Avalonia.Mermaid" />

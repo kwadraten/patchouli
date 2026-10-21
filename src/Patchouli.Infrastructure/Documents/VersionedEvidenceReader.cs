@@ -218,7 +218,7 @@ public sealed class VersionedEvidenceReader : IVersionedEvidenceReader
                 ? "[Equation image]"
                 : $"$$\n{equation.Latex.Trim()}\n$$",
             ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => table.Markdown,
+            TableBoxPayload table => TableContentAdapter.ToMarkdown(table),
             CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
             MediaBoxPayload media => CompileMedia(box.BoxType, media),
             _ => string.Empty

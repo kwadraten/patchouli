@@ -1,4 +1,5 @@
 using Dapper;
+using Markdig;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
@@ -127,6 +128,9 @@ public sealed class PageTranslationCompiler : IPageTranslationCompiler
 /// </summary>
 internal static class TranslationBoxCodec
 {
+    private static readonly MarkdownPipeline
+        LegacyTablePipeline = new MarkdownPipelineBuilder().UsePipeTables().Build();
+
     public static DocumentBoxPayload? FromStorage(DocumentBox box, string stored)
     {
         return box.Payload switch
@@ -135,7 +139,7 @@ internal static class TranslationBoxCodec
             EquationBoxPayload equation => equation with { Latex = stored },
             AlgorithmBoxPayload algorithm => algorithm with { Markdown = stored },
             ListBoxPayload => new ListBoxPayload(stored),
-            TableBoxPayload table => new TableBoxPayload(stored, stored.Trim() == "[Table]" ? table.Html : null),
+            TableBoxPayload table => ReadTableTranslation(table, stored),
             CodeBoxPayload => new CodeBoxPayload(stored),
             MediaBoxPayload media when TryReadMediaDescription(box.BoxType, stored, out string? description) =>
                 new MediaBoxPayload(media.AssetId, description),
@@ -158,11 +162,59 @@ internal static class TranslationBoxCodec
             EquationBoxPayload => StripMathFence(trimmed),
             AlgorithmBoxPayload => trimmed,
             ListBoxPayload => trimmed,
-            TableBoxPayload => trimmed,
+            TableBoxPayload table => ValidateTableStorage(table, trimmed),
             CodeBoxPayload => StripCodeFence(trimmed),
             MediaBoxPayload => trimmed,
             _ => null
         };
+    }
+
+    private static DocumentBoxPayload? ReadTableTranslation(TableBoxPayload source, string stored)
+    {
+        if (TableContentAdapter.TryGetHtml(source, out _))
+        {
+            Result<TableBoxPayload> candidate = TableContentAdapter.CreateHtml(stored);
+            if (candidate.IsFailure && TableContentAdapter.IsHtml(source))
+            {
+                // A representation-only source edit may retain an older GFM translation row.
+                // Rebuild its projection, then require the current HTML table's exact structure.
+                candidate = TableContentAdapter.CreateHtml(Markdown.ToHtml(stored, LegacyTablePipeline));
+            }
+
+            if (candidate.IsSuccess)
+            {
+                Result<TableBoxPayload> validated = TableContentAdapter.ValidateTranslation(source, candidate.Value);
+                return validated.IsSuccess ? validated.Value with { Annotations = source.Annotations } : null;
+            }
+
+            if (TableContentAdapter.IsHtml(source))
+            {
+                return null;
+            }
+        }
+
+        // Historical Markdown translations remain readable; reads never migrate stored rows.
+        return new TableBoxPayload(stored, stored.Trim() == "[Table]" ? source.Html : null)
+        {
+            Annotations = source.Annotations
+        };
+    }
+
+    private static string? ValidateTableStorage(TableBoxPayload source, string fragment)
+    {
+        if (!TableContentAdapter.TryGetHtml(source, out _))
+        {
+            return fragment;
+        }
+
+        Result<TableBoxPayload> candidate = TableContentAdapter.CreateHtml(fragment);
+        if (candidate.IsFailure)
+        {
+            return null;
+        }
+
+        Result<TableBoxPayload> validated = TableContentAdapter.ValidateTranslation(source, candidate.Value);
+        return validated.IsSuccess ? validated.Value.Html : null;
     }
 
     public static string? ToMarkdown(DocumentBox box, string stored)
@@ -176,6 +228,10 @@ internal static class TranslationBoxCodec
             EquationBoxPayload => string.IsNullOrWhiteSpace(value) ? "[Equation image]" : $"$$\n{value.Trim()}\n$$",
             AlgorithmBoxPayload => value,
             ListBoxPayload => value,
+            TableBoxPayload table when TableContentAdapter.IsHtml(table) =>
+                ReadTableTranslation(table, value) is TableBoxPayload translated
+                    ? TableContentAdapter.ToMarkdown(translated)
+                    : TableContentAdapter.ToMarkdown(table),
             TableBoxPayload => value,
             CodeBoxPayload => DocumentMarkdownRenderer.CompileCode(value, box.CodeLanguage),
             MediaBoxPayload => value,

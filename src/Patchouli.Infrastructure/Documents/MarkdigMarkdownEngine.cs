@@ -87,11 +87,15 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
                 ? ValidateSingleBlock<ListBlock>(list.Markdown, "a single GFM list")
                 : Invalid("List boxes require Markdown list payload."),
             DocumentBoxType.Table => payload is TableBoxPayload table
-                ? table.Markdown.Trim() == "[Table]"
-                    ? ValidateTablePlaceholder(table)
-                    : string.IsNullOrWhiteSpace(table.Html)
-                        ? ValidateSingleBlock<Table>(table.Markdown, "a single GFM pipe table")
-                        : Invalid("Only [Table] placeholders may retain raw HTML source.")
+                ? TableContentAdapter.IsHtml(table)
+                    ? ValidateAuthoritativeTable(table)
+                    : table.ContentFormat == TableContentFormat.LegacyMarkdown && table.ContentFormatVersion == 0
+                        ? table.Markdown.Trim() == "[Table]"
+                            ? ValidateTablePlaceholder(table)
+                            : string.IsNullOrWhiteSpace(table.Html)
+                                ? ValidateSingleBlock<Table>(table.Markdown, "a single GFM pipe table")
+                                : Invalid("Only [Table] placeholders may retain raw HTML source.")
+                        : Invalid("The table payload format or version is not supported.")
                 : Invalid("Table boxes require GFM pipe-table payload."),
             DocumentBoxType.Image or DocumentBoxType.Chart => payload is MediaBoxPayload
                 ? Result.Success()
@@ -133,22 +137,18 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
 
     private Result ValidateTablePlaceholder(TableBoxPayload table)
     {
-        if (string.IsNullOrWhiteSpace(table.Html))
-        {
-            return Result.Success();
-        }
-
-        Result dangerous = RejectDangerousHtml(table.Html);
-        if (dangerous.IsFailure)
-        {
-            return dangerous;
-        }
-
-        string html = table.Html.Trim();
-        return html.StartsWith("<table", StringComparison.OrdinalIgnoreCase) &&
-               html.EndsWith("</table>", StringComparison.OrdinalIgnoreCase)
+        // Historical projections can fall back to [Table], but validation must not admit
+        // unsupported raw HTML into a new working revision.
+        return string.IsNullOrWhiteSpace(table.Html) || TableContentAdapter.TryGetHtml(table, out _)
             ? Result.Success()
-            : Invalid("Table placeholder HTML must contain one table element.");
+            : Invalid("Legacy table HTML content is invalid or unsupported.");
+    }
+
+    private static Result ValidateAuthoritativeTable(TableBoxPayload table)
+    {
+        return TableContentAdapter.TryGetHtml(table, out string html)
+            ? Result.Success()
+            : Invalid("Authoritative HTML table content is invalid or unsupported.");
     }
 
     // OCR text may quote HTML-looking placeholders (for example Option "<option>").
@@ -287,8 +287,10 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
                 LineBreakInline => new MarkdownInlineModel("line_break", "\n"),
                 EmphasisInline { DelimiterChar: '^' } superscript => new MarkdownInlineModel(
                     "superscript", string.Empty, MapInlines(superscript.FirstChild)),
-                EmphasisInline { DelimiterChar: '~' } strikethrough => new MarkdownInlineModel(
+                EmphasisInline { DelimiterChar: '~', DelimiterCount: >= 2 } strikethrough => new MarkdownInlineModel(
                     "strikethrough", string.Empty, MapInlines(strikethrough.FirstChild)),
+                EmphasisInline { DelimiterChar: '~' } subscript => new MarkdownInlineModel(
+                    "subscript", string.Empty, MapInlines(subscript.FirstChild)),
                 EmphasisInline emphasis => new MarkdownInlineModel(
                     emphasis.DelimiterCount >= 2 ? "strong" : "emphasis", string.Empty,
                     MapInlines(emphasis.FirstChild)),

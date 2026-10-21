@@ -20,9 +20,9 @@ namespace Patchouli.Tests;
 public sealed class MinerURegionCandidateTests
 {
     [Fact]
-    public async Task MinerU_region_candidate_routes_through_image_upload_instead_of_the_adapter()
+    public async Task MinerU_region_candidate_uploads_png_and_preserves_plain_text_output()
     {
-        await using Context context = await Context.CreateAsync();
+        await using Context context = await Context.CreateAsync(includeImageBlock: false);
         NormalizedBBox region = new(0.2, 0.3, 0.4, 0.2);
 
         Result<OcrRegionCandidate> candidate = await context.Coordinator.RecognizeRegionCandidateAsync(
@@ -33,6 +33,25 @@ public sealed class MinerURegionCandidateTests
         candidate.Value.BoxType.Should().Be(DocumentBoxType.Text);
         candidate.Value.Payload.Should().BeOfType<TextBoxPayload>()
             .Which.Markdown.Should().Be("region line one\nregion line two");
+        context.Renders.LastRegion.Should().Be(region);
+        context.MinerUClient.UploadRequest.Should().NotBeNull();
+        context.MinerUClient.UploadRequest!.FileName.Should().EndWith(".png");
+        (await context.CountAsync("select count(1) from ocr_runs;")).Should().Be(0);
+        (await context.CountAsync("select count(1) from document_tree_revisions;")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MinerU_region_candidate_rejects_structured_output_without_flattening_it()
+    {
+        await using Context context = await Context.CreateAsync();
+        NormalizedBBox region = new(0.2, 0.3, 0.4, 0.2);
+
+        Result<OcrRegionCandidate> candidate = await context.Coordinator.RecognizeRegionCandidateAsync(
+            context.Document.DocumentInstanceId, context.Preset.PresetId, context.Page.PageId, region);
+
+        candidate.IsFailure.Should().BeTrue();
+        candidate.ErrorCode.Should().Be(AppErrorCodes.UnsupportedOperation);
+        candidate.ErrorMessage.Should().Contain("non-text or structured content");
         context.Renders.LastRegion.Should().Be(region);
         context.MinerUClient.UploadRequest.Should().NotBeNull();
         context.MinerUClient.UploadRequest!.FileName.Should().EndWith(".png");
@@ -90,7 +109,8 @@ public sealed class MinerURegionCandidateTests
         }
 
         public static async Task<Context> CreateAsync(
-            Func<string, Task<Result<string>>>? credentialResolver = null)
+            Func<string, Task<Result<string>>>? credentialResolver = null,
+            bool includeImageBlock = true)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
@@ -116,7 +136,7 @@ public sealed class MinerURegionCandidateTests
             OcrAdapterRegistry adapters = new();
             adapters.RegisterAdapter(new MinerUOcrAdapter());
             FakePageRenderService renders = new(regionPngPath);
-            FakeMinerUClient minerUClient = new();
+            FakeMinerUClient minerUClient = new(includeImageBlock);
             OcrRunEngine coordinator = new(
                 database.ConnectionFactory,
                 clock,
@@ -216,6 +236,13 @@ public sealed class MinerURegionCandidateTests
 
     private sealed class FakeMinerUClient : IMinerUClient
     {
+        private readonly bool _includeImageBlock;
+
+        public FakeMinerUClient(bool includeImageBlock)
+        {
+            _includeImageBlock = includeImageBlock;
+        }
+
         public MinerUUploadRequest? UploadRequest { get; private set; }
         public bool IsConfigured => true;
 
@@ -254,9 +281,9 @@ public sealed class MinerURegionCandidateTests
             {
                 ZipArchiveEntry entry = archive.CreateEntry("region_content_list.json");
                 using StreamWriter writer = new(entry.Open());
-                writer.Write("""
-                             [{"type":"text","page_idx":0,"text":"region line one","bbox":[0,0,100,20]},{"type":"image","page_idx":0,"bbox":[0,20,100,120]},{"type":"text","page_idx":0,"text":"region line two","bbox":[0,120,100,140]}]
-                             """);
+                writer.Write(_includeImageBlock
+                    ? """[{"type":"text","page_idx":0,"text":"region line one","bbox":[0,0,100,20]},{"type":"image","page_idx":0,"bbox":[0,20,100,120]},{"type":"text","page_idx":0,"text":"region line two","bbox":[0,120,100,140]}]"""
+                    : """[{"type":"text","page_idx":0,"text":"region line one","bbox":[0,0,100,20]},{"type":"text","page_idx":0,"text":"region line two","bbox":[0,20,100,40]}]""");
             }
 
             return Task.FromResult(Result<MinerUDownloadedResult>.Success(

@@ -85,7 +85,24 @@ public sealed record EquationBoxPayload(string Latex, bool HasImage = false) : D
 
 public sealed record ListBoxPayload(string Markdown) : DocumentBoxPayload;
 
-public sealed record TableBoxPayload(string Markdown, string? Html = null) : DocumentBoxPayload;
+public static class TableContentFormat
+{
+    public const string LegacyMarkdown = "markdown";
+    public const string Html = "html";
+    public const int AuthoritativeHtmlVersion = 1;
+}
+
+/// <summary>
+/// A table payload. The original positional constructor remains the legacy Markdown form.
+/// Versioned HTML payloads keep their editable content only in <see cref="Html"/>; Markdown
+/// is empty and all projections are produced by <see cref="TableContentAdapter"/>.
+/// </summary>
+public sealed record TableBoxPayload(string Markdown, string? Html = null) : DocumentBoxPayload
+{
+    public string ContentFormat { get; init; } = TableContentFormat.LegacyMarkdown;
+
+    public int ContentFormatVersion { get; init; }
+}
 
 public sealed record AlgorithmBoxPayload(string Markdown) : DocumentBoxPayload;
 

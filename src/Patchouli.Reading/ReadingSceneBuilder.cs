@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using HtmlAgilityPack;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -16,20 +17,6 @@ namespace Patchouli.Reading;
 /// </summary>
 public static class ReadingSceneBuilder
 {
-    private static readonly Regex HtmlRowPattern = new(
-        @"<tr\b[^>]*>(?<body>.*?)</tr>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-    private static readonly Regex HtmlCellPattern = new(
-        @"<(?<tag>t[dh])\b(?<attrs>[^>]*)>(?<body>.*?)</t[dh]>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-    private static readonly Regex HtmlSpanPattern = new(
-        @"\bcolspan\s*=\s*[""']?(?<value>\d+)", RegexOptions.IgnoreCase);
-
-    private static readonly Regex HtmlTagPattern = new("<[^>]+>", RegexOptions.Singleline);
-
-    private static readonly Regex WhitespacePattern = new(@"\s+", RegexOptions.Singleline);
-
     // Semantics:
     // - One ReadingBlock per MarkdownBlock in model.Blocks, in order.
     // - BoxId: from sourceMap — the entry whose [PreviewNodeStart, PreviewNodeStart+PreviewNodeCount)
@@ -209,7 +196,9 @@ public static class ReadingSceneBuilder
             return null;
         }
 
-        return ParseHtmlTable((box?.Payload as TableBoxPayload)?.Html);
+        return box?.Payload is TableBoxPayload payload && TableContentAdapter.TryGetHtml(payload, out string html)
+            ? ParseHtmlTable(html)
+            : null;
     }
 
     // The compiled HTML fallback of a complex table is the only table block that starts with a
@@ -349,57 +338,141 @@ public static class ReadingSceneBuilder
         return backslashes % 2 == 1;
     }
 
-    // Reader for the stored HTML of a [Table] placeholder (an irregular or spanning table that GFM
-    // cannot express; the OCR pipeline keeps the source <table> exactly for this case). Only rows
-    // and cells are read: a colspan reserves its extra slots as empty cells so the row still lines
-    // up with the rest of the grid, and rowspan stays with the row that declares it. Cell markup is
-    // flattened to text, so nested emphasis/marks read as their own text rather than as tags.
+    // Read the table's own rows/cells (nested tables remain inside their parent cell), retaining
+    // merged-cell positions for the native reader's grid renderer. The original HTML stays on the
+    // box payload; this is a read-only display projection.
     private static ReadingTable? ParseHtmlTable(string? html)
     {
-        if (string.IsNullOrWhiteSpace(html) || !html.Contains("<tr", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(html))
         {
             return null;
         }
 
-        List<IReadOnlyList<string>> rows = [];
-        bool hasHeader = false;
-        foreach (Match rowMatch in HtmlRowPattern.Matches(html))
+        HtmlDocument document = new();
+        document.LoadHtml(html);
+        HtmlNode? table = document.DocumentNode.Descendants("table").FirstOrDefault();
+        if (table is null)
         {
-            List<string> cells = [];
-            bool headerRow = false;
-            foreach (Match cellMatch in HtmlCellPattern.Matches(rowMatch.Groups["body"].Value))
+            return null;
+        }
+
+        List<HtmlNode> sourceRows = [];
+        CollectTableChildren(table, "tr", sourceRows);
+        List<List<string>> rows = [];
+        List<ReadingTableCell> cells = [];
+        Dictionary<int, int> occupiedThroughRow = [];
+        bool hasHeader = false;
+        for (int rowIndex = 0; rowIndex < sourceRows.Count; rowIndex++)
+        {
+            HtmlNode row = sourceRows[rowIndex];
+            List<HtmlNode> sourceCells = [];
+            CollectTableChildren(row, "td", sourceCells);
+            CollectTableChildren(row, "th", sourceCells);
+            sourceCells = sourceCells.OrderBy(cell => cell.StreamPosition).ToList();
+            List<string> values = [];
+            int column = 0;
+            foreach (HtmlNode sourceCell in sourceCells)
             {
-                headerRow |= string.Equals(cellMatch.Groups["tag"].Value, "th", StringComparison.OrdinalIgnoreCase);
-                cells.Add(HtmlCellText(cellMatch.Groups["body"].Value));
-                int span = ColumnSpan(cellMatch.Groups["attrs"].Value);
-                for (int extra = 1; extra < span; extra++)
+                while (occupiedThroughRow.TryGetValue(column, out int occupiedThrough) &&
+                       occupiedThrough >= rowIndex)
                 {
-                    cells.Add(string.Empty);
+                    SetCell(values, column++, string.Empty);
+                }
+
+                int columnSpan = ReadSpan(sourceCell, "colspan");
+                int rowSpan = ReadSpan(sourceCell, "rowspan");
+                string text = NormalizeCellText(sourceCell.InnerText);
+                bool isHeader = string.Equals(sourceCell.Name, "th", StringComparison.OrdinalIgnoreCase);
+                hasHeader |= rowIndex == 0 && isHeader;
+                cells.Add(new ReadingTableCell(rowIndex, column, text, rowSpan, columnSpan, isHeader));
+                SetCell(values, column, text);
+                for (int offset = 0; offset < columnSpan; offset++)
+                {
+                    int occupiedColumn = column + offset;
+                    if (rowSpan > 1)
+                    {
+                        occupiedThroughRow[occupiedColumn] = Math.Max(
+                            occupiedThroughRow.GetValueOrDefault(occupiedColumn, -1), rowIndex + rowSpan - 1);
+                    }
+
+                    if (offset > 0)
+                    {
+                        SetCell(values, occupiedColumn, string.Empty);
+                    }
+                }
+
+                column += columnSpan;
+            }
+
+            foreach ((int occupiedColumn, int occupiedThrough) in occupiedThroughRow)
+            {
+                if (occupiedThrough >= rowIndex && occupiedColumn >= values.Count)
+                {
+                    SetCell(values, occupiedColumn, string.Empty);
                 }
             }
 
-            if (cells.Count == 0)
+            rows.Add(values);
+        }
+
+        if (rows.Count == 0 || cells.Count == 0)
+        {
+            return null;
+        }
+
+        int columnCount = rows.Max(row => row.Count);
+        foreach (List<string> row in rows)
+        {
+            while (row.Count < columnCount)
+            {
+                row.Add(string.Empty);
+            }
+        }
+
+        return new ReadingTable(rows.Select(row => (IReadOnlyList<string>)row.AsReadOnly()).ToArray(), hasHeader)
+        {
+            Cells = cells.AsReadOnly()
+        };
+    }
+
+    private static void CollectTableChildren(HtmlNode parent, string elementName, List<HtmlNode> result)
+    {
+        foreach (HtmlNode child in parent.ChildNodes)
+        {
+            if (string.Equals(child.Name, "table", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            hasHeader |= rows.Count == 0 && headerRow;
-            rows.Add(cells);
+            if (string.Equals(child.Name, elementName, StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(child);
+            }
+            else
+            {
+                CollectTableChildren(child, elementName, result);
+            }
+        }
+    }
+
+    private static int ReadSpan(HtmlNode cell, string attributeName)
+    {
+        string value = cell.GetAttributeValue(attributeName, string.Empty);
+        return int.TryParse(value, out int span) ? Math.Clamp(span, 1, 64) : 1;
+    }
+
+    private static string NormalizeCellText(string value)
+    {
+        return Regex.Replace(WebUtility.HtmlDecode(value), @"\s+", " ", RegexOptions.Singleline).Trim();
+    }
+
+    private static void SetCell(List<string> row, int column, string text)
+    {
+        while (row.Count <= column)
+        {
+            row.Add(string.Empty);
         }
 
-        return rows.Count == 0 ? null : new ReadingTable(rows, hasHeader);
-    }
-
-    private static string HtmlCellText(string body)
-    {
-        return WhitespacePattern.Replace(WebUtility.HtmlDecode(HtmlTagPattern.Replace(body, " ")), " ").Trim();
-    }
-
-    private static int ColumnSpan(string attributes)
-    {
-        Match span = HtmlSpanPattern.Match(attributes);
-        return span.Success && int.TryParse(span.Groups["value"].Value, out int value) && value > 0
-            ? value
-            : 1;
+        row[column] = text;
     }
 }

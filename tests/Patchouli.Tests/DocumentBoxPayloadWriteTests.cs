@@ -149,7 +149,7 @@ public sealed class DocumentBoxPayloadWriteTests
     }
 
     [Fact]
-    public async Task Replacement_preserves_media_assets_and_table_html_from_existing_payloads()
+    public async Task Replacement_rejects_legacy_table_projection_without_partially_updating_media_or_table()
     {
         await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
         DocumentBoxId mediaId = DocumentBoxId.New();
@@ -161,6 +161,7 @@ public sealed class DocumentBoxPayloadWriteTests
             new DocumentBoxSeed(tableId, null, 1, DocumentBoxType.Table, null, new NormalizedBBox(0.55, 0.02, 0.4, 0.3),
                 new TableBoxPayload(tableMarkdown, "<table><tr><td>hidden</td></tr></table>")));
 
+        int originalCommitCount = await CountForPageAsync(context, "document_commits");
         Result<DocumentTreeRevision> result = await context.Trees.ReplaceBoxPayloadsAsync(context.DocumentId,
             context.PageId,
             original.TreeRevisionId,
@@ -170,12 +171,47 @@ public sealed class DocumentBoxPayloadWriteTests
                 [tableId] = new TableBoxPayload(tableMarkdown, "<table><tr><td>injected</td></tr></table>")
             });
 
+        result.IsFailure.Should().BeTrue("a legacy placeholder cannot authorize rewriting authoritative table HTML");
+        (await CountForPageAsync(context, "document_commits")).Should().Be(originalCommitCount);
+        DocumentTreeRevision current =
+            (await context.Trees.GetCurrentRevisionAsync(context.DocumentId, context.PageId)).Value;
+        current.TreeRevisionId.Should().Be(original.TreeRevisionId);
+        IReadOnlyList<DocumentBox> unchanged = await context.ListBoxesAsync(current.TreeRevisionId);
+        unchanged.Single(box => box.BoxId == mediaId).Payload
+            .Should().Be(new MediaBoxPayload("asset-original", "old description"));
+        unchanged.Single(box => box.BoxId == tableId).Payload
+            .Should().Be(new TableBoxPayload(tableMarkdown, "<table><tr><td>hidden</td></tr></table>"));
+    }
+
+    [Fact]
+    public async Task Replacement_accepts_validated_authoritative_table_html_and_preserves_media_asset_identity()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId mediaId = DocumentBoxId.New();
+        DocumentBoxId tableId = DocumentBoxId.New();
+        const string originalHtml = "<table><tr><td>hidden</td></tr></table>";
+        const string editedHtml = "<table><tr><td>updated</td></tr></table>";
+        DocumentTreeRevision original = await context.CommitAsync(
+            new DocumentBoxSeed(mediaId, null, 0, DocumentBoxType.Image, null,
+                new NormalizedBBox(0.02, 0.02, 0.4, 0.3), new MediaBoxPayload("asset-original", "old description")),
+            new DocumentBoxSeed(tableId, null, 1, DocumentBoxType.Table, null,
+                new NormalizedBBox(0.55, 0.02, 0.4, 0.3), TableContentAdapter.CreateHtml(originalHtml).Value));
+        TableBoxPayload editedTable = TableContentAdapter.CreateHtml(editedHtml).Value;
+
+        Result<DocumentTreeRevision> result = await context.Trees.ReplaceBoxPayloadsAsync(context.DocumentId,
+            context.PageId,
+            original.TreeRevisionId,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload>
+            {
+                [mediaId] = new MediaBoxPayload("asset-injected", "new description"),
+                [tableId] = editedTable
+            });
+
         result.IsSuccess.Should().BeTrue(result.ErrorMessage);
         IReadOnlyList<DocumentBox> updated = await context.ListBoxesAsync(result.Value.TreeRevisionId);
         updated.Single(box => box.BoxId == mediaId).Payload
             .Should().Be(new MediaBoxPayload("asset-original", "new description"));
-        updated.Single(box => box.BoxId == tableId).Payload
-            .Should().Be(new TableBoxPayload(tableMarkdown, "<table><tr><td>hidden</td></tr></table>"));
+        updated.Single(box => box.BoxId == tableId).Payload.Should().Be(editedTable);
     }
 
     [Fact]

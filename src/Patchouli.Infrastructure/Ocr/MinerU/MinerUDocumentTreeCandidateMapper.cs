@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Ocr;
 
@@ -35,6 +36,27 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         }
 
         return new OcrDocumentTreeCandidate(LinkContinuations(mappedPages, diagnostics), diagnostics);
+    }
+
+    public OcrDocumentTreeCandidate MapTextBoxes(Page page, IReadOnlyList<OcrEngineTextBox> textBoxes)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(textBoxes);
+        const double normalizedPageSize = 1000;
+        MinerUContentListPage contentPage = new(page.PageIndex + 1, normalizedPageSize, normalizedPageSize,
+            textBoxes.Select(box =>
+            {
+                double[] bbox = box.BBox.Validate().IsSuccess
+                    ?
+                    [
+                        box.BBox.X * normalizedPageSize, box.BBox.Y * normalizedPageSize,
+                        (box.BBox.X + box.BBox.Width) * normalizedPageSize,
+                        (box.BBox.Y + box.BBox.Height) * normalizedPageSize
+                    ]
+                    : [0, 0, 0, 0];
+                return new MinerUContentBlock("text", bbox, box.Text, null, box.Confidence);
+            }).ToArray());
+        return MapDocument(new MinerUContentListDocument([contentPage]), [page]);
     }
 
     public (OcrPageCandidate Page, IReadOnlyList<OcrDiagnostic> Diagnostics) MapImagePage(
@@ -459,6 +481,37 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         Core.Ids.PageId pageId,
         int sourceOrder)
     {
+        if (!string.IsNullOrWhiteSpace(block.TableHtml))
+        {
+            Result<TableBoxPayload> htmlPayload = TableContentAdapter.CreateHtml(block.TableHtml);
+            if (htmlPayload.IsSuccess)
+            {
+                return (DocumentBoxType.Table, null, htmlPayload.Value, null, false);
+            }
+
+            if (!block.TableHtml.Contains("<table", StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add(new OcrDiagnostic(
+                    "unsupported_table_spatial_text",
+                    "MinerU returned a spatial-text table projection. Patchouli preserves the original projection " +
+                    "in this candidate, but cannot adopt it as a structured table; use supported structured OCR " +
+                    "review instead.",
+                    pageId,
+                    sourceOrder,
+                    true));
+                return (DocumentBoxType.Table, null, new TableBoxPayload("[Table]", block.TableHtml), null, false);
+            }
+
+            diagnostics.Add(new OcrDiagnostic(
+                "table_html_rejected",
+                (htmlPayload.ErrorMessage ?? "MinerU table HTML did not pass the restricted table validator.") +
+                " The candidate retains the rejected fragment as a diagnostic placeholder and cannot be adopted.",
+                pageId,
+                sourceOrder,
+                true));
+            return (DocumentBoxType.Table, null, new TableBoxPayload("[Table]", block.TableHtml), null, false);
+        }
+
         IReadOnlyList<MinerUTableCell> cells = block.TableCells is { Count: > 0 }
             ? block.TableCells
             : block.Cells ?? [];
@@ -467,9 +520,11 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         {
             diagnostics.Add(new OcrDiagnostic(
                 "table_gfm_too_complex",
-                "MinerU table GFM exceeded Markdig limits and was stored as a [Table] HTML placeholder.",
+                "MinerU table cells could not be represented within the supported GFM limits; the table is " +
+                "preserved as a diagnostic placeholder and cannot be adopted.",
                 pageId,
-                sourceOrder));
+                sourceOrder,
+                true));
             gfm = null;
         }
         else if (gfm is null)
@@ -478,7 +533,8 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                 "table_not_representable_as_gfm",
                 "MinerU table could not be losslessly normalized to a regular GFM pipe table.",
                 pageId,
-                sourceOrder));
+                sourceOrder,
+                true));
         }
 
         if (gfm is null)
@@ -487,7 +543,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         }
 
         return (DocumentBoxType.Table, null,
-            new TableBoxPayload(gfm, gfm == "[Table]" ? block.TableHtml : null), null, false);
+            new TableBoxPayload(gfm), null, false);
     }
 
     private static string? TryBuildGfmTable(IReadOnlyList<MinerUTableCell> cells)

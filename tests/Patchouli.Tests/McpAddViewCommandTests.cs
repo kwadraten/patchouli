@@ -1,5 +1,8 @@
 using System.Reflection;
 using FluentAssertions;
+using Patchouli.Core.Bibliography;
+using Patchouli.Core.Bibliography.Biblatex;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Mcp;
@@ -30,7 +33,7 @@ public sealed class McpAddViewCommandTests
     {
         McpCommandService service = CreateService();
 
-        var result = await service.AddAsync(new McpAddRequest("  "));
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("  "));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
@@ -41,7 +44,7 @@ public sealed class McpAddViewCommandTests
     {
         McpCommandService service = CreateService(addEnabled: false);
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
@@ -50,9 +53,9 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_without_host_import_service_is_unavailable()
     {
-        McpCommandService service = CreateService(fileImport: null);
+        McpCommandService service = CreateService(null);
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.Unavailable);
@@ -61,13 +64,14 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_rejects_url_with_invalid_argument()
     {
-        var (_, import) = Stub<IFileImportService>.Create();
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
         import.Handle(nameof(IFileImportService.ImportAsync), _ =>
             Task.FromResult(Result<FileImportResult>.Failure(
                 FileImportErrorCodes.UrlNotAllowed, "URLs are not accepted.")));
-        McpCommandService service = CreateService(fileImport: import.Proxy);
+        McpCommandService service = CreateService(import.Proxy);
 
-        var result = await service.AddAsync(new McpAddRequest("https://example.com/p.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result =
+            await service.AddAsync(new McpAddRequest("https://example.com/p.pdf"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
@@ -76,16 +80,16 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_success_maps_uris_issues_and_body_status()
     {
-        var (_, import) = Stub<IFileImportService>.Create();
-        var imported = new FileImportResult(true, LocalImportKind.Pdf, false, true,
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
+        FileImportResult imported = new(true, LocalImportKind.Pdf, false, true,
             "patchouli://items/item-1.yml", "patchouli://texts/" + DocId + "/", null, 12,
             "imported", "ingested",
             [new FileImportIssue("moved_to_search_root", "moved")], null);
         import.Handle(nameof(IFileImportService.ImportAsync),
             _ => Task.FromResult(Result<FileImportResult>.Success(imported)));
-        McpCommandService service = CreateService(fileImport: import.Proxy);
+        McpCommandService service = CreateService(import.Proxy);
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
 
         result.IsSuccess.Should().BeTrue();
         McpAddResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
@@ -101,7 +105,7 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_denies_pdf_without_items_and_texts_add_permission()
     {
-        var (_, import) = Stub<IFileImportService>.Create();
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
         FileImportRequest? seen = null;
         import.Handle(nameof(IFileImportService.ImportAsync), args =>
         {
@@ -120,10 +124,10 @@ public sealed class McpAddViewCommandTests
         {
             DomainPermissions = [new McpDomainPermission("items", "add", false)]
         };
-        McpCommandService service = CreateService(fileImport: import.Proxy,
+        McpCommandService service = CreateService(import.Proxy,
             permissions: _ => Task.FromResult(permissions));
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
@@ -132,13 +136,14 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_maps_import_errors_to_stable_mcp_codes()
     {
-        var (_, import) = Stub<IFileImportService>.Create();
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
         import.Handle(nameof(IFileImportService.ImportAsync), _ =>
             Task.FromResult(Result<FileImportResult>.Failure(
                 FileImportErrorCodes.StyleConflict, "conflict")));
-        McpCommandService service = CreateService(fileImport: import.Proxy);
+        McpCommandService service = CreateService(import.Proxy);
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/style.csl", "csl"));
+        McpCommandResult<McpAddMeta, McpAddResult> result =
+            await service.AddAsync(new McpAddRequest("/tmp/style.csl", "csl"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);
@@ -147,13 +152,14 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task Add_failure_never_reports_success_envelope_entries()
     {
-        var (_, import) = Stub<IFileImportService>.Create();
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
         import.Handle(nameof(IFileImportService.ImportAsync), _ =>
             Task.FromResult(Result<FileImportResult>.Failure(
                 FileImportErrorCodes.PathNotFound, "missing")));
-        McpCommandService service = CreateService(fileImport: import.Proxy);
+        McpCommandService service = CreateService(import.Proxy);
 
-        var result = await service.AddAsync(new McpAddRequest("/tmp/missing.pdf"));
+        McpCommandResult<McpAddMeta, McpAddResult> result =
+            await service.AddAsync(new McpAddRequest("/tmp/missing.pdf"));
 
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
@@ -188,7 +194,7 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_document_uri_requires_page_specification()
     {
-        var (_, docPageView) = Stub<IPageImageViewService>.Create();
+        (_, Stub<IPageImageViewService> docPageView) = Stub<IPageImageViewService>.Create();
         McpCommandService service = CreateService(pageView: docPageView.Proxy);
 
         McpViewCommandResult result =
@@ -201,11 +207,11 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_rejects_unknown_context()
     {
-        var (_, ctxPageView) = Stub<IPageImageViewService>.Create();
+        (_, Stub<IPageImageViewService> ctxPageView) = Stub<IPageImageViewService>.Create();
         McpCommandService service = CreateService(pageView: ctxPageView.Proxy);
 
         McpViewCommandResult result = await service.ViewAsync(
-            new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml", Context: "thumbnail"));
+            new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml", "thumbnail"));
 
         result.Result.IsSuccess.Should().BeFalse();
         result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
@@ -214,7 +220,7 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_denies_without_texts_view_permission()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         McpServerSettings permissions = new(0, "127.0.0.1", false, [], false, null, [],
             DateTimeOffset.UtcNow)
         {
@@ -233,8 +239,8 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_success_returns_metadata_envelope_and_native_png_bytes()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
-        var image = new PageImageViewResult(
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
+        PageImageViewResult image = new(
             "patchouli://texts/" + DocId + "/page-2.xml?rev=rev-7",
             PageImageViewTypes.Page, "image/png", 1200, 1600,
             new NormalizedBBox(0, 0, 1, 1), 0, "rev-7", FakePng);
@@ -269,8 +275,8 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_box_uri_with_region_context_requests_region_crop()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
-        var image = new PageImageViewResult(
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
+        PageImageViewResult image = new(
             "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "",
             PageImageViewTypes.Box, "image/png", 400, 300,
             new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, "rev-1", FakePng);
@@ -283,7 +289,7 @@ public sealed class McpAddViewCommandTests
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
         McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(
-            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "", Context: "region"));
+            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "", "region"));
 
         result.Result.IsSuccess.Should().BeTrue();
         seen!.Context.Should().Be(PageImageViewContext.Region);
@@ -294,8 +300,8 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_translation_page_resolves_to_source_image_request()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
-        var image = new PageImageViewResult(
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
+        PageImageViewResult image = new(
             "patchouli://translations/" + DocId + "/page-1.xml?rev=rev-1",
             PageImageViewTypes.TranslationPage, "image/png", 1200, 1600,
             new NormalizedBBox(0, 0, 1, 1), 0, "rev-1", FakePng);
@@ -318,7 +324,7 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_maps_stale_revision_to_not_found_not_silent_latest()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
             Task.FromResult(Result<PageImageViewResult>.Failure(
                 PageImageViewErrorCodes.StaleRevision, "no such revision")));
@@ -335,7 +341,7 @@ public sealed class McpAddViewCommandTests
     [Fact]
     public async Task View_maps_source_changed_to_revision_conflict()
     {
-        var (_, pageView) = Stub<IPageImageViewService>.Create();
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
             Task.FromResult(Result<PageImageViewResult>.Failure(
                 PageImageViewErrorCodes.SourceChanged, "fingerprint changed")));
@@ -358,14 +364,14 @@ public sealed class McpAddViewCommandTests
         bool viewEnabled = true,
         Func<CancellationToken, Task<McpServerSettings>>? permissions = null)
     {
-        var (_, read) = Stub<IMcpReadApi>.Create();
+        (_, Stub<IMcpReadApi> read) = Stub<IMcpReadApi>.Create();
         read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
             Task.FromResult(Result<McpLibraryStateResponse>.Success(
                 new McpLibraryStateResponse("lib", "lib:99"))));
-        var (_, write) = Stub<IMcpWriteApi>.Create();
-        var (_, biblatex) = Stub<Patchouli.Core.Bibliography.Biblatex.IBiblatexImportService>.Create();
-        var (_, items) = Stub<Patchouli.Core.Bibliography.IItemService>.Create();
-        var (_, evidence) = Stub<Patchouli.Core.Documents.IVersionedEvidenceReader>.Create();
+        (_, Stub<IMcpWriteApi> write) = Stub<IMcpWriteApi>.Create();
+        (_, Stub<IBiblatexImportService> biblatex) = Stub<Core.Bibliography.Biblatex.IBiblatexImportService>.Create();
+        (_, Stub<IItemService> items) = Stub<Core.Bibliography.IItemService>.Create();
+        (_, Stub<IVersionedEvidenceReader> evidence) = Stub<Core.Documents.IVersionedEvidenceReader>.Create();
         return new McpCommandService(read.Proxy, write.Proxy, biblatex.Proxy, items.Proxy,
             evidence.Proxy, permissionSettings: permissions, fileImport: fileImport,
             pageView: pageView, addEnabled: addEnabled, viewEnabled: viewEnabled);
@@ -381,8 +387,10 @@ public sealed class McpAddViewCommandTests
 
         public T Proxy => (T)(object)this;
 
-        public void Handle(string methodName, Func<object?[], object?> handler) =>
+        public void Handle(string methodName, Func<object?[], object?> handler)
+        {
             _handlers[methodName] = handler;
+        }
 
         public static (T Proxy, Stub<T> Impl) Create()
         {
@@ -392,7 +400,8 @@ public sealed class McpAddViewCommandTests
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
-            if (targetMethod is not null && _handlers.TryGetValue(targetMethod.Name, out var handler))
+            if (targetMethod is not null &&
+                _handlers.TryGetValue(targetMethod.Name, out Func<object?[], object?>? handler))
             {
                 return handler(args ?? []);
             }

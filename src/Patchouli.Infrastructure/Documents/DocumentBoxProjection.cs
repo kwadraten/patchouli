@@ -59,7 +59,9 @@ internal static class DocumentBoxProjection
             AlgorithmBoxPayload algorithm => markdown.ToPlainText(algorithm.Markdown),
             EquationBoxPayload equation => equation.Latex,
             ListBoxPayload list => markdown.ToPlainText(list.Markdown),
-            TableBoxPayload table => markdown.ToPlainText(table.Markdown),
+            TableBoxPayload table => TableContentAdapter.TryGetHtml(table, out _)
+                ? TableContentAdapter.GetPlainText(table)
+                : markdown.ToPlainText(table.Markdown),
             CodeBoxPayload code => code.Code,
             MediaBoxPayload media => media.Description ??
                                      (box.BoxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),

@@ -113,6 +113,12 @@ public sealed class TranslationStructureValidator
             {
                 storage[boxId] = stored;
             }
+            else if (box.Payload is TableBoxPayload table && TableContentAdapter.TryGetHtml(table, out _))
+            {
+                errors.Add(new TranslationStructureError(0,
+                    "HTML table with unchanged structure and protected content",
+                    "unsupported or lossy table translation"));
+            }
         }
 
         return new TranslationValidationResult(storage, errors);
