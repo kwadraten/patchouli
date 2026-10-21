@@ -69,7 +69,7 @@ public sealed class ChapterScanIndependentTests
         Result<ChapterEditingSnapshot> stale = await maps.SaveChaptersAsync(document.DocumentId,
             new ChapterSaveRequest(saved.Value.VersionToken, result.Chapters, expected));
 
-        stale.ErrorCode.Should().Be(Core.Results.AppErrorCodes.Conflict);
+        stale.ErrorCode.Should().Be(AppErrorCodes.Conflict);
     }
 
     private static ChapterScanService Scanner(PageMapTestDocument document)

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Patchouli.Core.Results;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Core.Update;
@@ -28,7 +29,7 @@ public enum UpdateCheckStatus
     NotAvailableForPlatform,
 
     /// <summary>The check itself failed (network, parsing, settings IO).</summary>
-    CheckFailed,
+    CheckFailed
 }
 
 public sealed record UpdateCheckOutcome(
@@ -148,7 +149,7 @@ public sealed class UpdateCoordinator
                     $"当前已是最新版本（{current}）。");
             }
 
-            (OSPlatform platform, System.Runtime.InteropServices.Architecture architecture) =
+            (OSPlatform platform, Architecture architecture) =
                 UpdateAssetSelector.CurrentPlatform();
             Result<ReleaseAssetInfo> assetResult =
                 UpdateAssetSelector.SelectAsset(release, platform, architecture);
@@ -164,7 +165,7 @@ public sealed class UpdateCoordinator
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "updates.check"))
         {
             return new UpdateCheckOutcome(UpdateCheckStatus.CheckFailed, null, null,
                 $"检查更新时发生意外错误：{exception.Message}");

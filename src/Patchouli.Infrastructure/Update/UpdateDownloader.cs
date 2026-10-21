@@ -101,12 +101,13 @@ public sealed class UpdateDownloader
                 }
             }
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "update-download", "cleanup-stale"))
         {
             // Best-effort cleanup: Path.GetTempPath() and the directory
             // enumeration above can throw exception types beyond IO/permission
-            // failures; none of them may break startup, so swallow everything.
-            _ = exception;
+            // failures; report unexpected errors without interrupting startup.
+            return;
         }
     }
 

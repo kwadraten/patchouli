@@ -32,9 +32,9 @@ public sealed class GitHubReleaseSourceTests
 
     private static GitHubReleaseSource SourceFor(string jsonBody, HttpStatusCode status = HttpStatusCode.OK)
     {
-        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(status)
+        FakeHttpMessageHandler handler = new(_ => new HttpResponseMessage(status)
         {
-            Content = new StringContent(jsonBody, Encoding.UTF8, "application/json"),
+            Content = new StringContent(jsonBody, Encoding.UTF8, "application/json")
         });
         return new GitHubReleaseSource(new HttpClient(handler));
     }
@@ -45,12 +45,12 @@ public sealed class GitHubReleaseSourceTests
         // API order is deliberately unhelpful: the newest-by-version stable
         // release (0.3.13) is neither first nor last.
         string body = "[" + string.Join(",",
-            ReleaseJson("v0.3.9", draft: false, prerelease: false),
-            ReleaseJson("v0.4.0", draft: true, prerelease: false),
-            ReleaseJson("v0.3.14", draft: false, prerelease: true),
-            ReleaseJson("v0.3.13", draft: false, prerelease: false,
+            ReleaseJson("v0.3.9", false, false),
+            ReleaseJson("v0.4.0", true, false),
+            ReleaseJson("v0.3.14", false, true),
+            ReleaseJson("v0.3.13", false, false,
                 """[{"name": "Patchouli.NET-0.3.13-linux-x64.AppImage", "browser_download_url": "https://example.test/a.AppImage", "size": 42}, {"name": "Patchouli.NET-0.3.13-linux-x64.AppImage.sha256", "browser_download_url": "https://example.test/a.AppImage.sha256", "size": 93}]"""),
-            ReleaseJson("v0.3.10", draft: false, prerelease: false)) + "]";
+            ReleaseJson("v0.3.10", false, false)) + "]";
 
         Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
 
@@ -69,8 +69,9 @@ public sealed class GitHubReleaseSourceTests
     [Fact]
     public async Task Marks_checksum_absence_only_when_release_asset_list_confirms_it()
     {
-        string body = "[" + ReleaseJson("v0.3.13", draft: false, prerelease: false,
-            """[{"name": "Patchouli.NET-0.3.13-win-x64-setup.exe", "browser_download_url": "https://example.test/a.exe", "size": 42}]""") + "]";
+        string body = "[" + ReleaseJson("v0.3.13", false, false,
+                          """[{"name": "Patchouli.NET-0.3.13-win-x64-setup.exe", "browser_download_url": "https://example.test/a.exe", "size": 42}]""") +
+                      "]";
 
         Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
 
@@ -82,8 +83,8 @@ public sealed class GitHubReleaseSourceTests
     public async Task Ignores_releases_with_unparseable_tags()
     {
         string body = "[" + string.Join(",",
-            ReleaseJson("not-a-version", draft: false, prerelease: false),
-            ReleaseJson("v0.3.13", draft: false, prerelease: false)) + "]";
+            ReleaseJson("not-a-version", false, false),
+            ReleaseJson("v0.3.13", false, false)) + "]";
 
         Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
 
@@ -96,8 +97,8 @@ public sealed class GitHubReleaseSourceTests
     public async Task Returns_null_when_no_stable_release_exists()
     {
         string body = "[" + string.Join(",",
-            ReleaseJson("v0.4.0", draft: true, prerelease: false),
-            ReleaseJson("v0.3.14", draft: false, prerelease: true)) + "]";
+            ReleaseJson("v0.4.0", true, false),
+            ReleaseJson("v0.3.14", false, true)) + "]";
 
         Result<ReleaseInfo?> result = await SourceFor(body).GetLatestReleaseAsync();
 

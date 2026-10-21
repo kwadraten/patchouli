@@ -34,7 +34,7 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     [Fact]
     public async Task Missing_settings_file_loads_defaults()
     {
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
 
         Result<FileHandlingBehaviorSettings> result = await service.GetSettingsAsync();
 
@@ -45,8 +45,8 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     [Fact]
     public async Task Save_and_load_round_trips_independent_actions()
     {
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
-        var settings = new FileHandlingBehaviorSettings(
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettings settings = new(
             FileHandlingBehavior.MoveToFirstSearchRoot,
             FileHandlingBehavior.KeepInPlace);
 
@@ -64,7 +64,7 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     public async Task Legacy_file_without_section_falls_back_to_defaults()
     {
         await File.WriteAllTextAsync(SettingsPath, """{"Other": {"Key": "value"}}""");
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
 
         Result<FileHandlingBehaviorSettings> result = await service.GetSettingsAsync();
 
@@ -77,7 +77,7 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     {
         await File.WriteAllTextAsync(SettingsPath,
             """{"FileHandlingBehavior": {"McpAddPdfBehavior": "Teleport", "PdfDragDropBehavior": "MoveToFirstSearchRoot"}}""");
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
 
         Result<FileHandlingBehaviorSettings> result = await service.GetSettingsAsync();
 
@@ -90,7 +90,7 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     public async Task Save_preserves_other_sections_in_shared_device_file()
     {
         await File.WriteAllTextAsync(SettingsPath, """{"McpServer": {"Port": 1234}}""");
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
 
         await service.SaveSettingsAsync(new FileHandlingBehaviorSettings(
             FileHandlingBehavior.MoveToFirstSearchRoot, FileHandlingBehavior.MoveToFirstSearchRoot));
@@ -103,7 +103,7 @@ public sealed class FileHandlingBehaviorSettingsTests : IDisposable
     [Fact]
     public async Task Save_rejects_null_settings()
     {
-        var service = new FileHandlingBehaviorSettingsService(SettingsPath, new SystemClock());
+        FileHandlingBehaviorSettingsService service = new(SettingsPath, new SystemClock());
 
         await FluentActions.Invoking(() => service.SaveSettingsAsync(null!))
             .Should().ThrowAsync<ArgumentNullException>();
