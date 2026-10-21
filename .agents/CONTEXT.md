@@ -95,6 +95,9 @@ chapter-map ADR `0045` for ownership and consistency rules.
 
 ## Language
 
+**接续 (`continues_prev`)**:
+“接续”是 `continues_prev` 的标准中文译名，后续代码注释、产品文案和文档统一使用该术语；“续接”等旧称仅在历史材料或兼容说明中保留。接续表示阅读顺序中的后框延续前框内容，允许跨栏或跨页；每个物理框分别保存自己的文字和几何信息，前后框通过显式关系关联，不能以搬空后框或后框为空来表达或推断标准接续关系。所有 OCR 引擎的新结果均应采用 MinerU v4 的这一语义；完整段落由消费或渲染环节按关系组合。旧版 MinerU（v3 及更早）“首框保存合并文字、后框为空”的方式仅作为明确标记弃用的兼容导入路径保留。PDF 工作台须支持建立和解除接续关系；旧数据库的空框接续数据须迁移为可有效编辑的兼容表示。该段定义目标契约，不表示迁移和编辑功能已经交付；实施范围见 [#29](https://github.com/kwadraten/patchouli/issues/29)，MCP XML 展示另见 [#28](https://github.com/kwadraten/patchouli/issues/28)。
+
 **Library**:
 The durable boundary for metadata, document instances, OCR/layout/search artifacts, versioned evidence URIs, snapshots, credentials, and MCP resolution. A library keeps the same identity when renamed or moved.
 
