@@ -3,7 +3,10 @@ using System.Net;
 using System.Net.Sockets;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Csl;
+using Patchouli.Core.Results;
 using Patchouli.Host.CitationInterop;
+using Patchouli.Infrastructure.Csl;
 
 namespace Patchouli.Tests.CitationInterop;
 
@@ -148,6 +151,45 @@ public sealed class CaywIndependentHttpTests
             ("Content-Type", "application/json"));
 
         response.StatusCode.Should().Be(413);
+    }
+
+    [Fact]
+    public async Task Shutdown_token_cancels_an_in_flight_json_rpc_request()
+    {
+        await using CaywIndependentTestContext context = await CaywIndependentTestContext.CreateAsync();
+        await context.CreateItemAsync(new CreateItemRequest("book", "Wire Book"));
+        BlockingCslItemMapper mapper = new();
+        // Search uses only the query/item/mapper chain; the renderer and
+        // biblatex dependencies are not touched by this service instance.
+        CitationInteropService service = new(context.Query, context.Items, mapper, null!, null!);
+        CountingCitationBridge bridge = new();
+        using CancellationTokenSource shutdown = new();
+        CitationInteropHttpServer server = new(
+            new CaywRequestHandler(service, bridge), new JsonRpcHandler(service), null, shutdown.Token);
+        int port = GetFreeTcpPort();
+        await server.StartAsync(port);
+        try
+        {
+            Task<LoopbackHttpResponse> request = LoopbackHttp.SendAsync(
+                "POST", $"http://127.0.0.1:{port}/better-bibtex/json-rpc",
+                """{"jsonrpc":"2.0","method":"item.search","params":["Wire"]}""",
+                ("Content-Type", "application/json"));
+            await mapper.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Cancelling the generation shutdown token (what the host's
+            // StopAsync does first) must converge the in-flight RPC through
+            // the endpoint's cancellation path, not leave it to the drain.
+            shutdown.Cancel();
+
+            await mapper.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            LoopbackHttpResponse response = await request.WaitAsync(TimeSpan.FromSeconds(10));
+            response.StatusCode.Should().Be(200);
+            response.Body.Should().BeEmpty();
+        }
+        finally
+        {
+            await server.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -322,6 +364,37 @@ public sealed class CaywIndependentHttpTests
             }
 
             await Task.Delay(25);
+        }
+    }
+
+    /// <summary>A CSL mapper that blocks inside the projection until its
+    /// cancellation token fires, so a test can hold an RPC in flight while
+    /// the server's shutdown token is cancelled.</summary>
+    private sealed class BlockingCslItemMapper : ICslItemMapper
+    {
+        private readonly ICslItemMapper _inner = new CslItemMapper();
+
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Cancelled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<CslMappedItem>> MapAsync(
+            ItemMetadata item, CancellationToken cancellationToken = default)
+        {
+            Entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled.TrySetResult();
+                throw;
+            }
+
+            return await _inner.MapAsync(item, cancellationToken);
         }
     }
 

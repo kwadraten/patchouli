@@ -194,10 +194,15 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             return;
         }
 
+        // As on the CAYW path, the host's per-generation shutdown token
+        // joins the request token: stopping the host cancels an in-flight
+        // RPC immediately instead of leaving it to Kestrel's drain.
+        using CancellationTokenSource linked =
+            CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _shutdownToken);
         string body;
         try
         {
-            body = await ReadBodyWithLimitAsync(context);
+            body = await ReadBodyWithLimitAsync(context, linked.Token);
         }
         catch (InvalidOperationException)
         {
@@ -205,13 +210,19 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             await context.Response.WriteAsync("request too large.", context.RequestAborted);
             return;
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
+                                                  _shutdownToken.IsCancellationRequested)
+        {
+            return;
+        }
 
         string responseBody;
         try
         {
-            responseBody = await _rpc.HandleAsync(body, context.RequestAborted);
+            responseBody = await _rpc.HandleAsync(body, linked.Token);
         }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
+                                                  _shutdownToken.IsCancellationRequested)
         {
             return;
         }
@@ -231,14 +242,14 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
         await context.Response.WriteAsync(responseBody, context.RequestAborted);
     }
 
-    private static async Task<string> ReadBodyWithLimitAsync(HttpContext context)
+    private static async Task<string> ReadBodyWithLimitAsync(HttpContext context, CancellationToken cancellationToken)
     {
         using MemoryStream buffer = new();
         byte[] chunk = ArrayPool<byte>.Shared.Rent(8192);
         try
         {
             int read;
-            while ((read = await context.Request.Body.ReadAsync(chunk, context.RequestAborted)) > 0)
+            while ((read = await context.Request.Body.ReadAsync(chunk, cancellationToken)) > 0)
             {
                 if (buffer.Length + read > CaywCompatibility.MaxRequestBodyBytes)
                 {
