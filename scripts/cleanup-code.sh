@@ -69,10 +69,20 @@ require_inside_tmp() {
 }
 
 # The jb apphost does not search PATH for the runtime; when dotnet lives in a
-# non-standard root (e.g. ~/.dotnet), point DOTNET_ROOT at it.
+# non-standard root (e.g. ~/.dotnet), point DOTNET_ROOT at it. When dotnet is
+# not on PATH at all, fall back to the well-known install locations.
 if [[ -z "${DOTNET_ROOT:-}" ]]; then
     dotnet_bin="$(command -v dotnet || true)"
-    [[ -n "$dotnet_bin" ]] || { echo "dotnet not found on PATH" >&2; exit 1; }
+    if [[ -z "$dotnet_bin" ]]; then
+        for candidate in "$HOME/.dotnet/dotnet" /usr/share/dotnet/dotnet \
+                         /usr/local/share/dotnet/dotnet /opt/dotnet/dotnet; do
+            if [[ -x "$candidate" ]]; then
+                dotnet_bin="$candidate"
+                break
+            fi
+        done
+    fi
+    [[ -n "$dotnet_bin" ]] || { echo "dotnet not found on PATH or in well-known install locations" >&2; exit 1; }
     DOTNET_ROOT="$(dirname "$(readlink -f "$dotnet_bin")")"
     export DOTNET_ROOT
 fi
