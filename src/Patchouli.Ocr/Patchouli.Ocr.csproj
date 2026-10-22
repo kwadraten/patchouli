@@ -6,5 +6,8 @@
   <ItemGroup>
     <PackageReference Include="PDFiumCore" />
     <PackageReference Include="SkiaSharp" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

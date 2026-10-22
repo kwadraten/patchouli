@@ -1,36 +1,69 @@
-using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
+using Patchouli.Core.Import;
+using Patchouli.Ocr.Native;
 using PDFiumCore;
 
 namespace Patchouli.Ocr;
 
+/// <summary>PDFium native error codes, as returned by the library's last-error channel.</summary>
+public static class PdfiumErrorCodes
+{
+    public const ulong Unknown = 1;
+    public const ulong File = 2;
+
+    /// <summary>Format error: the file is not a valid / readable PDF. This is not a lock or busy signal.</summary>
+    public const ulong Format = 3;
+
+    public const ulong Password = 4;
+    public const ulong Security = 5;
+    public const ulong Page = 6;
+}
+
+/// <summary>
+/// A typed PDFium failure. <see cref="Code"/> carries the native error code read inside the
+/// same scheduled unit that failed (see <see cref="PdfiumErrorCodes"/>), and <see cref="Path"/>
+/// the document that was being processed, so callers can distinguish password-protected,
+/// corrupt/format, and unreadable files instead of collapsing everything into one message.
+/// </summary>
 public sealed class PdfiumDocumentException : Exception
 {
-    public PdfiumDocumentException(string message) : base(message)
+    public PdfiumDocumentException(string message, ulong? code = null, string? path = null) : base(message)
     {
+        Code = code;
+        Path = path;
     }
+
+    public ulong? Code { get; }
+
+    public string? Path { get; }
 }
 
 public sealed record PdfiumPageBitmap(byte[] BgraBytes, int Width, int Height, int Stride);
 
 /// <summary>
 /// A PDFium document that stays open across page renders so a viewing session does not
-/// reopen the PDF for every page. Native handles are closed deterministically either by
-/// <see cref="DisposeAsync"/> or when the engine shuts down at process exit; the same
+/// reopen the PDF for every page. The session is lease-counted (issue #31): rendering holds a
+/// lease, disposal first blocks new leases, waits for in-flight leases to drain, and only
+/// then closes the native document inside the scheduler. Closing is idempotent and the same
 /// document is never closed twice.
 /// </summary>
 public sealed class PdfiumDocumentSession : IAsyncDisposable
 {
     private readonly PdfiumDocumentEngine _engine;
     private readonly FpdfDocumentT _document;
+    private readonly object _leaseSync = new();
+    private int _leases;
+    private bool _closing;
     private int _disposed;
+    private int _closeStarted;
+    private TaskCompletionSource? _drained;
 
     internal PdfiumDocumentSession(PdfiumDocumentEngine engine, FpdfDocumentT document, string path)
     {
         _engine = engine;
         _document = document;
         Path = path;
-        PageCount = fpdfview.FPDF_GetPageCount(document);
+        PageCount = PdfiumNative.GetPageCount(document);
     }
 
     public string Path { get; }
@@ -45,12 +78,12 @@ public sealed class PdfiumDocumentSession : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        if (Volatile.Read(ref _disposed) == 0)
+        if (Interlocked.Exchange(ref _closeStarted, 1) != 0)
         {
-            return new ValueTask(_engine.CloseSessionAsync(this));
+            return ValueTask.CompletedTask;
         }
 
-        return ValueTask.CompletedTask;
+        return new ValueTask(_engine.CloseSessionAsync(this));
     }
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
@@ -64,6 +97,9 @@ public sealed class PdfiumDocumentSession : IAsyncDisposable
         }
     }
 
+    /// <summary>Handle access for the close unit itself, which runs after MarkDisposed ordering is decided by the engine.</summary>
+    internal FpdfDocumentT DocumentForClose => _document;
+
     internal void MarkDisposed()
     {
         Interlocked.Exchange(ref _disposed, 1);
@@ -76,37 +112,112 @@ public sealed class PdfiumDocumentSession : IAsyncDisposable
             throw new ObjectDisposedException(nameof(PdfiumDocumentSession));
         }
     }
+
+    /// <summary>Acquires a lease that keeps the native document alive until disposed.</summary>
+    internal IDisposable AcquireLease()
+    {
+        lock (_leaseSync)
+        {
+            if (_closing || IsDisposed)
+            {
+                throw new ObjectDisposedException(nameof(PdfiumDocumentSession));
+            }
+
+            _leases++;
+            return new Lease(this);
+        }
+    }
+
+    /// <summary>Blocks new leases; existing leases keep the document alive until they drain.</summary>
+    internal void BeginClose()
+    {
+        lock (_leaseSync)
+        {
+            _closing = true;
+        }
+    }
+
+    internal Task WaitForLeasesAsync()
+    {
+        lock (_leaseSync)
+        {
+            if (_leases == 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            _drained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _drained.Task;
+        }
+    }
+
+    private void ReleaseLease()
+    {
+        TaskCompletionSource? drained = null;
+        lock (_leaseSync)
+        {
+            _leases--;
+            if (_leases == 0)
+            {
+                drained = _drained;
+                _drained = null;
+            }
+        }
+
+        drained?.TrySetResult();
+    }
+
+    private sealed class Lease(PdfiumDocumentSession session) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                session.ReleaseLease();
+            }
+        }
+    }
 }
 
+/// <summary>
+/// Facade over the process-wide <see cref="PdfiumScheduler"/>: every native operation is a
+/// single scheduled unit on the dedicated PDFium worker thread, executed through the internal
+/// native layer (<see cref="PdfiumNative"/>). Engine instances are cheap and share the one
+/// scheduler, so constructing several engines never creates competing native gates.
+/// </summary>
 public sealed class PdfiumDocumentEngine
 {
     public const string Version = "151.0.7920";
-    private const int RenderAnnotations = 0x01;
-    private static readonly SemaphoreSlim NativeGate = new(1, 1);
-    private static readonly object InitializationGate = new();
-    private static readonly ConcurrentDictionary<IntPtr, Stream> SaveStreams = new();
-    private static readonly ConcurrentDictionary<PdfiumDocumentSession, PdfiumDocumentEngine> AllSessions = new();
-    private static bool _initialized;
+    private static readonly ConcurrentDictionary<PdfiumDocumentSession, byte> AllSessions = new();
+    private static int _shutdownHookRegistered;
 
-    public async Task CheckAvailabilityAsync(CancellationToken cancellationToken = default)
+    public Task CheckAvailabilityAsync(CancellationToken cancellationToken = default)
     {
-        _ = await ExecuteAsync(() => true, cancellationToken);
+        return RunAsync(() =>
+        {
+            PdfiumNative.EnsureInitialized();
+            return true;
+        }, PdfiumPriority.Interactive, cancellationToken);
     }
 
     public async Task<int> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
     {
-        return await ExecuteAsync(() =>
-        {
-            FpdfDocumentT document = OpenDocument(pdfPath);
-            try
-            {
-                return fpdfview.FPDF_GetPageCount(document);
-            }
-            finally
-            {
-                fpdfview.FPDF_CloseDocument(document);
-            }
-        }, cancellationToken);
+        return await RunAsync(() => PdfiumNative.GetPageCountForPath(pdfPath),
+            PdfiumPriority.Interactive, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PdfPageInfoResult>> GetPageInfosAsync(string pdfPath, int pageCount,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<PdfiumPageInfoEntry> entries = await RunAsync(
+            () => PdfiumNative.ReadPageInfos(pdfPath, pageCount), PdfiumPriority.Interactive, cancellationToken);
+        return entries.Select(entry => entry.Success
+                ? new PdfPageInfoResult(true,
+                    new PdfPageInfo(entry.Info!.Value.Width, entry.Info.Value.Height, entry.Info.Value.Rotation), null)
+                : new PdfPageInfoResult(false, null, entry.ErrorMessage))
+            .ToArray();
     }
 
     /// <summary>
@@ -117,276 +228,112 @@ public sealed class PdfiumDocumentEngine
     public async Task<PdfiumDocumentSession> OpenSessionAsync(string pdfPath,
         CancellationToken cancellationToken = default)
     {
-        return await ExecuteAsync(() =>
+        return await RunAsync(() =>
         {
-            FpdfDocumentT document = OpenDocument(pdfPath);
+            FpdfDocumentT document = PdfiumNative.LoadDocument(pdfPath);
             PdfiumDocumentSession session = new(this, document, Path.GetFullPath(pdfPath));
-            AllSessions[session] = this;
+            AllSessions[session] = 0;
             return session;
-        }, cancellationToken);
+        }, PdfiumPriority.Interactive, cancellationToken);
     }
 
     internal async Task<PdfiumPageBitmap> RenderPageAsync(PdfiumDocumentSession session, int pageIndex, int dpi,
         CancellationToken cancellationToken = default)
     {
-        return await ExecuteAsync(() =>
-        {
-            FpdfDocumentT document = session.Document;
-            return RenderPage(document, pageIndex, dpi);
-        }, cancellationToken);
+        using IDisposable lease = session.AcquireLease();
+        return await RunAsync(() => PdfiumNative.RenderPage(session.Document, pageIndex, dpi, session.Path),
+            PdfiumPriority.Interactive, cancellationToken);
     }
 
-    internal Task CloseSessionAsync(PdfiumDocumentSession session)
+    internal async Task CloseSessionAsync(PdfiumDocumentSession session)
     {
-        return ExecuteAsync(() =>
+        // Lease protocol: block new leases, wait for in-flight renders to drain, then close
+        // the native document inside the scheduler.
+        session.BeginClose();
+        await session.WaitForLeasesAsync();
+        await RunAsync(() =>
         {
             if (!session.IsDisposed)
             {
-                fpdfview.FPDF_CloseDocument(session.Document);
+                PdfiumNative.CloseDocument(session.DocumentForClose);
                 session.MarkDisposed();
             }
 
             _ = AllSessions.TryRemove(session, out _);
-        }, CancellationToken.None);
+            return true;
+        }, PdfiumPriority.Interactive, CancellationToken.None);
     }
 
     public async Task<PdfiumPageBitmap> RenderPageAsync(string pdfPath, int pageIndex, int dpi,
         CancellationToken cancellationToken = default)
     {
-        return await ExecuteAsync(() =>
+        return await RenderPageAsync(pdfPath, pageIndex, dpi, PdfiumPriority.Background, cancellationToken);
+    }
+
+    public async Task<PdfiumPageBitmap> RenderPageAsync(string pdfPath, int pageIndex, int dpi,
+        PdfiumPriority priority, CancellationToken cancellationToken = default)
+    {
+        return await RunAsync(() =>
         {
-            FpdfDocumentT document = OpenDocument(pdfPath);
+            FpdfDocumentT document = PdfiumNative.LoadDocument(pdfPath);
             try
             {
-                return RenderPage(document, pageIndex, dpi);
+                return PdfiumNative.RenderPage(document, pageIndex, dpi, pdfPath);
             }
             finally
             {
-                fpdfview.FPDF_CloseDocument(document);
+                PdfiumNative.CloseDocument(document);
             }
-        }, cancellationToken);
+        }, priority, cancellationToken);
     }
 
     public async Task ExtractPagesAsync(string sourcePath, string outputPath, int startPageIndex, int pageCount,
         CancellationToken cancellationToken = default)
     {
-        await ExecuteAsync(() =>
+        byte[] bytes = await RunAsync(() => PdfiumNative.ExtractPagesToBytes(sourcePath, startPageIndex, pageCount),
+            PdfiumPriority.Background, cancellationToken);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        await File.WriteAllBytesAsync(outputPath, bytes, cancellationToken);
+    }
+
+    private static Task<T> RunAsync<T>(Func<T> nativeOp, PdfiumPriority priority, CancellationToken cancellationToken)
+    {
+        RegisterShutdownHookOnce();
+        return PdfiumScheduler.Instance.RunAsync(nativeOp, priority, cancellationToken);
+    }
+
+    private static void RegisterShutdownHookOnce()
+    {
+        if (Interlocked.Exchange(ref _shutdownHookRegistered, 1) != 0)
         {
-            FpdfDocumentT source = OpenDocument(sourcePath);
-            FpdfDocumentT destination = fpdf_edit.FPDF_CreateNewDocument();
-            EnsureHandle(destination, "destination document");
+            return;
+        }
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
             try
             {
-                int sourcePageCount = fpdfview.FPDF_GetPageCount(source);
-                if (startPageIndex < 0 || pageCount <= 0 || startPageIndex + pageCount > sourcePageCount)
+                // Shutdown teardown runs through the same scheduler as every other native
+                // call; the blocking entry point exists for exactly this release path.
+                PdfiumScheduler.Instance.RunSynchronously(() =>
                 {
-                    throw new InvalidOperationException("The requested PDF page range is invalid.");
-                }
-
-                string range = $"{startPageIndex + 1}-{startPageIndex + pageCount}";
-                if (fpdf_ppo.FPDF_ImportPages(destination, source, range, 0) == 0)
-                {
-                    throw LastError("PDF pages could not be imported");
-                }
-
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-                using FileStream stream = new(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                FPDF_FILEWRITE_ writer = new() { Version = 1 };
-                writer.WriteBlock = WriteRegisteredBlock;
-                SaveStreams[writer.__Instance] = stream;
-                try
-                {
-                    if (fpdf_save.FPDF_SaveAsCopy(destination, writer, 0) == 0)
+                    foreach (PdfiumDocumentSession session in AllSessions.Keys)
                     {
-                        throw LastError("PDF pages could not be saved");
-                    }
-                }
-                finally
-                {
-                    _ = SaveStreams.TryRemove(writer.__Instance, out _);
-                }
-            }
-            finally
-            {
-                fpdfview.FPDF_CloseDocument(destination);
-                fpdfview.FPDF_CloseDocument(source);
-            }
-        }, cancellationToken);
-    }
-
-    private static PdfiumPageBitmap RenderPage(FpdfDocumentT document, int pageIndex, int dpi)
-    {
-        int pageCount = fpdfview.FPDF_GetPageCount(document);
-        if (pageIndex < 0 || pageIndex >= pageCount)
-        {
-            throw new InvalidOperationException("Page index is outside the PDF page range.");
-        }
-
-        FpdfPageT page = fpdfview.FPDF_LoadPage(document, pageIndex);
-        EnsureHandle(page, "page");
-        try
-        {
-            int width = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageWidthF(page) * dpi / 72d));
-            int height = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageHeightF(page) * dpi / 72d));
-            FpdfBitmapT bitmap = fpdfview.FPDFBitmapCreate(width, height, 1);
-            EnsureHandle(bitmap, "bitmap");
-            try
-            {
-                _ = fpdfview.FPDFBitmapFillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
-                fpdfview.FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, RenderAnnotations);
-                int stride = fpdfview.FPDFBitmapGetStride(bitmap);
-                byte[] bytes = new byte[checked(stride * height)];
-                Marshal.Copy(fpdfview.FPDFBitmapGetBuffer(bitmap), bytes, 0, bytes.Length);
-                return new PdfiumPageBitmap(bytes, width, height, stride);
-            }
-            finally
-            {
-                fpdfview.FPDFBitmapDestroy(bitmap);
-            }
-        }
-        finally
-        {
-            fpdfview.FPDF_ClosePage(page);
-        }
-    }
-
-    private static async Task<T> ExecuteAsync<T>(Func<T> action, CancellationToken cancellationToken)
-    {
-        await NativeGate.WaitAsync(cancellationToken);
-        try
-        {
-            EnsureInitialized();
-            cancellationToken.ThrowIfCancellationRequested();
-            return action();
-        }
-        catch (DllNotFoundException exception)
-        {
-            throw new PdfRendererUnavailableException("PDFium native runtime could not be loaded.", exception);
-        }
-        catch (BadImageFormatException exception)
-        {
-            throw new PdfRendererUnavailableException("PDFium native runtime has an incompatible architecture.",
-                exception);
-        }
-        finally
-        {
-            NativeGate.Release();
-        }
-    }
-
-    private static Task ExecuteAsync(Action action, CancellationToken cancellationToken)
-    {
-        return ExecuteAsync(() =>
-        {
-            action();
-            return true;
-        }, cancellationToken);
-    }
-
-    private static void EnsureInitialized()
-    {
-        lock (InitializationGate)
-        {
-            if (_initialized)
-            {
-                return;
-            }
-
-            fpdfview.FPDF_InitLibrary();
-            _initialized = true;
-            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-            {
-                lock (InitializationGate)
-                {
-                    if (!_initialized)
-                    {
-                        return;
+                        if (!session.IsDisposed)
+                        {
+                            PdfiumNative.CloseDocument(session.DocumentForClose);
+                            session.MarkDisposed();
+                        }
                     }
 
-                    CloseAllSessionsSynchronously();
-                    fpdfview.FPDF_DestroyLibrary();
-                    _initialized = false;
-                }
-            };
-        }
-    }
-
-    // PDFium is not thread-safe, so closing every registered session at shutdown must go
-    // through the same native gate as rendering. Process exit is already under the
-    // initialization lock, so this only waits for an in-flight render to finish.
-    private static void CloseAllSessionsSynchronously()
-    {
-        NativeGate.Wait();
-        try
-        {
-            foreach (PdfiumDocumentSession session in AllSessions.Keys)
-            {
-                if (!session.IsDisposed)
-                {
-                    fpdfview.FPDF_CloseDocument(session.Document);
-                    session.MarkDisposed();
-                }
+                    AllSessions.Clear();
+                    PdfiumNative.DestroyLibrary();
+                });
             }
-
-            AllSessions.Clear();
-        }
-        finally
-        {
-            NativeGate.Release();
-        }
-    }
-
-    private static FpdfDocumentT OpenDocument(string path)
-    {
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException("PDF source file was not found.", path);
-        }
-
-        FpdfDocumentT document = fpdfview.FPDF_LoadDocument(path, null!);
-        EnsureHandle(document, "document");
-        return document;
-    }
-
-    private static void EnsureHandle(object handle, string description)
-    {
-        IntPtr instance = handle switch
-        {
-            FpdfDocumentT value => value.__Instance,
-            FpdfPageT value => value.__Instance,
-            FpdfBitmapT value => value.__Instance,
-            _ => IntPtr.Zero
+            catch (Exception)
+            {
+                // Process exit: there is no caller left to report teardown failures to.
+            }
         };
-        if (instance == IntPtr.Zero)
-        {
-            throw LastError($"PDFium did not create the {description}");
-        }
-    }
-
-    private static PdfiumDocumentException LastError(string operation)
-    {
-        ulong error = fpdfview.FPDF_GetLastError();
-        return new PdfiumDocumentException($"{operation} (PDFium error {error}).");
-    }
-
-    private static int WriteBlock(Stream stream, IntPtr data, ulong size)
-    {
-        const int bufferSize = 81920;
-        byte[] buffer = new byte[bufferSize];
-        ulong offset = 0;
-        while (offset < size)
-        {
-            int count = (int)Math.Min((ulong)buffer.Length, size - offset);
-            Marshal.Copy(IntPtr.Add(data, checked((int)offset)), buffer, 0, count);
-            stream.Write(buffer, 0, count);
-            offset += (ulong)count;
-        }
-
-        return 1;
-    }
-
-    private static int WriteRegisteredBlock(IntPtr writer, IntPtr data, ulong size)
-    {
-        return SaveStreams.TryGetValue(writer, out Stream? stream) ? WriteBlock(stream, data, size) : 0;
     }
 }
