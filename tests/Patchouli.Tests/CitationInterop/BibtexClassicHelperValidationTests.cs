@@ -14,20 +14,16 @@ namespace Patchouli.Tests.CitationInterop;
 /// re-parsed by the independent Rust helper parser — not merely checked
 /// against the mapper's own expectations. (The helper's WRITE path is
 /// deliberately not used for classic output: it canonicalizes journal /
-/// address / school to journaltitle / location / institution.) Skips when
-/// the helper binary is not staged next to the test assembly (same
-/// convention as BiblatexImportCoreTests).
+/// address / school to journaltitle / location / institution.) When no
+/// helper binary is available the test is an explicit skip with a reason
+/// (see <see cref="BiblatexHelperTestSupport"/>), never a silent pass.
 /// </summary>
 public sealed class BibtexClassicHelperValidationTests
 {
     [Fact]
     public async Task Classic_output_roundtrips_through_the_real_helper()
     {
-        string helper = BiblatexHelperClient.ResolveDefaultHelperPath();
-        if (!File.Exists(helper))
-        {
-            return;
-        }
+        string helper = BiblatexHelperTestSupport.RequireHelperPath();
 
         BiblatexHelperClient client = new(helper);
         ItemId id = ItemId.New();
