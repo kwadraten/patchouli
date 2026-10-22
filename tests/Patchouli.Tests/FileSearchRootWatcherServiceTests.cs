@@ -217,6 +217,21 @@ public sealed class FileSearchRootWatcherServiceTests
             };
             watcher.RefreshWatchers([added.Value]);
 
+            // Issue #30 (plan §11): activation runs one full reconciliation scan and
+            // publishes its own completion. Drain that completion first so the
+            // assertions below measure only what the rapid file events produce.
+            await WaitUntilAsync(() =>
+            {
+                lock (sync)
+                {
+                    return completedTriggers.Count > 0;
+                }
+            }, "the activation reconciliation scan should complete well within the timeout");
+            lock (sync)
+            {
+                completedTriggers.Clear();
+            }
+
             for (int index = 0; index < 3; index++)
             {
                 await File.WriteAllTextAsync(Path.Combine(root, $"rapid-{index}.pdf"), "fake pdf payload");
@@ -278,9 +293,20 @@ public sealed class FileSearchRootWatcherServiceTests
             watcher.RefreshWatchers([added.Value]);
             watcher.RefreshWatchers([]);
 
+            // Issue #30 (plan §11): the activation reconciliation scan requested by the
+            // first RefreshWatchers still runs to completion and publishes exactly once,
+            // even though the watcher itself is already gone. Drain that one completion;
+            // a removed root must not produce any further ones.
+            await WaitUntilAsync(() => completed.Count > 0,
+                "the activation reconciliation scan should complete well within the timeout");
+            int activationCompletions = completed.Count;
+            activationCompletions.Should().Be(1,
+                "activation publishes exactly one reconciliation completion");
+
             await File.WriteAllTextAsync(Path.Combine(root, "removed-root.pdf"), "fake pdf payload");
             await Task.Delay(TimeSpan.FromSeconds(4));
-            completed.Count.Should().Be(0, "a removed root must no longer raise rescan triggers");
+            completed.Count.Should().Be(activationCompletions,
+                "a removed root must no longer raise rescan triggers");
         }
         finally
         {
@@ -299,7 +325,8 @@ public sealed class FileSearchRootWatcherServiceTests
             DateTimeOffset.UtcNow);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(Func<bool> condition, string because =
+        "the debounced rescan should complete well within the timeout")
     {
         DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (!condition() && DateTimeOffset.UtcNow < deadline)
@@ -307,7 +334,7 @@ public sealed class FileSearchRootWatcherServiceTests
             await Task.Delay(50);
         }
 
-        condition().Should().BeTrue("the debounced rescan should complete well within the timeout");
+        condition().Should().BeTrue(because);
     }
 
     private sealed class NoOpAppLogger : IAppLogger
