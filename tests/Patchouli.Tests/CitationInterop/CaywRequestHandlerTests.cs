@@ -304,7 +304,9 @@ public sealed class CaywRequestHandlerTests
         {
             ItemMetadata book = await context.CreateItemAsync(
                 new CreateItemRequest("book", "Late Book"));
-            using CancellationTokenSource disconnect = new();
+            // Not disposed via using: the OnPick closure captures the source,
+            // and its lifetime is bounded by the handler call below.
+            CancellationTokenSource disconnect = new();
             FakeBridge bridge = new()
             {
                 OnPick = _ =>

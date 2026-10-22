@@ -42,24 +42,30 @@ public sealed class DesktopCitationBridge : ICitationDesktopBridge
 
         TaskCompletionSource<CitationPickBridgeResult> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
-        Dispatcher.UIThread.Post(async () =>
-        {
-            try
-            {
-                CitationPickerViewModel viewModel = new(_query);
-                CitationPickerWindow window = new() { DataContext = viewModel };
-                using CancellationTokenRegistration registration = cancellationToken.Register(() =>
-                    Dispatcher.UIThread.Post(() => window.Close()));
-                CitationPickBridgeResult? result =
-                    await window.ShowDialog<CitationPickBridgeResult?>(owner);
-                completion.TrySetResult(result ?? CitationPickBridgeResult.CancelledResult);
-            }
-            catch (Exception exception)
-            {
-                completion.TrySetException(exception);
-            }
-        });
+        Dispatcher.UIThread.Post(() =>
+            _ = ShowPickerAsync(owner, completion, cancellationToken));
         return completion.Task;
+    }
+
+    private async Task ShowPickerAsync(
+        Window owner,
+        TaskCompletionSource<CitationPickBridgeResult> completion,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            CitationPickerViewModel viewModel = new(_query);
+            CitationPickerWindow window = new() { DataContext = viewModel };
+            using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+                Dispatcher.UIThread.Post(() => window.Close()));
+            CitationPickBridgeResult? result =
+                await window.ShowDialog<CitationPickBridgeResult?>(owner);
+            completion.TrySetResult(result ?? CitationPickBridgeResult.CancelledResult);
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
     }
 
     public async Task<IReadOnlyList<ItemId>> GetSelectedItemIdsAsync(CancellationToken cancellationToken)
