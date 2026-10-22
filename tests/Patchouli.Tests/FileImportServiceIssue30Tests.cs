@@ -1,14 +1,19 @@
 using System.Security.Cryptography;
 using System.Text;
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Import;
+using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Migrations;
 
 namespace Patchouli.Tests;
 
@@ -195,6 +200,85 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
             record.Status == FileImportRecoveryStatuses.ImportFailedRestored);
     }
 
+    [Fact]
+    public async Task Failure_recovery_completes_even_when_the_caller_cancels_during_the_committed_probe()
+    {
+        FileSearchRoot first = SearchRoot("first");
+        FileOperationCoordinator coordinator = new();
+        using CancellationTokenSource cancelling = new();
+        CancellationToken token = cancelling.Token;
+        Harness harness = CreateHarness(
+            coordinator,
+            committed: new CancellingCommittedLookup(cancelling),
+            pdfHandler: _ => Task.FromResult(PdfImportResultFactory.Failed("boom")),
+            roots: [first]);
+        string source = WriteFile("fail-cancel-during-recovery.pdf", PdfBytes);
+        string target = Path.Combine(first.RootPath, "fail-cancel-during-recovery.pdf");
+
+        // The probe cancels the caller's token mid-recovery (and would throw if the
+        // token it received were the caller's). Recovery runs on a non-cancellable
+        // token, so the file is still restored and the recovery is still recorded
+        // instead of the file being stranded at the target with no record.
+        Result<FileImportResult> result = await harness.Service.ImportAsync(
+            new FileImportRequest(source, null, FileImportTrigger.McpAdd), token);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorMessage.Should().Contain("restored");
+        File.Exists(source).Should().BeTrue("recovery completed despite the cancellation");
+        File.Exists(target).Should().BeFalse();
+        harness.Recovery.Records.Should().ContainSingle(record =>
+            record.Status == FileImportRecoveryStatuses.ImportFailedRestored);
+    }
+
+    [Fact]
+    public async Task Committed_location_lookup_matches_paths_with_platform_case_semantics()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        await runner.RunAsync();
+        FixedClock clock = new(new DateTimeOffset(2026, 6, 19, 1, 0, 0, TimeSpan.Zero));
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
+        LibraryMetadata metadata = (await library.CreateLibraryAsync("case-semantics")).Value;
+
+        string committedPath = Path.Combine(_root, "Committed.PDF");
+        string assetId = Guid.NewGuid().ToString();
+        string timestamp = clock.UtcNow.ToString("O");
+        await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into file_assets (
+                    file_asset_id, library_id, original_path, file_name, size_bytes, status,
+                    created_at, updated_at
+                )
+                values (@FileAssetId, @LibraryId, @OriginalPath, @FileName, 100, 'available',
+                    @CreatedAt, @CreatedAt);
+                insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
+                values (@LocationId, @FileAssetId, @OriginalPath, @CreatedAt, 'available');
+                """,
+                new
+                {
+                    FileAssetId = assetId,
+                    LibraryId = metadata.LibraryId.Value.ToString(),
+                    OriginalPath = committedPath,
+                    FileName = Path.GetFileName(committedPath),
+                    LocationId = Guid.NewGuid().ToString(),
+                    CreatedAt = timestamp
+                });
+        }
+
+        CommittedFileLocationLookup lookup = new(database.ConnectionFactory);
+
+        (await lookup.HasCommittedLocationAsync(committedPath)).Should().BeTrue(
+            "the exact committed path is found");
+        (await lookup.HasCommittedLocationAsync(Path.Combine(_root, "committed.pdf"))).Should()
+            .Be(OperatingSystem.IsWindows(),
+                "path case is significant exactly where the platform says it is: " +
+                "on Linux committed.PDF and committed.pdf are different files and the " +
+                "lookup must agree with the claim coordinator's Ordinal semantics");
+    }
+
     // ---- harness & fakes ----
 
     private static TaskCompletionSource NewSignal() =>
@@ -275,6 +359,21 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Committed);
+        }
+    }
+
+    private sealed class CancellingCommittedLookup(CancellationTokenSource cancelling)
+        : ICommittedFileLocationLookup
+    {
+        public Task<bool> HasCommittedLocationAsync(string path,
+            CancellationToken cancellationToken = default)
+        {
+            // The caller's request is cancelled while recovery is probing. If the token
+            // handed to the probe were the caller's, this throw would abort recovery
+            // before the restore and its durable record.
+            cancelling.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(false);
         }
     }
 

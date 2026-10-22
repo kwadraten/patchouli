@@ -10,6 +10,7 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.Import;
 using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.Host.Watching;
@@ -36,7 +37,9 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly object _fileSearchRootWatchSync = new();
-    private readonly Dictionary<string, long> _changedPaths = new(StringComparer.OrdinalIgnoreCase);
+    // Platform path-case semantics come from the claim coordinator's shared comparer:
+    // on Linux, A.pdf and a.pdf are different files and must stay separate dirty entries.
+    private readonly Dictionary<string, long> _changedPaths = new(FileOperationCoordinator.PathComparer);
     private long _fileChangeVersion;
     private readonly SemaphoreSlim _fileSearchRootRescanGate = new(1, 1);
     private long _fileSearchRootWatchGeneration;

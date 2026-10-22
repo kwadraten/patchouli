@@ -7,9 +7,12 @@ namespace Patchouli.Infrastructure.Import;
 /// dictionary guarded by one lock; a slot is removed as soon as its last holder releases,
 /// so the registry never accumulates entries for paths nobody is operating on. Waiters
 /// sleep on the current holders' release signals instead of polling. Only explicit
-/// imports (add) ever wait — background scanners use the non-blocking try-claim — and a
-/// claim holder never needs another importer's source path to make progress, so the
-/// wait graph cannot cycle.
+/// imports (add) ever wait — background scanners use the non-blocking try-claim. Waiting
+/// is hold-and-wait, though: an add claims its source first and then waits for its
+/// target, so two adds with crossed source/target paths could in theory wait on each
+/// other. Such a cycle is not a permanent hang — every wait runs under the caller's
+/// cancellation token, so cancelling either request breaks the cycle and the cancelled
+/// lease releases everything it held.
 /// </summary>
 public sealed class FileOperationCoordinator : IFileOperationCoordinator
 {
@@ -20,7 +23,14 @@ public sealed class FileOperationCoordinator : IFileOperationCoordinator
     /// </summary>
     public static FileOperationCoordinator Shared { get; } = new();
 
-    private static StringComparer PathComparer =>
+    /// <summary>
+    /// The single source of truth for path-case semantics: paths compare
+    /// case-insensitively only on Windows. Anything that keys state by path — claim
+    /// slots, watcher dirty sets, committed-location lookups — must use this comparer
+    /// (or its SQL equivalent) so two components never disagree about whether two paths
+    /// name the same file.
+    /// </summary>
+    public static StringComparer PathComparer =>
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private readonly object _sync = new();

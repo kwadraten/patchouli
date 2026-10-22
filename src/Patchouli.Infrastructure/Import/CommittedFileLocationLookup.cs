@@ -34,11 +34,16 @@ public sealed class CommittedFileLocationLookup : ICommittedFileLocationLookup
             string fullPath = Path.GetFullPath(path);
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
+            // Match the claim registry's case semantics: paths compare case-insensitively
+            // only on Windows. Unconditional "collate nocase" would report A.pdf as
+            // committed on Linux when only a.pdf is, while the coordinator (Ordinal on
+            // Linux) treats them as different files.
+            string collation = OperatingSystem.IsWindows() ? " collate nocase" : string.Empty;
             int count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
-                """
+                $"""
                 select count(1) from known_file_locations k
                 join file_assets a on a.file_asset_id = k.file_asset_id
-                where k.path = @Path collate nocase and k.status = 'available' and a.status = 'available';
+                where k.path = @Path{collation} and k.status = 'available' and a.status = 'available';
                 """,
                 new { Path = fullPath },
                 cancellationToken: cancellationToken));

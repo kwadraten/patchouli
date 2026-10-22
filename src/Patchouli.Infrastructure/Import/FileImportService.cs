@@ -157,7 +157,7 @@ public sealed class FileImportService : IFileImportService
         if (ingested.IsFailure && wasMoved)
         {
             return await RecoverAfterFailedImportAsync(file.FullPath, importPath, request.Trigger,
-                LocalImportKind.Pdf, ingested, cancellationToken);
+                LocalImportKind.Pdf, ingested);
         }
 
         return ingested;
@@ -391,6 +391,24 @@ public sealed class FileImportService : IFileImportService
         }
 
         string rootFull = rootPath.Value;
+
+        // Issue #30 (probe window): target planning reads candidate fingerprints before
+        // the planned target can be claimed below, so without preparation another
+        // importer could take the name between the probe and the claim. Claim the
+        // primary candidate — the plain file name in the root, which is what the plan
+        // picks whenever it is free or content-identical — before planning starts, so
+        // the common no-conflict path is covered end to end. Suffixed fallback
+        // candidates (name-2.pdf, ...) can only be known after probing and are still
+        // claimed right after planning, before the file is touched; their probe window
+        // remains, backstopped by the content-hash dedup deciding reuse, the workflow
+        // re-resolving content ownership inside its commit transaction, and the
+        // MoveFailed replan retry below when a concurrent import wins the name.
+        string primaryCandidate = Path.Combine(rootFull, Path.GetFileName(file.FullPath));
+        if (!PathsEqual(primaryCandidate, file.FullPath))
+        {
+            await lease.AddAsync([primaryCandidate], cancellationToken);
+        }
+
         for (int attempt = 0; attempt < MovePlanRetries; attempt++)
         {
             MoveTargetPlan planned = await MoveTargetNamer.PlanAsync(
@@ -738,26 +756,29 @@ public sealed class FileImportService : IFileImportService
     /// import fails after a move, restore the original position; when the restore fails,
     /// keep the file where it is and return a recoverable diagnosis — never "file lost",
     /// never a silent move. Every attempt is recorded durably.
+    /// Recovery deliberately runs on a non-cancellable token (the same convention as
+    /// <see cref="RestoreAfterCancelAsync"/>): the caller's request may already be
+    /// cancelled — that is often why the import failed — and recovery aborted halfway
+    /// would leave the file at the moved location with no durable record of where it is.
     /// </summary>
     private async Task<Result<FileImportResult>> RecoverAfterFailedImportAsync(
         string originalPath,
         string movedPath,
         FileImportTrigger trigger,
         LocalImportKind kind,
-        Result<FileImportResult> ingestFailure,
-        CancellationToken cancellationToken)
+        Result<FileImportResult> ingestFailure)
     {
         // Issue #30 defensive check: if the database already holds a committed location
         // at the moved path (another importer committed it, or this import's commit
         // landed before the failure surfaced), moving the file back would strand that
         // record on a missing file. Keep the file where the database expects it.
-        if (await IsCommittedAtMovedLocationAsync(movedPath, cancellationToken))
+        if (await IsCommittedAtMovedLocationAsync(movedPath, CancellationToken.None))
         {
             await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, movedPath,
                 FileImportRecoveryStatuses.ImportFailedKeptAtMovedLocation,
                 $"Import failed ({ingestFailure.ErrorCode}), but the library database already references " +
                 "the moved location; the file was kept there so the database path stays valid.",
-                cancellationToken);
+                CancellationToken.None);
             return Result<FileImportResult>.Failure(
                 ingestFailure.ErrorCode ?? FileImportErrorCodes.ImportFailed,
                 $"{ingestFailure.ErrorMessage} The file was kept in the first file search root because " +
@@ -765,13 +786,13 @@ public sealed class FileImportService : IFileImportService
         }
 
         string fileName = Path.GetFileName(originalPath);
-        Result restore = await MoveFileAsync(movedPath, originalPath, cancellationToken);
+        Result restore = await MoveFileAsync(movedPath, originalPath, CancellationToken.None);
         if (restore.IsSuccess)
         {
             await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, originalPath,
                 FileImportRecoveryStatuses.ImportFailedRestored,
                 $"Import failed ({ingestFailure.ErrorCode}); the file was restored to its original position.",
-                cancellationToken);
+                CancellationToken.None);
             return Result<FileImportResult>.Failure(
                 ingestFailure.ErrorCode ?? FileImportErrorCodes.ImportFailed,
                 $"{ingestFailure.ErrorMessage} The source file was restored to its original position.");
@@ -781,7 +802,7 @@ public sealed class FileImportService : IFileImportService
             FileImportRecoveryStatuses.ImportFailedRestoreFailed,
             $"Import failed ({ingestFailure.ErrorCode}); restoring the file to its original position " +
             $"failed: {restore.ErrorMessage}. The file was kept at its moved location.",
-            cancellationToken);
+            CancellationToken.None);
         return Result<FileImportResult>.Failure(FileImportErrorCodes.RecoveryFailed,
             $"{ingestFailure.ErrorMessage} The file could not be restored to its original position and " +
             $"was kept as '{fileName}' in the first file search root; see the import recovery records " +
