@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 using Patchouli.UI.Themes;
 
 namespace Patchouli.UI;
@@ -23,6 +24,7 @@ public sealed partial class App : Application
     {
         try
         {
+            RichEditorChineseLocalization.Apply();
             PatchouliAppSettings settings = PatchouliAppSettings.Load();
             ThemePaletteApplier.Apply(settings.Ui.PaletteId, settings.Ui.ThemeMode);
 

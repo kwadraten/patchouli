@@ -7,6 +7,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Media.Immutable;
 using Avalonia.Platform;
 using FluentAssertions;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Reading;
@@ -563,6 +564,54 @@ public sealed class ReadingViewTests
 
             view.DesiredSize.Height.Should().BeGreaterThan(0);
             return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Inline_html_table_renders_as_a_grid_in_the_reading_view()
+    {
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            const string html =
+                "<table><tr><th>Type</th><th>Example Dialog</th><th>Explanation</th></tr>" +
+                "<tr><td rowspan=\"3\">Retrieval Intent</td>" +
+                "<td rowspan=\"3\">Retrieved context: At high altitudes, water boils at lower temperatures " +
+                "than at sea level, such as 95°C at elevations above 2,000 meters. This altitude-induced " +
+                "reduction can affect cooking times and methods.</td>" +
+                "<td rowspan=\"3\">This query involves a basic scientific fact that should be available " +
+                "within the model's parametric knowledge. However, the system inappropriately retrieves " +
+                "and uses altitude-specific information about boiling temperatures.</td></tr>" +
+                "<tr></tr><tr></tr>" +
+                "<tr><td rowspan=\"2\">Ambiguous Queries</td>" +
+                "<td rowspan=\"2\">Retrieved context: The Hennessey Venom GT famously set a speed record by " +
+                "completing a mile on a racetrack in 32 seconds.</td>" +
+                "<td rowspan=\"2\">The query is ambiguous because it does not specify whether it refers to a " +
+                "production car or a modified vehicle, or whether the track is a straight line or a " +
+                "closed circuit.</td></tr><tr></tr></table>";
+            MarkdownDocumentModel model = new([new MarkdownBlock("HtmlBlock", html, 0, html.Length)]);
+            ReadingScene scene = ReadingSceneBuilder.Build(model, [], [], "page", markdownSource: html);
+            scene.Blocks.Single().Kind.Should().Be("table");
+            scene.Blocks.Single().Table!.Rows.Should().HaveCountGreaterThanOrEqualTo(5);
+
+            ReadingView view = new() { SourceScene = scene };
+            Window window = new() { Content = view, Width = 900, Height = 700 };
+            window.Show();
+            try
+            {
+                AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                string directory = TestPaths.FromRepositoryRoot(".tmp", "tests", "box-editor-preview");
+                Directory.CreateDirectory(directory);
+                using WriteableBitmap? frame = window.CaptureRenderedFrame();
+                frame.Should().NotBeNull();
+                frame!.Save(Path.Combine(directory, "reading-html-table.png"));
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
         }, CancellationToken.None);
     }
 

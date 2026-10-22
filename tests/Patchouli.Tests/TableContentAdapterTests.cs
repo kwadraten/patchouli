@@ -194,4 +194,122 @@ public sealed class TableContentAdapterTests
                                       """;
         TableContentAdapter.TryNormalizeEditorHtml(source, changedFormula, out _).Should().BeFalse();
     }
+
+    [Fact]
+    public void Editor_save_ignores_presentation_attribute_changes_instead_of_blocking()
+    {
+        const string sourceHtml = "<table><tr><td>Label</td><td>1</td></tr></table>";
+        const string editorHtml = """
+                                  <table border="1" style="border-collapse:collapse; width:100%; margin:0;">
+                                  <tr>
+                                  <td data-custom="1" style="font-family:Arial; color:red;">Label</td>
+                                  <td>1</td>
+                                  </tr>
+                                  </table>
+                                  """;
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(source, editorHtml);
+
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        TableContentAdapter.ValidateHtml(saved.Value).IsSuccess.Should().BeTrue();
+        saved.Value.Should().Contain("color:red").And.Contain("Label")
+            .And.NotContain("font-family").And.NotContain("data-custom").And.NotContain("margin");
+    }
+
+    [Fact]
+    public void Editor_save_keeps_row_column_and_span_structure_edits()
+    {
+        const string sourceHtml = "<table><tr><td>A</td><td>B</td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> addedRow = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>");
+        addedRow.IsSuccess.Should().BeTrue(addedRow.ErrorMessage);
+        addedRow.Value.Split("<tr>").Length.Should().Be(3);
+
+        Result<string> removedColumn = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>A</td></tr></table>");
+        removedColumn.IsSuccess.Should().BeTrue(removedColumn.ErrorMessage);
+        removedColumn.Value.Should().Contain("<td>A</td>").And.NotContain("<td>B</td>");
+
+        Result<string> merged = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td colspan=\"2\">A</td></tr></table>");
+        merged.IsSuccess.Should().BeTrue(merged.ErrorMessage);
+        merged.Value.Should().Contain("colspan=\"2\"");
+        TableContentAdapter.ValidateHtml(merged.Value).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Editor_save_restores_header_cells_after_structural_edits()
+    {
+        const string sourceHtml = "<table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>Name</td><td>Value</td></tr><tr><td>A</td><td>1</td></tr>" +
+            "<tr><td>B</td><td>2</td></tr></table>");
+
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        saved.Value.Should().Contain("<th>Name</th>").And.Contain("<th>Value</th>");
+    }
+
+    [Fact]
+    public void Editor_save_keeps_protected_formula_cells_by_content_match_after_structural_edits()
+    {
+        const string sourceHtml = "<table><tr><td>Label</td><td><eq>x^2</eq></td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>Label</td><td>x^2</td></tr><tr><td>New</td><td>1</td></tr></table>");
+
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        saved.Value.Should().Contain("<eq>x^2</eq>").And.Contain("<td>New</td>");
+        TableContentAdapter.ValidateHtml(saved.Value).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Editor_save_rejects_modified_or_removed_protected_formula_cells()
+    {
+        const string sourceHtml = "<table><tr><td>Label</td><td><eq>x^2</eq></td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> modified = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>Label</td><td>x^3</td></tr></table>");
+        modified.IsFailure.Should().BeTrue();
+        modified.ErrorMessage.Should().Contain("公式");
+
+        Result<string> removed = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>Label</td><td>other</td></tr></table>");
+        removed.IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Editor_save_keeps_user_formatted_block_content_inside_cells()
+    {
+        const string sourceHtml = "<table><tr><td>A</td><td>B</td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        Result<string> multiParagraph = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td><p>line one</p><p>line two</p></td><td>B</td></tr></table>");
+        multiParagraph.IsSuccess.Should().BeTrue(multiParagraph.ErrorMessage);
+        multiParagraph.Value.Should().Contain("<p>line one</p>").And.Contain("<p>line two</p>");
+
+        Result<string> centered = TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td><p style=\"text-align:center\">A</p></td><td>B</td></tr></table>");
+        centered.IsSuccess.Should().BeTrue(centered.ErrorMessage);
+        centered.Value.Should().Contain("text-align:center");
+    }
+
+    [Fact]
+    public void Editor_save_rejects_content_outside_the_table()
+    {
+        const string sourceHtml = "<table><tr><td>A</td></tr></table>";
+        TableBoxPayload source = TableContentAdapter.CreateHtml(sourceHtml).Value;
+
+        TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<p>extra</p><table><tr><td>A</td></tr></table>").IsFailure.Should().BeTrue();
+        TableContentAdapter.TryCreateEditorSaveHtml(source,
+            "<table><tr><td>A</td></tr></table><table><tr><td>B</td></tr></table>").IsFailure.Should().BeTrue();
+    }
 }

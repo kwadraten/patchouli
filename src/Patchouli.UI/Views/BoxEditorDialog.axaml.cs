@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using AvaloniaRichEditor.Controls;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Results;
+using Patchouli.UI.Controls;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
 
@@ -63,6 +64,12 @@ public sealed partial class BoxEditorDialog : Window
         _tableEditorBaseline = baseline.Value;
         _initialEditorHtml = editor.ToHtml();
         _tableEditorReady = true;
+
+        // Merge has no public editor API in AvaloniaRichEditor 1.3.0; the toolbar buttons bind to the
+        // same private members the context menu uses and stay disabled if that surface is unavailable.
+        bool mergeSupported = RichEditorTableStructureCommands.IsSupported;
+        MergeCellsButton.IsEnabled = mergeSupported;
+        UnmergeCellsButton.IsEnabled = mergeSupported;
     }
 
     private void OnCloseClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -83,6 +90,62 @@ public sealed partial class BoxEditorDialog : Window
         if (TableEditorView.Editor.CanRedo)
         {
             TableEditorView.Editor.Redo();
+        }
+    }
+
+    private void OnInsertRowAboveClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.InsertRowAbove();
+    }
+
+    private void OnInsertRowBelowClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.InsertRowBelow();
+    }
+
+    private void OnDeleteRowClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.DeleteRow();
+    }
+
+    private void OnInsertColumnLeftClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.InsertColumnLeft();
+    }
+
+    private void OnInsertColumnRightClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.InsertColumnRight();
+    }
+
+    private void OnDeleteColumnClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        TableEditorView.Editor.DeleteColumn();
+    }
+
+    private void OnMergeCellsClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!RichEditorTableStructureCommands.MergeSelectedCells(TableEditorView.Editor))
+        {
+            TableEditorError.Text = "请先在表格中拖动或按住 Shift+方向键选中多个相邻单元格，再执行合并。";
+            TableEditorError.IsVisible = true;
+        }
+        else
+        {
+            TableEditorError.IsVisible = false;
+        }
+    }
+
+    private void OnUnmergeCellsClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!RichEditorTableStructureCommands.UnmergeCaretCell(TableEditorView.Editor))
+        {
+            TableEditorError.Text = "当前单元格没有合并，无法拆分。";
+            TableEditorError.IsVisible = true;
+        }
+        else
+        {
+            TableEditorError.IsVisible = false;
         }
     }
 
@@ -139,16 +202,17 @@ public sealed partial class BoxEditorDialog : Window
                     return;
                 }
 
-                if (_tableEditorBaseline is null ||
-                    !TableContentAdapter.TryNormalizeEditorHtml(_tableEditorBaseline, editedHtml,
-                        out string normalizedHtml))
+                Result<string> normalized = _tableEditorBaseline is null
+                    ? Result<string>.Failure(AppErrorCodes.ValidationFailed, "表格编辑会话未就绪，未保存。")
+                    : TableContentAdapter.TryCreateEditorSaveHtml(_tableEditorBaseline, editedHtml);
+                if (normalized.IsFailure)
                 {
-                    TableEditorError.Text = "表格编辑结果改变了不支持的结构，未保存。请撤销该更改，或关闭后保留原表格。";
+                    TableEditorError.Text = normalized.ErrorMessage!;
                     TableEditorError.IsVisible = true;
                     return;
                 }
 
-                Result result = await viewModel.SaveTableHtmlAsync(normalizedHtml);
+                Result result = await viewModel.SaveTableHtmlAsync(normalized.Value);
                 if (result.IsFailure)
                 {
                     TableEditorError.Text = result.ErrorMessage;
