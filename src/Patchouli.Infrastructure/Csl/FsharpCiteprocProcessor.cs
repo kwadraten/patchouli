@@ -594,11 +594,13 @@ internal sealed class FsharpCiteprocProcessor
 
     private sealed record EngineCitationItem(
         [property: JsonPropertyName("id")] string Id,
-        [property: JsonPropertyName("locator")] string? Locator = null,
+        [property: JsonPropertyName("locator")]
+        string? Locator = null,
         [property: JsonPropertyName("label")] string? Label = null,
         [property: JsonPropertyName("prefix")] string? Prefix = null,
         [property: JsonPropertyName("suffix")] string? Suffix = null,
-        [property: JsonPropertyName("suppress-author")] bool? SuppressAuthor = null);
+        [property: JsonPropertyName("suppress-author")]
+        bool? SuppressAuthor = null);
 
     private sealed record EngineRenderResponse(
         [property: JsonPropertyName("citations")]

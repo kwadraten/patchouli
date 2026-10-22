@@ -27,7 +27,9 @@ public enum CitationPickOutcome
     Unavailable
 }
 
-public sealed record CitationPickBridgeResult(CitationPickOutcome Outcome, IReadOnlyList<CitationBridgePickEntry> Entries)
+public sealed record CitationPickBridgeResult(
+    CitationPickOutcome Outcome,
+    IReadOnlyList<CitationBridgePickEntry> Entries)
 {
     public static readonly CitationPickBridgeResult CancelledResult = new(CitationPickOutcome.Cancelled, []);
     public static readonly CitationPickBridgeResult UnavailableResult = new(CitationPickOutcome.Unavailable, []);

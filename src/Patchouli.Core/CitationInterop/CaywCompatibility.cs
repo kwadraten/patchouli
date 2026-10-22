@@ -84,6 +84,7 @@ public static class CaywCompatibility
 
     /// <summary>JSON-RPC translator names (verbatim BBT translator names).</summary>
     public const string TranslatorBetterBiblatex = "Better BibLaTeX";
+
     public const string TranslatorBetterBibtex = "Better BibTeX";
 
     /// <summary>Server-side cap for TexPile <c>item.search</c> results (issue #14 §7).</summary>
@@ -94,6 +95,7 @@ public static class CaywCompatibility
 
     /// <summary>Hard cap for the JSON-RPC request body and the CAYW query string.</summary>
     public const int MaxRequestBodyBytes = 64 * 1024;
+
     public const int MaxQueryStringLength = 2048;
     public const int MaxSearchQueryLength = 512;
 

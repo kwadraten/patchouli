@@ -207,7 +207,7 @@ public sealed class TypstCitationFormatter : ICitationStringFormatter
             return false;
         }
 
-        return key.All(static ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':' or '+' );
+        return key.All(static ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':' or '+');
     }
 
     private static string EscapeTypstContent(string text)

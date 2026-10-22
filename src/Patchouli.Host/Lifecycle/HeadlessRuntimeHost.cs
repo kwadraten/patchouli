@@ -2,6 +2,7 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
+using Patchouli.Host.CitationInterop;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Mcp;
 using Patchouli.Mcp;
@@ -79,6 +80,14 @@ public static class HeadlessRuntimeHost
                 return 1;
             }
 
+            // Citation interop (issue #14): headless hosts expose the TexPile
+            // JSON-RPC subset only; interactive CAYW fails fast with
+            // ui_unavailable. A failed interop bind never takes down MCP.
+            await using CitationInteropHost interop = new(
+                services, new UnavailableCitationDesktopBridge(), ReportUnexpected);
+            await interop.StartAsync(services.StartupSettings.CitationInterop, cancellationToken);
+            Console.Error.WriteLine($"[headless-host] citation interop: {interop.Status.Detail}");
+
             // Expose the lease InstanceId via /health for cross-namespace discovery.
             // A CLI in a different PID namespace (e.g., another `flatpak run` instance)
             // cannot verify the host via PID, but the network namespace is shared
@@ -105,10 +114,12 @@ public static class HeadlessRuntimeHost
                 }
 
                 shutdown.Cancel();
+                await interop.ShutdownAsync();
                 await host.StopAsync("Runtime host is shutting down.", CancellationToken.None);
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
             {
+                await interop.ShutdownAsync();
                 await host.StopAsync("Runtime host is shutting down.", CancellationToken.None);
             }
 

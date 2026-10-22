@@ -37,6 +37,8 @@ using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Settings;
 using Patchouli.Host.Caching;
+using Patchouli.Host.CitationInterop;
+using Patchouli.UI.CitationInterop;
 using Patchouli.Host.Import;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
@@ -79,6 +81,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private Task? _shutdownTask;
     private ILibraryRevisionService? _observedLibraryRevisions;
     private McpServerHost? _mcpHost;
+    private CitationInteropHost? _citationInteropHost;
+    private readonly SerialDisposable _citationInteropSubscriptions = new();
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
     private LibraryImportOrchestrator? _importOrchestrator;
     private LibraryRevisionMonitor? _libraryRevisionMonitor;
@@ -149,6 +153,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ObservableProperty] public partial string McpStatusText { get; private set; } = "MCP: 未启动";
 
     [ExcludeFromDerivedGeneration] public bool McpServerRunning => _mcpHost?.IsRunning == true;
+
+    [ObservableProperty] public partial string CitationInteropStatusText { get; private set; } = "CAYW: 未启动";
+
+    [ObservableProperty] public partial string CitationInteropStatusDetail { get; private set; } = "等待运行数据库打开。";
+
+    [ObservableProperty] public partial string CitationInteropEndpoint { get; private set; } = "http://127.0.0.1:23119";
+
+    [ExcludeFromDerivedGeneration] public bool CitationInteropRunning => _citationInteropHost?.IsRunning == true;
+
+    [ExcludeFromDerivedGeneration] internal CitationInteropHost? CitationInteropHostOrNull => _citationInteropHost;
 
     public bool CanStopMcpServer => true;
 
@@ -549,6 +563,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             "FILESCANNING" => current with { FileScanning = updated.FileScanning },
             "OCRENGINES" => current with { OcrEngines = updated.OcrEngines },
             "IMPORT" => current with { Import = updated.Import },
+            "CITATIONINTEROP" => current with { CitationInterop = updated.CitationInterop },
             "LLM" => current with { Llm = updated.Llm },
             _ => updated with { Sync = MergeSyncFields(current.Sync, updated.Sync) }
         };
@@ -722,6 +737,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             : ImmediateScheduler.Instance);
         Register(_revisionSubscription);
         Register(_mcpSubscriptions);
+        Register(_citationInteropSubscriptions);
         Register(_watcherSubscriptions);
         _settingsPath = settingsPath;
         SettingsLoadFailure? settingsLoadFailure = null;
@@ -1366,6 +1382,22 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             .Subscribe(e => OnMcpHostConnectionCountsChanged(e.Sender, e.EventArgs)));
         _mcpSubscriptions.Disposable = mcpSubs;
 
+        // Citation interop (issue #14): per-library host + desktop bridge. A
+        // start failure lands in the host's Error status (shown on the
+        // 「Cite As You Write」 settings page) and never blocks library open.
+        DesktopCitationBridge citationBridge = new(this, services.LibraryItems);
+        CitationInteropHost citationInteropHost = new(services, citationBridge, ReportUnexpectedException);
+        _citationInteropHost = citationInteropHost;
+        CompositeDisposable interopSubs = new();
+        interopSubs.Add(Observable.FromEventPattern<EventHandler, EventArgs>(
+                h => citationInteropHost.StatusChanged += h,
+                h => citationInteropHost.StatusChanged -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(_ => OnCitationInteropHostStatusChanged(citationInteropHost)));
+        _citationInteropSubscriptions.Disposable = interopSubs;
+        citationInteropHost.StartAsync(_settingsStore.Current.CitationInterop)
+            .Observe("host-services", "start-citation-interop");
+
         FileSearchRootWatcherService fileSearchRootWatcher = new(services, Logger);
         _fileSearchRootWatcher = fileSearchRootWatcher;
         CompositeDisposable watcherSubs = new();
@@ -1404,6 +1436,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         {
             _mcpHost.DisposeAsync().AsTask().Observe("host-services", "dispose-mcp-host");
             _mcpHost = null;
+        }
+
+        _citationInteropSubscriptions.Disposable = null;
+        if (_citationInteropHost is not null)
+        {
+            // Disposal stops the listener, which aborts in-flight CAYW requests
+            // and closes the picker (issue #14 §4: library switch teardown).
+            _citationInteropHost.DisposeAsync().AsTask().Observe("host-services", "dispose-citation-interop-host");
+            _citationInteropHost = null;
         }
 
         _watcherSubscriptions.Disposable = null;
@@ -2237,6 +2278,46 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         {
             await lease.DisposeAsync();
         }
+    }
+
+    private void OnCitationInteropHostStatusChanged(CitationInteropHost host)
+    {
+        if (!ReferenceEquals(host, _citationInteropHost))
+        {
+            return;
+        }
+
+        CitationInteropHostStatusSnapshot snapshot = host.Status;
+        CitationInteropStatusText = snapshot.Status switch
+        {
+            CitationInteropHostStatus.Running => "CAYW: 运行中",
+            CitationInteropHostStatus.Starting => "CAYW: 启动中",
+            CitationInteropHostStatus.Error => "CAYW: 错误",
+            _ => "CAYW: 未启动"
+        };
+        CitationInteropStatusDetail = snapshot.Detail;
+        if (snapshot.Endpoint is not null)
+        {
+            CitationInteropEndpoint = snapshot.Endpoint;
+        }
+
+        // Manual Raise: CitationInteropRunning bridges the host's external status.
+        Raise(nameof(CitationInteropRunning));
+    }
+
+    /// <summary>
+    /// Restarts the citation interop service from the persisted settings
+    /// (settings-apply flow for the 「Cite As You Write」 page). A bind failure
+    /// does not throw: it lands in the host status the settings page shows.
+    /// </summary>
+    public async Task RestartCitationInteropAsync()
+    {
+        if (_citationInteropHost is null)
+        {
+            return;
+        }
+
+        await _citationInteropHost.RestartAsync(_settingsStore.Current.CitationInterop);
     }
 
     private void OnMcpHostStatusChanged(object? sender, McpServerHostStatusChangedEventArgs change)

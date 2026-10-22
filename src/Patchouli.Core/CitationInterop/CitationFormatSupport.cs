@@ -136,7 +136,8 @@ public static class CitationFormatSupport
         }
 
         return ValidateKey(citationKey, static ch =>
-            !(char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':' or ';' or '#' or '$' or '%' or '&' or '+' or '?' or '<' or '>' or '~' or '/'),
+                !(char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':' or ';' or '#' or '$' or '%' or '&' or '+'
+                    or '?' or '<' or '>' or '~' or '/'),
             "pandoc");
     }
 
