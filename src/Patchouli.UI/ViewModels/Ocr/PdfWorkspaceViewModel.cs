@@ -2143,6 +2143,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 await RenderPreviewWithRetryAsync(services, renderRequest, generation);
             if (preview.IsFailure)
             {
+                // Only the current generation may publish its failure (the same invariant
+                // as the catch branch below): a superseded generation's late failure is
+                // discarded instead of overwriting the newer page's status.
+                if (generation != _renderGeneration)
+                {
+                    return;
+                }
+
                 // Keep the previous page on screen; the status line is the error surface and
                 // re-selecting the page (or Reload) is the retry entry point.
                 ApplyPreviewFailure(preview);
