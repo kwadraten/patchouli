@@ -93,6 +93,92 @@ internal sealed class FsharpCiteprocProcessor
         }
     }
 
+    /// <summary>
+    /// Renders a single citation cluster with per-item modifiers (issue #14).
+    /// Unlike <see cref="Render"/>, an empty bibliography is not an error:
+    /// citation-only styles produce an empty bibliography list and a valid
+    /// citation. The language-localization pipeline (issue #9) is shared with
+    /// the bibliography path and must not diverge.
+    /// </summary>
+    public Result<FsharpCiteprocClusterResponse> RenderCluster(
+        FsharpCiteprocClusterRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            (string styleXml, string? originalDefaultLocale) = ApplyLocale(request.StyleXml, request.Locale);
+            (string StyleXml, IReadOnlyList<Dictionary<string, object?>> Items) localizedRender =
+                ApplyLanguageLocaleMappings(styleXml, request.Items,
+                    request.LanguageLocaleMappings, originalDefaultLocale);
+            styleXml = localizedRender.StyleXml;
+            IReadOnlyList<Dictionary<string, object?>> renderItems = localizedRender.Items;
+            EngineCitationItem[] citationItems = request.Citations.Select(static citation => new EngineCitationItem(
+                citation.Id, citation.Locator, citation.Label, citation.Prefix, citation.Suffix,
+                citation.SuppressAuthor ? true : null)).ToArray();
+
+            Result<string> text = RenderClusterEntry(
+                styleXml, renderItems, citationItems, "plain-text", cancellationToken);
+            if (text.IsFailure)
+            {
+                return Result<FsharpCiteprocClusterResponse>.Failure(text.ErrorCode!, text.ErrorMessage!);
+            }
+
+            Result<string> html = RenderClusterEntry(
+                styleXml, renderItems, citationItems, "html", cancellationToken);
+            if (html.IsFailure)
+            {
+                return Result<FsharpCiteprocClusterResponse>.Failure(html.ErrorCode!, html.ErrorMessage!);
+            }
+
+            return Result<FsharpCiteprocClusterResponse>.Success(new FsharpCiteprocClusterResponse(
+                request.StyleId, request.Locale, text.Value, html.Value,
+                Array.Empty<string>(), Array.Empty<string>()));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (XmlException exception)
+        {
+            return Result<FsharpCiteprocClusterResponse>.Failure("csl_render_failed",
+                $"invalid-xml at line {exception.LineNumber}, position {exception.LinePosition}: {exception.Message}");
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.fsharp-citeproc"))
+        {
+            return Result<FsharpCiteprocClusterResponse>.Failure(
+                "csl_render_failed", $"Fsharp.Citeproc rendering failed: {exception.Message}");
+        }
+    }
+
+    private static Result<string> RenderClusterEntry(
+        string styleXml,
+        IReadOnlyList<Dictionary<string, object?>> items,
+        IReadOnlyList<EngineCitationItem> citationItems,
+        string format,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string payload = JsonSerializer.Serialize(new EngineRenderRequest(styleXml, items, [citationItems], format),
+            JsonOptions);
+        FSharpResult<string, FSharpList<CiteprocError>> rendered = Citeproc.renderJson(payload);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (rendered.IsError)
+        {
+            string message = string.Join("; ", rendered.ErrorValue.Select(FormatDiagnostic));
+            return Result<string>.Failure("csl_render_failed",
+                string.IsNullOrWhiteSpace(message) ? "Fsharp.Citeproc rendering failed." : message);
+        }
+
+        EngineRenderResponse? response = JsonSerializer.Deserialize<EngineRenderResponse>(rendered.ResultValue,
+            JsonOptions);
+        return response?.Citations is null || response.Citations.Count == 0
+            ? Result<string>.Failure("csl_render_failed",
+                "Fsharp.Citeproc returned no citation for the cluster (the style may have no <citation> section).")
+            : Result<string>.Success(response.Citations[0]);
+    }
+
     private static Result<IReadOnlyList<string>> RenderEntries(
         string styleXml,
         IReadOnlyList<Dictionary<string, object?>> items,
@@ -506,9 +592,17 @@ internal sealed class FsharpCiteprocProcessor
         IReadOnlyList<IReadOnlyList<EngineCitationItem>> Citations,
         [property: JsonPropertyName("format")] string Format);
 
-    private sealed record EngineCitationItem([property: JsonPropertyName("id")] string Id);
+    private sealed record EngineCitationItem(
+        [property: JsonPropertyName("id")] string Id,
+        [property: JsonPropertyName("locator")] string? Locator = null,
+        [property: JsonPropertyName("label")] string? Label = null,
+        [property: JsonPropertyName("prefix")] string? Prefix = null,
+        [property: JsonPropertyName("suffix")] string? Suffix = null,
+        [property: JsonPropertyName("suppress-author")] bool? SuppressAuthor = null);
 
     private sealed record EngineRenderResponse(
+        [property: JsonPropertyName("citations")]
+        IReadOnlyList<string>? Citations,
         [property: JsonPropertyName("bibliography")]
         IReadOnlyList<string> Bibliography);
 }
@@ -525,5 +619,31 @@ internal sealed record FsharpCiteprocRenderResponse(
     string? Locale,
     string RenderedText,
     string RenderedHtml,
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string> Errors);
+
+/// <summary>One citation item for a cluster render: the item id plus the citeproc
+/// citation-item modifiers, in cluster order.</summary>
+internal sealed record FsharpCiteprocCitationItem(
+    string Id,
+    string? Locator = null,
+    string? Label = null,
+    string? Prefix = null,
+    string? Suffix = null,
+    bool SuppressAuthor = false);
+
+internal sealed record FsharpCiteprocClusterRequest(
+    string StyleId,
+    string StyleXml,
+    string? Locale,
+    IReadOnlyDictionary<string, string> LanguageLocaleMappings,
+    IReadOnlyList<Dictionary<string, object?>> Items,
+    IReadOnlyList<FsharpCiteprocCitationItem> Citations);
+
+internal sealed record FsharpCiteprocClusterResponse(
+    string StyleId,
+    string? Locale,
+    string CitationText,
+    string CitationHtml,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Errors);

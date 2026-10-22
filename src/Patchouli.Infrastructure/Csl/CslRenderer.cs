@@ -115,6 +115,100 @@ public sealed class CslRenderer : ICslRenderer
             rendered.Value.Errors));
     }
 
+    public async Task<Result<CslClusterRenderResult>> RenderClusterAsync(CslClusterRenderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.Items.Count == 0)
+        {
+            return Result<CslClusterRenderResult>.Failure(AppErrorCodes.ValidationFailed,
+                "At least one citation item is required for CSL cluster rendering.");
+        }
+
+        Result<ResolvedStyle> style = await ResolveStyleAsync(request.StyleId, cancellationToken);
+        if (style.IsFailure)
+        {
+            return Result<CslClusterRenderResult>.Failure(style.ErrorCode!, style.ErrorMessage!);
+        }
+
+        Result<string> styleContent =
+            await _styleStore.GetStyleContentAsync(style.Value.Style.StyleId, cancellationToken);
+        if (styleContent.IsFailure)
+        {
+            return Result<CslClusterRenderResult>.Failure(styleContent.ErrorCode!, styleContent.ErrorMessage!);
+        }
+
+        Result<ResolvedLocale> resolvedLocale =
+            await ResolveLocaleAsync(request.Locale, style.Value.Style, cancellationToken);
+        if (resolvedLocale.IsFailure)
+        {
+            return Result<CslClusterRenderResult>.Failure(resolvedLocale.ErrorCode!, resolvedLocale.ErrorMessage!);
+        }
+
+        List<string> warnings = style.Value.Warnings.ToList();
+        List<Dictionary<string, object?>> mappedItems = new();
+        List<FsharpCiteprocCitationItem> citations = new();
+        HashSet<ItemId> seen = new();
+        foreach (CslCitationItem citation in request.Items)
+        {
+            if (seen.Add(citation.ItemId))
+            {
+                Result<ItemMetadata> item = await _itemService.GetItemAsync(citation.ItemId, cancellationToken);
+                if (item.IsFailure)
+                {
+                    return Result<CslClusterRenderResult>.Failure(item.ErrorCode!, item.ErrorMessage!);
+                }
+
+                Result<CslMappedItem> mapped = await _itemMapper.MapAsync(item.Value, cancellationToken);
+                if (mapped.IsFailure)
+                {
+                    return Result<CslClusterRenderResult>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
+                }
+
+                mappedItems.Add(FsharpCiteprocJsonAdapter.ToItem(mapped.Value));
+            }
+
+            citations.Add(new FsharpCiteprocCitationItem(
+                citation.ItemId.ToString(),
+                NullIfWhiteSpace(citation.Locator),
+                NullIfWhiteSpace(citation.Label),
+                NullIfWhiteSpace(citation.Prefix),
+                NullIfWhiteSpace(citation.Suffix),
+                citation.SuppressAuthor));
+        }
+
+        Result<FsharpCiteprocClusterResponse> rendered = _citeproc.RenderCluster(
+            new FsharpCiteprocClusterRequest(style.Value.Style.StyleId, styleContent.Value,
+                resolvedLocale.Value.Locale, resolvedLocale.Value.LanguageLocaleMappings, mappedItems, citations),
+            cancellationToken);
+        if (rendered.IsFailure)
+        {
+            return Result<CslClusterRenderResult>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
+        }
+
+        if (string.IsNullOrWhiteSpace(rendered.Value.CitationText) &&
+            string.IsNullOrWhiteSpace(rendered.Value.CitationHtml))
+        {
+            return Result<CslClusterRenderResult>.Failure("csl_render_failed",
+                "CSL renderer produced an empty citation.");
+        }
+
+        warnings.AddRange(rendered.Value.Warnings);
+        return Result<CslClusterRenderResult>.Success(new CslClusterRenderResult(
+            style.Value.Style.StyleId,
+            style.Value.Style.DisplayName,
+            rendered.Value.Locale,
+            request.Items.Select(static citation => citation.ItemId).ToArray(),
+            rendered.Value.CitationText,
+            rendered.Value.CitationHtml,
+            warnings.Distinct(StringComparer.Ordinal).ToArray(),
+            rendered.Value.Errors));
+    }
+
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
     private async Task<Result<ResolvedStyle>> ResolveStyleAsync(string? requestedStyleId,
         CancellationToken cancellationToken)
     {
