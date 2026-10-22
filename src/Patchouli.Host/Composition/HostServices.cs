@@ -373,6 +373,9 @@ public sealed class HostServices
             Clock,
             Core.BuildInfo.Version);
         CslLocalInstall = new CslLocalFileInstallService(CslStore);
+        // Issue #30: one claim registry for add and the watcher; the committed-location
+        // probe lets import recovery avoid moving a file the database already references.
+        FileOperations = new FileOperationCoordinator();
         FileImport = new FileImportService(
             PdfImport,
             CslLocalInstall,
@@ -380,7 +383,9 @@ public sealed class HostServices
             FileResolution,
             new FileFingerprintService(),
             new FileImportRecoveryStore(ConnectionFactory),
-            Clock);
+            Clock,
+            FileOperations,
+            new CommittedFileLocationLookup(ConnectionFactory));
         // Issue #11: source-image reading for the view tool.
         PageImageView = new PageImageViewService(Pages, DocumentTrees, PageRenders);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
@@ -512,6 +517,13 @@ public sealed class HostServices
     public UpdateCoordinator UpdateCoordinator { get; }
     public ICslLocalFileInstallService CslLocalInstall { get; }
     public IFileImportService FileImport { get; }
+
+    /// <summary>
+    /// Issue #30: the one path-claim registry shared by explicit imports
+    /// (<see cref="FileImport"/>) and the file search root watcher, so both sides
+    /// coordinate on the same claims.
+    /// </summary>
+    public IFileOperationCoordinator FileOperations { get; }
     public IPageImageViewService PageImageView { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }

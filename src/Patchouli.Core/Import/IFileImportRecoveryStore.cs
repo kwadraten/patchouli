@@ -21,6 +21,7 @@ public static class FileImportRecoveryStatuses
     public const string ImportFailedRestored = "import_failed_restored";
     public const string ImportFailedRestoreFailed = "import_failed_restore_failed";
     public const string ImportFailedNoMove = "import_failed_no_move";
+    public const string ImportFailedKeptAtMovedLocation = "import_failed_kept_at_moved_location";
 }
 
 /// <summary>

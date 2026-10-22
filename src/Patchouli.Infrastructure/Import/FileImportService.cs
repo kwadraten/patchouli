@@ -21,6 +21,7 @@ public sealed class FileImportService : IFileImportService
 {
     private const int SniffByteCount = 16384;
     private const int MovePlanRetries = 3;
+    private const int CopyBufferSize = 128 * 1024;
 
     private readonly IPdfImportWorkflow _pdfImport;
     private readonly ICslLocalFileInstallService _cslInstall;
@@ -29,6 +30,8 @@ public sealed class FileImportService : IFileImportService
     private readonly IFileFingerprintService _fingerprints;
     private readonly IFileImportRecoveryStore _recovery;
     private readonly IClock _clock;
+    private readonly IFileOperationCoordinator _fileOperations;
+    private readonly ICommittedFileLocationLookup? _committedLocations;
 
     public FileImportService(
         IPdfImportWorkflow pdfImport,
@@ -37,7 +40,9 @@ public sealed class FileImportService : IFileImportService
         IFileResolutionService fileResolution,
         IFileFingerprintService fingerprints,
         IFileImportRecoveryStore recovery,
-        IClock clock)
+        IClock clock,
+        IFileOperationCoordinator? fileOperations = null,
+        ICommittedFileLocationLookup? committedLocations = null)
     {
         _pdfImport = pdfImport;
         _cslInstall = cslInstall;
@@ -46,6 +51,10 @@ public sealed class FileImportService : IFileImportService
         _fingerprints = fingerprints;
         _recovery = recovery;
         _clock = clock;
+        // Coordination only works when every importer in the process shares one
+        // registry; fall back to the shared instance instead of running uncoordinated.
+        _fileOperations = fileOperations ?? FileOperationCoordinator.Shared;
+        _committedLocations = committedLocations;
     }
 
     public async Task<Result<FileImportResult>> ImportAsync(
@@ -85,11 +94,42 @@ public sealed class FileImportService : IFileImportService
             }
         }
 
+        if (kind == LocalImportKind.Pdf)
+        {
+            // Issue #30: claim the source path before anything moves and hold the claim
+            // until the import — database commit, failure cleanup and rollback included —
+            // has fully finished. While the claim is held, the file watcher and rescans
+            // skip this path, so they can neither import it concurrently nor commit it at
+            // the move target while this import may still roll the file back.
+            await using IFileOperationLease lease =
+                await _fileOperations.ClaimAsync([file.FullPath], cancellationToken);
+            return await ImportPdfClaimedAsync(request, file, behaviorResult.Value, lease, cancellationToken);
+        }
+
+        // CSL follows style-install rules (read + install); it is never moved to file
+        // search roots and never watcher-imported, so it needs no claim.
+        return await InstallCslCoreAsync(file.FullPath, cancellationToken);
+    }
+
+    /// <summary>
+    /// The PDF import path of <see cref="ImportAsync"/>, executed entirely inside the
+    /// caller's path claim (issue #30): the move extends the claim to the target path
+    /// before the file is touched, and every recovery branch below runs before the claim
+    /// is released.
+    /// </summary>
+    private async Task<Result<FileImportResult>> ImportPdfClaimedAsync(
+        FileImportRequest request,
+        ValidatedImportFile file,
+        FileHandlingBehavior behavior,
+        IFileOperationLease lease,
+        CancellationToken cancellationToken)
+    {
         string importPath = file.FullPath;
         bool wasMoved = false;
-        if (kind == LocalImportKind.Pdf && behaviorResult.Value == FileHandlingBehavior.MoveToFirstSearchRoot)
+        if (behavior == FileHandlingBehavior.MoveToFirstSearchRoot)
         {
-            Result<MoveOutcome> move = await MoveToFirstSearchRootAsync(file, request.Trigger, cancellationToken);
+            Result<MoveOutcome> move = await MoveToFirstSearchRootAsync(file, request.Trigger, lease,
+                cancellationToken);
             if (move.IsFailure)
             {
                 return Result<FileImportResult>.Failure(move.ErrorCode!, move.ErrorMessage!);
@@ -99,29 +139,25 @@ public sealed class FileImportService : IFileImportService
             wasMoved = move.Value.PhysicallyMoved;
         }
 
-        // CSL follows style-install rules (read + install); it is never moved to file
-        // search roots.
         Result<FileImportResult> ingested;
         try
         {
-            ingested = kind == LocalImportKind.Pdf
-                ? await ImportPdfCoreAsync(request.Trigger, importPath, wasMoved, cancellationToken)
-                : await InstallCslCoreAsync(importPath, cancellationToken);
+            ingested = await ImportPdfCoreAsync(request.Trigger, importPath, wasMoved, cancellationToken);
         }
         catch (OperationCanceledException) when (wasMoved)
         {
             // P1-4: the file was already moved but the import was cancelled (e.g. during
             // fingerprint computation). Restore with a non-cancelled token so cleanup is
             // not itself cancelled, and record the outcome durably.
-            await RestoreAfterCancelAsync(file.FullPath, importPath, request.Trigger, kind,
+            await RestoreAfterCancelAsync(file.FullPath, importPath, request.Trigger, LocalImportKind.Pdf,
                 CancellationToken.None);
             throw;
         }
 
         if (ingested.IsFailure && wasMoved)
         {
-            return await RecoverAfterFailedImportAsync(file.FullPath, importPath, request.Trigger, kind,
-                ingested, cancellationToken);
+            return await RecoverAfterFailedImportAsync(file.FullPath, importPath, request.Trigger,
+                LocalImportKind.Pdf, ingested, cancellationToken);
         }
 
         return ingested;
@@ -138,6 +174,22 @@ public sealed class FileImportService : IFileImportService
         LocalImportKind kind,
         CancellationToken cleanupToken)
     {
+        // Issue #30 defensive check: the workflow commit may already have landed (with
+        // cancellation observed only afterwards) or another importer may have committed
+        // this path. If the database already references the moved location, moving the
+        // file back would strand the record on a missing file — keep the file where the
+        // database expects it. The path claim (issue #30 §8) is the primary mechanism;
+        // this check only guards importers that bypass the claim.
+        if (await IsCommittedAtMovedLocationAsync(movedPath, cleanupToken))
+        {
+            await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, movedPath,
+                FileImportRecoveryStatuses.ImportFailedKeptAtMovedLocation,
+                "Import was cancelled after the file was moved, but the library database already " +
+                "references the moved location; the file was kept there so the database path stays valid.",
+                cleanupToken);
+            return;
+        }
+
         Result restore = await MoveFileAsync(movedPath, originalPath, cleanupToken);
         if (restore.IsSuccess)
         {
@@ -308,6 +360,7 @@ public sealed class FileImportService : IFileImportService
     private async Task<Result<MoveOutcome>> MoveToFirstSearchRootAsync(
         ValidatedImportFile file,
         FileImportTrigger trigger,
+        IFileOperationLease lease,
         CancellationToken cancellationToken)
     {
         Result<IReadOnlyList<FileSearchRoot>> roots = await _fileResolution.ListSearchRootsAsync(cancellationToken);
@@ -346,6 +399,15 @@ public sealed class FileImportService : IFileImportService
                 identity.Value,
                 candidate => ProbeCandidateIdentityAsync(candidate, cancellationToken),
                 cancellationToken);
+            if (!PathsEqual(planned.TargetPath, file.FullPath))
+            {
+                // Issue #30: extend the claim to the target path before the file there
+                // is touched or read for import, so no other importer can take the
+                // target while this import owns it (covers both the physical-move plan
+                // and the identical-content-already-in-root plan).
+                await lease.AddAsync([planned.TargetPath], cancellationToken);
+            }
+
             if (!planned.Moved)
             {
                 // Already inside the target root, or identical content already occupies
@@ -468,8 +530,10 @@ public sealed class FileImportService : IFileImportService
 
     /// <summary>
     /// Moves the source to the target. Same-volume moves are atomic renames; cross-volume
-    /// moves copy, verify, then delete the source — the source is never deleted before
-    /// the copy is verified, so a failure never loses the file.
+    /// moves copy into a temporary ".importing" file in the target directory, verify and
+    /// flush it, publish it with a rename, and only then delete the source — the source
+    /// is never deleted before the copy is verified and published, so a failure never
+    /// loses the file and no observer ever sees a partial file at the target path.
     /// </summary>
     private static async Task<Result> MoveFileAsync(
         string source,
@@ -496,14 +560,45 @@ public sealed class FileImportService : IFileImportService
                 return Result.Success();
             }
 
+            // Issue #30: never write the final path directly — a watcher scan must never
+            // observe a half-written PDF. Copy into a ".importing" temp file inside the
+            // target directory (invisible to the "*.pdf" watcher and scans), flush it to
+            // disk, verify it, then publish with a same-directory rename so the file
+            // appears complete in one step. A failed or cancelled copy deletes the temp
+            // file and leaves the source untouched; stale temp files left by a crashed
+            // process are cleaned up when the watcher service starts.
+            string tempDirectory = string.IsNullOrWhiteSpace(directory) ? "." : directory;
+            string tempPath = Path.Combine(tempDirectory,
+                $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.importing");
             long sourceLength = new FileInfo(source).Length;
-            await Task.Run(() => File.Copy(source, target, overwrite: false), cancellationToken);
-            long targetLength = new FileInfo(target).Length;
-            if (targetLength != sourceLength)
+            try
             {
-                TryDelete(target);
-                return Result.Failure(FileImportErrorCodes.MoveFailed,
-                    "Cross-volume copy verification failed; the source file was kept in place.");
+                await using (FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.Read,
+                                 CopyBufferSize, useAsync: true))
+                await using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write,
+                                 FileShare.None, CopyBufferSize, useAsync: true))
+                {
+                    await input.CopyToAsync(output, cancellationToken);
+                    await output.FlushAsync(cancellationToken);
+                    output.Flush(flushToDisk: true);
+                }
+
+                if (new FileInfo(tempPath).Length != sourceLength)
+                {
+                    TryDelete(tempPath);
+                    return Result.Failure(FileImportErrorCodes.MoveFailed,
+                        "Cross-volume copy verification failed; the source file was kept in place.");
+                }
+
+                File.Move(tempPath, target, overwrite: false);
+            }
+            catch
+            {
+                // Copy, flush or publish failed (or was cancelled): the temp file is
+                // removed and nothing ever appeared at the final path. The exception —
+                // including cancellation — flows to the existing handlers below.
+                TryDelete(tempPath);
+                throw;
             }
 
             try
@@ -512,9 +607,9 @@ public sealed class FileImportService : IFileImportService
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                // The copy is complete and verified; the source could not be removed.
-                // Never claim success, never lose track of either copy. This is a
-                // partial failure, NOT a concurrent naming conflict — the target was
+                // The copy is complete, verified and published; the source could not be
+                // removed. Never claim success, never lose track of either copy. This is
+                // a partial failure, NOT a concurrent naming conflict — the target was
                 // created by this move, so the caller must not retry as if someone
                 // else won the name.
                 return Result.Failure(FileImportErrorCodes.MovePartialFailure,
@@ -652,6 +747,23 @@ public sealed class FileImportService : IFileImportService
         Result<FileImportResult> ingestFailure,
         CancellationToken cancellationToken)
     {
+        // Issue #30 defensive check: if the database already holds a committed location
+        // at the moved path (another importer committed it, or this import's commit
+        // landed before the failure surfaced), moving the file back would strand that
+        // record on a missing file. Keep the file where the database expects it.
+        if (await IsCommittedAtMovedLocationAsync(movedPath, cancellationToken))
+        {
+            await RecordRecoveryAsync(trigger, kind, originalPath, movedPath, movedPath,
+                FileImportRecoveryStatuses.ImportFailedKeptAtMovedLocation,
+                $"Import failed ({ingestFailure.ErrorCode}), but the library database already references " +
+                "the moved location; the file was kept there so the database path stays valid.",
+                cancellationToken);
+            return Result<FileImportResult>.Failure(
+                ingestFailure.ErrorCode ?? FileImportErrorCodes.ImportFailed,
+                $"{ingestFailure.ErrorMessage} The file was kept in the first file search root because " +
+                "the library database already references that location.");
+        }
+
         string fileName = Path.GetFileName(originalPath);
         Result restore = await MoveFileAsync(movedPath, originalPath, cancellationToken);
         if (restore.IsSuccess)
@@ -674,6 +786,26 @@ public sealed class FileImportService : IFileImportService
             $"{ingestFailure.ErrorMessage} The file could not be restored to its original position and " +
             $"was kept as '{fileName}' in the first file search root; see the import recovery records " +
             "for the durable diagnosis.");
+    }
+
+    /// <summary>
+    /// Issue #30: asks the committed-location probe (when wired) whether the library
+    /// database already references <paramref name="movedPath"/>. Without a probe the
+    /// recovery falls back to the plain restore.
+    /// </summary>
+    private async Task<bool> IsCommittedAtMovedLocationAsync(
+        string movedPath,
+        CancellationToken cancellationToken)
+    {
+        return _committedLocations is not null &&
+               await _committedLocations.HasCommittedLocationAsync(movedPath, cancellationToken);
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return OperatingSystem.IsWindows()
+            ? string.Equals(left, right, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(left, right, StringComparison.Ordinal);
     }
 
     private async Task RecordRecoveryAsync(
