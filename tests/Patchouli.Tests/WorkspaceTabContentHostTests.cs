@@ -219,7 +219,7 @@ public sealed class WorkspaceTabContentHostTests
                     WorkspaceTabKind.About, "integration-about", "About", "Info", true, () => viewModel.About);
                 WorkspaceTabViewModel changelog = viewModel.Workspace.OpenOrActivate(
                     WorkspaceTabKind.Changelog, "integration-changelog", "Changelog", "List", true,
-                    () => new ChangelogViewModel());
+                    () => new ChangelogViewModel(viewModel.Links));
                 WorkspaceTabViewModel settingsTab = viewModel.Workspace.OpenOrActivate(
                     WorkspaceTabKind.Settings, "integration-settings", "Settings", "Menu", true,
                     () => viewModel.Settings);

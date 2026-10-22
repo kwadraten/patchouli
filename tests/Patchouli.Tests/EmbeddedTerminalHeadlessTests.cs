@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using FluentAssertions;
+using Iciclecreek.Terminal;
 using Patchouli.Terminal;
 
 namespace Patchouli.Tests;
@@ -25,6 +26,68 @@ public sealed class EmbeddedTerminalHeadlessTests
     public EmbeddedTerminalHeadlessTests(AvaloniaSharedSessionFixture headless)
     {
         _headless = headless;
+    }
+
+    [Fact]
+    public async Task A_url_click_forwards_once_per_activation_with_the_actual_target()
+    {
+        await _headless.Session.Dispatch<bool>(() =>
+        {
+            EmbeddedTerminal terminal = new();
+            List<(object? Sender, string Url, bool FromSequence)> received = [];
+            terminal.LinkActivated += (sender, args) => received.Add((sender, args.Url, args.FromSequence));
+            try
+            {
+                // Two sequential gestures: each UrlClicked report is forwarded exactly once, and the
+                // payload carries the actual target (for OSC 8 this need not match the display text).
+                RaiseUrlClicked(terminal, "https://example.org/paper?doi=10.1000/test");
+                RaiseUrlClicked(terminal, "patchouli://items/00000000-0000-0000-0000-000000000001.yml",
+                    true);
+            }
+            finally
+            {
+                terminal.Dispose();
+            }
+
+            received.Should().HaveCount(2);
+            received[0].Sender.Should().BeSameAs(terminal);
+            received[0].Url.Should().Be("https://example.org/paper?doi=10.1000/test");
+            received[0].FromSequence.Should().BeFalse();
+            received[1].Sender.Should().BeSameAs(terminal);
+            received[1].Url.Should().Be("patchouli://items/00000000-0000-0000-0000-000000000001.yml");
+            received[1].FromSequence.Should().BeTrue();
+            return Task.FromResult(true);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_disposed_terminal_no_longer_forwards_url_clicks()
+    {
+        await _headless.Session.Dispatch<bool>(() =>
+        {
+            EmbeddedTerminal terminal = new();
+            int received = 0;
+            terminal.LinkActivated += (_, _) => received++;
+            terminal.Dispose();
+
+            RaiseUrlClicked(terminal, "https://example.org/paper");
+
+            received.Should().Be(0, "Dispose unsubscribes from the control and gates forwarding");
+            return Task.FromResult(true);
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Simulates a Ctrl+click the way the terminal control reports it: UrlClicked is a field-like
+    /// event on <see cref="TerminalControl"/>, so a test raises it through the compiler-generated
+    /// backing delegate. A missing delegate means nobody is subscribed, which is itself observable.
+    /// </summary>
+    private static void RaiseUrlClicked(EmbeddedTerminal terminal, string url, bool fromSequence = false)
+    {
+        EventHandler<UrlClickedEventArgs>? handlers = typeof(TerminalControl)
+            .GetField("UrlClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(terminal.TerminalControl) as EventHandler<UrlClickedEventArgs>;
+        handlers?.Invoke(terminal.TerminalControl, new UrlClickedEventArgs(url, fromSequence));
     }
 
     [TerminalPtyFact]

@@ -24,7 +24,11 @@
     </Style>
   </UserControl.Styles>
   <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-    <md:MarkdownRenderer MarkdownBuilder="{Binding MarkdownBuilder}" Margin="32" MaxWidth="960"
+    <!-- Issue #21: LinkCommand routes every rendered link click through the shared LinkNavigator
+         (protocol allowlist + external-link confirmation). LinkContextMenu intentionally stays
+         unset: LiveMarkdown ships no default menu, so right-click cannot bypass the policy. -->
+    <md:MarkdownRenderer MarkdownBuilder="{Binding MarkdownBuilder}" LinkCommand="{Binding OpenLinkCommand}"
+                         Margin="32" MaxWidth="960"
                          HorizontalAlignment="Stretch" />
   </ScrollViewer>
 </UserControl>

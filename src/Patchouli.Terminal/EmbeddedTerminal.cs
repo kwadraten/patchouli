@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Iciclecreek.Terminal;
@@ -31,6 +31,7 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
         Content = _terminal;
         _terminal.OutputReceived += OnTerminalOutputReceived;
         _terminal.ProcessExited += OnTerminalProcessExited;
+        _terminal.UrlClicked += OnTerminalUrlClicked;
     }
 
     /// <summary>
@@ -47,6 +48,23 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
     /// Raised after the hosted process exits, including when it is killed.
     /// </summary>
     public event EventHandler<TerminalExitedEventArgs>? Exited;
+
+    /// <summary>
+    /// Raised once for each hyperlink the user activates with Ctrl+click, forwarding the
+    /// terminal control's UrlClicked report unchanged. This layer only forwards; deciding
+    /// whether and how to navigate (in-app routing, confirmation, external launch) is the
+    /// host's responsibility, and the terminal itself never opens the URL.
+    /// </summary>
+    /// <remarks>
+    /// Upstream limitation (Iciclecreek.Avalonia.Terminal 4.1.0): plain-text output is
+    /// hit-tested with the hardcoded <c>https?://</c> regex in TerminalView — the detection
+    /// entry point (FindUrlAtColumn) is internal and the package exposes no link-pattern or
+    /// link-provider extension point — so a plain-text patchouli:// address is NOT clickable.
+    /// OSC 8 declared hyperlinks are detected for any scheme, so terminal content can make a
+    /// patchouli:// target clickable today by emitting the sequence instead of the bare
+    /// address. A proper fix is an upstream PR making the URL detection schemes configurable.
+    /// </remarks>
+    public event EventHandler<TerminalLinkActivatedEventArgs>? LinkActivated;
 
     /// <summary>
     /// Raised when this control releases the terminal and its PTY.
@@ -369,6 +387,7 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
         _started = false;
         _terminal.OutputReceived -= OnTerminalOutputReceived;
         _terminal.ProcessExited -= OnTerminalProcessExited;
+        _terminal.UrlClicked -= OnTerminalUrlClicked;
 
         try
         {
@@ -422,6 +441,18 @@ public sealed class EmbeddedTerminal : UserControl, IDisposable
         {
             TextOutputReceived?.Invoke(this, new TerminalTextOutputEventArgs(text));
         }
+    }
+
+    private void OnTerminalUrlClicked(object? sender, UrlClickedEventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // The control arms a link on Ctrl+press and raises UrlClicked once when the release lands
+        // on the same link, so forwarding each report as-is keeps one activation to one event.
+        LinkActivated?.Invoke(this, new TerminalLinkActivatedEventArgs(e.Url, e.FromSequence));
     }
 
     private void OnTerminalProcessExited(object? sender, ProcessExitedEventArgs e)

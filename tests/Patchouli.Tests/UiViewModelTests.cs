@@ -378,17 +378,20 @@ public sealed class UiViewModelTests : IDisposable
 
                 vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
                 vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
-                MarkdownLinkNavigator vfsLinks = new(vm.NavigateToVfsUriAsync,
-                    _ => throw new InvalidOperationException("VFS links must not open a browser."));
-                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.PageUri(
-                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 2)));
+                LinkNavigator vfsLinks = new(vm.NavigateToVfsUriAsync,
+                    _ => throw new InvalidOperationException("VFS links must not ask for confirmation."),
+                    _ => throw new InvalidOperationException("VFS links must not open a browser."),
+                    _ => throw new InvalidOperationException("VFS links must not report failures."),
+                    _ => throw new InvalidOperationException("VFS links must not be rejected."));
+                await vfsLinks.NavigateAsync(McpResourceUris.PageUri(
+                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 2));
                 vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
-                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.TranslationPageUri(
-                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 3)));
+                await vfsLinks.NavigateAsync(McpResourceUris.TranslationPageUri(
+                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 3));
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("3");
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).ActiveSidebarTab.ToString().Should().Be("Translation");
-                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.ItemUri(ItemId.Parse(imported.CreatedItemId!))));
+                await vfsLinks.NavigateAsync(McpResourceUris.ItemUri(ItemId.Parse(imported.CreatedItemId!)));
                 vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
                 vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
                 await services.PageRenders.ReleaseDocumentSessionAsync(

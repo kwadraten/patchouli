@@ -1,5 +1,9 @@
 # 更新日志
 
+## 未发布
+
+- 统一超链接处理：阅读视图（原文/译文预览、整书阅读）、更新日志页、关于页第三方链接与 Agent 终端中的链接统一经由公共导航服务——patchouli:// 链接在应用内导航；http(s) 链接先弹出显示实际目标地址的确认，确认后才交给系统默认应用打开，打开失败有明确提示；无效地址与不支持的协议（如 javascript:、file:）一律拒绝并提示。取消确认不产生任何副作用，一次点击只触发一次导航。
+
 ## 0.3.13
 
 发布：2026-10-20 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.13) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.12...0.3.13)

@@ -33,6 +33,32 @@ public sealed class TerminalTextOutputEventArgs : EventArgs
 }
 
 /// <summary>
+/// A hyperlink the user activated in the terminal output (Ctrl+click).
+/// </summary>
+public sealed class TerminalLinkActivatedEventArgs : EventArgs
+{
+    public TerminalLinkActivatedEventArgs(string url, bool fromSequence)
+    {
+        Url = url;
+        FromSequence = fromSequence;
+    }
+
+    /// <summary>
+    /// Gets the actual navigation target. For an OSC 8 hyperlink this is the URI the program
+    /// declared, which can differ arbitrarily from the display text — never reconstruct a target
+    /// from what is shown on screen.
+    /// </summary>
+    public string Url { get; }
+
+    /// <summary>
+    /// Gets whether the program declared this link with an OSC 8 sequence
+    /// (<see langword="true"/>) rather than the terminal matching plain-text output that merely
+    /// looks like a URL (<see langword="false"/>).
+    /// </summary>
+    public bool FromSequence { get; }
+}
+
+/// <summary>
 /// Describes a hosted process exit.
 /// </summary>
 public sealed class TerminalExitedEventArgs : EventArgs

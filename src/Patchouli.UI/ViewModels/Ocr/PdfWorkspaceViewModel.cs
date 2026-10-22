@@ -322,6 +322,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     [ObservableProperty] public partial Bitmap? Image { get; private set; }
     public LibraryItemViewModel Item { get; }
 
+    /// <summary>Issue #21: links embedded in the reading surfaces (原文预览、译文预览、整书阅读)
+    /// route through the shared link navigation service, so every page gets the same
+    /// patchouli:// in-app routing and http(s) confirm-before-open policy.</summary>
+    [ExcludeFromDerivedGeneration]
+    public LinkNavigator Links => _main.Links;
+
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     [ObservableProperty] public partial bool IsBusy { get; private set; }

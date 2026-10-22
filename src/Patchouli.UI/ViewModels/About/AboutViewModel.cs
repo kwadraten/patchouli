@@ -18,12 +18,15 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
 
 public class AboutViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _parent;
+    private readonly LinkNavigator _links;
     public string VersionInfo => _parent.VersionInfo;
 
     public string LicenseText { get; }
@@ -31,8 +34,14 @@ public class AboutViewModel : ViewModelBase
     public ICommand OpenUrlCommand { get; }
 
     public AboutViewModel(MainWindowViewModel parent)
+        : this(parent, parent.Links)
+    {
+    }
+
+    internal AboutViewModel(MainWindowViewModel parent, LinkNavigator links)
     {
         _parent = parent;
+        _links = links;
         try
         {
             using Stream? stream = System.Reflection.Assembly.GetExecutingAssembly()
@@ -56,11 +65,9 @@ public class AboutViewModel : ViewModelBase
         {
             if (url is string s && !string.IsNullOrWhiteSpace(s))
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = s,
-                    UseShellExecute = true
-                });
+                // Issue #21: third-party links go through the shared navigator, so the user
+                // confirms the actual target address before the system launcher opens it.
+                _links.NavigateAsync(s).Observe(nameof(AboutViewModel), "open-third-party-link");
             }
         });
         OpenUrlCommand = openUrlCommand;

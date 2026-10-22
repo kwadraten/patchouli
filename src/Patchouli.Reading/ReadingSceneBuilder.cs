@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -233,7 +234,9 @@ public static class ReadingSceneBuilder
     // Minimal GFM pipe-table reader for the reading view: optional leading/trailing pipes, cells
     // split on unescaped pipes, and a delimiter row (dashes and colons only) marks the row above
     // it as the header instead of being a data row itself. Anything that yields no data row is
-    // not a renderable grid, so the caller keeps the raw text.
+    // not a renderable grid, so the caller keeps the raw text. Cell link markup ("[text](url)",
+    // "<scheme://url>") is stripped to its display text; when any cell carries a link, the grid
+    // also emits positioned cells with their link spans so the view can hit-test them.
     private static ReadingTable? ParseTable(string text)
     {
         if (string.Equals(text.Trim(), "[Table]", StringComparison.Ordinal))
@@ -242,6 +245,7 @@ public static class ReadingSceneBuilder
         }
 
         List<IReadOnlyList<string>> rows = [];
+        List<ReadingTableCell> linkCells = [];
         bool hasHeader = false;
         bool sawDataRow = false;
         foreach (string rawLine in text.Split('\n'))
@@ -252,19 +256,177 @@ public static class ReadingSceneBuilder
                 continue;
             }
 
-            IReadOnlyList<string> cells = SplitCells(line);
-            if (IsDelimiterRow(cells))
+            IReadOnlyList<string> sourceCells = SplitCells(line);
+            if (IsDelimiterRow(sourceCells))
             {
                 hasHeader |= sawDataRow;
                 sawDataRow = false;
                 continue;
             }
 
-            rows.Add(cells);
+            int rowIndex = rows.Count;
+            List<string> displayCells = new(sourceCells.Count);
+            for (int column = 0; column < sourceCells.Count; column++)
+            {
+                string display = ExtractCellDisplay(sourceCells[column], out List<ReadingLinkSpan>? links);
+                displayCells.Add(display);
+                if (links is { Count: > 0 })
+                {
+                    linkCells.Add(new ReadingTableCell(rowIndex, column, display) { Links = links });
+                }
+            }
+
+            rows.Add(displayCells);
             sawDataRow = true;
         }
 
-        return rows.Count == 0 ? null : new ReadingTable(rows, hasHeader);
+        if (rows.Count == 0)
+        {
+            return null;
+        }
+
+        if (linkCells.Count == 0)
+        {
+            return new ReadingTable(rows, hasHeader);
+        }
+
+        // The view lays a table out from its positioned Cells whenever they are present, so a link
+        // in one cell must not shrink the grid to just that cell: emit every row/column cell and
+        // attach the link spans to the ones that carry them. The header flag is only known once the
+        // delimiter row is seen, so row 0 is marked here.
+        Dictionary<(int Row, int Column), IReadOnlyList<ReadingLinkSpan>> linksByCell =
+            linkCells.Where(cell => cell.Links is { Count: > 0 })
+                .ToDictionary(cell => (cell.Row, cell.Column), cell => cell.Links!);
+        List<ReadingTableCell> positioned = [];
+        for (int row = 0; row < rows.Count; row++)
+        {
+            for (int column = 0; column < rows[row].Count; column++)
+            {
+                ReadingTableCell cell = new(row, column, rows[row][column], IsHeader: hasHeader && row == 0);
+                if (linksByCell.TryGetValue((row, column), out IReadOnlyList<ReadingLinkSpan>? links))
+                {
+                    cell = cell with { Links = links };
+                }
+
+                positioned.Add(cell);
+            }
+        }
+
+        return new ReadingTable(rows, hasHeader) { Cells = positioned };
+    }
+
+    // Minimal inline-link reader for GFM table cells: "[text](url)" and bare "<scheme://url>"
+    // autolinks. The display text replaces the markup so the cell reads like rendered markdown,
+    // and the returned spans (offsets into the display text) keep the cell clickable. Anything
+    // that does not parse as a link is copied verbatim.
+    private static string ExtractCellDisplay(string cell, out List<ReadingLinkSpan>? links)
+    {
+        links = null;
+        if (!cell.Contains('[') && !cell.Contains('<'))
+        {
+            return cell;
+        }
+
+        StringBuilder display = new(cell.Length);
+        int index = 0;
+        while (index < cell.Length)
+        {
+            if (TryReadBracketLink(cell, index, out string? linkedText, out string? url, out int consumed) ||
+                TryReadAngleAutolink(cell, index, out linkedText, out url, out consumed))
+            {
+                int start = display.Length;
+                display.Append(linkedText);
+                links ??= [];
+                links.Add(new ReadingLinkSpan(start, linkedText.Length, url));
+                index += consumed;
+                continue;
+            }
+
+            display.Append(cell[index]);
+            index++;
+        }
+
+        return display.ToString();
+    }
+
+    private static bool TryReadBracketLink(
+        string cell,
+        int index,
+        [NotNullWhen(true)] out string? text,
+        [NotNullWhen(true)] out string? url,
+        out int consumed)
+    {
+        text = null;
+        url = null;
+        consumed = 0;
+        if (cell[index] != '[')
+        {
+            return false;
+        }
+
+        int close = cell.IndexOf(']', index + 1);
+        if (close <= index + 1 || close + 1 >= cell.Length || cell[close + 1] != '(')
+        {
+            return false;
+        }
+
+        int end = cell.IndexOf(')', close + 2);
+        if (end < 0)
+        {
+            return false;
+        }
+
+        string target = cell.Substring(close + 2, end - close - 2).Trim();
+        // An optional markdown title ("url" "title") is not part of the target.
+        int space = target.IndexOfAny(' ', '\t');
+        if (space >= 0)
+        {
+            target = target[..space];
+        }
+
+        if (target.Length == 0)
+        {
+            return false;
+        }
+
+        text = cell.Substring(index + 1, close - index - 1);
+        url = target;
+        consumed = end - index + 1;
+        return true;
+    }
+
+    private static bool TryReadAngleAutolink(
+        string cell,
+        int index,
+        [NotNullWhen(true)] out string? text,
+        [NotNullWhen(true)] out string? url,
+        out int consumed)
+    {
+        text = null;
+        url = null;
+        consumed = 0;
+        if (cell[index] != '<')
+        {
+            return false;
+        }
+
+        int end = cell.IndexOf('>', index + 1);
+        if (end < 0)
+        {
+            return false;
+        }
+
+        string target = cell.Substring(index + 1, end - index - 1);
+        if (!target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !target.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        text = target;
+        url = target;
+        consumed = end - index + 1;
+        return true;
     }
 
     private static IReadOnlyList<string> SplitCells(string line)
@@ -384,7 +546,10 @@ public static class ReadingSceneBuilder
                 string text = NormalizeCellText(sourceCell.InnerText);
                 bool isHeader = string.Equals(sourceCell.Name, "th", StringComparison.OrdinalIgnoreCase);
                 hasHeader |= rowIndex == 0 && isHeader;
-                cells.Add(new ReadingTableCell(rowIndex, column, text, rowSpan, columnSpan, isHeader));
+                cells.Add(new ReadingTableCell(rowIndex, column, text, rowSpan, columnSpan, isHeader)
+                {
+                    Links = ExtractCellLinks(sourceCell, text)
+                });
                 SetCell(values, column, text);
                 for (int offset = 0; offset < columnSpan; offset++)
                 {
@@ -459,6 +624,46 @@ public static class ReadingSceneBuilder
     {
         string value = cell.GetAttributeValue(attributeName, string.Empty);
         return int.TryParse(value, out int span) ? Math.Clamp(span, 1, 64) : 1;
+    }
+
+    // A cell's anchors keep their href as display-projection link spans: each anchor's normalized
+    // text is located in the normalized cell text (anchors appear in document order, so the search
+    // resumes after the previous match), and its [start, start+length) range becomes clickable.
+    private static IReadOnlyList<ReadingLinkSpan>? ExtractCellLinks(HtmlNode cell, string normalizedText)
+    {
+        List<ReadingLinkSpan>? links = null;
+        int searchFrom = 0;
+        foreach (HtmlNode anchor in cell.Descendants("a"))
+        {
+            string href = WebUtility.HtmlDecode(anchor.GetAttributeValue("href", string.Empty)).Trim();
+            if (href.Length == 0)
+            {
+                continue;
+            }
+
+            string anchorText = NormalizeCellText(anchor.InnerText);
+            if (anchorText.Length == 0)
+            {
+                continue;
+            }
+
+            int start = normalizedText.IndexOf(anchorText, searchFrom, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                start = normalizedText.IndexOf(anchorText, StringComparison.Ordinal);
+            }
+
+            if (start < 0)
+            {
+                continue;
+            }
+
+            links ??= [];
+            links.Add(new ReadingLinkSpan(start, anchorText.Length, href));
+            searchFrom = start + anchorText.Length;
+        }
+
+        return links;
     }
 
     private static string NormalizeCellText(string value)

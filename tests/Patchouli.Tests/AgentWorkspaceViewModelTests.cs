@@ -1,11 +1,18 @@
+using System.Reflection;
 using FluentAssertions;
+using Iciclecreek.Terminal;
 using Patchouli.Core.Agents;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
+using Patchouli.Mcp;
+using Patchouli.Terminal;
 using Patchouli.UI;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Agents;
+using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.Tests;
 
@@ -239,10 +246,173 @@ public sealed class AgentWorkspaceViewModelTests
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task A_patchouli_link_activated_in_the_terminal_navigates_in_app_without_a_confirmation()
+    {
+        await _headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            LinkDialogs dialogs = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs)
+            {
+                RuntimeDatabasePath = settings.CreateDatabasePath("agent-link-internal")
+            };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync("document", "终端链接目标");
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            string target = McpResourceUris.ItemUri(created.Value.ItemId);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            workspace.Terminal.Should().NotBeNull();
+
+            RaiseUrlClicked(workspace.Terminal!, target, true);
+
+            (await WaitUntilAsync(() => main.Status.Contains("已打开题录", StringComparison.Ordinal)))
+                .Should().BeTrue("a patchouli:// link routes to the in-app navigation entry point");
+            main.Layout.Tabs.Should().Contain(tab => tab.Kind == WorkspaceTabKind.ItemEditor);
+            dialogs.Shown.Should().BeEmpty("in-app navigation must not prompt");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task An_external_link_asks_for_confirmation_with_the_actual_target_and_a_cancel_never_launches()
+    {
+        await _headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            LinkDialogs dialogs = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            workspace.Terminal.Should().NotBeNull();
+            const string target = "https://example.org/real-target?doi=10.1000/test";
+
+            RaiseUrlClicked(workspace.Terminal!, target, true);
+
+            (await WaitUntilAsync(() => dialogs.Shown.Count == 1)).Should().BeTrue();
+            ConfirmDialogViewModel prompt = dialogs.Shown.Should().ContainSingle()
+                .Which.Should().BeOfType<ConfirmDialogViewModel>().Which;
+            prompt.Title.Should().Be("打开外部链接");
+            prompt.Message.Should().Contain(target,
+                "the confirmation shows the actual target URL, never the OSC 8 display text");
+            await Task.Delay(200);
+            dialogs.Shown.Should().HaveCount(1,
+                "declining the confirmation must not launch anything or report a failure");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_confirmed_external_link_surfaces_a_failed_launch_with_the_actual_target()
+    {
+        await _headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            LinkDialogs dialogs = new() { Choice = ConfirmDialogResult.Confirm };
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            workspace.Terminal.Should().NotBeNull();
+            const string target = "https://example.org/real-target?doi=10.1000/test";
+
+            RaiseUrlClicked(workspace.Terminal!, target, true);
+
+            (await WaitUntilAsync(() => dialogs.Shown.Count == 2)).Should().BeTrue(
+                "the headless session has no desktop launcher, so a confirmed open fails visibly");
+            dialogs.Shown[0].Should().BeOfType<ConfirmDialogViewModel>();
+            InfoDialogViewModel failure = dialogs.Shown[1].Should().BeOfType<InfoDialogViewModel>().Which;
+            failure.Message.Should().Contain(target);
+            main.Status.Should().Contain("无法打开链接");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_replaced_terminal_stops_activating_links_and_the_new_one_activates_once_per_click()
+    {
+        await _headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            LinkDialogs dialogs = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            EmbeddedTerminal first = workspace.Terminal!;
+            workspace.OnPageClosed();
+            workspace.Terminal.Should().BeNull();
+            workspace.OnPageAttached();
+            EmbeddedTerminal second = workspace.Terminal!;
+            second.Should().NotBeSameAs(first);
+
+            RaiseUrlClicked(first, "https://example.org/stale-terminal");
+            await Task.Delay(200);
+            dialogs.Shown.Should().BeEmpty("a replaced terminal is unsubscribed and must not navigate");
+
+            RaiseUrlClicked(second, "https://example.org/live-terminal");
+            (await WaitUntilAsync(() => dialogs.Shown.Count == 1)).Should().BeTrue();
+
+            // A second, sequential activation is a new gesture and prompts again, exactly once.
+            RaiseUrlClicked(second, "https://example.org/live-terminal");
+            (await WaitUntilAsync(() => dialogs.Shown.Count == 2)).Should().BeTrue();
+            return true;
+        }, CancellationToken.None);
+    }
+
     private static void WriteAgentsSettings(TemporaryAppSettingsFile settings,
         AgentIntegrationAppSettings agents)
     {
         PatchouliAppSettings current = PatchouliAppSettings.Load(settings.Path);
         (current with { Agents = agents }).Save(settings.Path).IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Simulates a Ctrl+click the way the terminal control reports it: UrlClicked is a field-like
+    /// event on <see cref="TerminalControl"/>, so a test raises it through the compiler-generated
+    /// backing delegate. A missing delegate means nobody is subscribed, which is itself observable.
+    /// </summary>
+    private static void RaiseUrlClicked(EmbeddedTerminal terminal, string url, bool fromSequence = false)
+    {
+        EventHandler<UrlClickedEventArgs>? handlers = typeof(TerminalControl)
+            .GetField("UrlClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(terminal.TerminalControl) as EventHandler<UrlClickedEventArgs>;
+        handlers?.Invoke(terminal.TerminalControl, new UrlClickedEventArgs(url, fromSequence));
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+
+        return condition();
+    }
+
+    /// <summary>Records every dialog the link flow would show and answers with a fixed choice.</summary>
+    private sealed class LinkDialogs : IDialogService
+    {
+        public ConfirmDialogResult Choice { get; set; } = ConfirmDialogResult.Cancel;
+        public List<object> Shown { get; } = [];
+
+        public Task ShowDialogAsync(object viewModel)
+        {
+            Shown.Add(viewModel);
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+        {
+            Shown.Add(viewModel);
+            return Task.FromResult(Choice is TResult result ? result : default);
+        }
     }
 }

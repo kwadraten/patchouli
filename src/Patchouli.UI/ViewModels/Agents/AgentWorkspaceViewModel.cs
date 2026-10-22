@@ -463,6 +463,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         if (_terminal is not null)
         {
             _terminal.Exited -= OnTerminalExited;
+            _terminal.LinkActivated -= OnTerminalLinkActivated;
             _terminal.Dispose();
             _terminal = null;
         }
@@ -520,6 +521,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
 
         EmbeddedTerminal terminal = _sessions.CreateTerminal();
         terminal.Exited += OnTerminalExited;
+        terminal.LinkActivated += OnTerminalLinkActivated;
         terminal.TerminalControl.FontSize = 13;
         terminal.TerminalControl.Background = new SolidColorBrush(Color.Parse("#101014"));
         terminal.TerminalControl.Foreground = new SolidColorBrush(Color.Parse("#E8E8EC"));
@@ -543,6 +545,25 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         }
 
         Dispatcher.UIThread.Post(() => ApplyExited(args));
+    }
+
+    /// <summary>
+    /// Routes a terminal hyperlink activation (Ctrl+click) to the shared link navigator, which owns
+    /// the protocol whitelist, the confirmation dialog and the external launch. The dialog shows the
+    /// event's actual target URL — for OSC 8 links the display text can differ arbitrarily and is
+    /// never consulted. This handler never writes to the PTY, so declining the confirmation leaves
+    /// the running session untouched.
+    /// </summary>
+    private void OnTerminalLinkActivated(object? sender, TerminalLinkActivatedEventArgs args)
+    {
+        // A late event from a terminal that has since been replaced (agent switch, page close) must
+        // not navigate; ResetTerminal also unsubscribes, so this guard only covers in-flight raises.
+        if (_shutdown || !ReferenceEquals(sender, _terminal))
+        {
+            return;
+        }
+
+        _main.Links.NavigateAsync(args.Url).Observe("agent-workspace", "terminal-link");
     }
 
     private void ApplyExited(TerminalExitedEventArgs args)
@@ -1218,6 +1239,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         if (_terminal is not null)
         {
             _terminal.Exited -= OnTerminalExited;
+            _terminal.LinkActivated -= OnTerminalLinkActivated;
         }
 
         try
@@ -1243,6 +1265,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
         if (disposing && _terminal is not null)
         {
             _terminal.Exited -= OnTerminalExited;
+            _terminal.LinkActivated -= OnTerminalLinkActivated;
         }
 
         base.Dispose(disposing);

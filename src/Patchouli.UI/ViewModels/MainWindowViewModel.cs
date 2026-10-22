@@ -774,6 +774,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Dialogs = dialogs ?? CreateDialogService();
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         UpdateFlow = new UpdateFlowService(this);
+        Links = CreateLinkNavigator();
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
         Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
@@ -2858,7 +2859,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public Task OpenChangelogAsync()
     {
         return ActivateTabAsync(WorkspaceTabKind.Changelog, "Changelog", "更新日志", "List", true,
-            () => new ChangelogViewModel());
+            () => new ChangelogViewModel(Links));
     }
 
     /// <summary>

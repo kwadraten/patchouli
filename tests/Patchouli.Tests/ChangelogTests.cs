@@ -8,6 +8,7 @@ using Avalonia.VisualTree;
 using FluentAssertions;
 using LiveMarkdown.Avalonia;
 using Patchouli.UI;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Views;
 
@@ -26,10 +27,100 @@ public sealed class ChangelogTests
     [Fact]
     public void Embedded_changelog_matches_the_standalone_document()
     {
-        ChangelogViewModel changelog = new();
+        (LinkNavigator navigator, _) = CreateRecordingNavigator();
+        ChangelogViewModel changelog = new(navigator);
         changelog.Markdown.Should().Be(File.ReadAllText(TestPaths.FromRepositoryRoot("Changelog.md")));
         changelog.Markdown.Should().Contain("## 0.3.12");
     }
+
+    [Fact]
+    public void External_link_click_asks_the_navigator_to_confirm_and_open_the_actual_target()
+    {
+        (LinkNavigator navigator, RecordedLinks recorded) = CreateRecordingNavigator();
+        ChangelogViewModel changelog = new(navigator);
+
+        changelog.OpenLinkCommand.Execute(LinkClick(new Uri("https://example.org/releases?page=2#top")));
+
+        recorded.Confirmed.Select(uri => uri.AbsoluteUri).Should().Equal("https://example.org/releases?page=2#top");
+        recorded.Opened.Select(uri => uri.AbsoluteUri).Should().Equal("https://example.org/releases?page=2#top");
+        recorded.Internal.Should().BeEmpty();
+        recorded.Rejected.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Patchouli_link_click_uses_internal_navigation_without_confirmation()
+    {
+        (LinkNavigator navigator, RecordedLinks recorded) = CreateRecordingNavigator();
+        ChangelogViewModel changelog = new(navigator);
+
+        changelog.OpenLinkCommand.Execute(LinkClick(new Uri("patchouli://texts/abc/page-2.md?rev=def")));
+
+        recorded.Internal.Should().Equal("patchouli://texts/abc/page-2.md?rev=def");
+        recorded.Confirmed.Should().BeEmpty();
+        recorded.Opened.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Disallowed_relative_or_missing_targets_never_reach_confirmation_or_the_launcher()
+    {
+        (LinkNavigator navigator, RecordedLinks recorded) = CreateRecordingNavigator();
+        ChangelogViewModel changelog = new(navigator);
+
+        changelog.OpenLinkCommand.Execute(LinkClick(new Uri("../local/file.md", UriKind.Relative)));
+        changelog.OpenLinkCommand.Execute(LinkClick(new Uri("javascript:alert(1)")));
+        changelog.OpenLinkCommand.Execute(LinkClick(null));
+        changelog.OpenLinkCommand.Execute(null);
+        changelog.OpenLinkCommand.Execute("https://example.org");
+
+        recorded.Rejected.Should().Equal("../local/file.md", "javascript:alert(1)");
+        recorded.Confirmed.Should().BeEmpty();
+        recorded.Opened.Should().BeEmpty();
+        recorded.Internal.Should().BeEmpty();
+    }
+
+    private static LinkClickedEventArgs LinkClick(Uri? href)
+    {
+        return new LinkClickedEventArgs(MarkdownTextBlock.LinkClickEvent, new object(), href);
+    }
+
+    private static (LinkNavigator Navigator, RecordedLinks Recorded) CreateRecordingNavigator()
+    {
+        RecordedLinks recorded = new([], [], [], [], []);
+        LinkNavigator navigator = new(
+            url =>
+            {
+                recorded.Internal.Add(url);
+                return Task.CompletedTask;
+            },
+            uri =>
+            {
+                recorded.Confirmed.Add(uri);
+                return Task.FromResult(true);
+            },
+            uri =>
+            {
+                recorded.Opened.Add(uri);
+                return Task.FromResult(true);
+            },
+            uri =>
+            {
+                recorded.OpenFailures.Add(uri);
+                return Task.CompletedTask;
+            },
+            url =>
+            {
+                recorded.Rejected.Add(url);
+                return Task.CompletedTask;
+            });
+        return (navigator, recorded);
+    }
+
+    private sealed record RecordedLinks(
+        List<string> Internal,
+        List<Uri> Confirmed,
+        List<Uri> Opened,
+        List<Uri> OpenFailures,
+        List<string> Rejected);
 
     [Fact]
     public async Task Settings_menu_opens_a_rendered_changelog_tab_and_reuses_it_until_closed()
@@ -76,7 +167,12 @@ public sealed class ChangelogTests
                 }
 
                 page.Should().NotBeNull();
-                renderer!.MarkdownBuilder.Should().BeSameAs(((ChangelogViewModel)tab.Content).MarkdownBuilder);
+                ChangelogViewModel changelog = (ChangelogViewModel)tab.Content;
+                renderer!.MarkdownBuilder.Should().BeSameAs(changelog.MarkdownBuilder);
+                // Issue #21: every link click is routed through the shared LinkNavigator, and the
+                // component's right-click menu stays unset so no path bypasses the policy.
+                renderer.LinkCommand.Should().BeSameAs(changelog.OpenLinkCommand);
+                renderer.LinkContextMenu.Should().BeNull();
                 using RenderTargetBitmap bitmap = new(new PixelSize(1280, 820), new Vector(96, 96));
                 bitmap.Render(window);
                 renderedBlocks.Should().NotBeEmpty();

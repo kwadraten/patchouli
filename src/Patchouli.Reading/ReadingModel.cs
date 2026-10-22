@@ -33,14 +33,24 @@ public sealed record ReadingTable(
     public IReadOnlyList<ReadingTableCell>? Cells { get; init; }
 }
 
-/// <summary>A source HTML cell positioned in the rendered table grid.</summary>
+/// <summary>A hyperlink range inside a block's or table cell's displayed text: [Start,
+/// Start+Length) is the clickable span, Url is the actual navigation target (the markdown link
+/// destination, never the display text).</summary>
+public sealed record ReadingLinkSpan(int Start, int Length, string Url);
+
+/// <summary>A source HTML cell positioned in the rendered table grid. Links carries the cell's
+/// hyperlink spans (offsets into <see cref="Text"/>), or null when the cell has none; the
+/// positional shape is unchanged so existing construction sites keep compiling.</summary>
 public sealed record ReadingTableCell(
     int Row,
     int Column,
     string Text,
     int RowSpan = 1,
     int ColumnSpan = 1,
-    bool IsHeader = false);
+    bool IsHeader = false)
+{
+    public IReadOnlyList<ReadingLinkSpan>? Links { get; init; }
+}
 
 /// <summary>A media block's image region: the normalized bbox region of the owning page that the
 /// block displays, drawn as a source sub-rect of the page's rendered pixel buffer. The image is
@@ -165,6 +175,12 @@ public sealed record ReadingMeasuredBlock(
 /// <summary>Raised when a block is pressed: the column it lives in plus its source box linkage
 /// (null on empty space or unlinked content).</summary>
 public sealed record ReadingBlockActivation(ReadingColumnRole Column, DocumentBoxId? BoxId);
+
+/// <summary>Raised by <see cref="ReadingView.LinkClicked"/> when a hyperlink span is clicked
+/// without a drag selection: the column the link lives in and the actual target URL taken from
+/// the link's destination (not its display text). The view performs no navigation itself; the
+/// host decides how to handle the URL.</summary>
+public sealed record ReadingLinkActivation(ReadingColumnRole Column, string Url);
 
 /// <summary>Raised by the source column's 编辑选中文本 command with the selected boxes in reading
 /// order (the host opens the first one), the selected text, and the zero-based page of the first

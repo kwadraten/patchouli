@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.Core;
 using Patchouli.Ocr;
 using Patchouli.UI;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.Host.Composition;
 
@@ -328,6 +329,66 @@ public sealed class AlphaPackagingTests
             about.ThirdPartyLibraries.Should().Contain(library =>
                 library.Name == name && library.License == license && library.Url == url);
         }
+    }
+
+    [Fact]
+    public async Task About_third_party_link_click_goes_through_shared_link_navigator()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        TaskCompletionSource<Uri> confirmed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<Uri> opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        LinkNavigator navigator = new(
+            _ => Task.CompletedTask,
+            uri =>
+            {
+                confirmed.TrySetResult(uri);
+                return Task.FromResult(true);
+            },
+            uri =>
+            {
+                opened.TrySetResult(uri);
+                return Task.FromResult(true);
+            },
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path),
+            navigator);
+        ThirdPartyLibrary library = about.ThirdPartyLibraries.Single(entry => entry.Name == "Avalonia");
+
+        library.OpenUrlCommand.Execute(library.Url);
+
+        (await confirmed.Task.WaitAsync(TimeSpan.FromSeconds(5))).AbsoluteUri.Should().Be(library.Url);
+        (await opened.Task.WaitAsync(TimeSpan.FromSeconds(5))).AbsoluteUri.Should().Be(library.Url);
+    }
+
+    [Fact]
+    public async Task About_third_party_link_declined_confirmation_does_not_open_external_app()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        TaskCompletionSource<Uri> confirmed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int openAttempts = 0;
+        LinkNavigator navigator = new(
+            _ => Task.CompletedTask,
+            uri =>
+            {
+                confirmed.TrySetResult(uri);
+                return Task.FromResult(false);
+            },
+            _ =>
+            {
+                openAttempts++;
+                return Task.FromResult(true);
+            },
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask);
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path),
+            navigator);
+        ThirdPartyLibrary library = about.ThirdPartyLibraries.Single(entry => entry.Name == "Avalonia");
+
+        library.OpenUrlCommand.Execute(library.Url);
+
+        (await confirmed.Task.WaitAsync(TimeSpan.FromSeconds(5))).AbsoluteUri.Should().Be(library.Url);
+        openAttempts.Should().Be(0);
     }
 
     [Fact]

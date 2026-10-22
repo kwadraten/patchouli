@@ -191,6 +191,11 @@ public sealed class ReadingView : Control, ICustomHitTest
     /// reading order, the selected text, and the first selected block's page index.</summary>
     public event EventHandler<ReadingEditSelectionRequest>? EditSelectionRequested;
 
+    /// <summary>Raised when a hyperlink span (paragraph inline or table cell) is clicked without
+    /// a drag selection: press and release land on the same link and the selection stays empty.
+    /// The view never navigates itself; the host receives the actual target URL.</summary>
+    public event EventHandler<ReadingLinkActivation>? LinkClicked;
+
     /// <summary>The active selection, or null when none was started. Selection never spans
     /// columns.</summary>
     public ReadingSelection? Selection => _selection;
@@ -221,7 +226,12 @@ public sealed class ReadingView : Control, ICustomHitTest
     private bool _layoutValid;
 
     private ReadingSelection? _selection;
+
     private bool _selecting;
+
+    // The link under the pointer at press time; a click activates it only when the release lands
+    // on the same link and no drag selection happened in between.
+    private string? _pressedLinkUrl;
 
     private readonly MenuFlyout _contextFlyout = new();
     private readonly MenuItem _copyItem = new() { Header = "复制" };
@@ -376,6 +386,96 @@ public sealed class ReadingView : Control, ICustomHitTest
         return false;
     }
 
+    /// <summary>Hit-tests a view point against the hyperlink spans recorded during layout
+    /// (paragraph inline links and table cell links). Returns the actual target URL, never the
+    /// display text.</summary>
+    public bool TryGetLinkAt(Point point, out string url)
+    {
+        return TryGetLinkAt(point, out _, out url);
+    }
+
+    private bool TryGetLinkAt(Point point, out ReadingColumnRole column, out string url)
+    {
+        EnsureLayout(_layoutWidth > 0 ? _layoutWidth : NormalizeWidth(Bounds.Width));
+        foreach (ReadingColumnRole candidate in new[] { ReadingColumnRole.Source, ReadingColumnRole.Translation })
+        {
+            BlockLayout? layout = FindBlockAt(candidate, point);
+            if (layout is not null && TryGetLinkInBlock(layout, point, out url))
+            {
+                column = candidate;
+                return true;
+            }
+        }
+
+        column = ReadingColumnRole.Source;
+        url = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetLinkInBlock(BlockLayout layout, Point point, out string url)
+    {
+        if (layout is { Links.Count: > 0, Text: { } text })
+        {
+            Point local = new(point.X - layout.Left, point.Y - layout.Top);
+            if (TryHitLinkSpan(text, local, layout.Links, out url))
+            {
+                return true;
+            }
+        }
+
+        if (layout.Table is { } table)
+        {
+            foreach (ReadingCellLayout cell in table.Cells)
+            {
+                if (cell.Links is not { Count: > 0 } links)
+                {
+                    continue;
+                }
+
+                double cellX = layout.Left + table.ColumnWidths.Take(cell.Column).Sum();
+                double cellY = layout.Top + table.RowHeights.Take(cell.Row).Sum();
+                Rect bounds = new(cellX, cellY,
+                    table.ColumnWidths.Skip(cell.Column).Take(cell.ColumnSpan).Sum(),
+                    table.RowHeights.Skip(cell.Row).Take(cell.RowSpan).Sum());
+                if (!bounds.Contains(point))
+                {
+                    continue;
+                }
+
+                // The cell text is drawn inset by the cell padding, so the link spans (offsets
+                // into the cell text) are hit-tested against the inset origin.
+                Point local = new(point.X - cellX - TableCellPadX, point.Y - cellY - TableCellPadY);
+                if (TryHitLinkSpan(cell.Text, local, links, out url))
+                {
+                    return true;
+                }
+            }
+        }
+
+        url = string.Empty;
+        return false;
+    }
+
+    private static bool TryHitLinkSpan(
+        TextLayout text, Point local, IReadOnlyList<ReadingLinkSpan> links, out string url)
+    {
+        // HitTestPoint returns the leading edge of the glyph under the point; a span owns
+        // [Start, Start+Length), so a trailing-edge hit on the last link character still lands
+        // inside while the first character after the link does not.
+        int index = text.HitTestPoint(local).TextPosition;
+        foreach (ReadingLinkSpan span in links)
+        {
+            if (index >= span.Start && index < span.Start + span.Length)
+            {
+                url = span.Url;
+                return true;
+            }
+        }
+
+        url = string.Empty;
+        return false;
+    }
+
     /// <summary>Starts (or collapses) the selection at a position in the given column.</summary>
     public void BeginSelection(ReadingColumnRole column, int blockIndex, int characterIndex)
     {
@@ -510,6 +610,7 @@ public sealed class ReadingView : Control, ICustomHitTest
 
         Point point = e.GetPosition(this);
         Focus();
+        _pressedLinkUrl = TryGetLinkAt(point, out string? pressedUrl) ? pressedUrl : null;
         if (TryHitTestPosition(point, out ReadingColumnRole column, out int blockIndex, out int characterIndex))
         {
             BeginSelection(column, blockIndex, characterIndex);
@@ -541,17 +642,33 @@ public sealed class ReadingView : Control, ICustomHitTest
             return;
         }
 
+        bool overLink = TryGetLinkAt(point, out _);
         bool overBox = TryHitTestPosition(point, out ReadingColumnRole hovered, out int hoveredIndex, out _) &&
                        ColumnBlocks(hovered)[hoveredIndex].Source.BoxId is not null;
-        Cursor = overBox ? HandCursor : Cursor.Default;
+        Cursor = overLink || overBox ? HandCursor : Cursor.Default;
     }
 
     /// <inheritdoc/>
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        bool wasSelecting = _selecting;
         _selecting = false;
         e.Pointer.Capture(null);
+        // A link activates on a plain click: same link under press and release, and no drag
+        // selection in between (selecting link text must not navigate). One release raises the
+        // event at most once.
+        string? pressedLink = _pressedLinkUrl;
+        _pressedLinkUrl = null;
+        if (wasSelecting &&
+            e.InitialPressMouseButton == MouseButton.Left &&
+            pressedLink is not null &&
+            (_selection is null || _selection.IsEmpty) &&
+            TryGetLinkAt(e.GetPosition(this), out ReadingColumnRole column, out string url) &&
+            string.Equals(pressedLink, url, StringComparison.Ordinal))
+        {
+            LinkClicked?.Invoke(this, new ReadingLinkActivation(column, url));
+        }
     }
 
     /// <inheritdoc/>
@@ -813,7 +930,7 @@ public sealed class ReadingView : Control, ICustomHitTest
                 layout.Height = layout.Text.Height + 2 * PlaceholderPadding;
                 break;
             default:
-                layout.Text = BuildTextLayout(block, contentWidth, bodySize);
+                layout.Text = BuildTextLayout(block, contentWidth, bodySize, layout);
                 layout.Height = layout.Text.Height;
                 break;
         }
@@ -821,12 +938,19 @@ public sealed class ReadingView : Control, ICustomHitTest
         return layout;
     }
 
-    private TextLayout BuildTextLayout(ReadingBlock block, double width, double bodySize)
+    private TextLayout BuildTextLayout(ReadingBlock block, double width, double bodySize, BlockLayout layout)
     {
         IBrush foreground = block.Kind == "quote" ? _muted : _foreground;
         if (block.Inlines is { Count: > 0 } inlines)
         {
-            return BuildInlineLayout(inlines, foreground, width, bodySize);
+            List<ReadingLinkSpan> links = [];
+            TextLayout text = BuildInlineLayout(inlines, foreground, width, bodySize, links);
+            if (links.Count > 0)
+            {
+                layout.Links = links;
+            }
+
+            return text;
         }
 
         return BuildRawLayout(block.Text, BodyTypeface(), bodySize, foreground, width);
@@ -860,13 +984,19 @@ public sealed class ReadingView : Control, ICustomHitTest
     }
 
     // Inline markup is flattened into one string plus per-range run-property overrides, so a single
-    // TextLayout wraps bold/italic/code/link spans across lines the way flowing text should.
+    // TextLayout wraps bold/italic/code/link spans across lines the way flowing text should. Link
+    // ranges (character offsets into the flattened string plus the actual target URL) are collected
+    // into <paramref name="links"/> for hit testing.
     private TextLayout BuildInlineLayout(
-        IReadOnlyList<MarkdownInlineModel> inlines, IBrush foreground, double maxWidth, double bodySize)
+        IReadOnlyList<MarkdownInlineModel> inlines,
+        IBrush foreground,
+        double maxWidth,
+        double bodySize,
+        List<ReadingLinkSpan> links)
     {
         StringBuilder builder = new();
         List<ValueSpan<TextRunProperties>> spans = [];
-        AppendInlines(inlines, InlineStyle.Default, foreground, bodySize, builder, spans);
+        AppendInlines(inlines, InlineStyle.Default, foreground, bodySize, builder, spans, links);
         if (spans.Count == 0)
         {
             return BuildRawLayout(string.Empty, BodyTypeface(), bodySize, foreground, maxWidth);
@@ -897,44 +1027,52 @@ public sealed class ReadingView : Control, ICustomHitTest
         IBrush foreground,
         double bodySize,
         StringBuilder builder,
-        List<ValueSpan<TextRunProperties>> spans)
+        List<ValueSpan<TextRunProperties>> spans,
+        List<ReadingLinkSpan> links)
     {
         foreach (MarkdownInlineModel inline in inlines)
         {
             switch (inline.Kind)
             {
                 case "text":
-                    AppendRun(inline.Text, style, foreground, bodySize, builder, spans);
+                    AppendRun(inline.Text, style, foreground, bodySize, builder, spans, links);
                     break;
                 case "line_break":
-                    AppendRun("\n", style, foreground, bodySize, builder, spans);
+                    AppendRun("\n", style, foreground, bodySize, builder, spans, links);
                     break;
                 case "strong":
-                    AppendChildren(inline, style with { Bold = true }, foreground, bodySize, builder, spans);
+                    AppendChildren(inline, style with { Bold = true }, foreground, bodySize, builder, spans,
+                        links);
                     break;
                 case "emphasis":
-                    AppendChildren(inline, style with { Italic = true }, foreground, bodySize, builder, spans);
+                    AppendChildren(inline, style with { Italic = true }, foreground, bodySize, builder, spans,
+                        links);
                     break;
                 case "strikethrough":
                     AppendChildren(inline, style with { Strikethrough = true }, foreground, bodySize, builder,
-                        spans);
+                        spans, links);
                     break;
                 case "code":
-                    AppendRun(inline.Text, style with { Code = true }, foreground, bodySize, builder, spans);
+                    AppendRun(inline.Text, style with { Code = true }, foreground, bodySize, builder, spans,
+                        links);
                     break;
                 case "link":
-                    AppendChildren(inline, style with { Link = true }, foreground, bodySize, builder, spans);
+                    // The link destination lives in Text; Children carry the display runs. Nested
+                    // styles (strong/em around or inside the link) keep LinkUrl flowing down so
+                    // every display character is attributed to the link.
+                    AppendChildren(inline, style with { Link = true, LinkUrl = inline.Text }, foreground,
+                        bodySize, builder, spans, links);
                     break;
                 case "superscript":
                     AppendChildren(inline, style with { Baseline = BaselineAlignment.Superscript }, foreground,
-                        bodySize, builder, spans);
+                        bodySize, builder, spans, links);
                     break;
                 case "subscript":
                     AppendChildren(inline, style with { Baseline = BaselineAlignment.Subscript }, foreground,
-                        bodySize, builder, spans);
+                        bodySize, builder, spans, links);
                     break;
                 default:
-                    AppendChildren(inline, style, foreground, bodySize, builder, spans);
+                    AppendChildren(inline, style, foreground, bodySize, builder, spans, links);
                     break;
             }
         }
@@ -946,15 +1084,16 @@ public sealed class ReadingView : Control, ICustomHitTest
         IBrush foreground,
         double bodySize,
         StringBuilder builder,
-        List<ValueSpan<TextRunProperties>> spans)
+        List<ValueSpan<TextRunProperties>> spans,
+        List<ReadingLinkSpan> links)
     {
         if (inline.Children is { Count: > 0 } children)
         {
-            AppendInlines(children, style, foreground, bodySize, builder, spans);
+            AppendInlines(children, style, foreground, bodySize, builder, spans, links);
         }
         else
         {
-            AppendRun(inline.Text, style, foreground, bodySize, builder, spans);
+            AppendRun(inline.Text, style, foreground, bodySize, builder, spans, links);
         }
     }
 
@@ -964,7 +1103,8 @@ public sealed class ReadingView : Control, ICustomHitTest
         IBrush foreground,
         double bodySize,
         StringBuilder builder,
-        List<ValueSpan<TextRunProperties>> spans)
+        List<ValueSpan<TextRunProperties>> spans,
+        List<ReadingLinkSpan> links)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -975,6 +1115,10 @@ public sealed class ReadingView : Control, ICustomHitTest
         builder.Append(text);
         spans.Add(new ValueSpan<TextRunProperties>(start, text.Length,
             CreateRunProperties(style, foreground, bodySize)));
+        if (!string.IsNullOrEmpty(style.LinkUrl))
+        {
+            links.Add(new ReadingLinkSpan(start, text.Length, style.LinkUrl));
+        }
     }
 
     private TextRunProperties CreateRunProperties(InlineStyle style, IBrush foreground, double bodySize)
@@ -987,12 +1131,12 @@ public sealed class ReadingView : Control, ICustomHitTest
         if (style.Link)
         {
             decorations = style.Strikethrough
-                ? new TextDecorationCollection(TextDecorations.Underline.Concat(TextDecorations.Strikethrough))
-                : TextDecorations.Underline;
+                ? CreateDecorations(TextDecorationLocation.Underline, TextDecorationLocation.Strikethrough)
+                : CreateDecorations(TextDecorationLocation.Underline);
         }
         else if (style.Strikethrough)
         {
-            decorations = TextDecorations.Strikethrough;
+            decorations = CreateDecorations(TextDecorationLocation.Strikethrough);
         }
 
         IBrush runForeground = style.Link ? _link : foreground;
@@ -1000,6 +1144,21 @@ public sealed class ReadingView : Control, ICustomHitTest
         double fontSize = style.Baseline == BaselineAlignment.Baseline ? bodySize : bodySize * 0.8;
         return new GenericTextRunProperties(typeface, fontSize, decorations, runForeground, background,
             style.Baseline, null, null);
+    }
+
+    // TextDecorations.Underline/Strikethrough are static AvaloniaObjects owned by the first thread
+    // that touches them; sharing them across headless sessions (each with its own dispatcher
+    // thread) throws cross-thread access errors on render. Fresh instances render identically
+    // (only Location is set, same as the statics) and stay on the calling thread.
+    private static TextDecorationCollection CreateDecorations(params TextDecorationLocation[] locations)
+    {
+        TextDecorationCollection decorations = [];
+        foreach (TextDecorationLocation location in locations)
+        {
+            decorations.Add(new TextDecoration { Location = location });
+        }
+
+        return decorations;
     }
 
     private TableLayout BuildTable(ReadingTable table, double width, double bodySize)
@@ -1100,8 +1259,7 @@ public sealed class ReadingView : Control, ICustomHitTest
             int columnSpan = Math.Clamp(cell.ColumnSpan, 1, columns - cell.Column);
             int rowSpan = Math.Clamp(cell.RowSpan, 1, rows - cell.Row);
             double cellWidth = columnWidths.Skip(cell.Column).Take(columnSpan).Sum();
-            TextLayout textLayout = BuildRawLayout(cell.Text,
-                cell.IsHeader ? BodyBoldTypeface() : BodyTypeface(), bodySize, _foreground,
+            TextLayout textLayout = BuildCellTextLayout(cell, bodySize,
                 Math.Max(8, cellWidth - 2 * TableCellPadX));
             double requiredHeight = Math.Max(18, textLayout.Height + 2 * TableCellPadY);
             double currentHeight = result.RowHeights.Skip(cell.Row).Take(rowSpan).Sum();
@@ -1115,7 +1273,7 @@ public sealed class ReadingView : Control, ICustomHitTest
             }
 
             layouts.Add(new ReadingCellLayout(cell.Row, cell.Column, rowSpan, columnSpan, cell.IsHeader,
-                textLayout));
+                textLayout, cell.Links));
         }
 
         result.Cells = layouts.ToArray();
@@ -1128,6 +1286,54 @@ public sealed class ReadingView : Control, ICustomHitTest
 
         result.Height = tableHeight;
         return result;
+    }
+
+    // A linked cell draws its link ranges underlined in the link brush, like paragraph links. The
+    // span offsets index into the cell's own text, so they ride along with wrapping unchanged.
+    private TextLayout BuildCellTextLayout(ReadingTableCell cell, double bodySize, double maxWidth)
+    {
+        Typeface typeface = cell.IsHeader ? BodyBoldTypeface() : BodyTypeface();
+        if (cell.Links is not { Count: > 0 } links)
+        {
+            return BuildRawLayout(cell.Text, typeface, bodySize, _foreground, maxWidth);
+        }
+
+        GenericTextRunProperties linkProperties = new(typeface, bodySize,
+            CreateDecorations(TextDecorationLocation.Underline), _link,
+            null, BaselineAlignment.Baseline, null, null);
+        List<ValueSpan<TextRunProperties>> spans = [];
+        foreach (ReadingLinkSpan link in links)
+        {
+            int start = Math.Clamp(link.Start, 0, cell.Text.Length);
+            int length = Math.Clamp(link.Length, 0, cell.Text.Length - start);
+            if (length > 0)
+            {
+                spans.Add(new ValueSpan<TextRunProperties>(start, length, linkProperties));
+            }
+        }
+
+        if (spans.Count == 0)
+        {
+            return BuildRawLayout(cell.Text, typeface, bodySize, _foreground, maxWidth);
+        }
+
+        return new TextLayout(
+            cell.Text,
+            typeface,
+            bodySize,
+            _foreground,
+            TextAlignment.Left,
+            TextWrapping.Wrap,
+            TextTrimming.None,
+            null,
+            FlowDirection.LeftToRight,
+            Math.Max(1, maxWidth),
+            double.PositiveInfinity,
+            double.NaN,
+            0,
+            0,
+            null,
+            spans);
     }
 
     private BlockLayout BuildMedia(ReadingBlock block, double width, double bodySize)
@@ -1719,7 +1925,12 @@ public sealed class ReadingView : Control, ICustomHitTest
         public double Width;
         public double Height;
         public string PlainText = string.Empty;
+
         public TextLayout? Text;
+
+        // Hyperlink spans over PlainText for inline-laid-out blocks (offsets match the flattened
+        // TextLayout string); null when the block has no links.
+        public List<ReadingLinkSpan>? Links;
         public TextLayout? MediaLabel;
         public TableLayout? Table;
         public IImage? MediaImage;
@@ -1745,7 +1956,8 @@ public sealed class ReadingView : Control, ICustomHitTest
         int RowSpan,
         int ColumnSpan,
         bool IsHeader,
-        TextLayout Text);
+        TextLayout Text,
+        IReadOnlyList<ReadingLinkSpan>? Links = null);
 
     private readonly record struct InlineStyle(
         bool Bold,
@@ -1753,8 +1965,10 @@ public sealed class ReadingView : Control, ICustomHitTest
         bool Strikethrough,
         bool Code,
         bool Link,
-        BaselineAlignment Baseline)
+        BaselineAlignment Baseline,
+        string? LinkUrl)
     {
-        public static readonly InlineStyle Default = new(false, false, false, false, false, BaselineAlignment.Baseline);
+        public static readonly InlineStyle Default =
+            new(false, false, false, false, false, BaselineAlignment.Baseline, null);
     }
 }

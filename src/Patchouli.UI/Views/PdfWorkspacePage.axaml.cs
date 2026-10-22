@@ -130,6 +130,13 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         DataContextChanged += OnDataContextChanged;
         ReadingView.BlockClicked += OnReadingBlockClicked;
         TranslationReadingView.BlockClicked += OnReadingBlockClicked;
+        // Issue #21: all three reading surfaces (原文预览、译文预览、整书阅读) share one handler
+        // that routes the link's actual target URL through the shared LinkNavigator. The views
+        // are owned by this page for its whole lifetime, so a single constructor subscription
+        // can neither leak nor double-fire; no unsubscribe is needed.
+        ReadingView.LinkClicked += OnReadingLinkClicked;
+        TranslationReadingView.LinkClicked += OnReadingLinkClicked;
+        BookReadingView.LinkClicked += OnReadingLinkClicked;
         // Tunnel so Ctrl+wheel is handled (and swallowed) before ScrollViewer's own bubble-phase scrolling.
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
             RoutingStrategies.Tunnel);
@@ -379,6 +386,19 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
     private void OnReadingBlockClicked(object? sender, ReadingBlockActivation activation)
     {
         _workspace?.SelectReadingBlock(activation.BoxId);
+    }
+
+    // Issue #21: the view hands over the link's actual target URL; navigation goes through the
+    // shared LinkNavigator (patchouli:// in-app, http(s) behind an explicit confirmation that
+    // shows the real address). A closed page must not navigate at all.
+    private void OnReadingLinkClicked(object? sender, ReadingLinkActivation activation)
+    {
+        if (_isClosed || _workspace is null)
+        {
+            return;
+        }
+
+        _workspace.Links.NavigateAsync(activation.Url).Observe(nameof(PdfWorkspacePage), "reading-link");
     }
 
     private void OnBBoxPointerPressed(object? sender, PointerPressedEventArgs e)

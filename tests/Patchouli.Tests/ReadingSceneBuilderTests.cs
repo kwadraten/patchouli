@@ -477,6 +477,91 @@ public sealed class ReadingSceneBuilderTests
         scene.Blocks.Should().ContainSingle().Which.Inlines.Should().BeSameAs(inlines);
     }
 
+    [Fact]
+    public void Html_table_cells_keep_their_anchor_links()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html =
+            "<table><tr><td>参见 <a href=\"https://example.com/docs\">文档</a> 结尾</td></tr></table>";
+        MarkdownBlock block = new("table", "[Table]", 0, 7);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)],
+            [Box(boxId, DocumentBoxType.Table, payload: new TableBoxPayload("[Table]", html))], "page");
+
+        ReadingTableCell cell = scene.Blocks.Should().ContainSingle().Subject.Table!.Cells!
+            .Should().ContainSingle().Subject;
+        cell.Text.Should().Be("参见 文档 结尾");
+        cell.Links.Should().Equal(new ReadingLinkSpan(3, 2, "https://example.com/docs"));
+    }
+
+    [Fact]
+    public void Html_table_cells_without_anchors_carry_no_links()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html = "<table><tr><td>纯文本</td></tr></table>";
+        MarkdownBlock block = new("table", "[Table]", 0, 7);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)],
+            [Box(boxId, DocumentBoxType.Table, payload: new TableBoxPayload("[Table]", html))], "page");
+
+        scene.Blocks.Should().ContainSingle().Subject.Table!.Cells!
+            .Should().ContainSingle().Which.Links.Should().BeNull();
+    }
+
+    [Fact]
+    public void Gfm_table_cells_strip_link_markup_and_keep_link_spans()
+    {
+        ReadingScene scene = BuildTable("| 名称 | 参考 |\n| --- | --- |\n| 苹果 | [文档](https://example.com/docs) |");
+
+        ReadingTable table = scene.Blocks.Should().ContainSingle().Subject.Table!;
+        table.Rows[1].Should().Equal("苹果", "文档");
+        table.Cells.Should().NotBeNull("a table with linked cells emits positioned cells");
+        table.Cells.Should().HaveCount(4,
+            "every cell stays positioned so linked and plain cells render as one grid");
+        table.Cells!.Should().Contain(cell => cell.Row == 0 && cell.Column == 0 && cell.IsHeader);
+        ReadingTableCell linked = table.Cells!.Single(cell => cell is { Row: 1, Column: 1 });
+        linked.IsHeader.Should().BeFalse();
+        linked.Text.Should().Be("文档");
+        linked.Links.Should().Equal(new ReadingLinkSpan(0, 2, "https://example.com/docs"));
+    }
+
+    [Fact]
+    public void Gfm_table_cells_keep_angle_autolinks()
+    {
+        ReadingScene scene = BuildTable("| 参考 |\n| --- |\n| <https://example.com> |");
+
+        ReadingTable table = scene.Blocks.Should().ContainSingle().Subject.Table!;
+        table.Rows[1].Should().Equal("https://example.com");
+        table.Cells.Should().HaveCount(2, "the plain header cell keeps its grid position");
+        ReadingTableCell cell = table.Cells!.Single(item => item.Row == 1);
+        cell.Links.Should().Equal(new ReadingLinkSpan(0, "https://example.com".Length, "https://example.com"));
+    }
+
+    [Fact]
+    public void Gfm_table_cells_track_link_offsets_around_plain_text()
+    {
+        ReadingScene scene = BuildTable("| 参考 |\n| --- |\n| 见 [文档](https://example.com) 全文 |");
+
+        ReadingTable table = scene.Blocks.Should().ContainSingle().Subject.Table!;
+        table.Rows[1].Should().Equal("见 文档 全文");
+        table.Cells.Should().HaveCount(2);
+        ReadingTableCell cell = table.Cells!.Single(item => item.Row == 1);
+        cell.Links.Should().Equal(new ReadingLinkSpan(2, 2, "https://example.com"));
+    }
+
+    [Fact]
+    public void Gfm_tables_without_links_keep_synthesized_cells()
+    {
+        ReadingScene scene = BuildTable("| 名称 |\n| --- |\n| 苹果 |");
+
+        scene.Blocks.Should().ContainSingle().Subject.Table!.Cells.Should().BeNull(
+            "a link-less table keeps the view's synthesized cell model");
+    }
+
     private static ReadingScene BuildTable(string text)
     {
         DocumentBoxId boxId = DocumentBoxId.New();

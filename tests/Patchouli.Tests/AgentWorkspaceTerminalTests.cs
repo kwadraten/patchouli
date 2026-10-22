@@ -1,10 +1,12 @@
 using Avalonia;
+using System.Reflection;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using FluentAssertions;
+using Iciclecreek.Terminal;
 using Patchouli.Core.Agents;
 using Patchouli.Host.Composition;
 using Patchouli.Terminal;
@@ -159,6 +161,48 @@ public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture hea
     }
 
     [TerminalPtyFact]
+    public async Task Declining_a_terminal_link_confirmation_writes_nothing_to_the_pty()
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(40));
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            ChoiceDialogs dialogs = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            AgentWorkspaceViewModel workspace = main.AgentWorkspace;
+            workspace.OnPageAttached();
+            Window window = new() { Content = workspace.Terminal, Width = 900, Height = 600 };
+            string received = Path.Combine(Path.GetDirectoryName(settings.Path)!, "received.txt");
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                await StartReaderAsync(workspace, received, timeout.Token);
+
+                RaiseUrlClicked(workspace.Terminal!, "https://example.org/declined");
+                (await WaitUntilAsync(() => dialogs.Shown.Count == 1, timeout.Token)).Should().BeTrue(
+                    "an external link prompts before anything else can happen");
+                dialogs.Shown[0].Message.Should().Contain("https://example.org/declined");
+                File.Exists(received).Should().BeFalse("nothing may reach the PTY while the dialog is up");
+
+                await workspace.Terminal!.WriteInputAsync("\r", timeout.Token);
+                (await workspace.Terminal.WaitForExitAsync(TimeSpan.FromSeconds(10), timeout.Token))
+                    .Should().BeTrue();
+                (await File.ReadAllTextAsync(received, timeout.Token)).Should().BeEmpty(
+                    "declining the confirmation must leave the shell input line untouched");
+            }
+            finally
+            {
+                await workspace.ShutdownAsync();
+                window.Content = null;
+                window.Close();
+            }
+
+            return true;
+        }, timeout.Token);
+    }
+
+    [TerminalPtyFact]
     public async Task Mcp_config_write_restarts_same_agent_only_after_successful_confirmation_and_write()
     {
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(40));
@@ -193,10 +237,10 @@ public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture hea
                     ["-NoLogo", "-NoProfile", "-Command", script], directory,
                     new Dictionary<string, string> { ["RESTART_TEST"] = "preserved-environment" }, false, null, target);
                 typeof(AgentWorkspaceViewModel).GetField("_services",
-                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
                     .SetValue(workspace, services);
                 typeof(AgentWorkspaceViewModel).GetField("_launchSpec",
-                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
                     .SetValue(workspace, spec);
 
                 dialogs.Confirm = false;
@@ -295,6 +339,36 @@ public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture hea
             .Should().Be($"{expected.Cols},{expected.Rows}", "launch must preserve the grid calculated by layout");
         workspace.OnPageAttached();
         await Dispatcher.UIThread.InvokeAsync(static () => { }, DispatcherPriority.Input);
+    }
+
+    /// <summary>
+    /// Simulates a Ctrl+click the way the terminal control reports it: UrlClicked is a field-like
+    /// event on <see cref="TerminalControl"/>, so a test raises it through the compiler-generated
+    /// backing delegate. A missing delegate means nobody is subscribed, which is itself observable.
+    /// </summary>
+    private static void RaiseUrlClicked(EmbeddedTerminal terminal, string url, bool fromSequence = false)
+    {
+        EventHandler<UrlClickedEventArgs>? handlers = typeof(TerminalControl)
+            .GetField("UrlClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(terminal.TerminalControl) as EventHandler<UrlClickedEventArgs>;
+        handlers?.Invoke(terminal.TerminalControl, new UrlClickedEventArgs(url, fromSequence));
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(25, cancellationToken);
+        }
+
+        return condition();
     }
 
     private sealed class ChoiceDialogs : IDialogService
