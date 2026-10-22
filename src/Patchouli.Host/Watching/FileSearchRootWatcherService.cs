@@ -282,7 +282,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             Dictionary<string, long> changedPaths;
             lock (_fileSearchRootWatchSync)
             {
-                changedPaths = new Dictionary<string, long>(_changedPaths, StringComparer.OrdinalIgnoreCase);
+                changedPaths = new Dictionary<string, long>(_changedPaths, FileOperationCoordinator.PathComparer);
             }
 
             knownPaths.ExceptWith(changedPaths.Keys);
@@ -595,7 +595,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             from known_file_locations k join file_assets a on a.file_asset_id = k.file_asset_id
             where k.status = 'available' and a.status = 'available';
             """, cancellationToken: cancellationToken))).ToArray();
-        HashSet<string> unchanged = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> unchanged = new(FileOperationCoordinator.PathComparer);
         foreach (IGrouping<string, KnownPath> group in paths.GroupBy(path => path.FileAssetId))
         {
             // A remembered path is only a shortcut while the primary path and all remembered

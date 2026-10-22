@@ -206,7 +206,10 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
             if (unclaimed is not null)
             {
-                await unclaimed.DisposeAsync();
+                // Converged like the drain path: a close failure here must not throw out of
+                // the finally and mask the waiter's own outcome (result, cancellation, or
+                // failure), which is already decided by the time the last waiter leaves.
+                await DisposeSessionConvergedAsync(unclaimed, "close-unclaimed-session");
             }
         }
     }
@@ -406,6 +409,22 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         Evictions++;
     }
 
+    // A session that fails to close must not fault whichever caller happened to dispose
+    // it: by the time this runs the session is already detached from the cache (or was
+    // never claimed into it), and the caller's own outcome and lease accounting have to
+    // stay unaffected. Report the failure and converge.
+    private async Task DisposeSessionConvergedAsync(IPdfPageSession session, string operation)
+    {
+        try
+        {
+            await session.DisposeAsync();
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptionReporter.Report(exception, "ocr.pdfium-session-cache", operation);
+        }
+    }
+
     private async Task DrainDisposedAsync()
     {
         IPdfPageSession[] sessions;
@@ -422,19 +441,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
         foreach (IPdfPageSession session in sessions)
         {
-            try
-            {
-                await session.DisposeAsync();
-            }
-            catch (Exception exception)
-            {
-                // A session that fails to close must not fault whichever caller happened
-                // to drain it: the session is already out of the cache, and the acquiring
-                // caller's lease accounting (its entry's in-use count) has to stay
-                // balanced. Report the failure and keep draining the rest.
-                UnexpectedExceptionReporter.Report(exception, "ocr.pdfium-session-cache",
-                    "drain-disposed-session");
-            }
+            await DisposeSessionConvergedAsync(session, "drain-disposed-session");
         }
     }
 

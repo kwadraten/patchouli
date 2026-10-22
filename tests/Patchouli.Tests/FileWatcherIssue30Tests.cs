@@ -183,6 +183,71 @@ public sealed class FileWatcherIssue30Tests
         }
     }
 
+    [Fact]
+    public async Task Full_rescan_with_case_variant_dirty_paths_pending_imports_each_file_once()
+    {
+        // Needs a case-sensitive file system (Linux): "A.pdf" and "a.pdf" are two
+        // files in one root. The dirty set keys paths with the platform comparer
+        // (Ordinal here), so both entries coexist in it; the full rescan must
+        // snapshot the dirty set with that same comparer. Copying it with a
+        // hardcoded OrdinalIgnoreCase comparer throws ArgumentException (the two
+        // keys collide) and fails the whole rescan. The known-paths set must use
+        // the platform comparer too, or the second file is skipped as "known"
+        // once the first one has been imported.
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        Result<FileSearchRoot> added =
+            await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
+        added.IsSuccess.Should().BeTrue(added.ErrorMessage);
+
+        // Stage the two files outside the root so moving them in is the only
+        // file activity once the watchers are live.
+        string staging = Path.Combine(context.TempRoot, "staging");
+        string stagedUpper = TestFixtures.CopyRealThreePagePdfTo(staging, "A.pdf");
+        await File.AppendAllTextAsync(stagedUpper, "\n% upper copy");
+        string stagedLower = TestFixtures.CopyRealThreePagePdfTo(staging, "a.pdf");
+        await File.AppendAllTextAsync(stagedLower, "\n% lower copy");
+
+        RecordingAppLogger logger = new();
+        FileSearchRootWatcherService watcher = new(context.Services, logger);
+        CompletionLog completions = new();
+        watcher.RescanCompleted += (_, args) => completions.Add(args);
+        try
+        {
+            watcher.RefreshWatchers([added.Value]);
+            // Activation runs one full reconciliation rescan (plan §11); wait for
+            // it so the watch loop is idle before the case variants arrive.
+            await completions.WaitForCountAsync(1, Timeout);
+            completions.Clear();
+
+            string upper = Path.Combine(root, "A.pdf");
+            string lower = Path.Combine(root, "a.pdf");
+            File.Move(stagedUpper, upper);
+            File.Move(stagedLower, lower);
+
+            // NoteFileEvent records a path in the dirty set before logging its
+            // "Change detected" line, so observing both lines proves both case
+            // variants are pending in the dirty set. The watch loop cannot
+            // consume them inside the quiet window after the last event, so the
+            // manual rescan below deterministically snapshots a two-entry set.
+            await logger.WaitForChangeDetectedAsync(upper, Timeout);
+            await logger.WaitForChangeDetectedAsync(lower, Timeout);
+
+            Result<FileSearchRootRescanSummary> rescan = await watcher.RescanFileSearchRootsAsync();
+            rescan.IsSuccess.Should().BeTrue(rescan.ErrorMessage);
+            rescan.Value.ImportedPdfCount.Should().Be(2,
+                "both case variants are distinct pending paths and each is imported");
+            (await CountAssetsAsync(context, upper)).Should().Be(1);
+            (await CountAssetsAsync(context, lower)).Should().Be(1);
+            (await CountAllAssetsAsync(context)).Should().Be(2);
+        }
+        finally
+        {
+            await watcher.StopAsync();
+            await watcher.DisposeAsync();
+        }
+    }
+
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -265,6 +330,51 @@ public sealed class FileWatcherIssue30Tests
 
                 TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
                 remaining.Should().BePositive("the expected rescan completions did not arrive in time");
+                await changed.WaitAsync(remaining);
+            }
+        }
+    }
+
+    private sealed class RecordingAppLogger : IAppLogger
+    {
+        private readonly object _sync = new();
+        private readonly List<string> _messages = [];
+        private TaskCompletionSource _changed = NewSignal();
+
+        public Task LogAsync(string operation, string message)
+        {
+            TaskCompletionSource changed;
+            lock (_sync)
+            {
+                _messages.Add(message);
+                changed = _changed;
+                _changed = NewSignal();
+            }
+
+            changed.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public async Task WaitForChangeDetectedAsync(string path, TimeSpan timeout)
+        {
+            DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+            while (true)
+            {
+                Task changed;
+                lock (_sync)
+                {
+                    if (_messages.Exists(message =>
+                            message.Contains("Change detected", StringComparison.Ordinal) &&
+                            message.Contains(path, StringComparison.Ordinal)))
+                    {
+                        return;
+                    }
+
+                    changed = _changed.Task;
+                }
+
+                TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
+                remaining.Should().BePositive($"no change event was recorded for '{path}' in time");
                 await changed.WaitAsync(remaining);
             }
         }
