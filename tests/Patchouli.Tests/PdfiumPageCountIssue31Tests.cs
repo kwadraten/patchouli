@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Core.Import;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Ocr;
 
@@ -83,6 +84,31 @@ public sealed class PdfiumPageCountIssue31Tests : IDisposable
             .WaitAsync(Timeout);
 
         count.Should().BeNull("a missing file is the one case with nothing to read");
+    }
+
+    [Fact]
+    public async Task Engine_missing_file_throws_file_not_found()
+    {
+        // Pins the exact exception the reader's vanish-race translation relies on: the
+        // native layer reports a missing file as FileNotFoundException (unlike its
+        // typed PdfiumDocumentException for real PDFium failures).
+        PdfiumDocumentEngine engine = new();
+
+        Func<Task> act = () => engine.GetPageCountAsync(Path.Combine(_root, "missing-engine.pdf"));
+
+        await act.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    [Fact]
+    public async Task Missing_file_reports_no_page_infos_instead_of_throwing()
+    {
+        PdfMetadataReader reader = new();
+
+        IReadOnlyList<PdfPageInfoResult>? infos = await reader
+            .GetPageInfosAsync(Path.Combine(_root, "missing-infos.pdf"))
+            .WaitAsync(Timeout);
+
+        infos.Should().BeNull("a missing file has neither a page count nor page infos");
     }
 
     [Fact]

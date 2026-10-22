@@ -10,7 +10,10 @@ namespace Patchouli.Infrastructure.Workflows;
 /// Page-count failures are not swallowed: a PDFium failure surfaces as a typed
 /// <see cref="PdfiumDocumentException"/> carrying the native error code and path, and
 /// cancellation propagates as <see cref="OperationCanceledException"/>. A missing file is
-/// the only case reported as <c>null</c> (there is nothing to read).
+/// reported as <c>null</c> (there is nothing to read) — including a file that disappears
+/// between the existence check and the native open, which the native layer surfaces as
+/// <see cref="FileNotFoundException"/>; that race is translated to the same null rather
+/// than escaping as an untyped failure the workflow cannot classify.
 /// </summary>
 public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
 {
@@ -28,7 +31,17 @@ public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
             return null;
         }
 
-        int pageCount = await _engine.GetPageCountAsync(pdfPath, cancellationToken);
+        int pageCount;
+        try
+        {
+            pageCount = await _engine.GetPageCountAsync(pdfPath, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            // Deleted between the existence check and the native open: same as missing.
+            return null;
+        }
+
         if (pageCount > 0)
         {
             return pageCount;
@@ -53,6 +66,14 @@ public sealed class PdfMetadataReader : IPdfMetadataReader, IPdfPageInfoReader
             return null;
         }
 
-        return await _engine.GetPageInfosAsync(pdfPath, pageCount.Value, cancellationToken);
+        try
+        {
+            return await _engine.GetPageInfosAsync(pdfPath, pageCount.Value, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            // Deleted between the page-count read and the page-info read: same as missing.
+            return null;
+        }
     }
 }
