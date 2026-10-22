@@ -211,7 +211,9 @@ public sealed class TypstCitationFormatter : ICitationStringFormatter
             return false;
         }
 
-        return key.All(static ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':' or '+');
+        // Typst's label character set is letters, numbers and _ - : . only
+        // (no '+': a key like smith+2020 is not a valid Typst label).
+        return key.All(static ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':');
     }
 
     private static string EscapeTypstContent(string text)

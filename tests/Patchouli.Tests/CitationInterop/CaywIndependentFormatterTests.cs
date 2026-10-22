@@ -125,6 +125,21 @@ public sealed class CaywIndependentFormatterTests
     }
 
     [Fact]
+    public void Typst_key_with_plus_is_an_explicit_error_in_shorthand_and_functional_forms()
+    {
+        // '+' is not in Typst's label character set (letters, numbers,
+        // _ - : .), so smith+2020 can be expressed neither as @key nor as
+        // #cite(<key>): both forms must fail with a validation error.
+        Result<string> shorthand = Format("typst", Pick(Entry("smith+2020")));
+        shorthand.IsFailure.Should().BeTrue();
+        shorthand.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+
+        Result<string> functional = Format("typst", Pick(Entry("smith+2020", "33")));
+        functional.IsFailure.Should().BeTrue();
+        functional.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
     public void Json_pick_carries_patchouli_identity_and_typed_pick_fields()
     {
         ItemId itemId = ItemId.New();
