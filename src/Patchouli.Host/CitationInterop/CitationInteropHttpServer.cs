@@ -57,54 +57,60 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
         });
         builder.Services.AddRouting();
 
-        WebApplication app = builder.Build();
-        app.Use(async (context, next) =>
+        WebApplication? app = null;
+        try
         {
-            if (!IsHostAllowed(context.Request) || !IsOriginAllowed(context.Request))
+            app = builder.Build();
+            app.Use(async (context, next) =>
             {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                await context.Response.WriteAsync(
-                    "forbidden: this endpoint only accepts loopback requests with a loopback Host/Origin.",
-                    context.RequestAborted);
-                return;
-            }
+                if (!IsHostAllowed(context.Request) || !IsOriginAllowed(context.Request))
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    await context.Response.WriteAsync(
+                        "forbidden: this endpoint only accepts loopback requests with a loopback Host/Origin.",
+                        context.RequestAborted);
+                    return;
+                }
 
-            await next(context);
-        });
+                await next(context);
+            });
 
-        app.MapGet(CaywCompatibility.CaywPath, HandleCaywAsync);
-        app.MapPost(CaywCompatibility.CaywPath, static context =>
-        {
-            context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
-            return context.Response.WriteAsync(
-                "unsupported: the stateful POST citation picker is not supported; use GET.",
-                context.RequestAborted);
-        });
-        app.MapPost(CaywCompatibility.JsonRpcPath, HandleJsonRpcAsync);
-        app.Map(CaywCompatibility.JsonRpcPath, static context =>
-        {
-            if (context.Request.Method != HttpMethods.Post)
+            app.MapGet(CaywCompatibility.CaywPath, HandleCaywAsync);
+            app.MapPost(CaywCompatibility.CaywPath, static context =>
             {
                 context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
                 return context.Response.WriteAsync(
-                    "unsupported: the JSON-RPC endpoint only accepts POST.", context.RequestAborted);
-            }
+                    "unsupported: the stateful POST citation picker is not supported; use GET.",
+                    context.RequestAborted);
+            });
+            app.MapPost(CaywCompatibility.JsonRpcPath, HandleJsonRpcAsync);
+            app.Map(CaywCompatibility.JsonRpcPath, static context =>
+            {
+                if (context.Request.Method != HttpMethods.Post)
+                {
+                    context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+                    return context.Response.WriteAsync(
+                        "unsupported: the JSON-RPC endpoint only accepts POST.", context.RequestAborted);
+                }
 
-            return Task.CompletedTask;
-        });
+                return Task.CompletedTask;
+            });
 
-        try
-        {
             await app.StartAsync(cancellationToken);
         }
         catch
         {
-            // A failed start must not leak the WebApplication: the instance
-            // is only handed to _app (and thereby to StopAsync's disposal)
+            // A failure anywhere after the WebApplication exists — build,
+            // endpoint mapping or start — must not leak it: the instance is
+            // only handed to _app (and thereby to StopAsync's disposal)
             // after a successful start, so dispose the local one here —
             // otherwise every port-conflict retry accumulates an undisposed
             // host.
-            await app.DisposeAsync();
+            if (app is not null)
+            {
+                await app.DisposeAsync();
+            }
+
             throw;
         }
 
@@ -167,7 +173,7 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             response = await _cayw.HandleAsync(query, linked.Token);
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
-                                                  _shutdownToken.IsCancellationRequested)
+                                                 _shutdownToken.IsCancellationRequested)
         {
             return;
         }
@@ -211,7 +217,7 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             return;
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
-                                                  _shutdownToken.IsCancellationRequested)
+                                                 _shutdownToken.IsCancellationRequested)
         {
             return;
         }
@@ -222,7 +228,7 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             responseBody = await _rpc.HandleAsync(body, linked.Token);
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
-                                                  _shutdownToken.IsCancellationRequested)
+                                                 _shutdownToken.IsCancellationRequested)
         {
             return;
         }
