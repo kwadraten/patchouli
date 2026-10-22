@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json.Nodes;
@@ -168,5 +169,89 @@ public sealed class CaywIndependentHostTests
         JsonObject envelope = JsonNode.Parse(rpc.Body)!.AsObject();
         envelope["result"]!.AsArray().Single()!.AsObject()["citekey"]!.GetValue<string>()
             .Should().Be(created.Value.CitationKey);
+    }
+
+    [Fact]
+    public async Task Stopping_the_host_cancels_an_in_flight_pick_and_frees_the_port_immediately()
+    {
+        await using HostFixture fixture = await HostFixture.CreateAsync();
+        Result<ItemMetadata> created = await fixture.Services.Items.CreateItemAsync(
+            new CreateItemRequest("book", "Stop Race Book"));
+        created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+
+        TaskCompletionSource pickEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releasePick = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CountingCitationBridge bridge = new()
+        {
+            OnPick = async cancellationToken =>
+            {
+                pickEntered.TrySetResult();
+                try
+                {
+                    await releasePick.Task.WaitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Model the real race at the picker window: the user
+                    // confirmed in the same instant the window was closed by
+                    // cancellation, so the bridge hands back a CONFIRMED
+                    // result whose request is already cancelled. Only the
+                    // handler's completion guard can keep it inert.
+                    return new CitationPickBridgeResult(
+                        CitationPickOutcome.Confirmed, [new CitationBridgePickEntry(created.Value.ItemId)]);
+                }
+
+                return CitationPickBridgeResult.CancelledResult;
+            }
+        };
+        int port = GetFreeTcpPort();
+        await using CitationInteropHost host = new(fixture.Services, bridge, (_, _, _) => { });
+        await host.StartAsync(new CitationInteropAppSettings(true, port));
+        host.IsRunning.Should().BeTrue();
+
+        using Process client = LoopbackHttp.StartRequest(
+            "GET", $"http://127.0.0.1:{port}/better-bibtex/cayw?format=latex&clipboard=1&select=1",
+            out string bodyFile);
+        try
+        {
+            await pickEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Stopping must cancel the pick explicitly and finish promptly —
+            // not wait for a Kestrel drain behind a still-open picker.
+            await host.StopAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            host.Status.Status.Should().Be(CitationInteropHostStatus.Stopped);
+
+            // The in-flight request converges to the cancelled shape.
+            await client.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            LoopbackHttpResponse response = LoopbackHttp.ReadResult(client, bodyFile);
+            response.StatusCode.Should().Be(200);
+            response.Body.Should().BeEmpty();
+        }
+        finally
+        {
+            if (!client.HasExited)
+            {
+                client.Kill(true);
+            }
+
+            releasePick.TrySetResult();
+        }
+
+        // The racing confirmation produced no side effects on the old
+        // library (the request asked for clipboard + select).
+        bridge.ClipboardCalls.Should().Be(0);
+        bridge.SelectCalls.Should().Be(0);
+
+        // The port was released as part of the stop: a new host generation
+        // binds it immediately and serves.
+        CountingCitationBridge nextBridge = new();
+        await using CitationInteropHost nextHost = new(fixture.Services, nextBridge, (_, _, _) => { });
+        await nextHost.StartAsync(new CitationInteropAppSettings(true, port));
+        nextHost.IsRunning.Should().BeTrue();
+        LoopbackHttpResponse probe = await LoopbackHttp.SendAsync(
+            "GET", $"http://127.0.0.1:{port}/better-bibtex/cayw?probe=1");
+        probe.StatusCode.Should().Be(200);
+        probe.Body.Should().Be("ready");
+        await nextHost.StopAsync();
     }
 }

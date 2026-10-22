@@ -24,16 +24,19 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
     private readonly CaywRequestHandler _cayw;
     private readonly JsonRpcHandler _rpc;
     private readonly Action<Exception, string>? _reportUnexpected;
+    private readonly CancellationToken _shutdownToken;
     private WebApplication? _app;
 
     public CitationInteropHttpServer(
         CaywRequestHandler cayw,
         JsonRpcHandler rpc,
-        Action<Exception, string>? reportUnexpected = null)
+        Action<Exception, string>? reportUnexpected = null,
+        CancellationToken shutdownToken = default)
     {
         _cayw = cayw;
         _rpc = rpc;
         _reportUnexpected = reportUnexpected;
+        _shutdownToken = shutdownToken;
     }
 
     public bool IsRunning => _app is not null;
@@ -90,7 +93,21 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
             return Task.CompletedTask;
         });
 
-        await app.StartAsync(cancellationToken);
+        try
+        {
+            await app.StartAsync(cancellationToken);
+        }
+        catch
+        {
+            // A failed start must not leak the WebApplication: the instance
+            // is only handed to _app (and thereby to StopAsync's disposal)
+            // after a successful start, so dispose the local one here —
+            // otherwise every port-conflict retry accumulates an undisposed
+            // host.
+            await app.DisposeAsync();
+            throw;
+        }
+
         _app = app;
     }
 
@@ -137,9 +154,20 @@ internal sealed class CitationInteropHttpServer : IAsyncDisposable
         CitationHttpResponse response;
         try
         {
-            response = await _cayw.HandleAsync(query, context.RequestAborted);
+            // The host's per-generation shutdown token joins the request
+            // token: stopping the host (library switch, shutdown, settings
+            // restart) cancels in-flight picks immediately instead of
+            // leaving them to Kestrel's connection drain, during which a
+            // late confirmation could still land clipboard/selection side
+            // effects on the old library. The handler links this token with
+            // its interactive deadline and converges cancellation to the
+            // usual empty result.
+            using CancellationTokenSource linked =
+                CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _shutdownToken);
+            response = await _cayw.HandleAsync(query, linked.Token);
         }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested ||
+                                                  _shutdownToken.IsCancellationRequested)
         {
             return;
         }

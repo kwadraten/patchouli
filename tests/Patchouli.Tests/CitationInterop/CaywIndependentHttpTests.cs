@@ -227,6 +227,61 @@ public sealed class CaywIndependentHttpTests
         }
     }
 
+    [Fact]
+    public async Task Repeated_failed_starts_leave_the_server_usable()
+    {
+        await using CaywIndependentTestContext context = await CaywIndependentTestContext.CreateAsync();
+        CountingCitationBridge bridge = new();
+        int port = GetFreeTcpPort();
+        TcpListener squatter = new(IPAddress.Loopback, port);
+        squatter.Start();
+        CitationInteropHttpServer server = CreateServer(context, bridge);
+        try
+        {
+            // Two consecutive bind failures on the occupied port. Each one
+            // builds a WebApplication; if a failed start leaked it (only a
+            // successful start reaches the field StopAsync disposes), the
+            // instance would accumulate undisposed hosts per retry.
+            (await StartFailsAsync(server, port)).Should().BeTrue();
+            server.IsRunning.Should().BeFalse();
+            (await StartFailsAsync(server, port)).Should().BeTrue();
+            server.IsRunning.Should().BeFalse();
+        }
+        finally
+        {
+            squatter.Stop();
+        }
+
+        // Once the port frees up, the same instance still starts cleanly
+        // and serves.
+        await server.StartAsync(port);
+        try
+        {
+            server.IsRunning.Should().BeTrue();
+            LoopbackHttpResponse probe =
+                await LoopbackHttp.SendAsync("GET", $"http://127.0.0.1:{port}/better-bibtex/cayw?probe=1");
+            probe.StatusCode.Should().Be(200);
+            probe.Body.Should().Be("ready");
+        }
+        finally
+        {
+            await server.DisposeAsync();
+        }
+    }
+
+    private static async Task<bool> StartFailsAsync(CitationInteropHttpServer server, int port)
+    {
+        try
+        {
+            await server.StartAsync(port);
+            return false;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
     private static CitationInteropHttpServer CreateServer(
         CaywIndependentTestContext context,
         CountingCitationBridge bridge)

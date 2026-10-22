@@ -28,8 +28,9 @@ public sealed record CitationInteropHostStatusSnapshot(
 /// Owns the citation interop service for one library session (issue #14 §4/§5,
 /// ADR 0024 single-Host rule): created from the current
 /// <see cref="HostServices"/>, stopped on library switch and shutdown, which
-/// cancels in-flight picks (Kestrel aborts the connections) and frees the
-/// port. Disabled by default; a failed bind never takes down MCP or the
+/// first cancels the generation's in-flight picks explicitly (see
+/// <see cref="StopAsync"/>) and only then stops Kestrel and frees the port.
+/// Disabled by default; a failed bind never takes down MCP or the
 /// library — it lands in <see cref="CitationInteropHostStatus.Error"/> with a
 /// diagnosable detail the settings page shows verbatim.
 /// </summary>
@@ -40,6 +41,7 @@ public sealed class CitationInteropHost : IAsyncDisposable
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private CitationInteropHttpServer? _server;
+    private CancellationTokenSource? _generationShutdown;
     private bool _disposed;
 
     public CitationInteropHost(HostServices services, ICitationDesktopBridge bridge,
@@ -99,7 +101,12 @@ public sealed class CitationInteropHost : IAsyncDisposable
                 _reportUnexpectedException(exception, "citation-interop", context);
             CaywRequestHandler cayw = new(service, _bridge, reportUnexpected: report);
             JsonRpcHandler rpc = new(service);
-            CitationInteropHttpServer server = new(cayw, rpc, report);
+            // One cancellation source per server generation: StopAsync
+            // cancels it to end in-flight picks the moment stopping begins.
+            // A restart builds a fresh source with the new server, so a
+            // cancelled generation can never leak into the next one.
+            CancellationTokenSource generationShutdown = new();
+            CitationInteropHttpServer server = new(cayw, rpc, report, generationShutdown.Token);
             try
             {
                 await server.StartAsync(port, cancellationToken);
@@ -107,11 +114,13 @@ public sealed class CitationInteropHost : IAsyncDisposable
             catch (Exception exception)
             {
                 await server.DisposeAsync();
+                generationShutdown.Dispose();
                 SetStatus(CitationInteropHostStatus.Error, DescribeStartFailure(exception, port), settings.Endpoint);
                 return;
             }
 
             _server = server;
+            _generationShutdown = generationShutdown;
             SetStatus(CitationInteropHostStatus.Running,
                 _bridge.IsInteractiveAvailable
                     ? "兼容服务运行中：CAYW 选择器与 TexPile JSON-RPC 均可用。"
@@ -131,11 +140,22 @@ public sealed class CitationInteropHost : IAsyncDisposable
         {
             CitationInteropHttpServer? server = _server;
             _server = null;
+            CancellationTokenSource? generationShutdown = _generationShutdown;
+            _generationShutdown = null;
+
+            // Cancel in-flight picks FIRST, while the connections are still
+            // up: the handler converges them to the cancelled shape (200,
+            // empty body, no clipboard/selection side effects) and releases
+            // the interactive gate, so the Kestrel stop below drains
+            // immediately instead of waiting out a picker that could still
+            // confirm against the old library.
+            generationShutdown?.Cancel();
             if (server is not null)
             {
                 await server.DisposeAsync();
             }
 
+            generationShutdown?.Dispose();
             SetStatus(CitationInteropHostStatus.Stopped, detail, null);
         }
         finally
