@@ -203,34 +203,46 @@ public sealed class CaywRequestHandler
                 return CitationHttpResponse.Text(200, "");
             }
 
-            // A late confirmation racing a disconnect must not produce output
-            // or side effects for a client that is already gone.
-            if (requestAborted.IsCancellationRequested)
+            // Completion guard, shared by every cancellation source: a late
+            // confirmation racing a disconnect OR the interactive deadline
+            // must not be validated, formatted or produce side effects for a
+            // request that is already over. Validation/formatting run on the
+            // linked token so a deadline expiring mid-flight aborts them too;
+            // the catch below converges that abort to the same cancelled
+            // result instead of leaking an exception or a partial output.
+            try
+            {
+                if (linked.IsCancellationRequested)
+                {
+                    return CitationHttpResponse.Text(200, "");
+                }
+
+                Result<CitationPick> pick = await _service.ValidatePickAsync(bridgeResult.Entries, linked.Token);
+                if (pick.IsFailure)
+                {
+                    return CitationHttpResponse.Text(500, $"{pick.ErrorCode}: {pick.ErrorMessage}");
+                }
+
+                Result<CitationFormattedOutput> formatted = await _service.FormatPickAsync(
+                    pick.Value, Get(query, "format"), options, Get(query, "style"), Get(query, "locale"),
+                    preferHtml, linked.Token);
+                if (formatted.IsFailure)
+                {
+                    return CitationHttpResponse.Text(500, $"{formatted.ErrorCode}: {formatted.ErrorMessage}");
+                }
+
+                if (linked.IsCancellationRequested)
+                {
+                    return CitationHttpResponse.Text(200, "");
+                }
+
+                await ApplySideEffectsAsync(query, pick.Value, formatted.Value.Body, linked.Token);
+                return new CitationHttpResponse(200, formatted.Value.ContentType, formatted.Value.Body);
+            }
+            catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
                 return CitationHttpResponse.Text(200, "");
             }
-
-            Result<CitationPick> pick = await _service.ValidatePickAsync(bridgeResult.Entries, requestAborted);
-            if (pick.IsFailure)
-            {
-                return CitationHttpResponse.Text(500, $"{pick.ErrorCode}: {pick.ErrorMessage}");
-            }
-
-            Result<CitationFormattedOutput> formatted = await _service.FormatPickAsync(
-                pick.Value, Get(query, "format"), options, Get(query, "style"), Get(query, "locale"),
-                preferHtml, requestAborted);
-            if (formatted.IsFailure)
-            {
-                return CitationHttpResponse.Text(500, $"{formatted.ErrorCode}: {formatted.ErrorMessage}");
-            }
-
-            if (requestAborted.IsCancellationRequested)
-            {
-                return CitationHttpResponse.Text(200, "");
-            }
-
-            await ApplySideEffectsAsync(query, pick.Value, formatted.Value.Body, requestAborted);
-            return new CitationHttpResponse(200, formatted.Value.ContentType, formatted.Value.Body);
         }
         finally
         {
@@ -246,9 +258,9 @@ public sealed class CaywRequestHandler
     /// </summary>
     private async Task ApplySideEffectsAsync(
         IReadOnlyDictionary<string, string> query, CitationPick pick, string formattedBody,
-        CancellationToken requestAborted)
+        CancellationToken cancellationToken)
     {
-        if (requestAborted.IsCancellationRequested || pick.IsEmpty)
+        if (cancellationToken.IsCancellationRequested || pick.IsEmpty)
         {
             return;
         }
@@ -257,18 +269,18 @@ public sealed class CaywRequestHandler
         {
             if (IsSet(query, "clipboard"))
             {
-                await _bridge.SetClipboardTextAsync(formattedBody, requestAborted);
+                await _bridge.SetClipboardTextAsync(formattedBody, cancellationToken);
             }
 
             if (IsSet(query, "select"))
             {
                 await _bridge.SelectItemsAsync(
-                    pick.Entries.Select(static entry => entry.ItemId).ToArray(), requestAborted);
+                    pick.Entries.Select(static entry => entry.ItemId).ToArray(), cancellationToken);
             }
 
             if (IsSet(query, "minimize"))
             {
-                await _bridge.MinimizeMainWindowAsync(requestAborted);
+                await _bridge.MinimizeMainWindowAsync(cancellationToken);
             }
         }
         catch (CitationUiUnavailableException)
