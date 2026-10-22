@@ -157,43 +157,55 @@ internal static class PdfiumNative
     internal static byte[] ExtractPagesToBytes(string sourcePath, int startPageIndex, int pageCount)
     {
         FpdfDocumentT source = LoadDocument(sourcePath);
-        FpdfDocumentT destination = fpdf_edit.FPDF_CreateNewDocument();
-        EnsureHandle(destination, "destination document", sourcePath);
         try
         {
-            int sourcePageCount = fpdfview.FPDF_GetPageCount(source);
-            if (startPageIndex < 0 || pageCount <= 0 || startPageIndex + pageCount > sourcePageCount)
-            {
-                throw new InvalidOperationException("The requested PDF page range is invalid.");
-            }
-
-            string range = $"{startPageIndex + 1}-{startPageIndex + pageCount}";
-            if (fpdf_ppo.FPDF_ImportPages(destination, source, range, 0) == 0)
-            {
-                throw LastError("PDF pages could not be imported", sourcePath);
-            }
-
-            using MemoryStream stream = new();
-            FPDF_FILEWRITE_ writer = new() { Version = 1 };
-            writer.WriteBlock = WriteRegisteredBlock;
-            SaveStreams[writer.__Instance] = stream;
+            // Creating the destination is inside the source's try as well: if creation or
+            // its handle check fails, the finally below still closes the source document
+            // instead of leaking it.
+            FpdfDocumentT destination = fpdf_edit.FPDF_CreateNewDocument();
             try
             {
-                if (fpdf_save.FPDF_SaveAsCopy(destination, writer, 0) == 0)
+                EnsureHandle(destination, "destination document", sourcePath);
+                int sourcePageCount = fpdfview.FPDF_GetPageCount(source);
+                if (startPageIndex < 0 || pageCount <= 0 || startPageIndex + pageCount > sourcePageCount)
                 {
-                    throw LastError("PDF pages could not be saved", sourcePath);
+                    throw new InvalidOperationException("The requested PDF page range is invalid.");
                 }
+
+                string range = $"{startPageIndex + 1}-{startPageIndex + pageCount}";
+                if (fpdf_ppo.FPDF_ImportPages(destination, source, range, 0) == 0)
+                {
+                    throw LastError("PDF pages could not be imported", sourcePath);
+                }
+
+                using MemoryStream stream = new();
+                FPDF_FILEWRITE_ writer = new() { Version = 1 };
+                writer.WriteBlock = WriteRegisteredBlock;
+                SaveStreams[writer.__Instance] = stream;
+                try
+                {
+                    if (fpdf_save.FPDF_SaveAsCopy(destination, writer, 0) == 0)
+                    {
+                        throw LastError("PDF pages could not be saved", sourcePath);
+                    }
+                }
+                finally
+                {
+                    _ = SaveStreams.TryRemove(writer.__Instance, out _);
+                }
+
+                return stream.ToArray();
             }
             finally
             {
-                _ = SaveStreams.TryRemove(writer.__Instance, out _);
+                if (destination.__Instance != IntPtr.Zero)
+                {
+                    fpdfview.FPDF_CloseDocument(destination);
+                }
             }
-
-            return stream.ToArray();
         }
         finally
         {
-            fpdfview.FPDF_CloseDocument(destination);
             fpdfview.FPDF_CloseDocument(source);
         }
     }
