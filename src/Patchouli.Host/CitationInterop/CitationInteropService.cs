@@ -51,6 +51,10 @@ public sealed class CitationInteropService
     /// and have no CSL projection — so the result cap counts returned
     /// results, never pre-filter rows (plan §7 forbids fetching the cap and
     /// filtering afterwards).
+    /// A row whose CSL projection fails (for example an item with a corrupt
+    /// stored date) is skipped: unlike export, search is not all-or-nothing,
+    /// and one damaged item must not make the whole library unsearchable.
+    /// The query-level row failure above still fails the search as a whole.
     /// </summary>
     public async Task<Result<IReadOnlyList<CitationItemProjection>>> SearchAsync(
         string? query, CancellationToken cancellationToken = default)
@@ -73,8 +77,7 @@ public sealed class CitationInteropService
             Result<CitationItemProjection> projection = await ProjectAsync(row.ItemId, cancellationToken);
             if (projection.IsFailure)
             {
-                return Result<IReadOnlyList<CitationItemProjection>>.Failure(
-                    projection.ErrorCode!, projection.ErrorMessage!);
+                continue;
             }
 
             projections.Add(projection.Value);

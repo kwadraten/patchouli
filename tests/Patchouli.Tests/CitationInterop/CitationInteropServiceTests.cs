@@ -71,6 +71,30 @@ public sealed class CitationInteropServiceTests
     }
 
     [Fact]
+    public async Task Search_skips_an_item_whose_projection_fails_and_returns_the_rest()
+    {
+        (InteropTestContext context, ItemMetadata book, ItemMetadata article) = await SeedAsync();
+        await using (context)
+        {
+            // A stored date the CSL mapper cannot read (a four-component
+            // date-parts endpoint) makes this item's projection fail with a
+            // validation error. Search is not all-or-nothing: the damaged
+            // item is skipped and the rest of the library stays searchable.
+            ItemMetadata broken = await context.CreateItemAsync(new CreateItemRequest(
+                "book", "Broken Date Book",
+                Dates: [new ItemDateInput(ItemDateRoles.Issued, "[[2020,5,3,9]]")]));
+            Result<CitationItemProjection> projection = await context.Interop.ProjectAsync(broken.ItemId);
+            projection.IsFailure.Should().BeTrue("the fixture item must really be unprojectable");
+            projection.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+
+            Result<IReadOnlyList<CitationItemProjection>> results = await context.Interop.SearchAsync("");
+
+            results.IsSuccess.Should().BeTrue(results.ErrorMessage);
+            results.Value.Select(p => p.ItemId).Should().BeEquivalentTo([book.ItemId, article.ItemId]);
+        }
+    }
+
+    [Fact]
     public async Task Export_biblatex_keeps_request_order_and_dedupes()
     {
         (InteropTestContext context, ItemMetadata book, ItemMetadata article) = await SeedAsync();
