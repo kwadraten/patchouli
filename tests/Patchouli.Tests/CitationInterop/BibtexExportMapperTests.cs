@@ -215,6 +215,79 @@ public sealed class BibtexExportMapperTests
     }
 
     [Fact]
+    public void Text_fields_escape_latex_special_characters()
+    {
+        ItemMetadata item = Item("book", "doe2020",
+            title: "Fish & Chips: 100% #1 Under_score $5 ~home ^2",
+            publisher: "A & B Press");
+
+        Result<BiblatexWriteEntryDto> mapped = BibtexExportMapper.MapItem(item);
+
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+        mapped.Value.Fields["title"].Should().Be(
+            "Fish \\& Chips: 100\\% \\#1 Under\\_score \\$5 \\textasciitilde{}home \\textasciicircum{}2");
+        mapped.Value.Fields["publisher"].Should().Be("A \\& B Press");
+    }
+
+    [Fact]
+    public void Balanced_braces_survive_as_case_protection_while_specials_are_escaped()
+    {
+        ItemMetadata item = Item("book", "nasa2020", title: "The {NASA} Missions & Failures");
+
+        Result<BiblatexWriteEntryDto> mapped = BibtexExportMapper.MapItem(item);
+
+        mapped.Value.Fields["title"].Should().Be("The {NASA} Missions \\& Failures");
+    }
+
+    [Fact]
+    public void Pages_and_identifiers_are_not_text_escaped()
+    {
+        ItemMetadata item = Item("article-journal", "doe2020",
+            publicationTitle: "Journal of Testing",
+            pages: "33-41",
+            identifiers:
+            [
+                new ItemIdentifier(IdentifierId.New(), ItemId.New(), BuiltInIdentifierSchemes.DOI,
+                    "10.1000/xyz_123", null, DateTimeOffset.UtcNow)
+            ]);
+
+        Result<BiblatexWriteEntryDto> mapped = BibtexExportMapper.MapItem(item);
+
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+        // The pages range dash stays the classic "--" and the DOI keeps its
+        // underscore: escaping either would corrupt the data.
+        mapped.Value.Fields["pages"].Should().Be("33--41");
+        mapped.Value.Fields["doi"].Should().Be("10.1000/xyz_123");
+    }
+
+    [Fact]
+    public void Person_components_are_escaped_but_the_name_structure_is_not()
+    {
+        ItemMetadata item = Item("book", "doe2020", creators: [Author("Doe & Roe", "John")]);
+
+        Result<BibtexExportResult> mapped = BibtexExportMapper.MapItems([item]);
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+
+        string text = BibtexSerializer.Serialize(mapped.Value.Entries);
+        text.Should().Contain("author = {Doe \\& Roe, John}");
+    }
+
+    [Fact]
+    public void Serializer_orders_person_suffix_before_given_name()
+    {
+        ItemCreator author = new("c1", ItemId.New(), ItemCreatorRoles.Author, "King", "Martin Luther",
+            null, "Jr.", null, 0, DateTimeOffset.UtcNow);
+        ItemMetadata item = Item("book", "king1963", creators: [author]);
+        Result<BibtexExportResult> mapped = BibtexExportMapper.MapItems([item]);
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+
+        string text = BibtexSerializer.Serialize(mapped.Value.Entries);
+
+        // Classic BibTeX's three-part comma form is "Family, Suffix, Given".
+        text.Should().Contain("author = {King, Jr., Martin Luther}");
+    }
+
+    [Fact]
     public void MapItems_fails_the_whole_batch_on_general()
     {
         Result<BibtexExportResult> result = BibtexExportMapper.MapItems([Item("book"), Item("general")]);

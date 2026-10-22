@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Results;
@@ -28,8 +29,10 @@ public sealed record BibtexExportResult(
 /// the biblatex-helper writer: probing the helper showed its write path
 /// canonicalizes journal/address/school to journaltitle/location/institution,
 /// which classic BibTeX would silently ignore. This mapper additionally
-/// brace-escapes values whose braces are unbalanced, which classic BibTeX
-/// cannot represent raw.
+/// escapes values for a real LaTeX compile: typeset-text fields and name
+/// components get LaTeX special-character escaping, and braces are escaped
+/// when (and only when) they do not balance, which classic BibTeX cannot
+/// represent raw.
 /// </summary>
 public static class BibtexExportMapper
 {
@@ -169,11 +172,12 @@ public static class BibtexExportMapper
             warnings.Add($"{key}: translator names have no classic BibTeX field and were dropped.");
         }
 
-        IReadOnlyList<string> keywords = ParseTags(item.TagsJson);
+        IReadOnlyList<string> keywords = ParseTags(item.TagsJson).Select(EscapeTextValue).ToArray();
         BiblatexWriteEntryDto entry = new(
             key,
             entryType,
-            fields.ToDictionary(pair => pair.Key, pair => EscapeValue(pair.Value), StringComparer.Ordinal),
+            fields.ToDictionary(pair => pair.Key, pair => EscapeFieldValue(pair.Key, pair.Value),
+                StringComparer.Ordinal),
             persons,
             keywords);
         return Result<BiblatexWriteEntryDto>.Success(entry);
@@ -366,14 +370,73 @@ public static class BibtexExportMapper
     }
 
     /// <summary>
+    /// Fields whose values are machine identifiers or pre-normalized ranges
+    /// rather than typeset text: escaping their characters would corrupt the
+    /// data (an underscore inside a DOI, the "--" of a page range), so they
+    /// keep the brace-balance treatment only.
+    /// </summary>
+    private static readonly HashSet<string> NonTextFields = new(StringComparer.Ordinal)
+    {
+        "pages", "doi", "isbn", "issn", "url"
+    };
+
+    private static string EscapeFieldValue(string field, string value)
+    {
+        return NonTextFields.Contains(field) ? EscapeValue(value) : EscapeTextValue(value);
+    }
+
+    /// <summary>
     /// The helper writer emits values verbatim inside braces; a value with
     /// unbalanced braces would corrupt the entry, so braces are escaped when
     /// (and only when) they do not balance.
     /// </summary>
     private static string EscapeValue(string value)
     {
+        if (BracesAreBalanced(value))
+        {
+            return value;
+        }
+
+        return value.Replace("{", "\\{", StringComparison.Ordinal)
+            .Replace("}", "\\}", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Escapes a typeset-text value at the same level as
+    /// CitationFormatSupport.EscapeLatexText (backslash, &amp;, %, $, #, _,
+    /// ~, ^): left raw inside a .bib field, those characters break a real
+    /// LaTeX compile. Balanced braces are preserved verbatim — in a title
+    /// they are BibTeX's case-protection mechanism — while unbalanced braces
+    /// are escaped as in <see cref="EscapeValue"/>.
+    /// </summary>
+    private static string EscapeTextValue(string value)
+    {
+        bool bracesBalanced = BracesAreBalanced(value);
+        StringBuilder builder = new(value.Length);
+        foreach (char ch in value)
+        {
+            switch (ch)
+            {
+                case '\\': builder.Append("\\textbackslash{}"); break;
+                case '&': builder.Append("\\&"); break;
+                case '%': builder.Append("\\%"); break;
+                case '$': builder.Append("\\$"); break;
+                case '#': builder.Append("\\#"); break;
+                case '_': builder.Append("\\_"); break;
+                case '~': builder.Append("\\textasciitilde{}"); break;
+                case '^': builder.Append("\\textasciicircum{}"); break;
+                case '{': builder.Append(bracesBalanced ? "{" : "\\{"); break;
+                case '}': builder.Append(bracesBalanced ? "}" : "\\}"); break;
+                default: builder.Append(ch); break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool BracesAreBalanced(string value)
+    {
         int depth = 0;
-        bool balanced = true;
         foreach (char ch in value)
         {
             if (ch == '{')
@@ -385,19 +448,12 @@ public static class BibtexExportMapper
                 depth--;
                 if (depth < 0)
                 {
-                    balanced = false;
-                    break;
+                    return false;
                 }
             }
         }
 
-        if (balanced && depth == 0)
-        {
-            return value;
-        }
-
-        return value.Replace("{", "\\{", StringComparison.Ordinal)
-            .Replace("}", "\\}", StringComparison.Ordinal);
+        return depth == 0;
     }
 
     private static void AddPersons(
@@ -418,11 +474,20 @@ public static class BibtexExportMapper
         return creators
             .Where(creator => creator.Role == role)
             .Select(static creator => new BiblatexPersonDto(
-                creator.Family,
-                creator.Given,
-                creator.Particles,
-                creator.Suffix,
-                creator.Literal));
+                EscapePersonComponent(creator.Family),
+                EscapePersonComponent(creator.Given),
+                EscapePersonComponent(creator.Particles),
+                EscapePersonComponent(creator.Suffix),
+                EscapePersonComponent(creator.Literal)));
+    }
+
+    private static string? EscapePersonComponent(string? component)
+    {
+        // Name components are typeset text, so they get the same escaping as
+        // text fields; the name structure itself (the "Family, Suffix,
+        // Given" comma form and the " and " joins) is the serializer's and
+        // stays unescaped.
+        return component is null ? null : EscapeTextValue(component);
     }
 
     private static void Set(Dictionary<string, string> fields, string key, string? value)

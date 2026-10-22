@@ -90,4 +90,70 @@ public sealed class BibtexClassicHelperValidationTests
         entry.Fields.Should().NotContainKey("journaltitle");
         entry.Fields.Should().NotContainKey("date");
     }
+
+    [Fact]
+    public async Task Classic_output_with_latex_specials_in_the_title_roundtrips_through_the_real_helper()
+    {
+        string helper = BiblatexHelperTestSupport.RequireHelperPath();
+
+        BiblatexHelperClient client = new(helper);
+        ItemId id = ItemId.New();
+        ItemMetadata book = new(
+            id,
+            LibraryId.New(),
+            "book",
+            "doe2020specials",
+            "Fish & Chips: 100% #1 Under_score",
+            null,
+            null,
+            "[]",
+            [
+                new ItemCreator("c1", id, ItemCreatorRoles.Author, "Doe", "John", null, null, null, 0,
+                    DateTimeOffset.UtcNow)
+            ],
+            null,
+            [
+                new ItemDate("d1", id, ItemDateRoles.Issued, "[[2020]]", false, null, null,
+                    DateTimeOffset.UtcNow)
+            ],
+            [],
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "[]",
+            "[]",
+            "{}",
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        Result<BibtexExportResult> mapped = BibtexExportMapper.MapItems([book]);
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+
+        string written = BibtexSerializer.Serialize(mapped.Value.Entries);
+        // The written form carries the LaTeX escapes a real compile needs.
+        written.Should().Contain("Fish \\& Chips: 100\\% \\#1 Under\\_score");
+
+        // The independent parser must still read the entry back.
+        Result<IReadOnlyList<BiblatexEntryDto>> reparsed = await client.ParseAsync(written);
+        reparsed.IsSuccess.Should().BeTrue(reparsed.ErrorMessage);
+        BiblatexEntryDto entry = reparsed.Value.Should().ContainSingle().Subject;
+        entry.EntryType.Should().Be("book");
+        entry.Key.Should().Be("doe2020specials");
+        entry.Fields.Should().ContainKey("title");
+        entry.Fields["title"].Should().Contain("Fish").And.Contain("Chips");
+    }
 }

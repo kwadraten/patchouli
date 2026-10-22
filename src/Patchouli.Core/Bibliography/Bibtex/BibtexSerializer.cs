@@ -17,8 +17,9 @@ namespace Patchouli.Core.Bibliography.Bibtex;
 /// where those canonical names are the correct ones.
 ///
 /// Values are emitted verbatim inside braces; the mapper has already
-/// brace-escaped values whose braces are unbalanced. Field order is
-/// alphabetical for determinism.
+/// escaped them for a LaTeX compile (LaTeX special characters in text
+/// values, plus brace-escaping for values whose braces are unbalanced).
+/// Field order is alphabetical for determinism.
 /// </summary>
 public static class BibtexSerializer
 {
@@ -92,14 +93,17 @@ public static class BibtexSerializer
             parts.Add(family);
         }
 
-        if (!string.IsNullOrWhiteSpace(person.Given))
-        {
-            parts.Add(person.Given!);
-        }
-
+        // Classic BibTeX name order is "Family, Suffix, Given" (the
+        // three-part comma form is Last, Jr, First) — not Family, Given,
+        // Suffix.
         if (!string.IsNullOrWhiteSpace(person.Suffix))
         {
             parts.Add(person.Suffix!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(person.Given))
+        {
+            parts.Add(person.Given!);
         }
 
         return string.Join(", ", parts);
