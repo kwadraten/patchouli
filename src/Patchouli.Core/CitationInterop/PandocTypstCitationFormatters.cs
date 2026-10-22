@@ -160,8 +160,12 @@ public sealed class TypstCitationFormatter : ICitationStringFormatter
 
     private static Result<string> FunctionalForm(CitationPickEntry entry, CitationFormatOptions options)
     {
-        if (string.IsNullOrWhiteSpace(entry.CitationKey) ||
-            entry.CitationKey.Any(static ch => char.IsWhiteSpace(ch) || ch is '<' or '>'))
+        // The functional form embeds the key as a label (<key>), so it must
+        // satisfy exactly the same label rules as the @key shorthand: a key
+        // with e.g. '/' or whitespace would produce Typst that cannot parse.
+        // Fail explicitly instead of emitting an invalid label or rewriting
+        // the key.
+        if (!IsTypstLabelKey(entry.CitationKey))
         {
             return Result<string>.Failure(AppErrorCodes.ValidationFailed,
                 $"Citation key '{entry.CitationKey}' cannot be expressed as a Typst label; the key was not modified.");
