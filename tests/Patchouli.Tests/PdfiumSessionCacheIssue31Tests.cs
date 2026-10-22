@@ -37,7 +37,9 @@ public sealed class PdfiumSessionCacheIssue31Tests
         Task<IPdfPageSession>[] callers = Enumerable.Range(0, 20)
             .Select(_ => Task.Run(async () =>
             {
+                // ReSharper disable once AccessToDisposedClosure -- all callers are awaited before the using scope ends, so the event is never used after disposal.
                 start.Wait();
+                // ReSharper disable once AccessToDisposedClosure -- all callers are awaited before the await using scope ends, so the cache is never used after disposal.
                 return await cache.GetOrOpenAsync(path);
             }))
             .ToArray();
@@ -68,6 +70,7 @@ public sealed class PdfiumSessionCacheIssue31Tests
         await using PdfiumSessionCache cache = new(factory.OpenAsync, 8, long.MaxValue);
         string path = NewDocPath();
 
+        // ReSharper disable once AccessToDisposedClosure -- the delegate is awaited inside the await using scope, so the cache is never used after disposal.
         Func<Task> first = () => cache.GetOrOpenAsync(path);
         await first.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("sync-open-failure");

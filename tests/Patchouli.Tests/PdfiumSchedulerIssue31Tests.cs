@@ -31,6 +31,7 @@ public sealed class PdfiumSchedulerIssue31Tests
             startOrder.Enqueue(name);
             threadIds.Enqueue(Environment.CurrentManagedThreadId);
             int now = Interlocked.Increment(ref active);
+            // ReSharper disable once AccessToModifiedClosure -- maxActive is intentionally shared by the concurrent operations to record the peak concurrency and is read via Volatile.Read after they complete.
             InterlockedMax(ref maxActive, now);
             Thread.SpinWait(20_000);
             Interlocked.Decrement(ref active);
@@ -43,7 +44,9 @@ public sealed class PdfiumSchedulerIssue31Tests
         {
             startOrder.Enqueue("gate");
             threadIds.Enqueue(Environment.CurrentManagedThreadId);
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gateEntered.Set();
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gate.Wait(Timeout);
             return 0;
         }, PdfiumPriority.Background);
@@ -72,7 +75,9 @@ public sealed class PdfiumSchedulerIssue31Tests
         using ManualResetEventSlim gateEntered = new(false);
         Task<int> gateTask = scheduler.RunAsync(() =>
         {
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gateEntered.Set();
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gate.Wait(Timeout);
             return 0;
         }, PdfiumPriority.Background);
@@ -117,7 +122,9 @@ public sealed class PdfiumSchedulerIssue31Tests
         using ManualResetEventSlim gateEntered = new(false);
         Task<int> gateTask = scheduler.RunAsync(() =>
         {
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gateEntered.Set();
+            // ReSharper disable once AccessToDisposedClosure -- the gate task is awaited before the using scope ends, so the event is never used after disposal.
             gate.Wait(Timeout);
             return 0;
         }, PdfiumPriority.Background);
