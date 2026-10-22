@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Threading.Channels;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Diagnostics;
@@ -14,7 +16,10 @@ namespace Patchouli.Host.Watching;
 
 /// <summary>
 /// Owns the <see cref="FileSystemWatcher"/> fleet for the configured file search roots plus the
-/// debounced rescan pipeline that imports newly discovered PDFs. Extracted from
+/// rescan pipeline that imports newly discovered PDFs. Issue #30: file events only reserve
+/// work in a dirty set consumed by a single watch loop (incremental import passes, with full
+/// reconciliation rescans at activation, on watcher errors and on a periodic interval);
+/// events never cancel a scan or import already running. Extracted from
 /// <c>MainWindowViewModel</c>; the service never touches the UI thread — subscribers react to
 /// <see cref="RescanCompleted"/>, <see cref="RescanFailed"/> and
 /// <see cref="SearchRootAvailabilityChanged"/> and marshal to the UI as needed.
@@ -34,10 +39,35 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     private readonly Dictionary<string, long> _changedPaths = new(StringComparer.OrdinalIgnoreCase);
     private long _fileChangeVersion;
     private readonly SemaphoreSlim _fileSearchRootRescanGate = new(1, 1);
-    private CancellationTokenSource? _fileSearchRootWatchDebounce;
-    private Task? _fileSearchRootWatchDebounceTask;
     private long _fileSearchRootWatchGeneration;
     private bool _fileSearchRootWatchersActive;
+
+    // Issue #30: watcher scheduling is a single-consumer loop fed by a coalescing
+    // signal. File events only record dirty paths and signal the loop — they never
+    // cancel a pending wait's replacement or, worse, a scan/import already running.
+    // The loop alone decides between an incremental import pass over the dirty set
+    // and a full reconciliation rescan.
+    private static readonly TimeSpan QuietPeriod = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DeferredRetryDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan StaleImportTempAge = TimeSpan.FromHours(1);
+    private const int IncrementalImportConcurrency = 2;
+
+    private readonly Channel<byte> _rescanSignal = Channel.CreateBounded<byte>(
+        new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropWrite,
+            SingleReader = true,
+            SingleWriter = false
+        });
+    private CancellationTokenSource? _watchLoopStop;
+    private Task? _watchLoopTask;
+    private long _lastFileEventTimestamp;
+    private long _burstStartTimestamp;
+    private int _fullRescanRequested;
+    private DateTimeOffset _lastFullRescanUtc = DateTimeOffset.MinValue;
+    private bool _staleImportCleanupDone;
 
     public FileSearchRootWatcherService(HostServices services, IAppLogger logger)
     {
@@ -65,6 +95,16 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         {
             _fileSearchRootWatchersActive = true;
             watcherGeneration = _fileSearchRootWatchGeneration;
+            if (_watchLoopTask is null || _watchLoopTask.IsCompleted)
+            {
+                // Issue #30: every (re)activation starts with one full reconciliation
+                // rescan so files changed while the app was closed are picked up.
+                Interlocked.Exchange(ref _fullRescanRequested, 1);
+                _lastFullRescanUtc = DateTimeOffset.MinValue;
+                _watchLoopStop = new CancellationTokenSource();
+                CancellationToken stopToken = _watchLoopStop.Token;
+                _watchLoopTask = Task.Run(() => RunWatchLoopAsync(stopToken));
+            }
         }
 
         HashSet<string> wanted = roots.Where(root => root.IsAvailable && Directory.Exists(root.RootPath))
@@ -93,12 +133,12 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     EnableRaisingEvents = true
                 };
                 FileSystemEventHandler changed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}", watcherGeneration, e.FullPath);
+                    NoteFileEvent($"{e.ChangeType}: {e.FullPath}", watcherGeneration, e.FullPath);
                 RenamedEventHandler renamed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration,
-                        e.FullPath);
+                    NoteFileEvent($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration,
+                        e.OldFullPath, e.FullPath);
                 ErrorEventHandler error = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}", watcherGeneration);
+                    NoteWatcherError($"Error: {e.GetException()?.Message ?? "unknown"}", watcherGeneration);
                 watcher.Created += changed;
                 watcher.Changed += changed;
                 watcher.Deleted += changed;
@@ -111,27 +151,33 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "create-watcher");
             }
         }
+
+        if (!_staleImportCleanupDone)
+        {
+            _staleImportCleanupDone = true;
+            _ = CleanupStaleImportTempFilesAsync(wanted.ToArray());
+        }
     }
 
     /// <summary>
-    /// Stops all watchers and cancels any pending debounced rescan. Called on database switch and
+    /// Stops all watchers and the watch loop. Called on database switch and
     /// shutdown; watchers are restarted via <see cref="RefreshWatchers"/>.
     /// </summary>
     public async Task StopAsync()
     {
-        CancellationTokenSource? debounce;
-        Task? debounceTask;
+        CancellationTokenSource? loopStop;
+        Task? loopTask;
         lock (_fileSearchRootWatchSync)
         {
             _fileSearchRootWatchersActive = false;
             _fileSearchRootWatchGeneration++;
-            debounce = _fileSearchRootWatchDebounce;
-            debounceTask = _fileSearchRootWatchDebounceTask;
-            _fileSearchRootWatchDebounce = null;
-            _fileSearchRootWatchDebounceTask = null;
+            loopStop = _watchLoopStop;
+            loopTask = _watchLoopTask;
+            _watchLoopStop = null;
+            _watchLoopTask = null;
         }
 
-        debounce?.Cancel();
+        loopStop?.Cancel();
         foreach (FileSystemWatcher watcher in _fileSearchRootWatchers.Values)
         {
             watcher.Dispose();
@@ -140,18 +186,18 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         _fileSearchRootWatchers.Clear();
         try
         {
-            if (debounceTask is not null)
+            if (loopTask is not null)
             {
-                await debounceTask;
+                await loopTask;
             }
         }
-        catch (OperationCanceledException) when (debounce?.IsCancellationRequested == true)
+        catch (OperationCanceledException) when (loopStop?.IsCancellationRequested == true)
         {
-            // Expected when a database switch or application shutdown cancels a pending watcher rescan.
+            // Expected when a database switch or application shutdown stops the watch loop.
         }
         finally
         {
-            debounce?.Dispose();
+            loopStop?.Dispose();
         }
     }
 
@@ -373,9 +419,30 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     await LogOperationAsync("file-scan",
                         $"Importing (trigger={trigger}, {importIndex}/{importQueue.Count}, tier={tier}): {normalizedPath}");
 
-                    PdfImportResult importedPdf =
-                        await _services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
-                            cancellationToken);
+                    // Issue #30: never import a path another importer currently owns
+                    // (an in-flight add). Defer it into the watch loop's dirty set for
+                    // re-evaluation instead of racing the owner's commit or rollback.
+                    IFileOperationLease? claim = _services.FileOperations.TryClaim([normalizedPath]);
+                    if (claim is null)
+                    {
+                        skipped++;
+                        RequeueDirtyPath(normalizedPath);
+                        await LogOperationAsync("file-scan",
+                            $"Import deferred, path claimed by another import (trigger={trigger}): {normalizedPath}");
+                        continue;
+                    }
+
+                    PdfImportResult importedPdf;
+                    try
+                    {
+                        importedPdf =
+                            await _services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
+                                cancellationToken);
+                    }
+                    finally
+                    {
+                        await claim.DisposeAsync();
+                    }
                     if (importedPdf.Success)
                     {
                         if (importedPdf.IsDuplicate)
@@ -575,95 +642,530 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         public string? PrimaryStatus { get; init; }
     }
 
-    private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration,
-        string? changedPath = null)
+    /// <summary>
+    /// Issue #30: file events only make a reservation — record the dirty paths, stamp
+    /// the event time and signal the watch loop. Nothing here cancels anything; a scan
+    /// or import already running is never interrupted by later events.
+    /// </summary>
+    private void NoteFileEvent(string changeDescription, long watcherGeneration, params string[] changedPaths)
     {
         try
         {
-            CancellationTokenSource current = new();
-            CancellationTokenSource? previous;
-            Task? previousTask;
-            Task currentTask;
             lock (_fileSearchRootWatchSync)
             {
                 if (!_fileSearchRootWatchersActive || watcherGeneration != _fileSearchRootWatchGeneration)
                 {
-                    current.Dispose();
                     return;
                 }
 
-                if (changedPath is not null)
+                if (_changedPaths.Count == 0)
                 {
-                    _changedPaths[changedPath] = ++_fileChangeVersion;
+                    Volatile.Write(ref _burstStartTimestamp, Stopwatch.GetTimestamp());
                 }
 
-                previous = _fileSearchRootWatchDebounce;
-                previousTask = _fileSearchRootWatchDebounceTask;
-                currentTask = DebounceFileSearchRootRescanAsync(current.Token);
-                _fileSearchRootWatchDebounce = current;
-                _fileSearchRootWatchDebounceTask = currentTask;
+                foreach (string path in changedPaths)
+                {
+                    _changedPaths[path] = ++_fileChangeVersion;
+                }
             }
 
+            Volatile.Write(ref _lastFileEventTimestamp, Stopwatch.GetTimestamp());
+            _rescanSignal.Writer.TryWrite(0);
             _ = LogOperationAsync(FileWatcherTrigger, $"Change detected: {changeDescription}; rescan scheduled.");
-            previous?.Cancel();
-            if (previous is not null)
-            {
-                if (previousTask is null)
-                {
-                    previous.Dispose();
-                }
-                else
-                {
-                    DisposeCancellationSourceAfterTask(previous, previousTask);
-                }
-            }
-
-            ObserveDebouncedRescan(currentTask, current.Token);
         }
         catch (Exception exception)
         {
-            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "schedule-rescan");
+            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "note-file-event");
         }
     }
 
-    private static void DisposeCancellationSourceAfterTask(CancellationTokenSource source, Task task)
+    /// <summary>
+    /// A watcher error (e.g. internal buffer overflow) means events may have been lost:
+    /// reserve one full reconciliation rescan instead of an incremental pass.
+    /// </summary>
+    private void NoteWatcherError(string errorDescription, long watcherGeneration)
     {
-        _ = task.ContinueWith(
-            static (_, state) => ((CancellationTokenSource)state!).Dispose(),
-            source,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
-
-    private void ObserveDebouncedRescan(Task task, CancellationToken cancellationToken)
-    {
-        _ = task.ContinueWith(
-            (completed, state) =>
+        try
+        {
+            lock (_fileSearchRootWatchSync)
             {
-                CancellationToken token = (CancellationToken)state!;
-                if (completed.IsCanceled && token.IsCancellationRequested)
+                if (!_fileSearchRootWatchersActive || watcherGeneration != _fileSearchRootWatchGeneration)
                 {
                     return;
                 }
+            }
 
-                if (completed.IsFaulted && completed.Exception is not null)
-                {
-                    UnexpectedExceptions.Sink.Report(completed.Exception.GetBaseException(), FileWatcherTrigger,
-                        "debounced-rescan");
-                }
-            },
-            cancellationToken,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+            Interlocked.Exchange(ref _fullRescanRequested, 1);
+            _rescanSignal.Writer.TryWrite(0);
+            _ = LogOperationAsync(FileWatcherTrigger, $"Watcher error: {errorDescription}; full rescan scheduled.");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "note-watcher-error");
+        }
     }
 
-    private async Task DebounceFileSearchRootRescanAsync(CancellationToken cancellationToken)
+    private bool HasDirtyPaths
     {
-        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-        await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", cancellationToken,
-            trigger: FileWatcherTrigger);
+        get
+        {
+            lock (_fileSearchRootWatchSync)
+            {
+                return _changedPaths.Count > 0;
+            }
+        }
+    }
+
+    private List<string> SwapDirtyPaths()
+    {
+        lock (_fileSearchRootWatchSync)
+        {
+            List<string> batch = _changedPaths.Keys.ToList();
+            _changedPaths.Clear();
+            return batch;
+        }
+    }
+
+    private void RequeueDirtyPath(string normalizedPath)
+    {
+        lock (_fileSearchRootWatchSync)
+        {
+            if (_changedPaths.Count == 0)
+            {
+                Volatile.Write(ref _burstStartTimestamp, Stopwatch.GetTimestamp());
+            }
+
+            _changedPaths[normalizedPath] = ++_fileChangeVersion;
+        }
+    }
+
+    /// <summary>
+    /// The one and only consumer of watcher reservations. Each iteration either runs a
+    /// full reconciliation rescan (activation, watcher error, or the periodic interval)
+    /// or an incremental import pass over the swapped-out dirty set. Execution is bound
+    /// only to the service stop token — file events arriving mid-pass simply dirty the
+    /// next batch.
+    /// </summary>
+    private async Task RunWatchLoopAsync(CancellationToken stopToken)
+    {
+        try
+        {
+            while (!stopToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await RunWatchIterationAsync(stopToken);
+                }
+                catch (OperationCanceledException) when (stopToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    // One failed pass (e.g. the database was briefly unavailable) must
+                    // not kill the loop; the next signal or reconciliation retries.
+                    UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "watch-loop");
+                    await Task.Delay(TimeSpan.FromSeconds(1), stopToken);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stopToken.IsCancellationRequested)
+        {
+            // Service stop: exit quietly.
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "watch-loop");
+        }
+    }
+
+    private async Task RunWatchIterationAsync(CancellationToken stopToken)
+    {
+        while (_rescanSignal.Reader.TryRead(out _))
+        {
+            // Drain coalesced signals; the dirty set and flags are the real state.
+        }
+
+        bool fullRequested = Interlocked.Exchange(ref _fullRescanRequested, 0) == 1;
+        bool reconciliationDue =
+            DateTimeOffset.UtcNow - _lastFullRescanUtc >= ReconciliationInterval;
+        if (!fullRequested && !reconciliationDue && !HasDirtyPaths)
+        {
+            await WaitForSignalAsync(stopToken);
+            return;
+        }
+
+        await WaitQuietPeriodAsync(stopToken);
+        if (stopToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (fullRequested || reconciliationDue)
+        {
+            _lastFullRescanUtc = DateTimeOffset.UtcNow;
+            await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", stopToken,
+                trigger: FileWatcherTrigger);
+            return;
+        }
+
+        List<string> batch = SwapDirtyPaths();
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        int deferred = await RunIncrementalImportPassAsync(batch, stopToken);
+        if (deferred > 0 && !stopToken.IsCancellationRequested)
+        {
+            // Deferred paths were re-queued; retry on a bounded cadence rather
+            // than spinning while their claim holder finishes.
+            await Task.Delay(DeferredRetryDelay, stopToken);
+            if (HasDirtyPaths)
+            {
+                _rescanSignal.Writer.TryWrite(0);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sleeps until the next reservation signal, but wakes when the periodic
+    /// reconciliation comes due so an idle watcher still reconciles on schedule.
+    /// </summary>
+    private async Task WaitForSignalAsync(CancellationToken stopToken)
+    {
+        TimeSpan untilDue = ReconciliationInterval - (DateTimeOffset.UtcNow - _lastFullRescanUtc);
+        if (untilDue <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
+        timeout.CancelAfter(untilDue);
+        try
+        {
+            await _rescanSignal.Reader.WaitToReadAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) when (!stopToken.IsCancellationRequested)
+        {
+            // Reconciliation interval elapsed without any file event.
+        }
+    }
+
+    /// <summary>
+    /// Debounce as quiet-period re-evaluation: wait until no file event has arrived for
+    /// <see cref="QuietPeriod"/>, re-checking the remaining time whenever the delay
+    /// elapses. The delay is bound only to the stop token — new events extend the wait
+    /// by moving the last-event timestamp, never by cancelling it — and
+    /// <see cref="MaxWait"/> caps how long a continuous event stream can postpone work.
+    /// </summary>
+    private async Task WaitQuietPeriodAsync(CancellationToken stopToken)
+    {
+        while (!stopToken.IsCancellationRequested)
+        {
+            TimeSpan quietFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastFileEventTimestamp));
+            TimeSpan burstFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _burstStartTimestamp));
+            if (quietFor >= QuietPeriod || burstFor >= MaxWait)
+            {
+                return;
+            }
+
+            TimeSpan remaining = QuietPeriod - quietFor;
+            TimeSpan cap = MaxWait - burstFor;
+            if (cap < remaining)
+            {
+                remaining = cap;
+            }
+
+            if (remaining < TimeSpan.FromMilliseconds(20))
+            {
+                remaining = TimeSpan.FromMilliseconds(20);
+            }
+
+            await Task.Delay(remaining, stopToken);
+        }
+    }
+
+    private enum IncrementalImportOutcome
+    {
+        Imported,
+        Skipped,
+        Failed,
+        Deferred
+    }
+
+    /// <summary>
+    /// Incremental pass over one dirty batch: imports only the reserved paths (bounded
+    /// concurrency), serialized with full rescans through the same gate. Returns how
+    /// many paths were deferred back into the dirty set.
+    /// </summary>
+    private async Task<int> RunIncrementalImportPassAsync(
+        IReadOnlyList<string> batch,
+        CancellationToken stopToken)
+    {
+        await _fileSearchRootRescanGate.WaitAsync(stopToken);
+        try
+        {
+            using IActivityScope? activity = _services.ActivityTracker?.BeginScope(
+                "扫描文件搜索根",
+                HostActivityKind.Scanning,
+                "文件变化触发");
+            HashSet<string> knownPaths = await LoadKnownFilePathsAsync(stopToken);
+            object knownSync = new();
+            int imported = 0;
+            int skipped = 0;
+            int failed = 0;
+            int deferred = 0;
+            using SemaphoreSlim concurrency = new(IncrementalImportConcurrency);
+            Task[] passes = batch.Select(async path =>
+            {
+                await concurrency.WaitAsync(stopToken);
+                try
+                {
+                    IncrementalImportOutcome outcome;
+                    try
+                    {
+                        outcome = await ImportDirtyPathAsync(path, knownPaths, knownSync, stopToken);
+                    }
+                    catch (OperationCanceledException) when (stopToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "incremental-import");
+                        outcome = IncrementalImportOutcome.Failed;
+                    }
+
+                    switch (outcome)
+                    {
+                        case IncrementalImportOutcome.Imported:
+                            Interlocked.Increment(ref imported);
+                            break;
+                        case IncrementalImportOutcome.Failed:
+                            Interlocked.Increment(ref failed);
+                            break;
+                        case IncrementalImportOutcome.Deferred:
+                            Interlocked.Increment(ref deferred);
+                            break;
+                        default:
+                            Interlocked.Increment(ref skipped);
+                            break;
+                    }
+                }
+                finally
+                {
+                    concurrency.Release();
+                }
+            }).ToArray();
+            await Task.WhenAll(passes);
+
+            await LogOperationAsync("file-scan",
+                $"Incremental pass finished (trigger={FileWatcherTrigger}): candidates={batch.Count}, " +
+                $"imported={imported}, skipped={skipped}, failed={failed}, deferred={deferred}.");
+            if (imported > 0 || failed > 0)
+            {
+                FileSearchRootRescanSummary summary = new(batch.Count, imported, skipped, failed, 0, 0, 0, 0);
+                ApplyFileSearchRootRescanResult(
+                    Result<FileSearchRootRescanSummary>.Success(summary),
+                    "文件变化后自动重新扫描完成。", FileWatcherTrigger);
+            }
+
+            return deferred;
+        }
+        finally
+        {
+            _fileSearchRootRescanGate.Release();
+        }
+    }
+
+    private async Task<IncrementalImportOutcome> ImportDirtyPathAsync(
+        string path,
+        HashSet<string> knownPaths,
+        object knownSync,
+        CancellationToken stopToken)
+    {
+        string normalizedPath = Path.GetFullPath(path);
+        if (!string.Equals(Path.GetExtension(normalizedPath), ".pdf", StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(normalizedPath))
+        {
+            // Deleted, renamed away, or not a PDF (rename sources, ".importing" temps):
+            // nothing to import here; full reconciliation owns database-side staleness.
+            return IncrementalImportOutcome.Skipped;
+        }
+
+        lock (knownSync)
+        {
+            if (knownPaths.Contains(normalizedPath))
+            {
+                // (path, size, mtime) still match the database record: skip before any
+                // hashing or metadata work.
+                return IncrementalImportOutcome.Skipped;
+            }
+        }
+
+        FileLocalityAssessment locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+        if (locality.Readiness != FileLocalityReadiness.CloudUnready && !CanOpenForRead(normalizedPath))
+        {
+            // Still being written by an external copy: defer quietly instead of
+            // importing a partial file or logging a spurious failure.
+            RequeueDirtyPath(normalizedPath);
+            return IncrementalImportOutcome.Deferred;
+        }
+
+        IFileOperationLease? lease = _services.FileOperations.TryClaim([normalizedPath]);
+        if (lease is null)
+        {
+            // An explicit import owns this path right now; re-evaluate after it
+            // finishes instead of importing the same file a second time.
+            RequeueDirtyPath(normalizedPath);
+            return IncrementalImportOutcome.Deferred;
+        }
+
+        await using (lease)
+        {
+            if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+            {
+                await LogOperationAsync("file-scan",
+                    $"Hydrating cloud file (trigger={FileWatcherTrigger}): {normalizedPath}");
+                Result materialized =
+                    await _services.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath, stopToken);
+                locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+                if (materialized.IsFailure)
+                {
+                    await LogOperationAsync("file-scan",
+                        $"Cloud hydration failed (trigger={FileWatcherTrigger}): {normalizedPath} - " +
+                        $"{materialized.ErrorMessage ?? locality.Reason ?? "云端文件下载未完成。"}");
+                    return IncrementalImportOutcome.Failed;
+                }
+            }
+
+            await LogOperationAsync("file-scan",
+                $"Importing (trigger={FileWatcherTrigger}): {normalizedPath}");
+            PdfImportResult importedPdf =
+                await _services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
+                    stopToken);
+            if (!importedPdf.Success)
+            {
+                await LogOperationAsync("file-scan",
+                    $"Import failed (trigger={FileWatcherTrigger}): {normalizedPath} - {importedPdf.ErrorMessage}");
+                return IncrementalImportOutcome.Failed;
+            }
+
+            lock (knownSync)
+            {
+                knownPaths.Add(normalizedPath);
+            }
+
+            if (importedPdf.FailedPageCount > 0)
+            {
+                string firstPageFailure = importedPdf.PageFailures?.FirstOrDefault()?.ErrorMessage ?? "unknown";
+                await LogOperationAsync("file-scan",
+                    $"Import finished with {importedPdf.FailedPageCount} failed page placeholder(s) " +
+                    $"(trigger={FileWatcherTrigger}): {normalizedPath} - first failure: {firstPageFailure}");
+            }
+
+            return importedPdf.IsDuplicate
+                ? IncrementalImportOutcome.Skipped
+                : IncrementalImportOutcome.Imported;
+        }
+    }
+
+    private static bool CanOpenForRead(string path)
+    {
+        try
+        {
+            using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Issue #30: removes stale ".importing" temp files left in the search roots by a
+    /// process that died in the middle of a cross-volume copy. Runs once, on the first
+    /// watcher activation; a temp file is removed only when it matches the generated
+    /// naming pattern, is not currently claimed, and its last write is over an hour
+    /// old — an in-flight copy is never touched.
+    /// </summary>
+    private async Task CleanupStaleImportTempFilesAsync(IReadOnlyList<string> rootPaths)
+    {
+        try
+        {
+            foreach (string rootPath in rootPaths)
+            {
+                List<string> stale = await Task.Run(() =>
+                {
+                    List<string> found = [];
+                    try
+                    {
+                        foreach (string candidate in Directory.EnumerateFiles(rootPath, "*.importing",
+                                     SearchOption.AllDirectories))
+                        {
+                            if (IsImportTempFileName(Path.GetFileName(candidate)) &&
+                                !_services.FileOperations.IsClaimed(candidate) &&
+                                File.GetLastWriteTimeUtc(candidate) < DateTime.UtcNow - StaleImportTempAge)
+                            {
+                                found.Add(candidate);
+                            }
+                        }
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger,
+                            "cleanup-stale-import-temp");
+                    }
+
+                    return found;
+                });
+
+                foreach (string path in stale)
+                {
+                    try
+                    {
+                        File.Delete(path);
+                        await LogOperationAsync("file-scan", $"Removed stale import temp file: {path}");
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger,
+                            "cleanup-stale-import-temp");
+                    }
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "cleanup-stale-import-temp");
+        }
+    }
+
+    private static bool IsImportTempFileName(string fileName)
+    {
+        // Generated names look like ".{original file name}.{32 hex guid}.importing".
+        const string suffix = ".importing";
+        if (!fileName.StartsWith('.') ||
+            !fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string withoutSuffix = fileName[..^suffix.Length];
+        int lastDot = withoutSuffix.LastIndexOf('.');
+        if (lastDot < 0)
+        {
+            return false;
+        }
+
+        string guidPart = withoutSuffix[(lastDot + 1)..];
+        return guidPart.Length == 32 && guidPart.All(Uri.IsHexDigit);
     }
 
     private async Task LogOperationAsync(string operation, string message)
