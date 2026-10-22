@@ -195,6 +195,36 @@ public sealed class PdfiumSessionCacheIssue31Tests
         cache.Return(reopened);
     }
 
+    [Fact]
+    public async Task Evicted_session_failing_to_dispose_neither_faults_the_acquire_nor_leaks_its_lease()
+    {
+        FakeFactory factory = new();
+        string pathA = NewDocPath();
+        string pathB = NewDocPath();
+        FakeSession sessionA = new(pathA) { ThrowOnDispose = true };
+        FakeSession sessionB = new(pathB);
+        factory.Handler = path => Task.FromResult<IPdfPageSession>(
+            string.Equals(path, pathA, StringComparison.Ordinal) ? sessionA : sessionB);
+        await using PdfiumSessionCache cache = new(factory.OpenAsync, 1, long.MaxValue);
+
+        IPdfPageSession a = await cache.GetOrOpenAsync(pathA).WaitAsync(Timeout);
+        cache.Return(a);
+        cache.InUseCount.Should().Be(0);
+
+        // Acquiring B evicts A (capacity 1); draining A's disposal throws. The drain
+        // failure must be converged inside the cache: B's acquire still succeeds with
+        // a balanced lease instead of faulting with A's dispose exception and
+        // stranding B's in-use count forever.
+        IPdfPageSession b = await cache.GetOrOpenAsync(pathB).WaitAsync(Timeout);
+        b.Should().BeSameAs(sessionB);
+        sessionA.DisposeCount.Should().Be(1, "closing the evicted session was still attempted");
+        cache.Count.Should().Be(1);
+        cache.InUseCount.Should().Be(1);
+
+        cache.Return(b);
+        cache.InUseCount.Should().Be(0, "the lease acquired across the failing drain returns normally");
+    }
+
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -224,6 +254,8 @@ public sealed class PdfiumSessionCacheIssue31Tests
 
         public int PageCount => 3;
 
+        public bool ThrowOnDispose { get; init; }
+
         public TaskCompletionSource DisposedSignal { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -240,6 +272,11 @@ public sealed class PdfiumSessionCacheIssue31Tests
         {
             Interlocked.Increment(ref _disposeCount);
             DisposedSignal.TrySetResult();
+            if (ThrowOnDispose)
+            {
+                throw new InvalidOperationException("dispose-failure");
+            }
+
             return ValueTask.CompletedTask;
         }
     }

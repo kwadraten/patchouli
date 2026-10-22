@@ -1,3 +1,5 @@
+using Patchouli.Core.Diagnostics;
+
 namespace Patchouli.Ocr;
 
 /// <summary>
@@ -293,7 +295,17 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
         foreach (IPdfPageSession session in sessions)
         {
-            await session.DisposeAsync();
+            try
+            {
+                await session.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                // Teardown continues with the remaining sessions: one session failing
+                // to close must not leak the rest or fault the cache's own disposal.
+                UnexpectedExceptionReporter.Report(exception, "ocr.pdfium-session-cache",
+                    "dispose-session");
+            }
         }
     }
 
@@ -323,10 +335,10 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
             return;
         }
 
-        Opens++;
         bool dispose = false;
         lock (_sync)
         {
+            Opens++;
             pending.Session = session;
             if (_disposed || pending.Evicted || pending.Waiters == 0)
             {
@@ -347,7 +359,17 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         pending.Completion.TrySetResult(session);
         if (dispose)
         {
-            await session.DisposeAsync();
+            try
+            {
+                await session.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                // The session was opened but never claimed; a failing close is reported,
+                // not faulted into the (already completed) shared open.
+                UnexpectedExceptionReporter.Report(exception, "ocr.pdfium-session-cache",
+                    "dispose-unclaimed-session");
+            }
         }
     }
 
@@ -400,7 +422,19 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
         foreach (IPdfPageSession session in sessions)
         {
-            await session.DisposeAsync();
+            try
+            {
+                await session.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                // A session that fails to close must not fault whichever caller happened
+                // to drain it: the session is already out of the cache, and the acquiring
+                // caller's lease accounting (its entry's in-use count) has to stay
+                // balanced. Report the failure and keep draining the rest.
+                UnexpectedExceptionReporter.Report(exception, "ocr.pdfium-session-cache",
+                    "drain-disposed-session");
+            }
         }
     }
 
