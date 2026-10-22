@@ -69,8 +69,7 @@ public sealed class CitationInteropHost : IAsyncDisposable
             _services.Items,
             _services.CslItemMapper,
             _services.CslRenderer,
-            _services.BiblatexImport,
-            _services.BiblatexHelper);
+            _services.BiblatexImport);
     }
 
     public async Task StartAsync(CitationInteropAppSettings settings,

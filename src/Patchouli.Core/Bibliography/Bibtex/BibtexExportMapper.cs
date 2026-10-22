@@ -24,10 +24,12 @@ public sealed record BibtexExportResult(
 /// location, pubstate, …) are never emitted. Types classic BibTeX cannot
 /// express fall back to <c>misc</c> and every dropped or degraded field is
 /// recorded in <see cref="BibtexExportResult.Warnings"/>.
-/// Serialization/escaping is delegated to the existing biblatex-helper writer
-/// (verified: it passes entry types and fields through verbatim); this mapper
-/// additionally brace-escapes values whose braces are unbalanced, which
-/// classic BibTeX cannot represent raw.
+/// Serialization is done by <see cref="BibtexSerializer"/> in .NET, NOT by
+/// the biblatex-helper writer: probing the helper showed its write path
+/// canonicalizes journal/address/school to journaltitle/location/institution,
+/// which classic BibTeX would silently ignore. This mapper additionally
+/// brace-escapes values whose braces are unbalanced, which classic BibTeX
+/// cannot represent raw.
 /// </summary>
 public static class BibtexExportMapper
 {

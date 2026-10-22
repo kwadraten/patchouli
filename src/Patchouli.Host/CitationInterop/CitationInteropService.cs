@@ -27,22 +27,19 @@ public sealed class CitationInteropService
     private readonly ICslItemMapper _cslMapper;
     private readonly ICslRenderer _cslRenderer;
     private readonly IBiblatexImportService _biblatex;
-    private readonly IBiblatexHelperClient _helper;
 
     public CitationInteropService(
         ILibraryItemQueryService query,
         IItemService items,
         ICslItemMapper cslMapper,
         ICslRenderer cslRenderer,
-        IBiblatexImportService biblatex,
-        IBiblatexHelperClient helper)
+        IBiblatexImportService biblatex)
     {
         _query = query;
         _items = items;
         _cslMapper = cslMapper;
         _cslRenderer = cslRenderer;
         _biblatex = biblatex;
-        _helper = helper;
     }
 
     /// <summary>
@@ -385,7 +382,10 @@ public sealed class CitationInteropService
             return Result<string>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
         }
 
-        return await _helper.WriteAsync(mapped.Value.Entries, cancellationToken);
+        // Classic BibTeX is serialized in .NET (BibtexSerializer), not via the
+        // biblatex-helper writer: the helper canonicalizes journal/address/
+        // school to their BibLaTeX names, which classic BibTeX ignores.
+        return Result<string>.Success(BibtexSerializer.Serialize(mapped.Value.Entries));
     }
 
     private static string? NullIfWhiteSpace(string? value)
