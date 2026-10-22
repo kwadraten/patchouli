@@ -1,9 +1,11 @@
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.CitationInterop;
+using Patchouli.Core.Csl;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Host.CitationInterop;
+using Patchouli.Infrastructure.Csl;
 
 namespace Patchouli.Tests.CitationInterop;
 
@@ -91,6 +93,29 @@ public sealed class CitationInteropServiceTests
 
             results.IsSuccess.Should().BeTrue(results.ErrorMessage);
             results.Value.Select(p => p.ItemId).Should().BeEquivalentTo([book.ItemId, article.ItemId]);
+        }
+    }
+
+    [Fact]
+    public async Task Search_fails_as_a_whole_when_a_projection_reports_an_infrastructure_failure()
+    {
+        (InteropTestContext context, ItemMetadata book, _) = await SeedAsync();
+        await using (context)
+        {
+            // A database failure while projecting one row is systemic: it
+            // must surface as a failed search, not as a successful search
+            // that silently returns fewer results.
+            CitationInteropService interop = new(
+                context.Query,
+                context.Items,
+                new InfrastructureFailureMapper(new CslItemMapper(), book.ItemId),
+                context.Renderer,
+                null!);
+
+            Result<IReadOnlyList<CitationItemProjection>> results = await interop.SearchAsync("");
+
+            results.IsFailure.Should().BeTrue();
+            results.ErrorCode.Should().Be(AppErrorCodes.DatabaseError);
         }
     }
 
@@ -213,6 +238,31 @@ public sealed class CitationInteropServiceTests
                 .Equal(article.CitationKey, book.CitationKey);
             pick.Value.Entries[0].Locator.Should().Be("33");
             pick.Value.Entries[0].SuppressAuthor.Should().BeTrue();
+        }
+    }
+
+    /// <summary>Delegates to the real mapper except for one item, whose
+    /// projection reports a database (infrastructure) failure.</summary>
+    private sealed class InfrastructureFailureMapper : ICslItemMapper
+    {
+        private readonly ICslItemMapper _inner;
+        private readonly ItemId _failingItemId;
+
+        public InfrastructureFailureMapper(ICslItemMapper inner, ItemId failingItemId)
+        {
+            _inner = inner;
+            _failingItemId = failingItemId;
+        }
+
+        public Task<Result<CslMappedItem>> MapAsync(ItemMetadata item, CancellationToken cancellationToken = default)
+        {
+            if (item.ItemId == _failingItemId)
+            {
+                return Task.FromResult(Result<CslMappedItem>.Failure(
+                    AppErrorCodes.DatabaseError, "Simulated database failure."));
+            }
+
+            return _inner.MapAsync(item, cancellationToken);
         }
     }
 }
