@@ -1,6 +1,7 @@
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
 using FluentAssertions;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
@@ -238,6 +239,204 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
             workspace.Status.Should().Be(statusAfterNewerPage,
                 "only the current generation may publish its failure; a stale failure is discarded like a stale image");
             workspace.Status.Should().NotContain("ERROR");
+
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Transient_result_failure_is_retried_and_the_next_attempt_recovers()
+    {
+        HeadlessUnitTestSession session = SharedSession;
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-transient-result"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            workspace.PageRenderPreviewHandler = (_, _) => Task.FromResult(SuccessLease(10));
+            await workspace.LoadAsync();
+            Bitmap? firstImage = workspace.Image;
+            firstImage.Should().NotBeNull();
+
+            // The production render service reports a renderer timeout as a failed
+            // Result (not an exception); that channel must retry just like a throw.
+            int attempts = 0;
+            workspace.PageRenderPreviewHandler = (_, _) =>
+            {
+                int attempt = Interlocked.Increment(ref attempts);
+                return Task.FromResult(attempt == 1
+                    ? Result<PdfPagePixelBufferLease>.Failure(
+                        PageRenderStatus.RendererTimeout, "PDF renderer timed out.")
+                    : SuccessLease(20));
+            };
+            await workspace.NextPageCommand.ExecuteAsync();
+
+            attempts.Should().Be(2, "a transient Result failure is retried once and then recovers");
+            workspace.Image.Should().NotBeSameAs(firstImage);
+            workspace.WidthPixels.Should().Be(20);
+
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Persistent_transient_result_failure_exhausts_retries_and_keeps_the_previous_page()
+    {
+        HeadlessUnitTestSession session = SharedSession;
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-persistent-transient"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            workspace.PageRenderPreviewHandler = (_, _) => Task.FromResult(SuccessLease(10));
+            await workspace.LoadAsync();
+            Bitmap? firstImage = workspace.Image;
+            firstImage.Should().NotBeNull();
+
+            int attempts = 0;
+            workspace.PageRenderPreviewHandler = (_, _) =>
+            {
+                Interlocked.Increment(ref attempts);
+                return Task.FromResult(Result<PdfPagePixelBufferLease>.Failure(
+                    PageRenderStatus.RenderFailed, "PDF preview render failed: injected render failure"));
+            };
+            await workspace.NextPageCommand.ExecuteAsync();
+
+            attempts.Should().Be(3, "the initial attempt plus two bounded retries, then it gives up");
+            workspace.Image.Should().BeSameAs(firstImage,
+                "render-then-swap: exhausting the retries still never clears the page on screen");
+            workspace.WidthPixels.Should().Be(10);
+            workspace.Status.Should().Contain("ERROR").And.Contain(PageRenderStatus.RenderFailed);
+
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Deterministic_result_failure_is_not_retried()
+    {
+        HeadlessUnitTestSession session = SharedSession;
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-deterministic-result"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            workspace.PageRenderPreviewHandler = (_, _) => Task.FromResult(SuccessLease(10));
+            await workspace.LoadAsync();
+            Bitmap? firstImage = workspace.Image;
+            firstImage.Should().NotBeNull();
+
+            int attempts = 0;
+            workspace.PageRenderPreviewHandler = (_, _) =>
+            {
+                Interlocked.Increment(ref attempts);
+                return Task.FromResult(Result<PdfPagePixelBufferLease>.Failure(
+                    AppErrorCodes.NotFound, "Page was not found."));
+            };
+            await workspace.NextPageCommand.ExecuteAsync();
+
+            attempts.Should().Be(1, "a deterministic failure can never be fixed by rendering again");
+            workspace.Image.Should().BeSameAs(firstImage);
+            workspace.WidthPixels.Should().Be(10);
+            workspace.Status.Should().Contain("ERROR").And.Contain(AppErrorCodes.NotFound);
+
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Stale_generation_boxes_load_never_overwrites_the_newer_page()
+    {
+        HeadlessUnitTestSession session = SharedSession;
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-stale-boxes"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            // Seed one text box per page so the two generations publish observably
+            // different box sets, and capture the real boxes per current revision.
+            Patchouli.Host.Composition.HostServices services = await vm.ServicesAsync();
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
+            IReadOnlyList<Patchouli.Core.Layout.Page> pages =
+                (await services.Pages.ListPagesAsync(documentInstanceId)).Value;
+            await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
+                documentInstanceId, pages[0].PageId, "page zero box");
+            await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
+                documentInstanceId, pages[1].PageId, "page one box");
+            DocumentTreeRevisionId pageZeroRevision =
+                (await services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, pages[0].PageId))
+                .Value.TreeRevisionId;
+            DocumentTreeRevisionId pageOneRevision =
+                (await services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, pages[1].PageId))
+                .Value.TreeRevisionId;
+            Dictionary<DocumentTreeRevisionId, IReadOnlyList<DocumentBox>> realBoxes = new()
+            {
+                [pageZeroRevision] =
+                    (await services.DocumentTrees.ListBoxesAsync(pageZeroRevision)).Value,
+                [pageOneRevision] =
+                    (await services.DocumentTrees.ListBoxesAsync(pageOneRevision)).Value
+            };
+            IReadOnlyList<DocumentTreeRevisionId> pageOneRevisionIds =
+                (await services.DocumentTrees.ListRevisionsAsync(documentInstanceId, pages[1].PageId))
+                .Value.Select(revision => revision.TreeRevisionId).ToList();
+
+            // Generation 1 renders instantly but its box load is gated; generation 2
+            // (next page) runs to completion while generation 1 is still parked.
+            TaskCompletionSource boxesStarted = NewSignal();
+            TaskCompletionSource boxesRelease = NewSignal();
+            workspace.PageRenderPreviewHandler = (_, _) => Task.FromResult(
+                workspace.PageIndex == 0 ? SuccessLease(10) : SuccessLease(20));
+            workspace.DocumentBoxesLoadHandler = async revisionId =>
+            {
+                if (revisionId == pageZeroRevision)
+                {
+                    boxesStarted.TrySetResult();
+                    await boxesRelease.Task;
+                }
+
+                return realBoxes[revisionId];
+            };
+
+            Task loadTask = workspace.LoadAsync();
+            await boxesStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await workspace.NextPageCommand.ExecuteAsync();
+
+            workspace.PageIndex.Should().Be(1);
+            workspace.WidthPixels.Should().Be(20);
+            Bitmap? newerImage = workspace.Image;
+            newerImage.Should().NotBeNull();
+            workspace.BoundingBoxes.Select(box => box.Text).Should().Equal(new[] { "page one box" });
+            string statusAfterNewerPage = workspace.Status;
+            statusAfterNewerPage.Should().Contain("第 2/3 页");
+            workspace.PageRevisions.Select(row => row.RevisionId).Should().Equal(pageOneRevisionIds);
+
+            boxesRelease.TrySetResult();
+            await loadTask;
+
+            workspace.Image.Should().BeSameAs(newerImage,
+                "the superseded generation's late box load must not touch the newer page");
+            workspace.WidthPixels.Should().Be(20);
+            workspace.BoundingBoxes.Select(box => box.Text).Should().Equal(new[] { "page one box" },
+                "the stale generation's boxes are discarded, never committed over the newer page");
+            workspace.Status.Should().Be(statusAfterNewerPage);
+            workspace.PageRevisions.Select(row => row.RevisionId).Should().Equal(pageOneRevisionIds,
+                "the stale generation must not replace the newer page's revision rows");
 
             await ReleaseDocumentSessionAsync(vm, item);
             return true;

@@ -442,15 +442,25 @@ public sealed class PageRenderService : IPageRenderService
         }
         catch (PdfRendererUnavailableException ex)
         {
+            // Deterministic: the native runtime is missing or unusable, so retrying the
+            // render cannot help. Reported under the generic validation code.
             return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed, ex.Message);
         }
         catch (PdfRendererTimeoutException ex)
         {
-            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed, ex.Message);
+            // Transient: reported under the shared renderer-timeout code (same vocabulary
+            // as PageRenderStatus/OcrFailureCode) so callers can classify it as worth a
+            // bounded retry instead of treating it as a deterministic failure.
+            return Result<PdfPagePixelBufferLease>.Failure(PageRenderStatus.RendererTimeout, ex.Message);
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-preview"))
         {
-            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+            // Everything reaching here failed inside the render itself (PDFium render
+            // errors and infrastructure faults alike); that class is transient, so it is
+            // reported under the shared render-failed code for the same retry
+            // classification. Deterministic problems (missing page/asset/source,
+            // conflicts, validation) return earlier under their own codes.
+            return Result<PdfPagePixelBufferLease>.Failure(PageRenderStatus.RenderFailed,
                 $"PDF preview render failed: {ex.Message}");
         }
     }

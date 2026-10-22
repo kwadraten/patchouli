@@ -51,6 +51,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     internal Func<PageRenderRequest, CancellationToken, Task<Result<PdfPagePixelBufferLease>>>?
         PageRenderPreviewHandler { get; set; }
 
+    /// <summary>Test seam: when set, intercepts document-box loading so tests can gate a
+    /// superseded generation's box load deterministically.</summary>
+    internal Func<DocumentTreeRevisionId, Task<IReadOnlyList<DocumentBox>>>?
+        DocumentBoxesLoadHandler { get; set; }
+
     private PdfBBoxViewModel? _selectedBox;
     private DocumentTreeRevisionId? _currentRevisionId;
     private DocumentTreeRevisionId? _draftRevisionId;
@@ -2176,22 +2181,38 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             SelectedBox = null;
             if (IsEditMode && _draftRevisionId != null)
             {
-                await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
+                await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true, generation);
             }
             else
             {
                 Result<DocumentTreeRevision> rev =
                     await services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, page.PageId);
+                if (generation != _renderGeneration)
+                {
+                    return;
+                }
+
                 if (rev.IsSuccess)
                 {
                     _currentRevisionId = rev.Value.TreeRevisionId;
                     _liveCurrentRevisionId = rev.Value.TreeRevisionId;
                     IsViewingHistoricalRevision = false;
-                    await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false);
+                    await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false, generation);
                 }
             }
 
-            await LoadPageRevisionsAsync(services, documentInstanceId, page.PageId);
+            if (generation != _renderGeneration)
+            {
+                // Superseded during the post-swap loads: the newer generation owns the
+                // status line, the source-validation state and the prefetch schedule.
+                return;
+            }
+
+            await LoadPageRevisionsAsync(services, documentInstanceId, page.PageId, generation);
+            if (generation != _renderGeneration)
+            {
+                return;
+            }
 
             Status =
                 $"{Item.Title} · 第 {PageIndex + 1}/{PageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
@@ -2219,15 +2240,21 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     // Transient preview failures are retried with a short exponential backoff (at most two
     // retries, 200 ms then 400 ms). A superseded generation stops retrying immediately.
+    // Failures arrive on two channels and both are retried: thrown exceptions, and failed
+    // Results — the production render service reports renderer failures as a failed
+    // Result and lets only cancellation escape as an exception. For the Result channel
+    // only the transient codes retry (see IsTransientPreviewFailure); deterministic
+    // failures (not_found, source_changed, validation, ...) return immediately.
     private async Task<Result<PdfPagePixelBufferLease>> RenderPreviewWithRetryAsync(HostServices services,
         PageRenderRequest renderRequest, int generation)
     {
         const int maxRetries = 2;
         for (int attempt = 0;; attempt++)
         {
+            Result<PdfPagePixelBufferLease> result;
             try
             {
-                return PageRenderPreviewHandler is not null
+                result = PageRenderPreviewHandler is not null
                     ? await PageRenderPreviewHandler(renderRequest, CancellationToken.None)
                     : await services.PageRenders.RenderPreviewAsync(renderRequest);
             }
@@ -2238,8 +2265,32 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 {
                     throw;
                 }
+
+                continue;
+            }
+
+            if (result.IsSuccess || !IsTransientPreviewFailure(result) ||
+                attempt >= maxRetries || generation != _renderGeneration)
+            {
+                return result;
+            }
+
+            await Task.Delay(200 << attempt);
+            if (generation != _renderGeneration)
+            {
+                return result;
             }
         }
+    }
+
+    // The transient Result codes, in the shared PageRenderStatus vocabulary: the render
+    // itself failed, or the renderer timed out. The render service produces exactly these
+    // two codes for its render-execution failure paths; every other failure it returns
+    // (not_found, validation_failed incl. source_changed/conflict/DPI, conflict, and the
+    // codes it passes through from resolution/materialization) is deterministic.
+    private static bool IsTransientPreviewFailure(Result<PdfPagePixelBufferLease> result)
+    {
+        return result.ErrorCode is PageRenderStatus.RenderFailed or PageRenderStatus.RendererTimeout;
     }
 
     /// <summary>Replaces the preview image on the UI thread and disposes the replaced bitmap.</summary>
@@ -2480,14 +2531,39 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task<IReadOnlyList<DocumentBox>> LoadBoxesAsync(DocumentTreeRevisionId revisionId)
     {
+        if (DocumentBoxesLoadHandler is not null)
+        {
+            return await DocumentBoxesLoadHandler(revisionId);
+        }
+
         Result<IReadOnlyList<DocumentBox>> result =
             await (await _main.ServicesAsync()).DocumentTrees.ListBoxesAsync(revisionId);
         return result.IsSuccess ? result.Value : [];
     }
 
-    private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isDraft)
+    // Issue #31: post-swap publication guard. RenderCurrentPageAsync passes its render
+    // generation down this chain; every step that publishes view state after an await
+    // re-checks that the generation is still current, so a superseded page load can
+    // never write its boxes, markers, preview blocks or revision rows over the newer
+    // page. Callers outside the render path pass no generation and are never stale.
+    private bool IsStaleGeneration(int? generation)
     {
-        _loadedBoxes = await LoadBoxesAsync(revisionId);
+        return generation is not null && generation.Value != _renderGeneration;
+    }
+
+    private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isDraft,
+        int? generation = null)
+    {
+        // Load into a local first: the loaded set is committed to the view (_loadedBoxes
+        // and BoundingBoxes) only after the generation re-check, so a superseded load
+        // leaves the newer page's boxes untouched.
+        IReadOnlyList<DocumentBox> loaded = await LoadBoxesAsync(revisionId);
+        if (IsStaleGeneration(generation))
+        {
+            return;
+        }
+
+        _loadedBoxes = loaded;
         int readingOrder = 0;
         foreach ((DocumentBox Box, int Depth) item in OrderedTree(_loadedBoxes))
         {
@@ -2503,9 +2579,24 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         RebuildTreeBoxes();
-        await UpdateOverlapWarningsAsync(revisionId);
-        await UpdateContinuationLinksAsync();
-        await LoadPreviewAsync(revisionId);
+        await UpdateOverlapWarningsAsync(revisionId, generation);
+        if (IsStaleGeneration(generation))
+        {
+            return;
+        }
+
+        await UpdateContinuationLinksAsync(generation);
+        if (IsStaleGeneration(generation))
+        {
+            return;
+        }
+
+        await LoadPreviewAsync(revisionId, generation);
+        if (IsStaleGeneration(generation))
+        {
+            return;
+        }
+
         if (!isDraft && !IsViewingHistoricalRevision)
         {
             // Translations are derived from the live (HEAD) tree only: an edit draft and a
@@ -2514,7 +2605,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    private async Task UpdateContinuationLinksAsync()
+    private async Task UpdateContinuationLinksAsync(int? generation = null)
     {
         ContinuationLinks.Clear();
         CrossPageContinuationMarkers.Clear();
@@ -2557,6 +2648,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 }
 
                 IReadOnlyList<DocumentBox> candidates = await LoadBoxesAsync(revision.Value.TreeRevisionId);
+                if (IsStaleGeneration(generation))
+                {
+                    return;
+                }
+
                 foreach (PdfBBoxViewModel box in unresolved.ToArray())
                 {
                     DocumentBox? head = candidates.FirstOrDefault(candidate =>
@@ -2617,7 +2713,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // the projection for the page it entered; immutable revisions are reused from cache, Box edits
     // invalidate only this page, and the projection never reads the source file or computes a full
     // hash. The in-memory box set is passed through as the provider so there is no second read.
-    private async Task UpdateOverlapWarningsAsync(DocumentTreeRevisionId revisionId)
+    private async Task UpdateOverlapWarningsAsync(DocumentTreeRevisionId revisionId,
+        int? generation = null)
     {
         OverlapMarkers.Clear();
         Dictionary<DocumentBoxId, PdfBBoxViewModel> byId = BoundingBoxes.ToDictionary(box => box.BoxId);
@@ -2635,6 +2732,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 pageId,
                 DocumentBoxOverlapDetector.PolicyBasis,
                 _ => Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes)));
+            if (IsStaleGeneration(generation))
+            {
+                return;
+            }
+
             if (overlaps.IsSuccess)
             {
                 foreach (DocumentBoxOverlap overlap in overlaps.Value)
@@ -2719,14 +2821,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
     }
 
-    private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
+    private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId, int? generation = null)
     {
         PreviewBlocks.Clear();
         ReadingScene = null;
         HostServices services = await _main.ServicesAsync();
         Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
             revisionId, false);
-        if (compiled.IsFailure)
+        if (compiled.IsFailure || IsStaleGeneration(generation))
         {
             return;
         }
@@ -3229,16 +3331,24 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     }
 
     private async Task LoadPageRevisionsAsync(HostServices services, DocumentInstanceId documentInstanceId,
-        PageId pageId)
+        PageId pageId, int? generation = null)
     {
-        PageRevisions.Clear();
         Result<IReadOnlyList<DocumentTreeRevision>> revisions =
             await services.DocumentTrees.ListRevisionsAsync(documentInstanceId, pageId);
-        if (revisions.IsFailure)
+        if (IsStaleGeneration(generation))
         {
+            // Superseded while listing: leave the newer page's revision rows untouched.
             return;
         }
 
+        if (revisions.IsFailure)
+        {
+            PageRevisions.Clear();
+            return;
+        }
+
+        // Build the rows locally and swap the collection in only after the generation
+        // re-check, so a superseded load never clears or replaces the newer page's rows.
         List<PageRevisionViewModel> rows = revisions.Value
             .Select(revision => new PageRevisionViewModel(revision, ViewPageRevisionAsync, RevertPageRevisionAsync))
             .ToList();
@@ -3253,6 +3363,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 row.RevertRowOffset = revertOffset;
             });
 
+        PageRevisions.Clear();
         foreach (PageRevisionViewModel row in rows)
         {
             PageRevisions.Add(row);
