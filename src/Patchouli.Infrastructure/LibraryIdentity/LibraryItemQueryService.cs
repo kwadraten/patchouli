@@ -119,7 +119,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         BibliographicItemSearch search,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0)
+        if (string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0 &&
+            !search.ExcludeGeneralItems)
         {
             return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
         }
@@ -268,6 +269,14 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         BibliographicItemSearch search)
     {
         (List<string> clauses, Dictionary<string, object?> parameters) = BuildFilterClauses(search.Filters, "F");
+        if (search.ExcludeGeneralItems)
+        {
+            // Pushed into the WHERE so the caller's limit counts post-filter
+            // rows: general items are not citable (the same rule export and
+            // pick validation enforce) and must not consume result slots.
+            clauses.Add("i.item_type <> 'general'");
+        }
+
         if (!string.IsNullOrWhiteSpace(search.Query))
         {
             // Free text covers title, citation key, creators, identifiers, the

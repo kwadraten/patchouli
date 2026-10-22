@@ -47,43 +47,29 @@ public sealed class CitationInteropService
     /// limit, deterministic order (the query service's created_at/item_id
     /// order), at most <see cref="CaywCompatibility.MaxSearchResults"/>
     /// results. An empty query returns the most recent items. Items of type
-    /// <c>general</c> are excluded: they are not citable and have no CSL
-    /// projection.
+    /// <c>general</c> are excluded in the query itself — they are not citable
+    /// and have no CSL projection — so the result cap counts returned
+    /// results, never pre-filter rows (plan §7 forbids fetching the cap and
+    /// filtering afterwards).
     /// </summary>
     public async Task<Result<IReadOnlyList<CitationItemProjection>>> SearchAsync(
         string? query, CancellationToken cancellationToken = default)
     {
-        Result<IReadOnlyList<LibraryItemRow>> rows;
-        if (string.IsNullOrWhiteSpace(query))
+        Result<IReadOnlyList<LibraryItemRow>> rows = await _query.SearchRowsAsync(
+            new BibliographicItemSearch(
+                string.IsNullOrWhiteSpace(query) ? null : query.Trim(),
+                [],
+                CaywCompatibility.MaxSearchResults,
+                true),
+            cancellationToken);
+        if (rows.IsFailure)
         {
-            Result<LibraryItemPage> page = await _query.ListRowsAsync(
-                CaywCompatibility.MaxSearchResults, null, null, cancellationToken);
-            if (page.IsFailure)
-            {
-                return Result<IReadOnlyList<CitationItemProjection>>.Failure(page.ErrorCode!, page.ErrorMessage!);
-            }
-
-            rows = Result<IReadOnlyList<LibraryItemRow>>.Success(page.Value.Rows);
-        }
-        else
-        {
-            rows = await _query.SearchRowsAsync(
-                new BibliographicItemSearch(query.Trim(), [], CaywCompatibility.MaxSearchResults),
-                cancellationToken);
-            if (rows.IsFailure)
-            {
-                return Result<IReadOnlyList<CitationItemProjection>>.Failure(rows.ErrorCode!, rows.ErrorMessage!);
-            }
+            return Result<IReadOnlyList<CitationItemProjection>>.Failure(rows.ErrorCode!, rows.ErrorMessage!);
         }
 
         List<CitationItemProjection> projections = new();
         foreach (LibraryItemRow row in rows.Value)
         {
-            if (string.Equals(row.ItemType, "general", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
             Result<CitationItemProjection> projection = await ProjectAsync(row.ItemId, cancellationToken);
             if (projection.IsFailure)
             {
