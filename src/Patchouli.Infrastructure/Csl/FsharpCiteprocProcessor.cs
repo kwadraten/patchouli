@@ -11,7 +11,14 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Infrastructure.Csl;
 
-internal sealed class FsharpCiteprocProcessor
+/// <summary>
+/// Managed Fsharp.Citeproc adapter. Not sealed: tests substitute a stub
+/// through <see cref="CslRenderer"/>'s internal constructor to exercise
+/// renderer-level output-validation paths the real engine cannot be made
+/// to produce on demand (for example a cluster whose text channel is
+/// empty while its HTML channel is not).
+/// </summary>
+internal class FsharpCiteprocProcessor
 {
     private const long MaxStyleCharacters = 4 * 1024 * 1024;
 
@@ -100,7 +107,7 @@ internal sealed class FsharpCiteprocProcessor
     /// citation. The language-localization pipeline (issue #9) is shared with
     /// the bibliography path and must not diverge.
     /// </summary>
-    public Result<FsharpCiteprocClusterResponse> RenderCluster(
+    public virtual Result<FsharpCiteprocClusterResponse> RenderCluster(
         FsharpCiteprocClusterRequest request,
         CancellationToken cancellationToken = default)
     {

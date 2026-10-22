@@ -185,8 +185,16 @@ public sealed class CslRenderer : ICslRenderer
             return Result<CslClusterRenderResult>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
         }
 
-        if (string.IsNullOrWhiteSpace(rendered.Value.CitationText) &&
-            string.IsNullOrWhiteSpace(rendered.Value.CitationHtml))
+        // Validate the channel the caller actually asked for, per channel:
+        // a text request must not succeed with an empty body just because
+        // the HTML form came back (that surfaced as a 200 with an empty
+        // body), and vice versa. This mirrors the bibliography path's
+        // empty-output failure, applied to the requested output only.
+        bool wantsHtml = string.Equals(request.OutputFormat, CslRenderFormats.Html,
+            StringComparison.Ordinal);
+        if (wantsHtml
+                ? string.IsNullOrWhiteSpace(rendered.Value.CitationHtml)
+                : string.IsNullOrWhiteSpace(rendered.Value.CitationText))
         {
             return Result<CslClusterRenderResult>.Failure("csl_render_failed",
                 "CSL renderer produced an empty citation.");

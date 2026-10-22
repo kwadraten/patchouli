@@ -4,6 +4,7 @@ using Patchouli.Core.CitationInterop;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Results;
 using Patchouli.Host.CitationInterop;
+using Patchouli.Infrastructure.Csl;
 
 namespace Patchouli.Tests.CitationInterop;
 
@@ -143,6 +144,44 @@ public sealed class CslClusterRenderTests
                     [new CslCitationItem(general.ItemId)], "probe", "en-US", CslRenderFormats.Text));
 
             rendered.IsFailure.Should().BeTrue();
+        }
+    }
+
+    /// <summary>A citeproc stub whose cluster comes back HTML-only: the
+    /// shape that used to slip through the renderer's both-empty check and
+    /// surface as a 200 with an empty text body.</summary>
+    private sealed class HtmlOnlyCiteprocProcessor : FsharpCiteprocProcessor
+    {
+        public override Result<FsharpCiteprocClusterResponse> RenderCluster(
+            FsharpCiteprocClusterRequest request, CancellationToken cancellationToken = default)
+        {
+            return Result<FsharpCiteprocClusterResponse>.Success(new FsharpCiteprocClusterResponse(
+                request.StyleId, request.Locale, "",
+                "<span class=\"citation\">(Austen 1813)</span>", [], []));
+        }
+    }
+
+    [Fact]
+    public async Task Cluster_render_validates_the_requested_channel_not_both()
+    {
+        (InteropTestContext context, ItemMetadata austen, _) = await SeedAsync();
+        await using (context)
+        {
+            CslRenderer renderer = new(context.Items, context.Store, new CslItemMapper(),
+                new HtmlOnlyCiteprocProcessor());
+
+            Result<CslClusterRenderResult> text = await renderer.RenderClusterAsync(
+                new CslClusterRenderRequest(
+                    [new CslCitationItem(austen.ItemId)], "probe", "en-US", CslRenderFormats.Text));
+            text.IsFailure.Should().BeTrue(
+                "the requested text channel is empty; HTML being present must not rescue it");
+            text.ErrorCode.Should().Be("csl_render_failed");
+
+            Result<CslClusterRenderResult> html = await renderer.RenderClusterAsync(
+                new CslClusterRenderRequest(
+                    [new CslCitationItem(austen.ItemId)], "probe", "en-US", CslRenderFormats.Html));
+            html.IsSuccess.Should().BeTrue(html.ErrorMessage);
+            html.Value.CitationHtml.Should().Contain("Austen");
         }
     }
 }
