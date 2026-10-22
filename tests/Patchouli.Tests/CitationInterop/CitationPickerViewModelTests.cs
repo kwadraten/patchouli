@@ -217,4 +217,30 @@ public sealed class CitationPickerViewModelTests
         vm.Results.Should().BeEmpty();
         vm.StatusText.Should().Contain("没有找到");
     }
+
+    [Fact]
+    public void Add_result_refuses_entries_past_the_pick_cap()
+    {
+        FakeQueryService query = new();
+        CitationPickerViewModel vm = CreateVm(query);
+
+        // Fill the pick to the service cap with directly built result rows
+        // (the add path under test does not involve search).
+        for (int i = 0; i < CitationInteropService.MaxPickEntries; i++)
+        {
+            vm.AddResultCommand.Execute(
+                new CitationPickerResultViewModel(Row($"Book {i}"), vm.AddResultCommand));
+        }
+
+        vm.Picked.Should().HaveCount(CitationInteropService.MaxPickEntries);
+
+        CitationPickerResultViewModel overflow =
+            new(Row("One Too Many"), vm.AddResultCommand);
+        vm.AddResultCommand.Execute(overflow);
+
+        vm.Picked.Should().HaveCount(CitationInteropService.MaxPickEntries,
+            "the add path must refuse past the cap instead of letting confirm fail the whole pick");
+        overflow.IsPicked.Should().BeFalse();
+        vm.StatusText.Should().Contain(CitationInteropService.MaxPickEntries.ToString());
+    }
 }

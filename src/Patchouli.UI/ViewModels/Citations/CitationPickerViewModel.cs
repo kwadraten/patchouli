@@ -323,6 +323,15 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
             return;
         }
 
+        if (Picked.Count >= CitationInteropService.MaxPickEntries)
+        {
+            // Refuse here, at the add path: picking past the service's pick
+            // cap would only surface as a whole-pick rejection at confirm
+            // time (ValidatePickAsync), after the user built the list.
+            StatusText = $"一次引用最多可选择 {CitationInteropService.MaxPickEntries} 条，请先移除部分条目。";
+            return;
+        }
+
         Picked.Add(new CitationPickerEntryViewModel(result.Row, RemoveEntryCommand, MoveUpCommand, MoveDownCommand));
         result.IsPicked = true;
         Raise(nameof(HasPicked));
