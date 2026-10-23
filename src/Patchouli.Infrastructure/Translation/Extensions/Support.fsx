@@ -72,19 +72,29 @@ module Support =
 
     let config (job: ITranslationJob) = job.Info.Config
 
-    let sourceLanguage (common: CommonSettings) (job: ITranslationJob) =
+    /// The job's canonical source tag. An auto or unspecified job value falls back to the
+    /// configured source language (itself canonicalized on entry), then to auto.
+    let sourceLanguageTag (common: CommonSettings) (job: ITranslationJob) =
         let language = job.Info.SourceLanguage
-        if String.IsNullOrWhiteSpace language || String.Equals(language, "auto", StringComparison.OrdinalIgnoreCase) then
-            let configured = common.SourceLanguage
-            if String.IsNullOrWhiteSpace configured then "auto" else configured
-        else language
+        if not language.IsUnspecified && not language.IsAuto then language
+        else
+            let configured = LanguageTag.Create(common.SourceLanguage)
+            if configured.IsUnspecified then LanguageTag.Auto else configured
+
+    let sourceLanguage (common: CommonSettings) (job: ITranslationJob) =
+        (sourceLanguageTag common job).Value
+
+    /// The job's canonical target tag. An unspecified job value falls back to the configured
+    /// target language; when neither names one, the tag stays unspecified.
+    let targetLanguageTag (common: CommonSettings) (job: ITranslationJob) =
+        let language = job.Info.TargetLanguage
+        if not language.IsUnspecified then language
+        else
+            let configured = LanguageTag.Create(common.TargetLanguage)
+            if configured.IsUnspecified then language else configured
 
     let targetLanguage (common: CommonSettings) (job: ITranslationJob) =
-        let language = job.Info.TargetLanguage
-        if String.IsNullOrWhiteSpace language then
-            let configured = common.TargetLanguage
-            if String.IsNullOrWhiteSpace configured then language else configured
-        else language
+        (targetLanguageTag common job).Value
 
     let filteredBoxes (common: CommonSettings) (boxes: ExtensionBox array) =
         let configured = common.BoxTypes

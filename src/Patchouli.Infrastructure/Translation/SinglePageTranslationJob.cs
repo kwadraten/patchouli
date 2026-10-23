@@ -53,11 +53,12 @@ public sealed class SinglePageTranslationJob : ITranslationJob
         _page = new TranslationPageInput(
             new ExtensionPageIdentity(documentId, pageId, revisionId, 1),
             Array.AsReadOnly<ExtensionBox>([new ExtensionBox(boxId, null, "text", null, text, "{}")]));
+        LanguageTag sourceTag = LanguageTag.Create(sourceLanguage);
         Info = new TranslationJobInfo(
             Guid.NewGuid().ToString("N"),
             documentId,
-            string.IsNullOrWhiteSpace(sourceLanguage) ? "auto" : sourceLanguage.Trim(),
-            targetLanguage,
+            sourceTag.IsUnspecified ? LanguageTag.Auto : sourceTag,
+            LanguageTag.Create(targetLanguage),
             options ?? new TranslationExtensionOptions(),
             config);
     }
