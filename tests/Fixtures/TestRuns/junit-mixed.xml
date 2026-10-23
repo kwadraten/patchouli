@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic fixture: JUnit-style XML covering the non-TRX parse path. -->
+<testsuites tests="3" failures="1" errors="0" skipped="1">
+  <testsuite name="Patchouli.Tests.SampleTests" tests="3" failures="1" skipped="1"
+             timestamp="2026-10-23T15:00:00+00:00" time="4.500">
+    <testcase classname="Patchouli.Tests.SampleTests" name="Adds_two_numbers" time="0.120" />
+    <testcase classname="Patchouli.Tests.SampleTests" name="Deletes_database" time="2.500">
+      <failure message="Expected file to be absent, but found sidecar WAL file.">   at SampleTests.cs:line 42</failure>
+    </testcase>
+    <testcase classname="Patchouli.Tests.SampleTests" name="Requires_native_helper" time="0">
+      <skipped message="native OCR helper not built" />
+    </testcase>
+  </testsuite>
+</testsuites>

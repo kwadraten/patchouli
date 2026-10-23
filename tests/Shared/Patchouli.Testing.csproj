@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);PATCHOULI_SHARED_TEST_SUPPORT</DefineConstants>
+  </PropertyGroup>
+</Project>

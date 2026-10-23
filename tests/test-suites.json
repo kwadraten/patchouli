@@ -1,0 +1,109 @@
+{
+  "schema": "patchouli/test-suites/v1",
+  "purpose": "Recorded suite buckets for scripts/run-tests.ps1, scoped to the explicitly selected project. Resource batches run sequentially. Counts are not hardcoded; provide ExpectedCasesFile to verify the complete expected case multiset. Run the separate F# test project explicitly as well.",
+  "trait": {
+    "name": "Category",
+    "applied_via": "[Trait(\"Category\", \"<value>\")] on a test method or class",
+    "values": {
+      "ui": "Needs the headless Avalonia session, Dispatcher/UI static state, or belongs to the Avalonia test collection.",
+      "fcs": "Exercises the production F# compiler/checking pipeline.",
+      "compiled-extension": "Exercises activation/execution of a compiled extension in the host process.",
+      "performance": "Explicit performance or high-count endurance workload; excluded from normal correctness suites."
+    },
+    "combination_rule": "A case may carry multiple values. Ownership priority is performance, then ui, then compiled-extension, then ordinary; filters exclude overlapping ownership categories."
+  },
+  "batches": [
+    {
+      "name": "ordinary",
+      "order": 1,
+      "filter": "Category!=ui&Category!=compiled-extension&Category!=fcs&Category!=performance",
+      "description": "Tests without dedicated UI, compiled-extension, FCS, or performance resources.",
+      "expected_overlap_with_other_batches": "empty"
+    },
+    {
+      "name": "ui",
+      "order": 2,
+      "filter": "Category=ui&Category!=performance",
+      "description": "Headless-session and Avalonia-collection cases.",
+      "expected_overlap_with_other_batches": "empty"
+    },
+    {
+      "name": "compiled-extension",
+      "order": 3,
+      "filter": "(Category=compiled-extension|Category=fcs)&Category!=ui&Category!=performance",
+      "description": "Compiled extension host integration and FCS/compiler checks; no legacy FSI or worker processes.",
+      "expected_overlap_with_other_batches": "empty"
+    },
+    {
+      "name": "performance",
+      "order": 1,
+      "filter": "Category=performance",
+      "description": "Explicit high-count endurance/performance workloads. Not included in Full correctness coverage.",
+      "expected_overlap_with_other_batches": "empty"
+    }
+  ],
+  "suites": {
+    "All": {
+      "mode": "single-invocation",
+      "filter": "",
+      "description": "One dotnet test invocation, no filter."
+    },
+    "Full": {
+      "mode": "batches",
+      "batches": ["ordinary", "ui", "compiled-extension"],
+      "description": "Normal correctness coverage for the selected project. Does not include high-count endurance/performance workloads. Use ExpectedCasesFile for complete case-multiset verification; also run the separate F# test project."
+    },
+    "Fast": {
+      "mode": "single-invocation",
+      "filter": "Category!=performance",
+      "description": "Explicit local feedback pass excluding only explicit performance workloads; not a replacement for Full."
+    },
+    "Performance": {
+      "mode": "single-invocation",
+      "filter": "Category=performance",
+      "description": "Explicit manual performance/endurance entry point, separate from correctness acceptance."
+    },
+    "Diagnostic": {
+      "mode": "batches",
+      "batches": ["ordinary", "ui", "compiled-extension"],
+      "blame_hang_timeout": "30m",
+      "description": "Same correctness coverage as Full, plus opt-in blame-hang mini dumps per batch."
+    }
+  },
+  "required_integration_cases": [
+    "Patchouli.Tests.ExtensionDomainRunTests.Compiled_ocr_run_keeps_its_kind_and_pinned_generation_after_activation_changes",
+    "Patchouli.Tests.ExtensionSdkExecutionTests.Nested_parallel_work_uses_the_standard_httpclient",
+    "Patchouli.Tests.BuiltInTranslationExtensionProtocolTests.Http_engine_retries_request_timeout_but_preserves_run_cancellation",
+    "Patchouli.Tests.TranslationRunStartupTests.Task_registration_returns_immediately_with_accepted_receipt_while_initialization_in_progress"
+  ],
+  "suite_required_cases": {
+    "All": "required_integration_cases",
+    "Full": "required_integration_cases",
+    "Diagnostic": "required_integration_cases"
+  },
+  "r14_collection_audit": {
+    "purpose": "Collection boundaries and runner parallelism audit. UI collections retain their established process-global serialization.",
+    "conclusion": "DisableParallelization remains on both UI collections; no concurrency or algorithm changes are implied by suite bucketing."
+  },
+  "preconditions": {
+    "all_suites": [
+      "The target project must be built (or -NoBuild with a verified existing binary) before any batch runs; every batch shares the same build output.",
+      "Test outputs (TRX, summaries, dumps) stay under the repository .tmp directory.",
+      "Batches for one suite run sequentially in the declared order; the script must not start two batches of the same suite concurrently on the same machine.",
+      "A batch whose filter matches zero discovered cases fails the run (missing TRX or empty results)."
+    ]
+  },
+  "skip_allowlist": {
+    "description": "Cases allowed to appear with outcome NotExecuted without failing the run's unexpected-skip check (matched by fully-qualified name). Conditional-skip cases not listed here make the run fail.",
+    "cases": [
+      "Patchouli.Tests.AgentWorkspaceTerminalTests.Presets_and_generic_document_references_paste_directly_without_submitting",
+      "Patchouli.Tests.AgentWorkspaceTerminalTests.Switching_and_closing_require_confirmation_and_never_retain_a_background_process",
+      "Patchouli.Tests.AgentWorkspaceTerminalTests.Declining_a_terminal_link_confirmation_writes_nothing_to_the_pty",
+      "Patchouli.Tests.AgentWorkspaceTerminalTests.Mcp_config_write_restarts_same_agent_only_after_successful_confirmation_and_write",
+      "Patchouli.Tests.EmbeddedTerminalHeadlessTests.The_default_shell_echoes_a_command_and_stop_terminates_its_process",
+      "Patchouli.Tests.EmbeddedTerminalHeadlessTests.Chinese_utf8_output_is_decoded_across_reads",
+      "Patchouli.Tests.EmbeddedTerminalHeadlessTests.The_configured_working_directory_is_the_shell_working_directory",
+      "Patchouli.Tests.EmbeddedTerminalHeadlessTests.Starting_a_second_process_while_one_is_running_is_rejected"
+    ]
+  }
+}

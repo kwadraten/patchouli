@@ -2,14 +2,27 @@ using System.Runtime.CompilerServices;
 
 namespace Patchouli.Testing;
 
+#if PATCHOULI_SHARED_TEST_SUPPORT
+public static class RepositoryTestEnvironment
+#else
 internal static class RepositoryTestEnvironment
+#endif
 {
     public static string RepositoryRoot { get; } = FindRepositoryRoot();
     public static string TemporaryRoot { get; } = Path.Combine(RepositoryRoot, ".tmp");
     public static string TestRoot { get; } = Path.Combine(TemporaryRoot, "tests");
 
     // Apply before any fixture or production code creates a temporary file, including child processes.
+#if PATCHOULI_SHARED_TEST_SUPPORT
+    // F# fixtures access TestRoot before running tests; the support library uses type
+    // initialization rather than an application-only module initializer.
+    static RepositoryTestEnvironment()
+    {
+        Initialize();
+    }
+#else
     [ModuleInitializer]
+#endif
     internal static void Initialize()
     {
         Directory.CreateDirectory(TestRoot);

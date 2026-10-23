@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic fixture: run completed normally with one failing case. The run
+     itself is complete (not incomplete) even though a case failed. -->
+<TestRun id="33333333-3333-3333-3333-333333333333" name="synthetic-failed" runUser="FIXTURE\agent"
+         xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-10-23T12:00:00.0000000+00:00" queuing="2026-10-23T12:00:01.0000000+00:00"
+         start="2026-10-23T12:00:02.0000000+00:00" finish="2026-10-23T12:00:09.0000000+00:00" />
+  <TestDefinitions>
+    <UnitTest name="Patchouli.Tests.SampleTests.Adds_two_numbers" storage="patchouli.tests.dll"
+              id="cccccccc-0000-0000-0000-000000000001">
+      <Execution id="dddddddd-0000-0000-0000-000000000001" />
+      <TestMethod codeBase="/x/bin/Patchouli.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2"
+                  className="Patchouli.Tests.SampleTests" name="Adds_two_numbers" />
+    </UnitTest>
+    <UnitTest name="Patchouli.Tests.SampleTests.Deletes_database" storage="patchouli.tests.dll"
+              id="cccccccc-0000-0000-0000-000000000002">
+      <Execution id="dddddddd-0000-0000-0000-000000000002" />
+      <TestMethod codeBase="/x/bin/Patchouli.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2"
+                  className="Patchouli.Tests.SampleTests" name="Deletes_database" />
+    </UnitTest>
+    <UnitTest name="Patchouli.Tests.SampleTests.Writes_manifest" storage="patchouli.tests.dll"
+              id="cccccccc-0000-0000-0000-000000000003">
+      <Execution id="dddddddd-0000-0000-0000-000000000003" />
+      <TestMethod codeBase="/x/bin/Patchouli.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2"
+                  className="Patchouli.Tests.SampleTests" name="Writes_manifest" />
+    </UnitTest>
+  </TestDefinitions>
+  <Results>
+    <UnitTestResult executionId="dddddddd-0000-0000-0000-000000000001"
+                    testId="cccccccc-0000-0000-0000-000000000001"
+                    testName="Patchouli.Tests.SampleTests.Adds_two_numbers" computerName="FIXTUREBOX"
+                    duration="00:00:00.1100000" startTime="2026-10-23T12:00:02.1000000+00:00"
+                    endTime="2026-10-23T12:00:02.2100000+00:00"
+                    testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed"
+                    testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <UnitTestResult executionId="dddddddd-0000-0000-0000-000000000002"
+                    testId="cccccccc-0000-0000-0000-000000000002"
+                    testName="Patchouli.Tests.SampleTests.Deletes_database" computerName="FIXTUREBOX"
+                    duration="00:00:02.5000000" startTime="2026-10-23T12:00:02.5000000+00:00"
+                    endTime="2026-10-23T12:00:05.0000000+00:00"
+                    testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed"
+                    testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d">
+      <Output>
+        <ErrorInfo>
+          <Message>Expected file to be absent, but found sidecar WAL file.</Message>
+          <StackTrace>   at Patchouli.Tests.SampleTests.Deletes_database() in SampleTests.cs:line 42</StackTrace>
+        </ErrorInfo>
+        <StdOut>synthetic stdout: opened 3 pooled connections</StdOut>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="dddddddd-0000-0000-0000-000000000003"
+                    testId="cccccccc-0000-0000-0000-000000000003"
+                    testName="Patchouli.Tests.SampleTests.Writes_manifest" computerName="FIXTUREBOX"
+                    duration="00:00:00.3000000" startTime="2026-10-23T12:00:05.5000000+00:00"
+                    endTime="2026-10-23T12:00:05.8000000+00:00"
+                    testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed"
+                    testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </Results>
+  <ResultSummary outcome="Failed">
+    <Counters total="3" executed="3" passed="2" failed="1" error="0" timeout="0"
+              aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0"
+              notExecuted="0" disconnected="0" warning="0" completed="3"
+              inProgress="0" pending="0" />
+  </ResultSummary>
+</TestRun>

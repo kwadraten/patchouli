@@ -1,30 +1,53 @@
 <Project>
   <!-- The command-line JetBrains host has no F# source model. In no-build analysis,
-       consume the normally built public metadata instead of empty source stubs. -->
-  <ItemGroup Condition="'$(PatchouliUseBuiltExtensionAssembly)' == 'true' and ('$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.Extensions.Worker' or '$(MSBuildProjectName)' == 'Patchouli.Tests')">
+       consume the normally built public metadata instead of empty source stubs.
+       F# source analysis is owned by the F# compiler (TreatWarningsAsErrors in each
+       .fsproj) and tests, so scripts/cleanup-code.ps1 and scripts/inspect-code.ps1
+       cover .cs/.axaml only. -->
+  <ItemGroup Condition="'$(PatchouliUseBuiltExtensionAssembly)' == 'true' and ('$(MSBuildProjectName)' == 'Patchouli.Infrastructure' or '$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.Tests' or '$(MSBuildProjectName)' == 'Patchouli.ExtensionSchemas')">
     <ProjectReference Remove="..\Patchouli.Extensions\Patchouli.Extensions.fsproj;..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
     <Reference Include="Patchouli.Extensions">
       <HintPath>$(MSBuildThisFileDirectory)src\Patchouli.Extensions\bin\$(Configuration)\net10.0\Patchouli.Extensions.dll</HintPath>
     </Reference>
   </ItemGroup>
-  <!-- Executable project references can be built with both RID and non-RID properties.
-       Publish the worker once as an independent bundle instead of merging those apphosts. -->
-  <Target Name="KeepExtensionWorkerEntrypointInBundle" BeforeTargets="_HandleFileConflictsForPublish"
-          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
+  <ItemGroup Condition="'$(PatchouliUseBuiltExtensionAssembly)' == 'true' and ('$(MSBuildProjectName)' == 'Patchouli.Tests' or '$(MSBuildProjectName)' == 'Patchouli.ExtensionSchemas')">
+    <ProjectReference Remove="..\..\sidecar\Patchouli.Extensions.Compiler\Patchouli.Extensions.Compiler.fsproj" />
+    <Reference Include="Patchouli.Extensions.Compiler">
+      <HintPath>$(MSBuildThisFileDirectory)sidecar\Patchouli.Extensions.Compiler\bin\$(Configuration)\net10.0\Patchouli.Extensions.Compiler.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <!-- Compilation is an application sidecar, never the extension execution boundary. -->
+  <Target Name="CopyExtensionCompilerForDevelopment" AfterTargets="Build"
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer' or '$(MSBuildProjectName)' == 'Patchouli.Tests'">
     <ItemGroup>
-      <!-- The host references Worker.dll as a library. Only its separately published bundle owns executable metadata. -->
-      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
-        Condition="'%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.runtimeconfig.json' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.deps.json' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker.exe' or '%(ResolvedFileToPublish.RelativePath)' == 'Patchouli.Extensions.Worker'" />
+      <_ExtensionCompilerBuildFiles Include="$(MSBuildThisFileDirectory)sidecar/Patchouli.Extensions.Compiler/bin/$(Configuration)/net10.0/**/*"
+                                    Exclude="$(MSBuildThisFileDirectory)sidecar/Patchouli.Extensions.Compiler/bin/$(Configuration)/net10.0/extension-compiler/**/*" />
     </ItemGroup>
+    <Copy SourceFiles="@(_ExtensionCompilerBuildFiles)"
+          DestinationFiles="@(_ExtensionCompilerBuildFiles->'$(TargetDir)extension-compiler/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
   </Target>
-  <Target Name="PublishExtensionWorkerBundle" AfterTargets="Publish"
+  <Target Name="CopyExtensionToolchainStampForDevelopment" AfterTargets="Build"
+          DependsOnTargets="CopyExtensionCompilerForDevelopment"
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer' or '$(MSBuildProjectName)' == 'Patchouli.Tests'">
+    <!-- Infrastructure exports this generated file as ordinary transitive build content. -->
+    <Copy SourceFiles="$(TargetDir)ExtensionToolchain.json"
+          DestinationFiles="$(TargetDir)extension-compiler/ExtensionToolchain.json" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="PublishExtensionCompilerBundle" AfterTargets="Publish"
           Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
     <PropertyGroup>
       <_ExtensionHostPublishDirectory>$([System.IO.Path]::GetFullPath('$(PublishDir)', '$(MSBuildProjectDirectory)'))</_ExtensionHostPublishDirectory>
-      <_ExtensionWorkerPublishDirectory>$([System.IO.Path]::Combine('$(_ExtensionHostPublishDirectory)', 'extension-worker'))/</_ExtensionWorkerPublishDirectory>
+      <_ExtensionCompilerPublishDirectory>$([System.IO.Path]::Combine('$(_ExtensionHostPublishDirectory)', 'extension-compiler'))/</_ExtensionCompilerPublishDirectory>
     </PropertyGroup>
-    <MSBuild Projects="$(MSBuildThisFileDirectory)src/Patchouli.Extensions.Worker/Patchouli.Extensions.Worker.csproj"
+    <MSBuild Projects="$(MSBuildThisFileDirectory)sidecar/Patchouli.Extensions.Compiler/Patchouli.Extensions.Compiler.fsproj"
              Targets="Publish" BuildInParallel="false"
-             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishWorkerBundle=true;PublishDir=$(_ExtensionWorkerPublishDirectory)" />
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishDir=$(_ExtensionCompilerPublishDirectory)" />
+  </Target>
+  <Target Name="PublishExtensionToolchainStamp" AfterTargets="Publish"
+          DependsOnTargets="PublishExtensionCompilerBundle"
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
+    <Copy SourceFiles="$(PublishDir)ExtensionToolchain.json"
+          DestinationFiles="$(PublishDir)extension-compiler/ExtensionToolchain.json" SkipUnchangedFiles="true" />
   </Target>
 </Project>
