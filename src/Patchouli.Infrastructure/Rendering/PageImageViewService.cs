@@ -4,6 +4,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.View;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Ocr;
 using SkiaSharp;
 
@@ -64,14 +65,22 @@ public sealed class PageImageViewService : IPageImageViewService
         }
 
         Page page = pageResult.Value;
-        Result<DocumentTreeRevisionId> revisionResult =
+        Result<DocumentTreeRevisionId?> revisionResult =
             await ResolveRevisionAsync(request, page, cancellationToken);
         if (revisionResult.IsFailure)
         {
             return Result<PageImageViewResult>.Failure(revisionResult.ErrorCode!, revisionResult.ErrorMessage!);
         }
 
-        DocumentTreeRevisionId usedRevision = revisionResult.Value;
+        DocumentTreeRevisionId? usedRevision = revisionResult.Value;
+        if (request.BoxId is not null && usedRevision is null)
+        {
+            // A box target is addressed inside the tree; without a committed revision
+            // there is no box to view (a whole-page target below does not need one).
+            return Result<PageImageViewResult>.Failure(PageImageViewErrorCodes.TargetNotFound,
+                "The requested box does not exist: the page has no committed revision.");
+        }
+
         Result<ViewRegion> regionResult = await ResolveRegionAsync(request, page, usedRevision, cancellationToken);
         if (regionResult.IsFailure)
         {
@@ -79,6 +88,19 @@ public sealed class PageImageViewService : IPageImageViewService
         }
 
         ViewRegion region = regionResult.Value;
+        IReadOnlyList<NumberedBox> numberedBoxes = [];
+        if (request.NumberedBoxes && usedRevision is not null)
+        {
+            Result<IReadOnlyList<DocumentBox>> boxes =
+                await _trees.ListBoxesAsync(usedRevision.Value, cancellationToken);
+            if (boxes.IsFailure)
+            {
+                return Result<PageImageViewResult>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
+            }
+
+            numberedBoxes = NumberBoxes(boxes.Value, page.PageId);
+        }
+
         int dpi = ChooseDpi(page, region.Crop, request.MaxEdge);
         Result<PdfPagePixelBufferLease> rendered = await _renders.RenderPreviewAsync(
             new PageRenderRequest(
@@ -97,7 +119,8 @@ public sealed class PageImageViewService : IPageImageViewService
         }
 
         using PdfPagePixelBufferLease lease = rendered.Value;
-        Result<PageImageViewResult> cropped = CropToViewResult(request, page, usedRevision, region, lease);
+        Result<PageImageViewResult> cropped =
+            CropToViewResult(request, page, usedRevision, region, lease, numberedBoxes);
         return cropped;
     }
 
@@ -121,7 +144,16 @@ public sealed class PageImageViewService : IPageImageViewService
             : Result<Page>.Success(page);
     }
 
-    private async Task<Result<DocumentTreeRevisionId>> ResolveRevisionAsync(
+    /// <summary>
+    /// Resolves the tree revision a view is pinned to. A null result is a legitimate
+    /// outcome, not a failure: the page exists physically but has no committed tree
+    /// revision yet (it was never OCR'd into a box tree). Issue #28: the PDF workbench
+    /// shows such a page's rendered image without any tree, so a whole-page view must
+    /// work tree-less as well (human/agent parity); only box targets and box numbering
+    /// need the revision. An explicitly requested revision is different: it must exist,
+    /// and a missing one stays a stale-revision failure — never a silent substitution.
+    /// </summary>
+    private async Task<Result<DocumentTreeRevisionId?>> ResolveRevisionAsync(
         PageImageViewRequest request,
         Page page,
         CancellationToken cancellationToken)
@@ -131,11 +163,14 @@ public sealed class PageImageViewService : IPageImageViewService
             // An unspecified revision pins to the actually-used revision of this call.
             Result<DocumentTreeRevision> current =
                 await _trees.GetCurrentRevisionAsync(request.DocumentInstanceId, page.PageId, cancellationToken);
-            return current.IsFailure
-                ? Result<DocumentTreeRevisionId>.Failure(
-                    PageImageViewErrorCodes.TargetNotFound,
-                    current.ErrorMessage ?? "The page has no committed revision.")
-                : Result<DocumentTreeRevisionId>.Success(current.Value.TreeRevisionId);
+            if (current.IsSuccess)
+            {
+                return Result<DocumentTreeRevisionId?>.Success(current.Value.TreeRevisionId);
+            }
+
+            return string.Equals(current.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
+                ? Result<DocumentTreeRevisionId?>.Success(null)
+                : Result<DocumentTreeRevisionId?>.Failure(current.ErrorCode!, current.ErrorMessage!);
         }
 
         // A historical revision must exist; never substitute the latest revision.
@@ -143,24 +178,57 @@ public sealed class PageImageViewService : IPageImageViewService
             await _trees.ListRevisionsAsync(request.DocumentInstanceId, page.PageId, cancellationToken);
         if (revisions.IsFailure)
         {
-            return Result<DocumentTreeRevisionId>.Failure(revisions.ErrorCode!, revisions.ErrorMessage!);
+            return Result<DocumentTreeRevisionId?>.Failure(revisions.ErrorCode!, revisions.ErrorMessage!);
         }
 
         DocumentTreeRevisionId? requested = request.RevisionId;
         bool exists = requested is not null && revisions.Value.Any(revision =>
             revision.TreeRevisionId == requested);
         return exists
-            ? Result<DocumentTreeRevisionId>.Success(requested!.Value)
-            : Result<DocumentTreeRevisionId>.Failure(PageImageViewErrorCodes.StaleRevision,
+            ? Result<DocumentTreeRevisionId?>.Success(requested!.Value)
+            : Result<DocumentTreeRevisionId?>.Failure(PageImageViewErrorCodes.StaleRevision,
                 "The requested revision does not exist for this page.");
     }
 
     private sealed record ViewRegion(NormalizedBBox Crop, string ViewType);
 
+    /// <summary>One box of the viewed page with its drawn sequence number and geometry.</summary>
+    private sealed record NumberedBox(int Index, DocumentBoxId BoxId, NormalizedBBox BBox);
+
+    /// <summary>
+    /// Issue #28: assigns sequence numbers in page XML document order — the depth-first
+    /// pre-order traversal <c>PageXmlCodec.EncodeBox</c> emits (a box, then its children),
+    /// with siblings chained by <c>NextSiblingBoxId</c> via
+    /// <see cref="DocumentBoxProjection.Siblings"/>. An agent can therefore map a number
+    /// drawn on the image to the n-th <c>&lt;box&gt;</c> element of the fetched page XML,
+    /// and the result's mapping resolves that number to the stable box id.
+    /// </summary>
+    private static IReadOnlyList<NumberedBox> NumberBoxes(IReadOnlyList<DocumentBox> boxes, PageId pageId)
+    {
+        DocumentBox[] pageBoxes = boxes.Where(box => box.PageId == pageId).ToArray();
+        List<NumberedBox> numbered = [];
+
+        void Visit(DocumentBox box)
+        {
+            numbered.Add(new NumberedBox(numbered.Count + 1, box.BoxId, box.BBox));
+            foreach (DocumentBox child in DocumentBoxProjection.Siblings(pageBoxes, box.BoxId))
+            {
+                Visit(child);
+            }
+        }
+
+        foreach (DocumentBox root in DocumentBoxProjection.Siblings(pageBoxes, null))
+        {
+            Visit(root);
+        }
+
+        return numbered;
+    }
+
     private async Task<Result<ViewRegion>> ResolveRegionAsync(
         PageImageViewRequest request,
         Page page,
-        DocumentTreeRevisionId usedRevision,
+        DocumentTreeRevisionId? usedRevision,
         CancellationToken cancellationToken)
     {
         NormalizedBBox fullPage = new(0, 0, 1, 1);
@@ -170,8 +238,16 @@ public sealed class PageImageViewService : IPageImageViewService
             return Result<ViewRegion>.Success(new ViewRegion(fullPage, viewType));
         }
 
+        if (usedRevision is null)
+        {
+            // Guarded by ViewAsync as well; a box target can never resolve tree-less.
+            return Result<ViewRegion>.Failure(PageImageViewErrorCodes.TargetNotFound,
+                "The requested box does not exist: the page has no committed revision.");
+        }
+
         // Historical boxes use their own revision's bbox.
-        Result<IReadOnlyList<DocumentBox>> boxes = await _trees.ListBoxesAsync(usedRevision, cancellationToken);
+        Result<IReadOnlyList<DocumentBox>> boxes =
+            await _trees.ListBoxesAsync(usedRevision.Value, cancellationToken);
         if (boxes.IsFailure)
         {
             return Result<ViewRegion>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
@@ -236,9 +312,10 @@ public sealed class PageImageViewService : IPageImageViewService
     private static Result<PageImageViewResult> CropToViewResult(
         PageImageViewRequest request,
         Page page,
-        DocumentTreeRevisionId usedRevision,
+        DocumentTreeRevisionId? usedRevision,
         ViewRegion region,
-        PdfPagePixelBufferLease lease)
+        PdfPagePixelBufferLease lease,
+        IReadOnlyList<NumberedBox> numberedBoxes)
     {
         RegionPixelRect rect = RegionImageCrop.ComputePixelRect(region.Crop, lease.WidthPixels, lease.HeightPixels);
         long pixels = (long)rect.Width * rect.Height;
@@ -248,12 +325,18 @@ public sealed class PageImageViewService : IPageImageViewService
                 $"The requested image would be {rect.Width}x{rect.Height} pixels, above the v1 limit.");
         }
 
+        // The crop range is reported in page-normalized coordinates so the geometry is
+        // reproducible regardless of the render DPI; the annotation mapping uses the
+        // same range to place box outlines onto the output pixels.
+        NormalizedBBox cropRange = PixelRectToNormalized(rect, lease.WidthPixels, lease.HeightPixels);
         byte[] png;
         int outWidth;
         int outHeight;
+        IReadOnlyList<NumberedBox> drawnBoxes;
         try
         {
-            (png, outWidth, outHeight) = CropLeaseToPng(lease, rect, request.MaxEdge);
+            (png, outWidth, outHeight, drawnBoxes) =
+                CropLeaseToPng(lease, rect, request.MaxEdge, numberedBoxes, cropRange);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.page-image-view", "crop"))
@@ -269,9 +352,10 @@ public sealed class PageImageViewService : IPageImageViewService
         }
 
         string canonicalUri = BuildCanonicalUri(request, usedRevision);
-        // The crop range is reported in page-normalized coordinates so the geometry is
-        // reproducible regardless of the render DPI.
-        NormalizedBBox cropRange = PixelRectToNormalized(rect, lease.WidthPixels, lease.HeightPixels);
+        // The number mapping is built from exactly the boxes the drawing pass put
+        // onto the image (returned by CropLeaseToPng), never re-filtered here: only
+        // the drawing pass sees the pixel-quantized crop range and the final bitmap
+        // size, so a second filtering at this layer would drift at the crop boundary.
         return Result<PageImageViewResult>.Success(new PageImageViewResult(
             canonicalUri,
             region.ViewType,
@@ -280,8 +364,11 @@ public sealed class PageImageViewService : IPageImageViewService
             outHeight,
             cropRange,
             0,
-            usedRevision.ToString(),
-            png));
+            usedRevision?.ToString() ?? string.Empty,
+            png,
+            request.NumberedBoxes
+                ? drawnBoxes.Select(box => new PageImageBoxNumber(box.Index, box.BoxId)).ToArray()
+                : null));
     }
 
     /// <summary>
@@ -299,10 +386,12 @@ public sealed class PageImageViewService : IPageImageViewService
         return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
     }
 
-    private static (byte[] Png, int Width, int Height) CropLeaseToPng(
+    private static (byte[] Png, int Width, int Height, IReadOnlyList<NumberedBox> DrawnBoxes) CropLeaseToPng(
         PdfPagePixelBufferLease lease,
         RegionPixelRect rect,
-        int maxEdge)
+        int maxEdge,
+        IReadOnlyList<NumberedBox> numberedBoxes,
+        NormalizedBBox cropRange)
     {
         using SKBitmap source = new(lease.WidthPixels, lease.HeightPixels, SKColorType.Bgra8888, SKAlphaType.Premul);
         source.SetPixels(lease.PixelAddress);
@@ -335,11 +424,17 @@ public sealed class PageImageViewService : IPageImageViewService
             final = scaled;
         }
 
+        IReadOnlyList<NumberedBox> drawnBoxes = [];
+        if (numberedBoxes.Count > 0)
+        {
+            drawnBoxes = DrawNumberedBoxes(final, cropRange, numberedBoxes);
+        }
+
         try
         {
             using SKImage image = SKImage.FromBitmap(final);
             using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
-            return (data.ToArray(), final.Width, final.Height);
+            return (data.ToArray(), final.Width, final.Height, drawnBoxes);
         }
         finally
         {
@@ -348,6 +443,67 @@ public sealed class PageImageViewService : IPageImageViewService
                 final.Dispose();
             }
         }
+    }
+
+    /// <summary>
+    /// Issue #28: draws each numbered box's outline and sequence number onto the final
+    /// output bitmap. Box geometry is page-normalized; <paramref name="cropRange"/> is
+    /// the page-normalized range the bitmap covers, so a box maps linearly onto output
+    /// pixels and boxes outside the crop are skipped (their numbers stay stable: they
+    /// are page-global, assigned in page XML document order). Returns the boxes that
+    /// were actually drawn, in drawing order: this pass is the single source of truth
+    /// for the result's number mapping.
+    /// </summary>
+    private static IReadOnlyList<NumberedBox> DrawNumberedBoxes(SKBitmap bitmap, NormalizedBBox cropRange,
+        IReadOnlyList<NumberedBox> numberedBoxes)
+    {
+        SKColor accent = new(227, 49, 37);
+        float fontSize = Math.Clamp(bitmap.Width / 72f, 12f, 30f);
+        float strokeWidth = Math.Clamp(bitmap.Width / 600f, 1.5f, 4f);
+        using SKFont font = new(SKTypeface.Default, fontSize) { Embolden = true };
+        using SKPaint outline = new()
+        {
+            Color = accent, Style = SKPaintStyle.Stroke, StrokeWidth = strokeWidth,
+            IsAntialias = true
+        };
+        using SKPaint labelFill = new() { Color = accent, Style = SKPaintStyle.Fill };
+        using SKPaint labelText = new() { Color = SKColors.White, IsAntialias = true };
+        using SKCanvas canvas = new(bitmap);
+        List<NumberedBox> drawn = [];
+        foreach (NumberedBox box in numberedBoxes)
+        {
+            double left = (box.BBox.X - cropRange.X) / cropRange.Width * bitmap.Width;
+            double top = (box.BBox.Y - cropRange.Y) / cropRange.Height * bitmap.Height;
+            double right = (box.BBox.X + box.BBox.Width - cropRange.X) / cropRange.Width * bitmap.Width;
+            double bottom = (box.BBox.Y + box.BBox.Height - cropRange.Y) / cropRange.Height * bitmap.Height;
+            if (right <= 0 || bottom <= 0 || left >= bitmap.Width || top >= bitmap.Height)
+            {
+                continue;
+            }
+
+            drawn.Add(box);
+            SKRect rect = SKRect.Create(
+                (float)Math.Max(0, left), (float)Math.Max(0, top),
+                (float)(Math.Min(bitmap.Width, right) - Math.Max(0, left)),
+                (float)(Math.Min(bitmap.Height, bottom) - Math.Max(0, top)));
+            canvas.DrawRect(rect, outline);
+
+            string label = box.Index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            font.MeasureText(label, out SKRect textBounds);
+            float padding = fontSize * 0.3f;
+            float labelWidth = textBounds.Width + padding * 2;
+            float labelHeight = fontSize + padding * 1.6f;
+            float labelX = Math.Clamp(rect.Left, 0, Math.Max(0, bitmap.Width - labelWidth));
+            float labelY = Math.Clamp(rect.Top, 0, Math.Max(0, bitmap.Height - labelHeight));
+            canvas.DrawRect(SKRect.Create(labelX, labelY, labelWidth, labelHeight), labelFill);
+            canvas.DrawText(label,
+                labelX + padding - textBounds.Left,
+                labelY + (labelHeight - textBounds.Height) / 2f - textBounds.Top,
+                font, labelText);
+        }
+
+        canvas.Flush();
+        return drawn;
     }
 
     private static NormalizedBBox PixelRectToNormalized(RegionPixelRect rect, int imageWidth, int imageHeight)
@@ -359,11 +515,18 @@ public sealed class PageImageViewService : IPageImageViewService
             (double)rect.Height / imageHeight);
     }
 
-    private static string BuildCanonicalUri(PageImageViewRequest request, DocumentTreeRevisionId usedRevision)
+    private static string BuildCanonicalUri(PageImageViewRequest request, DocumentTreeRevisionId? usedRevision)
     {
         string root = request.IsTranslation ? "translations" : "texts";
-        string uri =
-            $"patchouli://{root}/{request.DocumentInstanceId}/page-{request.PageIndex1Based}.xml?rev={usedRevision}";
+        string uri = $"patchouli://{root}/{request.DocumentInstanceId}/page-{request.PageIndex1Based}.xml";
+        if (usedRevision is null)
+        {
+            // Tree-less page view: there is no revision to pin, so the canonical URI is
+            // the plain page URI (a box suffix cannot occur — boxes require a revision).
+            return uri;
+        }
+
+        uri = $"{uri}?rev={usedRevision.Value}";
         return request.BoxId is null ? uri : $"{uri}&box={request.BoxId}";
     }
 
