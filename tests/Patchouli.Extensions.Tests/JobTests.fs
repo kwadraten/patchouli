@@ -82,7 +82,7 @@ type JobTests() =
 
     let makeInfo (options: TranslationExtensionOptions) =
         TranslationJobInfo(
-            "job-" + Guid.NewGuid().ToString("N"), DocumentInstanceId.New(), "auto", "en", options,
+            "job-" + Guid.NewGuid().ToString("N"), DocumentInstanceId.New(), LanguageTag.Create("auto"), LanguageTag.Create("en"), options,
             ExtensionConfigSnapshot(Dictionary<string, string>(), 0L))
 
     let makeBox (text: string) =

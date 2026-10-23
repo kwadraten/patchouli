@@ -139,8 +139,8 @@ internal sealed class TestTranslationJob : ITranslationJob
         return new TranslationJobInfo(
             Guid.NewGuid().ToString("N"),
             DocumentInstanceId.New(),
-            sourceLanguage,
-            targetLanguage,
+            LanguageTag.Create(sourceLanguage),
+            LanguageTag.Create(targetLanguage),
             options ?? new TranslationExtensionOptions(),
             config ?? new ExtensionConfigSnapshot(new Dictionary<string, string>(), 0));
     }

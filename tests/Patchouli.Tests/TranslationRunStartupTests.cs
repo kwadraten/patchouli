@@ -34,7 +34,7 @@ public sealed class TranslationRunStartupTests
         TranslationExtensionRunner runner = TranslationTestExtensionHarness.CreateRunner(
             async (ITranslationJob job, IExtensionResources _, CancellationToken cancellationToken) =>
             {
-                actualLanguage = job.Info.TargetLanguage;
+                actualLanguage = job.Info.TargetLanguage.Value;
                 TranslationPageInput? page = await job.NextPageAsync(cancellationToken);
                 if (page is not null)
                 {
@@ -67,7 +67,7 @@ public sealed class TranslationRunStartupTests
         TranslationExtensionRunner runner = TranslationTestExtensionHarness.CreateRunner(
             async (ITranslationJob job, IExtensionResources _, CancellationToken cancellationToken) =>
             {
-                observedLanguages.Add(job.Info.TargetLanguage);
+                observedLanguages.Add(job.Info.TargetLanguage.Value);
                 TranslationPageInput? page = await job.NextPageAsync(cancellationToken);
                 if (page is null)
                 {

@@ -360,21 +360,6 @@ public sealed class FreeTranslationProviderProtocolTests
     }
 
     [Fact]
-    public async Task Tencent_does_not_claim_untested_traditional_chinese_output()
-    {
-        FakeCapabilities capabilities = new(_ => Response(200, new Dictionary<string, string>(), "{}"));
-        await using ActivatedProvider provider = await Activate(ProviderIds[1], capabilities);
-        ExtensionConfigSnapshot config = Config(ProviderIds[1]);
-        TestTranslationJob job = new(TestTranslationJob.CreateInfo(Options(), config, "en", "zh-TW"),
-            [TestTranslationJob.CreatePage(1, Box("hello"))]);
-
-        await provider.Run(job, config, CancellationToken.None);
-
-        capabilities.Requests.Should().BeEmpty();
-        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Failed);
-    }
-
-    [Fact]
     public async Task Cancellation_reaches_in_flight_provider_request()
     {
         using CancellationTokenSource cancellation = new();
@@ -418,6 +403,73 @@ public sealed class FreeTranslationProviderProtocolTests
         capabilities.Requests.Single().Uri.Query.Should().Contain("from=").And.Contain("to=zh-Hans");
         sent.Should().NotContain("$x^2$");
         job.Committed.Single().Outcomes.Single().TranslatedText.Should().Be("formula = $x^2$");
+    }
+
+    [Theory]
+    // Regression for the original outage: a stored target of "zh-Hans" used to fail every batch
+    // because the engine only accepted the raw text "zh-CN". Both spellings (and both traditional
+    // spellings) now canonicalize at the boundary and the engine maps the canonical tag to "zh".
+    [InlineData("zh-Hans")]
+    [InlineData("zh-CN")]
+    [InlineData("zh-Hant")]
+    [InlineData("zh-TW")]
+    public async Task Tencent_serves_every_chinese_target_spelling_as_zh(string targetLanguage)
+    {
+        FakeCapabilities capabilities = new(_ => SuccessResponse(ProviderIds[1]));
+        await using ActivatedProvider provider = await Activate(ProviderIds[1], capabilities);
+        ExtensionConfigSnapshot config = Config(ProviderIds[1]);
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(Options(), config, "en", targetLanguage),
+            [TestTranslationJob.CreatePage(1, Box("hello"))]);
+
+        await provider.Run(job, config, CancellationToken.None);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.Requests.Should().ContainSingle().Subject.Body!);
+        body.RootElement.GetProperty("target").GetProperty("lang").GetString().Should().Be("zh",
+            "Transmart has a single Chinese code regardless of script");
+    }
+
+    [Theory]
+    [InlineData("zh-Hans")]
+    [InlineData("zh-CN")]
+    [InlineData("zh")]
+    public async Task Tencent_maps_chinese_source_spellings_to_zh(string sourceLanguage)
+    {
+        FakeCapabilities capabilities = new(_ => SuccessResponse(ProviderIds[1]));
+        await using ActivatedProvider provider = await Activate(ProviderIds[1], capabilities);
+        ExtensionConfigSnapshot config = Config(ProviderIds[1]);
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(Options(), config, sourceLanguage, "en"),
+            [TestTranslationJob.CreatePage(1, Box("hello"))]);
+
+        await provider.Run(job, config, CancellationToken.None);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.Requests.Should().ContainSingle().Subject.Body!);
+        body.RootElement.GetProperty("source").GetProperty("lang").GetString().Should().Be("zh");
+    }
+
+    [Theory]
+    [InlineData("zh-Hans", "to=zh-Hans")]
+    [InlineData("zh-Hant", "to=zh-Hant")]
+    public async Task Microsoft_passes_canonical_script_tags_straight_through(string targetLanguage,
+        string expectedQuery)
+    {
+        FakeCapabilities capabilities = new(request =>
+        {
+            using JsonDocument input = JsonDocument.Parse(request.Body!);
+            string text = input.RootElement[0].GetString()!;
+            return Response(200, new Dictionary<string, string>(),
+                JsonSerializer.Serialize(new[] { new { translations = new[] { new { text } } } }));
+        });
+        await using ActivatedProvider provider = await Activate(ProviderIds[0], capabilities);
+        ExtensionConfigSnapshot config = Config(ProviderIds[0]);
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(Options(), config, "auto", targetLanguage),
+            [TestTranslationJob.CreatePage(1, Box("hello"))]);
+
+        await provider.Run(job, config, CancellationToken.None);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        capabilities.Requests.Single().Uri.Query.Should().Contain(expectedQuery);
     }
 
     private static async Task<ActivatedProvider> Activate(string id, FakeCapabilities capabilities)
