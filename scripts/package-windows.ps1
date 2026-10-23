@@ -46,10 +46,10 @@ dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
-foreach ($workerFile in @('Patchouli.Extensions.Worker.exe', 'Patchouli.Extensions.Worker.dll',
-        'Patchouli.Extensions.Worker.runtimeconfig.json', 'Patchouli.Extensions.Worker.deps.json')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $publishDir "extension-worker/$workerFile"))) {
-        throw "Published extension worker component was not found: $workerFile"
+foreach ($compilerFile in @('Patchouli.Extensions.Compiler.exe', 'Patchouli.Extensions.Compiler.dll',
+        'Patchouli.Extensions.Compiler.runtimeconfig.json', 'Patchouli.Extensions.Compiler.deps.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $publishDir "extension-compiler/$compilerFile"))) {
+        throw "Published extension compiler component was not found: $compilerFile"
     }
 }
 

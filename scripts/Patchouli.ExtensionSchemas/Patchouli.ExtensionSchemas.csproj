@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiled repository automation lives alongside scripts, not in a separate tools root. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <SchemaGeneratorRemoveProperties>RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun</SchemaGeneratorRemoveProperties>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Patchouli.Core\Patchouli.Core.csproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
+    <ProjectReference Include="..\..\sidecar\Patchouli.Extensions.Compiler\Patchouli.Extensions.Compiler.fsproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
+    <Compile Include="..\..\src\Patchouli.Infrastructure\Translation\BuiltInTranslationExtensions.cs" Link="BuiltInTranslationExtensions.cs" />
+    <Compile Include="..\..\src\Patchouli.Infrastructure\Bibliography\MetadataLookup\BuiltInMetadataExtensions.cs" Link="BuiltInMetadataExtensions.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\src\Patchouli.Infrastructure\Translation\Extensions\**\*.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\src\Patchouli.Infrastructure\Bibliography\MetadataLookup\Extensions\**\*.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
