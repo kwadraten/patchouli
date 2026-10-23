@@ -505,9 +505,10 @@ internal static class CliArguments
 
     /// <summary>
     /// Issue #11: <c>view &lt;URI&gt; --output image.png [--overwrite] [--context page|region]
-    /// [--max-edge N]</c>. The CLI calls the same MCP tool, decodes the image content
-    /// block and saves the PNG; <c>--output</c> is required so no temp images with
-    /// unclear lifecycle are produced.
+    /// [--max-edge N] [--boxes]</c>. The CLI calls the same MCP tool, decodes the image
+    /// content block and saves the PNG; <c>--output</c> is required so no temp images
+    /// with unclear lifecycle are produced. Issue #28: <c>--boxes</c> overlays numbered
+    /// box outlines matching the page XML order.
     /// </summary>
     private static CliToolCall BuildView(IReadOnlyList<string> args, bool json)
     {
@@ -537,6 +538,9 @@ internal static class CliArguments
                     break;
                 case "--max-edge":
                     arguments["max_edge"] = ParseInt(TakeValue(args, ref index, "--max-edge"), "--max-edge");
+                    break;
+                case "--boxes":
+                    arguments["boxes"] = true;
                     break;
                 case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
                     throw new CliUsageException($"unknown option '{args[index]}' for view.");
