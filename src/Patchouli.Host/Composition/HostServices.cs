@@ -317,6 +317,14 @@ public sealed class HostServices
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
             DocumentPageMaps);
         CliPath = new CliPathService();
+        // Issue #28: endpoint descriptions enumerate each runs domain's implementations
+        // from the live registries (OCR adapters, extension catalog, metadata sources).
+        McpImplementationCatalog = new McpHostImplementationCatalogApi(
+            OcrAdapters,
+            () => StartupSettings.OcrEngines.DocumentOcrEngine,
+            TranslationExtensions,
+            MetadataSources,
+            () => LlmSettings.Translation.EngineId);
         // Every MCP client acts through the same MCP command surface: identical validation,
         // permissions, atomic write set and error vocabulary.
         McpCommands = new McpCommandService(Mcp, McpWrites, BiblatexImport, Items, VersionedEvidenceReader,
@@ -330,7 +338,8 @@ public sealed class HostServices
             },
             ocrCommands: OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(TranslationRuns),
-            metadataRuns: new McpHostMetadataRunsApi(MetadataRuns));
+            metadataRuns: new McpHostMetadataRunsApi(MetadataRuns),
+            implementationCatalog: McpImplementationCatalog);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -488,6 +497,7 @@ public sealed class HostServices
     public IMcpOcrCommandApi OcrCommands { get; }
     public ITranslationRunService TranslationRuns { get; }
     public IMetadataRunService MetadataRuns { get; }
+    public IMcpImplementationCatalogApi McpImplementationCatalog { get; }
     public TranslationExtensionCatalog TranslationExtensions { get; }
     public ExtensionDomainService ExtensionDomains { get; }
     public HostExtensionResources ExtensionResources { get; }

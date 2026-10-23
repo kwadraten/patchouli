@@ -38,6 +38,7 @@ public sealed partial class McpCommandService
     private readonly IMcpOcrCommandApi? _ocrCommands;
     private readonly IMcpTranslationRunsApi? _translationRuns;
     private readonly IMcpMetadataRunsApi? _metadataRuns;
+    private readonly IMcpImplementationCatalogApi? _implementationCatalog;
     private readonly Func<CancellationToken, Task<McpServerSettings>>? _permissionSettings;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
@@ -48,7 +49,8 @@ public sealed partial class McpCommandService
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
         bool addEnabled = true, bool viewEnabled = true,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
-        IMcpMetadataRunsApi? metadataRuns = null)
+        IMcpMetadataRunsApi? metadataRuns = null,
+        IMcpImplementationCatalogApi? implementationCatalog = null)
     {
         _read = read;
         _write = write;
@@ -67,6 +69,7 @@ public sealed partial class McpCommandService
         _ocrCommands = ocrCommands;
         _translationRuns = translationRuns;
         _metadataRuns = metadataRuns;
+        _implementationCatalog = implementationCatalog;
         _permissionSettings = permissionSettings;
         _actions = CreateActionRegistry();
     }
@@ -327,7 +330,8 @@ public sealed partial class McpCommandService
                 target.BoxId,
                 isTranslation,
                 context,
-                request.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge),
+                request.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge,
+                request.Boxes),
             cancellationToken);
         if (viewed.IsFailure)
         {
@@ -345,7 +349,9 @@ public sealed partial class McpCommandService
             image.Width,
             image.Height,
             [image.CropRange.X, image.CropRange.Y, image.CropRange.Width, image.CropRange.Height],
-            image.ImageIndex);
+            image.ImageIndex,
+            image.BoxNumbers?.Select(box => new McpViewBoxNumber(box.Index, box.BoxId.ToString()))
+                .ToArray());
         McpEnvelope<McpViewMeta, McpViewImageMetadata> envelope =
             McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
         return new McpViewCommandResult(

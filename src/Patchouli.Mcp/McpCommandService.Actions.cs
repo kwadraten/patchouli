@@ -147,18 +147,46 @@ public sealed partial class McpCommandService
                 McpToolError.From(McpErrorCode.Unavailable, "Endpoint is unavailable on this host."), limitBytes);
         }
 
-        string content = JsonSerializer.Serialize(new
+        var messages = _actions.Describe().Where(value => value.Endpoint == target.CanonicalUri)
+            .OrderBy(value => value.Id)
+            .Select(value => new
+            {
+                action = value.Id, target_types = value.TargetTypes, input_schema = value.InputSchema,
+                result_schema = value.ResultSchema, execution_mode = value.Mode, side_effects = value.SideEffects,
+                required_capabilities = value.RequiredCapabilities
+            })
+            .ToArray();
+        string content;
+        if (_implementationCatalog is not null && target.EndpointDomain is not null)
         {
-            endpoint = target.CanonicalUri, domain = target.EndpointDomain,
-            messages = _actions.Describe().Where(value => value.Endpoint == target.CanonicalUri)
-                .OrderBy(value => value.Id)
-                .Select(value => new
-                {
-                    action = value.Id, target_types = value.TargetTypes, input_schema = value.InputSchema,
-                    result_schema = value.ResultSchema, execution_mode = value.Mode, side_effects = value.SideEffects,
-                    required_capabilities = value.RequiredCapabilities
-                })
-        });
+            // Issue #28: the description also enumerates the domain's internal
+            // implementations (OCR engines, translation extensions, metadata sources)
+            // from the host's live registries, so an agent learns which ids it may
+            // pass to this endpoint instead of guessing. A catalog failure fails the
+            // fetch honestly instead of silently recreating the missing-list problem.
+            Result<IReadOnlyList<McpImplementationEntry>> implementations =
+                await _implementationCatalog.ListAsync(target.EndpointDomain, ct);
+            if (implementations.IsFailure)
+            {
+                return FailedFetch(target.CanonicalUri,
+                    McpToolError.From(McpErrorCode.Unavailable,
+                        implementations.ErrorMessage ?? "The implementation catalog is unavailable."), limitBytes);
+            }
+
+            content = JsonSerializer.Serialize(new
+            {
+                endpoint = target.CanonicalUri, domain = target.EndpointDomain, messages,
+                implementations = implementations.Value
+            });
+        }
+        else
+        {
+            content = JsonSerializer.Serialize(new
+            {
+                endpoint = target.CanonicalUri, domain = target.EndpointDomain, messages
+            });
+        }
+
         McpFetchResult description = CompleteFetch(target.CanonicalUri, "endpoint", null, content, limitBytes) with
         {
             ContentType = "application/json"

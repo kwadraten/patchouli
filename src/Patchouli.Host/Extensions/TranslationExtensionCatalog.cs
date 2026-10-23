@@ -144,6 +144,66 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Issue #28: enumerates the extensions of one kind from the live registry — the
+    /// bundled packages (descriptor parsed from each package's declared entry metadata,
+    /// available before first activation because the host activates them on demand)
+    /// plus every already-active third-party package whose lease descriptor matches.
+    /// This mirrors how <see cref="RefreshMetadataSourcesAsync"/> discovers metadata
+    /// sources; a package whose declared metadata cannot be parsed is skipped rather
+    /// than failing the whole enumeration.
+    /// </summary>
+    public async Task<IReadOnlyList<ExtensionDescriptor>> ListExtensionsByKindAsync(ExtensionKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureBaselineInitializedAsync(cancellationToken).ConfigureAwait(false);
+        Dictionary<string, ExtensionDescriptor> byId = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ExtensionPackageSnapshot package in BundledPackages)
+        {
+            ExtensionEntryMetadata metadata;
+            try
+            {
+                metadata = ExtensionEntryMetadata.Parse(package);
+            }
+            catch (ExtensionMetadataException)
+            {
+                continue;
+            }
+            catch (InvalidOperationException)
+            {
+                // Defensive: metadata-element location asserts in the entry
+                // metadata helpers surface as InvalidOperationException. Should
+                // parsing ever route through them, that is the same "declared
+                // metadata cannot be parsed" outcome as
+                // ExtensionMetadataException, so the package is skipped instead
+                // of failing the whole enumeration.
+                continue;
+            }
+
+            if (metadata.Kind == kind)
+            {
+                byId[metadata.Id] = metadata.ToDescriptor();
+            }
+        }
+
+        foreach (ExtensionGenerationInfo info in Manager.List())
+        {
+            if (!info.IsActive || byId.ContainsKey(info.Id))
+            {
+                continue;
+            }
+
+            await using IExtensionLease? lease =
+                await Manager.AcquireAsync(info.Id, cancellationToken).ConfigureAwait(false);
+            if (lease is not null && lease.Descriptor.Kind == kind)
+            {
+                byId[lease.Descriptor.Id] = lease.Descriptor;
+            }
+        }
+
+        return byId.Values.OrderBy(descriptor => descriptor.Id, StringComparer.Ordinal).ToArray();
+    }
+
     public async Task<ExtensionDomainRun> AcquireDomainAsync(string id,
         CancellationToken cancellationToken = default)
     {
