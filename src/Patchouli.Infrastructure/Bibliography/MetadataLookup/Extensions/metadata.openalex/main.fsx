@@ -38,8 +38,23 @@ let parseCandidate (root: JsonElement) =
     let identifiers =
         let mutable ids = JsonElement()
         if root.TryGetProperty("ids", &ids) then
-            identifierFields ids [ ("doi", "doi"); ("pmid", "pmid"); ("pmcid", "pmcid"); ("openalex", "openalex") ]
-            |> Array.map (fun identifier -> MetadataIdentifier(identifier.Scheme, lastPath identifier.Value))
+            // Each ids value has its own shape: doi is a full https://doi.org/ URL whose path IS
+            // the DOI (it contains a slash, so last-segment truncation would corrupt it), pmid is
+            // a PubMed URL, and openalex/mag/pmcid values are single-segment identifiers.
+            let stripPrefix (prefix: string) (value: string) =
+                if value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) then
+                    value.Substring(prefix.Length)
+                else value
+            let normalizeId (identifier: MetadataIdentifier) =
+                let value =
+                    match identifier.Scheme with
+                    | "doi" -> identifier.Value |> stripPrefix "https://doi.org/" |> stripPrefix "http://doi.org/"
+                    | "pmid" | "pmcid" -> lastPath identifier.Value
+                    | "openalex" -> lastPath identifier.Value
+                    | _ -> identifier.Value
+                MetadataIdentifier(identifier.Scheme, value)
+            identifierFields ids [ ("doi", "doi"); ("pmid", "pmid"); ("pmcid", "pmcid"); ("mag", "mag"); ("openalex", "openalex") ]
+            |> Array.map normalizeId
         else Array.empty
     let year = jsonInt root "publication_year"
     let itemType = jsonString root "type"
@@ -47,7 +62,11 @@ let parseCandidate (root: JsonElement) =
         match year with
         | Some value -> [| MetadataDate(issuedRole, [| value |]) |]
         | None -> Array.empty
-    MetadataCandidate("openalex", jsonString root "title" |> Option.toObj,
+    MetadataCandidate("openalex",
+        // OpenAlex guarantees display_name; title can be null on some records.
+        (match jsonString root "title" with
+         | Some value -> Some value
+         | None -> jsonString root "display_name") |> Option.toObj,
         Creators = authors,
         Dates = dates,
         PublicationTitle = (jsonString location "display_name" |> Option.toObj),
