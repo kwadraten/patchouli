@@ -36,6 +36,5 @@ public sealed partial class SettingsPage : UserControl
         await editor.OpenAsync(id);
         ExtensionConfigurationDialog dialog = new(editor);
         await dialog.ShowDialog(owner);
-        await settings.LlmSettings.RefreshTranslationEnginesCommand.ExecuteAsync();
     }
 }

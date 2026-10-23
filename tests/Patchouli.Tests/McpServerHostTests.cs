@@ -167,8 +167,7 @@ public sealed class McpServerHostTests
                     RuntimeDatabasePath = databasePath,
                     DefaultSyncRoot = Path.Combine(tempRoot, "sync"),
                     DefaultStagingRoot = Path.Combine(tempRoot, "staging"),
-                    LogDirectory = Path.Combine(tempRoot, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(tempRoot, "logs")
                 }
             };
             HostServices services =

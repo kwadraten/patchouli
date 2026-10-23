@@ -32,8 +32,7 @@ public sealed class BiblatexImportApplyTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             });
             (await services.Library.CreateLibraryAsync("Bib apply")).IsSuccess.Should().BeTrue();
@@ -109,8 +108,7 @@ public sealed class BiblatexImportApplyTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             });
             (await services.Library.CreateLibraryAsync("Bib batch")).IsSuccess.Should().BeTrue();

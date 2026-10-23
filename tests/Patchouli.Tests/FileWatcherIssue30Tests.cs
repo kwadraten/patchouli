@@ -186,8 +186,9 @@ public sealed class FileWatcherIssue30Tests
     [Fact]
     public async Task Full_rescan_with_case_variant_dirty_paths_pending_imports_each_file_once()
     {
-        // Needs a case-sensitive file system (Linux): "A.pdf" and "a.pdf" are two
-        // files in one root. The dirty set keys paths with the platform comparer
+        // On a case-sensitive file system, "A.pdf" and "a.pdf" are two files.
+        // On a case-insensitive volume, exercise a case-only rename of one file.
+        // The dirty set keys paths with the platform comparer
         // (Ordinal here), so both entries coexist in it; the full rescan must
         // snapshot the dirty set with that same comparer. Copying it with a
         // hardcoded OrdinalIgnoreCase comparer throws ArgumentException (the two
@@ -205,7 +206,8 @@ public sealed class FileWatcherIssue30Tests
         string staging = Path.Combine(context.TempRoot, "staging");
         string stagedUpper = TestFixtures.CopyRealThreePagePdfTo(staging, "A.pdf");
         await File.AppendAllTextAsync(stagedUpper, "\n% upper copy");
-        string stagedLower = TestFixtures.CopyRealThreePagePdfTo(staging, "a.pdf");
+        bool distinctCasePaths = !File.Exists(Path.Combine(staging, "a.pdf"));
+        string stagedLower = TestFixtures.CopyRealThreePagePdfTo(Path.Combine(staging, "lower"), "a.pdf");
         await File.AppendAllTextAsync(stagedLower, "\n% lower copy");
 
         RecordingAppLogger logger = new();
@@ -223,23 +225,35 @@ public sealed class FileWatcherIssue30Tests
             string upper = Path.Combine(root, "A.pdf");
             string lower = Path.Combine(root, "a.pdf");
             File.Move(stagedUpper, upper);
-            File.Move(stagedLower, lower);
+            if (distinctCasePaths)
+            {
+                File.Move(stagedLower, lower);
+            }
+            else
+            {
+                File.Move(upper, lower);
+            }
 
             // NoteFileEvent records a path in the dirty set before logging its
-            // "Change detected" line, so observing both lines proves both case
-            // variants are pending in the dirty set. The watch loop cannot
+            // "Change detected" line, so observing both paths proves both case
+            // variants were recorded (coalesced on a case-insensitive platform). The watch loop cannot
             // consume them inside the quiet window after the last event, so the
-            // manual rescan below deterministically snapshots a two-entry set.
+            // manual rescan below snapshots those pending paths without comparer collisions.
             await logger.WaitForChangeDetectedAsync(upper, Timeout);
             await logger.WaitForChangeDetectedAsync(lower, Timeout);
 
             Result<FileSearchRootRescanSummary> rescan = await watcher.RescanFileSearchRootsAsync();
             rescan.IsSuccess.Should().BeTrue(rescan.ErrorMessage);
-            rescan.Value.ImportedPdfCount.Should().Be(2,
-                "both case variants are distinct pending paths and each is imported");
-            (await CountAssetsAsync(context, upper)).Should().Be(1);
+            int expectedFiles = distinctCasePaths ? 2 : 1;
+            rescan.Value.ImportedPdfCount.Should().Be(expectedFiles,
+                "each physical file is imported once, even when case-variant events are pending");
+            if (distinctCasePaths)
+            {
+                (await CountAssetsAsync(context, upper)).Should().Be(1);
+            }
+
             (await CountAssetsAsync(context, lower)).Should().Be(1);
-            (await CountAllAssetsAsync(context)).Should().Be(2);
+            (await CountAllAssetsAsync(context)).Should().Be(expectedFiles);
         }
         finally
         {
@@ -248,8 +262,10 @@ public sealed class FileWatcherIssue30Tests
         }
     }
 
-    private static TaskCompletionSource NewSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource NewSignal()
+    {
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private static async Task<int> CountAssetsAsync(HostContext context, string path)
     {
@@ -413,8 +429,7 @@ public sealed class FileWatcherIssue30Tests
                     RuntimeDatabasePath = databasePath,
                     DefaultSyncRoot = Path.Combine(tempRoot, "sync"),
                     DefaultStagingRoot = Path.Combine(tempRoot, "staging"),
-                    LogDirectory = Path.Combine(tempRoot, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(tempRoot, "logs")
                 },
                 Sync = defaults.Sync with { DeviceId = "issue30-test-device" }
             };

@@ -1176,7 +1176,7 @@
                   <ItemsControl ItemsSource="{Binding Sources}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:MetadataSourceSettingsRowViewModel">
-                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" Margin="0,4">
+                        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="10" Margin="0,4">
                           <CheckBox IsChecked="{Binding Enabled}" VerticalAlignment="Center" />
                           <StackPanel Grid.Column="1" Spacing="2">
                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
@@ -1187,6 +1187,11 @@
                                   IsEnabled="{Binding CanMoveUp}" Padding="10,4" />
                           <Button Grid.Column="3" Content="下移" Command="{Binding MoveDownCommand}"
                                   IsEnabled="{Binding CanMoveDown}" Padding="10,4" />
+                          <Button Grid.Column="4" Tag="{Binding ExtensionId}" Click="ConfigureExtensionClicked"
+                                  VerticalAlignment="Center"
+                                  ToolTip.Tip="配置来源" AutomationProperties.Name="配置来源">
+                            <lucide:Lucide Icon="Settings" Width="16" Height="16" />
+                          </Button>
                         </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>

@@ -115,6 +115,88 @@ public class DerivedPropertyGeneratorTests
         return test.RunAsync();
     }
 
+    // R12 bounded diagnostic: the measured pass below resolves the same ReferenceAssemblies,
+    // builds its own compilation and runs its own generator driver, printing one
+    // "PHASE {case}.{stage} {ms} ms" line per stage to the test output (captured by TRX).
+    // It only reports timing — the real verification still runs through RunTestAsync, so
+    // every case keeps an independent compilation, driver and expected diagnostics.
+    private static async Task RunInstrumentedTestAsync(
+        string caseName,
+        string source,
+        string? generatedSourceName,
+        string? generatedSourceCode,
+        params DiagnosticResult[] expectedDiagnostics)
+    {
+        await MeasureGeneratorPhasesAsync(caseName, source);
+        await RunTestAsync(source, generatedSourceName, generatedSourceCode, expectedDiagnostics);
+    }
+
+    private static async Task MeasureGeneratorPhasesAsync(string caseName, string source)
+    {
+        PhaseLog phases = new(caseName);
+        ReferenceAssemblies referenceAssemblies = ReferenceAssemblies.Net.Net80
+            .AddPackages(ImmutableArray.Create(
+                new PackageIdentity("CommunityToolkit.Mvvm", "8.4.2")
+            ));
+        ImmutableArray<MetadataReference> references = await phases.RecordAsync("references",
+            () => referenceAssemblies.ResolveAsync(LanguageNames.CSharp, CancellationToken.None));
+        CSharpParseOptions parseOptions = new(LanguageVersion.Preview, DocumentationMode.Diagnose);
+        CSharpCompilation compilation = phases.Record("compilation", () =>
+        {
+            CSharpCompilation built = CSharpCompilation.Create(
+                $"patchouli.{caseName}.diagnostic",
+                [CSharpSyntaxTree.ParseText(source, parseOptions)],
+                references,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            // Force semantic binding so the measured phase covers compilation work,
+            // not just syntax parsing.
+            _ = built.GetDiagnostics();
+            return built;
+        });
+        phases.Record("generator-driver", () =>
+        {
+            ISourceGenerator generator = new DerivedPropertyGenerator().AsSourceGenerator();
+            GeneratorDriver driver = CSharpGeneratorDriver.Create([generator],
+                parseOptions: parseOptions);
+            driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out _);
+            return true;
+        });
+    }
+
+    private sealed class PhaseLog
+    {
+        private readonly string _caseName;
+
+        public PhaseLog(string caseName)
+        {
+            _caseName = caseName;
+        }
+
+        public T Record<T>(string name, Func<T> operation)
+        {
+            System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            T result = operation();
+            watch.Stop();
+            Write(name, watch.Elapsed);
+            return result;
+        }
+
+        public async Task<T> RecordAsync<T>(string name, Func<Task<T>> operation)
+        {
+            System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            T result = await operation().ConfigureAwait(false);
+            watch.Stop();
+            Write(name, watch.Elapsed);
+            return result;
+        }
+
+        private void Write(string name, TimeSpan elapsed)
+        {
+            Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"PHASE {_caseName}.{name} {elapsed.TotalMilliseconds:0.##} ms"));
+        }
+    }
+
     [Fact]
     public async Task Transitive_And_Diamond()
     {
@@ -172,7 +254,8 @@ namespace TestNamespace
     }
 }
 ";
-        await RunTestAsync(source, "MyViewModel_DerivedProperties.g.cs", expected);
+        await RunInstrumentedTestAsync(nameof(Transitive_And_Diamond), source,
+            "MyViewModel_DerivedProperties.g.cs", expected);
     }
 
     [Fact]
@@ -221,7 +304,8 @@ namespace TestNamespace
     }
 }
 ";
-        await RunTestAsync(source, "MyViewModel_DerivedProperties.g.cs", expected);
+        await RunInstrumentedTestAsync(nameof(SafeNestedMember_Enum_And_ConditionalAccess), source,
+            "MyViewModel_DerivedProperties.g.cs", expected);
     }
 
     [Fact]
@@ -240,7 +324,7 @@ public partial class MyViewModel : ObservableObject
     public string PropB => PropC;
     public string PropC => PropB;
 }";
-        await RunTestAsync(source, null, null,
+        await RunInstrumentedTestAsync(nameof(PTCH001_Cycle), source, null, null,
             DiagnosticResult.CompilerError("PTCH001").WithSpan(11, 19, 11, 24).WithArguments("PropB"));
     }
 

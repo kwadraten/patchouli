@@ -28,8 +28,7 @@ public sealed class BiblatexImportPromptTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             });
             (await services.Library.CreateLibraryAsync("Prompt regression")).IsSuccess.Should().BeTrue();

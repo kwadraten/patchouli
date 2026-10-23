@@ -51,28 +51,32 @@ internal sealed class TemporarySqliteDatabase : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-
-        foreach (string candidate in new[] { Path, Path + "-wal", Path + "-shm" })
+        try
         {
-            if (File.Exists(candidate))
-            {
-                try
-                {
-                    File.Delete(candidate);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
+            // Owners (OcrPerfContext connections) are disposed first; here we only release the
+            // pools that can own this file and delete it with its -wal/-shm/-journal sidecars.
+            // No process-wide ClearAllPools or forced GC; a still-open owner makes the delete
+            // fail visibly instead of leaving orphan sidecars.
+            ReleaseOwnedPools();
+            ConnectionFactory.DeleteDatabaseFiles();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new IOException(
+                $"TemporarySqliteDatabase failed to delete '{Path}' and its SQLite sidecars; " +
+                "dispose every service and connection using this database before the fixture.", ex);
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private void ReleaseOwnedPools()
+    {
+        // The factory's general/read pools plus the default pool a raw
+        // new SqliteConnection("Data Source=...") would form for this path.
+        ConnectionFactory.ClearPools();
+        using SqliteConnection raw = new(new SqliteConnectionStringBuilder { DataSource = Path }.ToString());
+        SqliteConnection.ClearPool(raw);
     }
 }
 

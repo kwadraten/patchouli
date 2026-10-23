@@ -108,7 +108,7 @@ public sealed class McpRunsAndSendTests
     }
 
     [Fact]
-    public async Task Runs_browse_lists_ocr_and_translation_subtrees()
+    public async Task Runs_browse_lists_ocr_translation_and_metadata_subtrees()
     {
         StubOcrRunsApi ocr = new();
         ocr.SetTask("task-1", "queued");
@@ -119,7 +119,7 @@ public sealed class McpRunsAndSendTests
         McpCommandResult<McpFindMeta, object> runs = await commands.FindAsync(
             new McpFindRequest(null, "patchouli://runs/", null));
         runs.Envelope!.Entries.Cast<McpFindEntry>().Select(entry => entry.Uri).Should().Equal(
-            "patchouli://runs/ocr/", "patchouli://runs/translation/");
+            "patchouli://runs/ocr/", "patchouli://runs/translation/", "patchouli://runs/metadata/");
 
         McpCommandResult<McpFindMeta, object> tasks = await commands.FindAsync(
             new McpFindRequest(null, "patchouli://runs/ocr/", null));
@@ -248,6 +248,192 @@ public sealed class McpRunsAndSendTests
     }
 
     [Fact]
+    public async Task Metadata_lookup_returns_a_read_only_proposal()
+    {
+        Guid itemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        StubMetadataRunsApi metadata = new();
+        metadata.SetProposal(itemId.ToString(), "crossref");
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions = [new McpDomainPermission("runs/metadata", "send", true)]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(settings));
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> lookedUp = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(new ItemId(itemId)),
+                "lookup", JsonSerializer.SerializeToElement(new
+                {
+                    scheme = "doi", value = "10.1000/xyz"
+                }), "runs/metadata/control"));
+
+        lookedUp.Error.Should().BeNull();
+        McpActionSendResult entry = lookedUp.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.State.Should().Be("completed");
+        entry.RunUri.Should().BeNull();
+        entry.Result.Should().BeOfType<McpMetadataProposalProjection>().Which.Candidate.SourceId
+            .Should().Be("crossref");
+        metadata.Applied.Should().BeEmpty();
+        metadata.Enriched.Should().BeEmpty();
+        (await metadata.BatchStarts()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Metadata_apply_commits_the_validated_proposal()
+    {
+        Guid itemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        StubMetadataRunsApi metadata = new();
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions = [new McpDomainPermission("runs/metadata", "send", true)]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(settings));
+
+        JsonElement args = JsonSerializer.SerializeToElement(new
+        {
+            expected_updated_at = "2026-10-22T00:00:00.0000000+00:00",
+            candidate = new
+            {
+                source_id = "crossref",
+                title = "A Study",
+                identifiers = new[] { new { scheme = "doi", value = "10.1000/xyz" } },
+                type_confidence = 0.95
+            },
+            attempts = new[] { new { source_id = "crossref" } }
+        });
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> applied = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(new ItemId(itemId)), "apply", args,
+                "runs/metadata/control"));
+
+        applied.Error.Should().BeNull();
+        McpActionSendResult entry = applied.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.State.Should().Be("completed");
+        McpMetadataApplyProjection result = entry.Result.Should().BeOfType<McpMetadataApplyProjection>().Subject;
+        result.SourceId.Should().Be("crossref");
+        result.AddedIdentifiers.Should().ContainSingle()
+            .Which.Should().Be(new McpMetadataIdentifierDto("doi", "10.1000/xyz"));
+        metadata.Applied.Should().ContainSingle().Which.SourceId.Should().Be("crossref");
+    }
+
+    [Fact]
+    public async Task Metadata_enrich_batch_start_fetch_cancel_and_replay_dedup()
+    {
+        const string TaskId = "44444444-4444-4444-4444-444444444444";
+        Guid itemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        StubMetadataRunsApi metadata = new();
+        metadata.SetTask(TaskId, "running", 2);
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions = [new McpDomainPermission("runs/metadata", "send", true)]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(settings));
+
+        McpResourceUris.Parse(McpResourceUris.MetadataRunStatusUri(TaskId)).Value.Kind.Should()
+            .Be(McpUriKind.RunMetadataStatus);
+        McpResourceUris.Parse(McpResourceUris.RunsMetadataScopeUri()).Value.Kind.Should()
+            .Be(McpUriKind.RunsMetadataScope);
+
+        JsonElement batchArgs = JsonSerializer.SerializeToElement(new
+        {
+            item_ids = new[] { itemId.ToString(), "22222222-2222-2222-2222-222222222222" }
+        });
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> started = await commands.SendAsync(
+            new McpActionSendRequest("patchouli://items/", "enrich_batch", batchArgs,
+                "runs/metadata/control", "batch-1"));
+
+        started.Error.Should().BeNull();
+        McpActionSendResult startEntry = started.Envelope!.Entries.Should().ContainSingle().Subject;
+        startEntry.State.Should().Be("started");
+        startEntry.RunUri.Should().Be(McpResourceUris.MetadataRunStatusUri(TaskId));
+        startEntry.Result.Should().BeOfType<McpMetadataBatchActionResult>().Which.Total.Should().Be(2);
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> replayed = await commands.SendAsync(
+            new McpActionSendRequest("patchouli://items/", "enrich_batch", batchArgs,
+                "runs/metadata/control", "batch-1"));
+        replayed.Error.Should().BeNull();
+        replayed.Envelope!.Entries.Should().ContainSingle().Which.Result
+            .Should().BeOfType<McpMetadataBatchActionResult>().Which.Reused.Should().BeTrue();
+
+        JsonElement differentArgs = JsonSerializer.SerializeToElement(new
+        {
+            item_ids = new[] { itemId.ToString() }
+        });
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> conflict = await commands.SendAsync(
+            new McpActionSendRequest("patchouli://items/", "enrich_batch", differentArgs,
+                "runs/metadata/control", "batch-1"));
+        conflict.Error.Should().NotBeNull();
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> status = await commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.MetadataRunStatusUri(TaskId)], null, null));
+        McpFetchResult statusEntry = status.Envelope!.Entries.Should().ContainSingle().Subject;
+        statusEntry.ResourceType.Should().Be("run_status");
+        using (JsonDocument content = JsonDocument.Parse(McpToonCodec.DecodeToJson(statusEntry.Content!)))
+        {
+            content.RootElement.GetProperty("task_id").GetString().Should().Be(TaskId);
+            content.RootElement.GetProperty("state").GetString().Should().Be("running");
+            content.RootElement.GetProperty("total").GetInt32().Should().Be(2);
+        }
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> cancelled = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.MetadataRunStatusUri(TaskId), "cancel",
+                JsonSerializer.SerializeToElement(new { }), "runs/metadata/control"));
+        cancelled.Error.Should().BeNull();
+        cancelled.Envelope!.Entries.Should().ContainSingle().Which.State.Should().Be("completed");
+        metadata.Cancelled.Should().Be(TaskId);
+    }
+
+    [Fact]
+    public async Task Metadata_send_requires_metadata_subdomain_and_validates_schema()
+    {
+        Guid itemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        StubMetadataRunsApi metadata = new();
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions = [new McpDomainPermission("runs/ocr", "send", true)]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(settings));
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> denied = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(new ItemId(itemId)),
+                "lookup", JsonSerializer.SerializeToElement(new
+                {
+                    scheme = "doi", value = "10.1000/xyz"
+                }), "runs/metadata/control"));
+        denied.Error.Should().NotBeNull();
+
+        McpServerSettings granted = settings with
+        {
+            DomainPermissions =
+            [
+                new McpDomainPermission("runs/ocr", "send", true),
+                new McpDomainPermission("runs/metadata", "send", true)
+            ]
+        };
+        McpCommandService grantedCommands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(granted));
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> wrongTarget = await grantedCommands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.DocumentUri(new DocumentInstanceId(itemId)),
+                "lookup", JsonSerializer.SerializeToElement(new
+                {
+                    scheme = "doi", value = "10.1000/xyz"
+                }), "runs/metadata/control"));
+        wrongTarget.Error.Should().NotBeNull();
+
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> unknownArg = await grantedCommands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(new ItemId(itemId)),
+                "lookup", JsonSerializer.SerializeToElement(new
+                {
+                    scheme = "doi", value = "10.1000/xyz", extra = true
+                }), "runs/metadata/control"));
+        unknownArg.Error.Should().NotBeNull();
+        metadata.Lookups.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Put_to_runs_resources_is_permission_denied()
     {
         McpCommandService commands = CreateService(new StubReadApi());
@@ -307,12 +493,12 @@ public sealed class McpRunsAndSendTests
         StubOcrRunsApi? ocr = null, bool putEnabled = true,
         bool sendEnabled = true, StubWriteApi? write = null,
         Func<CancellationToken, Task<McpServerSettings>>? permissions = null,
-        StubTranslationRunsApi? translation = null)
+        StubTranslationRunsApi? translation = null, StubMetadataRunsApi? metadata = null)
     {
         return new McpCommandService(read, write ?? new StubWriteApi(), new StubBiblatexImportService(),
             new StubItemService(), new StubEvidenceReader(), putEnabled: putEnabled, sendEnabled: sendEnabled,
             ocrRuns: ocr, permissionSettings: permissions,
-            translationRuns: translation);
+            translationRuns: translation, metadataRuns: metadata);
     }
 
     private sealed class StubOcrRunsApi : IMcpOcrRunsApi
@@ -410,6 +596,148 @@ public sealed class McpRunsAndSendTests
 
             _runs[taskId] = run with { State = "cancelled" };
             return Task.FromResult(Result<McpTranslationRunStatusProjection>.Success(_runs[taskId]));
+        }
+    }
+
+    private sealed class StubMetadataRunsApi : IMcpMetadataRunsApi
+    {
+        private readonly Dictionary<string, McpMetadataTaskStatusProjection> _tasks = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, McpMetadataProposalProjection> _proposals =
+            new(StringComparer.Ordinal);
+
+        private readonly List<McpMetadataApplyProjection> _applies = [];
+        private readonly List<(string ItemId, string Scheme, string Value)> _lookups = [];
+        private readonly List<string> _enriched = [];
+        private readonly List<(string[] Items, string? RequestId)> _batchStarts = [];
+
+        private readonly Dictionary<string, (string Fingerprint, McpMetadataTaskStatusProjection Receipt)> _requests =
+            new(StringComparer.Ordinal);
+
+        public IReadOnlyList<(string ItemId, string Scheme, string Value)> Lookups => _lookups;
+        public IReadOnlyList<McpMetadataApplyProjection> Applied => _applies;
+        public IReadOnlyList<string> Enriched => _enriched;
+        public string? Cancelled { get; private set; }
+
+        public Task<IReadOnlyList<(string Items, string? RequestId)>> BatchStarts()
+        {
+            return Task.FromResult((IReadOnlyList<(string, string?)>)_batchStarts
+                .Select(value => (string.Join(",", value.Items), value.RequestId)).ToArray());
+        }
+
+        public void SetProposal(string itemId, string sourceId)
+        {
+            _proposals[itemId] = new McpMetadataProposalProjection(
+                itemId,
+                "2026-10-22T00:00:00.0000000+00:00",
+                new McpMetadataCandidateDto(sourceId, "A Study"),
+                [new McpMetadataAttemptDto(sourceId)]);
+        }
+
+        public void SetTask(string taskId, string state, int total)
+        {
+            _tasks[taskId] = new McpMetadataTaskStatusProjection(
+                taskId,
+                state,
+                total,
+                0,
+                0,
+                0,
+                []);
+        }
+
+        public Task<Result<McpMetadataProposalProjection>> LookupAsync(string itemId, string scheme, string value,
+            CancellationToken cancellationToken = default)
+        {
+            _lookups.Add((itemId, scheme, value));
+            return Task.FromResult(!_proposals.TryGetValue(itemId, out McpMetadataProposalProjection? proposal)
+                ? Result<McpMetadataProposalProjection>.Failure(AppErrorCodes.NotFound,
+                    $"The item '{itemId}' does not exist.")
+                : Result<McpMetadataProposalProjection>.Success(proposal));
+        }
+
+        public Task<Result<McpMetadataApplyProjection>> ApplyAsync(string itemId, string expectedUpdatedAt,
+            McpMetadataCandidateDto candidate, IReadOnlyList<McpMetadataAttemptDto> attempts,
+            CancellationToken cancellationToken = default)
+        {
+            McpMetadataApplyProjection applied = new(itemId, candidate.SourceId,
+                candidate.Identifiers ?? [], attempts);
+            _applies.Add(applied);
+            return Task.FromResult(Result<McpMetadataApplyProjection>.Success(applied));
+        }
+
+        public Task<Result<McpMetadataApplyProjection>> EnrichAsync(string itemId,
+            CancellationToken cancellationToken = default)
+        {
+            _enriched.Add(itemId);
+            return Task.FromResult(Result<McpMetadataApplyProjection>.Success(
+                new McpMetadataApplyProjection(itemId, "crossref", [], [])));
+        }
+
+        public Task<Result<McpMetadataTaskStatusProjection>> StartBatchAsync(IReadOnlyList<string> itemIds,
+            string? requestId, CancellationToken cancellationToken = default)
+        {
+            string[] items = itemIds.ToArray();
+            _batchStarts.Add((items, requestId));
+            string fingerprint = string.Join(",", items.Order(StringComparer.Ordinal));
+            if (requestId is not null &&
+                _requests.TryGetValue(requestId,
+                    out (string Fingerprint, McpMetadataTaskStatusProjection Receipt) previous))
+            {
+                return Task.FromResult(previous.Fingerprint == fingerprint
+                    ? Result<McpMetadataTaskStatusProjection>.Success(previous.Receipt with { Reused = true })
+                    : Result<McpMetadataTaskStatusProjection>.Failure(AppErrorCodes.Conflict,
+                        "request_id was already used for a different metadata message."));
+            }
+
+            McpMetadataTaskStatusProjection receipt = _tasks.Values.FirstOrDefault() ??
+                                                      new McpMetadataTaskStatusProjection(Guid.NewGuid().ToString("D"),
+                                                          "running", items.Length, 0, 0, 0,
+                                                          []);
+            if (requestId is not null)
+            {
+                _requests[requestId] = (fingerprint, receipt);
+            }
+
+            return Task.FromResult(Result<McpMetadataTaskStatusProjection>.Success(receipt));
+        }
+
+        public Task<Result<IReadOnlyList<McpMetadataTaskStatusProjection>>> ListRunsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<McpMetadataTaskStatusProjection>>.Success(
+                (IReadOnlyList<McpMetadataTaskStatusProjection>)_tasks.Values.ToArray()));
+        }
+
+        public Task<Result<McpMetadataTaskStatusProjection>> TryGetRunStatusAsync(string taskId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(!_tasks.TryGetValue(taskId, out McpMetadataTaskStatusProjection? task)
+                ? Result<McpMetadataTaskStatusProjection>.Failure(AppErrorCodes.NotFound,
+                    $"The metadata task '{taskId}' does not exist.")
+                : Result<McpMetadataTaskStatusProjection>.Success(task));
+        }
+
+        public Task<Result<McpMetadataTaskStatusProjection>> CancelAsync(string taskId,
+            CancellationToken cancellationToken = default)
+        {
+            Cancelled = taskId;
+            if (!_tasks.TryGetValue(taskId, out McpMetadataTaskStatusProjection? task))
+            {
+                return Task.FromResult(Result<McpMetadataTaskStatusProjection>.Failure(AppErrorCodes.NotFound,
+                    $"The metadata task '{taskId}' does not exist."));
+            }
+
+            _tasks[taskId] = task with { State = "cancelled" };
+            return Task.FromResult(Result<McpMetadataTaskStatusProjection>.Success(_tasks[taskId]));
+        }
+
+        public Task<Result<McpMetadataTaskStatusProjection>> RetryAsync(string taskId,
+            CancellationToken cancellationToken = default)
+        {
+            McpMetadataTaskStatusProjection retried = new(Guid.NewGuid().ToString("D"), "running",
+                _tasks.TryGetValue(taskId, out McpMetadataTaskStatusProjection? task) ? task.Total : 1, 0, 0, 0, []);
+            return Task.FromResult(Result<McpMetadataTaskStatusProjection>.Success(retried));
         }
     }
 

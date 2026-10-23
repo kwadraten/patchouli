@@ -8,6 +8,7 @@ using System.Reactive.Subjects;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -35,11 +36,23 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     private readonly Dictionary<Guid, OcrQueueTaskViewModel> _translations = new();
     private readonly HashSet<Guid> _hiddenTranslations = new();
     private readonly HashSet<Guid> _retriedTranslations = new();
+    private readonly Dictionary<Guid, OcrQueueTaskViewModel> _metadataRuns = new();
+    private readonly HashSet<Guid> _hiddenMetadataRuns = new();
+    private readonly HashSet<Guid> _retriedMetadataRuns = new();
     private readonly SerialDisposable _polling = new();
     private readonly Dictionary<string, string> _translationTitles = new();
+    private readonly Dictionary<string, string> _metadataBatchTitles = new();
+    private bool _isDetached;
+
+    internal void AddOcrRowForTesting(OcrQueueTaskViewModel row)
+    {
+        (row.IsActive ? _ocrActive : _ocrFinished).Add(row);
+        ApplyTaskFilter();
+    }
+
     [ObservableProperty] public partial int SelectedTaskTabIndex { get; set; }
     public string? FocusedTaskId { get; set; }
-    public IReadOnlyList<string> TaskTypes { get; } = ["全部任务", "OCR", "翻译"];
+    public IReadOnlyList<string> TaskTypes { get; } = ["全部任务", "OCR", "翻译", "元数据"];
     [ObservableProperty] public partial string SelectedTaskType { get; set; } = "全部任务";
 
     partial void OnSelectedTaskTypeChanged(string value)
@@ -61,14 +74,24 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     internal void ApplyTaskFilter()
     {
-        IEnumerable<OcrQueueTaskViewModel> rows = _ocrActive.Concat(_ocrFinished).Concat(_translations.Values);
+        IEnumerable<OcrQueueTaskViewModel> rows = _ocrActive.Concat(_ocrFinished)
+            .Concat(_translations.Values)
+            .Concat(_metadataRuns.Values);
         OcrQueueTaskViewModel[] visible = rows.OrderByDescending(row => row.TaskId == FocusedTaskId).Where(row =>
-            SelectedTaskType == "全部任务" ||
-            SelectedTaskType == "翻译" == row.IsTranslation).ToArray();
+            SelectedTaskType switch
+            {
+                "全部任务" => true,
+                "OCR" => !row.IsTranslation && !row.IsMetadata,
+                "翻译" => row.IsTranslation,
+                "元数据" => row.IsMetadata,
+                _ => true
+            }).ToArray();
         SyncVisible(ActiveTaskRows, visible.Where(row => row.IsActive));
         SyncVisible(FinishedTaskRows, visible.Where(row => !row.IsActive));
-        HasFinishedTasks = _ocrFinished.Count > 0 || _translations.Values.Any(row => !row.IsActive);
-        HasRetryableTasks = _ocrFinished.Concat(_translations.Values).Any(row => row.CanRetry);
+        HasFinishedTasks = _ocrFinished.Count > 0 || _translations.Values.Any(row => !row.IsActive) ||
+                           _metadataRuns.Values.Any(row => !row.IsActive);
+        HasRetryableTasks = _ocrFinished.Concat(_translations.Values).Concat(_metadataRuns.Values)
+            .Any(row => row.CanRetry);
     }
 
     private static void SyncVisible(ObservableCollection<OcrQueueTaskViewModel> target,
@@ -99,6 +122,11 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     internal void UpdateTranslations(IReadOnlyList<TranslationRunStatus> runs, ITranslationRunService service)
     {
+        if (_isDetached)
+        {
+            return;
+        }
+
         foreach (TranslationRunStatus run in runs)
         {
             if (_hiddenTranslations.Contains(run.RunId))
@@ -178,6 +206,81 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         else
         {
             _main.ReportError($"重试翻译任务失败：{result.ErrorMessage}");
+        }
+
+        await RefreshAsync();
+    }
+
+    internal void UpdateMetadataRuns(IReadOnlyList<MetadataBatchRunStatus> runs, IMetadataRunService service)
+    {
+        if (_isDetached)
+        {
+            return;
+        }
+
+        foreach (MetadataBatchRunStatus run in runs)
+        {
+            if (_hiddenMetadataRuns.Contains(run.TaskId))
+            {
+                continue;
+            }
+
+            string title = _metadataBatchTitles.GetValueOrDefault(run.TaskId.ToString())
+                           ?? (run.Total == 1 && run.Items.Count > 0
+                               ? _main.Shell.Items.FirstOrDefault(item => item.ItemId == run.Items[0].ItemId.ToString())
+                                     ?.Title
+                                 ?? $"元数据获取 · {run.Items[0].ItemId}"
+                               : $"批量元数据获取 ({run.Total} 项)");
+
+            if (!_metadataRuns.TryGetValue(run.TaskId, out OcrQueueTaskViewModel? row))
+            {
+                int generation = _main.LibraryGeneration;
+                row = new OcrQueueTaskViewModel(run, title, async () =>
+                    {
+                        if (_main.LibraryGeneration != generation || !_metadataRuns.ContainsKey(run.TaskId))
+                        {
+                            return;
+                        }
+
+                        Result<MetadataBatchRunStatus> result = await service.CancelAsync(run.TaskId);
+                        if (result.IsFailure)
+                        {
+                            _main.ReportError($"取消元数据任务失败：{result.ErrorMessage}");
+                        }
+
+                        await RefreshAsync();
+                    },
+                    () => RetryMetadataAsync(run.TaskId, generation, service));
+                _metadataRuns.Add(run.TaskId, row);
+            }
+
+            row.RetryStarted = _retriedMetadataRuns.Contains(run.TaskId);
+            row.UpdateMetadata(run, title);
+        }
+
+        ApplyTaskFilter();
+    }
+
+    private async Task RetryMetadataAsync(Guid taskId, int generation, IMetadataRunService service)
+    {
+        if (_main.LibraryGeneration != generation || !_metadataRuns.ContainsKey(taskId))
+        {
+            return;
+        }
+
+        Result<MetadataBatchRunStatus> result = await service.RetryAsync(taskId);
+        if (_main.LibraryGeneration != generation)
+        {
+            return;
+        }
+
+        if (result.IsSuccess)
+        {
+            _retriedMetadataRuns.Add(taskId);
+        }
+        else
+        {
+            _main.ReportError($"重试元数据任务失败：{result.ErrorMessage}");
         }
 
         await RefreshAsync();
@@ -464,6 +567,25 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             }
         }
 
+        foreach (Guid id in _metadataRuns.Where(pair => pair.Value.CanRetry).Select(pair => pair.Key).ToArray())
+        {
+            Result<MetadataBatchRunStatus> result = await services.MetadataRuns.RetryAsync(id);
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (result.IsSuccess)
+            {
+                _retriedMetadataRuns.Add(id);
+                retried++;
+            }
+            else
+            {
+                failed++;
+            }
+        }
+
         _main.Report(failed == 0
             ? $"已重新加入 {retried} 个失败或阻塞的任务。"
             : $"重新加入失败或阻塞的任务：成功 {retried}，失败 {failed}。");
@@ -511,6 +633,12 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         {
             _hiddenTranslations.Add(id);
             _translations.Remove(id);
+        }
+
+        foreach (Guid id in _metadataRuns.Where(pair => !pair.Value.IsActive).Select(pair => pair.Key).ToArray())
+        {
+            _hiddenMetadataRuns.Add(id);
+            _metadataRuns.Remove(id);
         }
 
         _main.Report("已清空完成的任务。");
@@ -644,6 +772,23 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         else
         {
             _main.ReportError($"读取翻译任务失败：{translations.ErrorMessage}");
+        }
+
+        Result<IReadOnlyList<MetadataBatchRunStatus>> metadataRuns = await services.MetadataRuns.ListAsync();
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
+        _isDetached = false;
+
+        if (metadataRuns.IsSuccess)
+        {
+            UpdateMetadataRuns(metadataRuns.Value, services.MetadataRuns);
+        }
+        else
+        {
+            _main.ReportError($"读取元数据任务失败：{metadataRuns.ErrorMessage}");
         }
 
         Result<IOcrQueueScheduler> queueResult = await services.GetOcrQueueAsync();
@@ -914,6 +1059,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     internal void DetachLibraryContext()
     {
+        _isDetached = true;
         _queueSubscription.Disposable = null;
         _subscribedQueue = null;
         _ocrActive.Clear();
@@ -922,6 +1068,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         _translationTitles.Clear();
         _hiddenTranslations.Clear();
         _retriedTranslations.Clear();
+        _metadataRuns.Clear();
+        _metadataBatchTitles.Clear();
+        _hiddenMetadataRuns.Clear();
+        _retriedMetadataRuns.Clear();
         ActiveTaskRows.Clear();
         FinishedTaskRows.Clear();
         StatusSummary = "等待运行数据库打开。";
@@ -983,6 +1133,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
     }
 
     public bool IsTranslation { get; }
+    public bool IsMetadata { get; }
     private bool TranslationControls { get; }
     [ObservableProperty] public partial bool RetryStarted { get; internal set; }
 
@@ -991,9 +1142,9 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         RetryCommand?.NotifyCanExecuteChanged();
     }
 
-    public bool SupportsPause => !IsTranslation || TranslationControls;
+    public bool SupportsPause => !IsMetadata && (!IsTranslation || TranslationControls);
     public bool CanRetry => IsFailed && !IsActive && !RetryStarted && (!IsTranslation || TranslationControls);
-    public string TaskTypeText => IsTranslation ? "翻译" : "OCR";
+    public string TaskTypeText => IsTranslation ? "翻译" : IsMetadata ? "元数据" : "OCR";
 
     public OcrQueueTaskViewModel(TranslationRunStatus run, string title, Func<Task> cancel,
         Func<Task>? pause = null, Func<Task>? resume = null, Func<Task>? retry = null)
@@ -1011,6 +1162,64 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         RetryCommand = new AsyncCommand(retry ?? (() => Task.CompletedTask), () => CanRetry);
         CancelCommand = new AsyncCommand(cancel, () => IsActive);
         UpdateTranslation(run, title);
+    }
+
+    public OcrQueueTaskViewModel(MetadataBatchRunStatus run, string title, Func<Task> cancel,
+        Func<Task>? retry = null)
+    {
+        IsMetadata = true;
+        TaskId = run.TaskId.ToString();
+        ShortTaskId = TaskId.Length <= 8 ? TaskId : TaskId[..8];
+        Kind = "元数据";
+        Priority = "";
+        PauseCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
+        ResumeCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
+        CancelCommand = new AsyncCommand(cancel, () => IsActive);
+        RetryCommand = new AsyncCommand(retry ?? (() => Task.CompletedTask), () => CanRetry);
+        UpdateMetadata(run, title);
+    }
+
+    public void UpdateMetadata(MetadataBatchRunStatus run, string title)
+    {
+        DocumentTitle = title;
+        IsActive = run.State == MetadataRunState.Running;
+        IsFailed = run.State == MetadataRunState.Failed || run.Failed > 0;
+        IsPaused = false;
+        State = run.State switch
+        {
+            MetadataRunState.Running => OcrQueueTaskState.Running,
+            MetadataRunState.Cancelled => OcrQueueTaskState.Cancelled,
+            MetadataRunState.Failed => OcrQueueTaskState.Failed,
+            _ => IsFailed ? OcrQueueTaskState.Failed : OcrQueueTaskState.Succeeded
+        };
+        TotalItemCount = run.Total;
+        ProcessedCount = run.Completed;
+        SucceededCount = run.Succeeded;
+        FailedCount = run.Failed;
+        PendingCount = Math.Max(0, run.Total - run.Completed);
+
+        PageCount = run.Total;
+        ProgressValue = run.Total == 0 ? 0 : 100.0 * run.Completed / run.Total;
+        StageText = $"{run.Completed}/{run.Total} 项 · 成功 {run.Succeeded} · 失败 {run.Failed} · 待处理 {PendingCount}";
+
+        List<string> errors = new();
+        if (!string.IsNullOrWhiteSpace(run.ErrorMessage))
+        {
+            errors.Add(run.ErrorMessage);
+        }
+
+        foreach (MetadataBatchItemResult item in run.Items.Where(item =>
+                     !item.IsSuccess && !string.IsNullOrWhiteSpace(item.ErrorMessage)))
+        {
+            errors.Add($"题录 {item.ItemId}：{item.ErrorMessage}");
+        }
+
+        ErrorText = string.Join("\n", errors);
+        MetaText = $"任务 {ShortTaskId} · 批量元数据获取 · {run.Total} 项";
+        PauseCommand.NotifyCanExecuteChanged();
+        ResumeCommand.NotifyCanExecuteChanged();
+        RetryCommand.NotifyCanExecuteChanged();
+        CancelCommand.NotifyCanExecuteChanged();
     }
 
     public void UpdateTranslation(TranslationRunStatus run, string title)
@@ -1033,7 +1242,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         if (IsActive && run.CurrentStep is { } step)
         {
             string count = step.Total > 0 ? $" {step.Completed}/{step.Total}" : "";
-            StageText += $" · 第 {step.PageIndex} 页 {step.Phase}{count}";
+            StageText += $" · 第 {step.PageIndex} 页 {DescribeTranslationPhase(step.Phase)}{count}";
         }
 
         ErrorText = string.Join("\n", new[] { run.ErrorMessage }.Concat(run.Pages
@@ -1047,11 +1256,34 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         CancelCommand.NotifyCanExecuteChanged();
     }
 
+    private static string DescribeTranslationPhase(string phase)
+    {
+        return phase switch
+        {
+            "request-wait" => "等待请求许可（排队/限流等待）",
+            "prepare" => "准备页面",
+            "protect" => "保护结构",
+            "pack" => "打包片段",
+            "request" => "发送请求",
+            "parse" => "解析响应",
+            "restore" => "恢复结构",
+            "validate" => "校验结果",
+            "commit" => "提交页面",
+            "page-translation" => "处理页面",
+            _ => phase
+        };
+    }
+
     public string TaskId { get; }
     public string ShortTaskId { get; }
     public string Kind { get; }
 
     [ObservableProperty] public partial int PageCount { get; private set; }
+    [ObservableProperty] public partial int ProcessedCount { get; private set; }
+    [ObservableProperty] public partial int SucceededCount { get; private set; }
+    [ObservableProperty] public partial int FailedCount { get; private set; }
+    [ObservableProperty] public partial int PendingCount { get; private set; }
+    [ObservableProperty] public partial int TotalItemCount { get; private set; }
 
     public string KindText => Kind switch
     {

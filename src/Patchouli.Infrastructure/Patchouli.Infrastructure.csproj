@@ -2,9 +2,95 @@
   <ItemGroup>
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
     <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+    <ProjectReference Include="..\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
+    <ProjectReference Include="..\..\scripts\Patchouli.ExtensionSchemas\Patchouli.ExtensionSchemas.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <BuiltInExtensionSchemaOutput>$([MSBuild]::NormalizePath('$(MSBuildProjectExtensionsPath)', '$(Configuration)', '$(TargetFramework)', 'extension-schemas', 'BuiltInExtensionSchemas.json'))</BuiltInExtensionSchemaOutput>
+    <BuiltInExtensionSchemaGeneratorProject>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '..', '..', 'scripts', 'Patchouli.ExtensionSchemas', 'Patchouli.ExtensionSchemas.csproj'))</BuiltInExtensionSchemaGeneratorProject>
+    <BuiltInExtensionSchemaGeneratorRemoveProperties>RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun</BuiltInExtensionSchemaGeneratorRemoveProperties>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(BuiltInExtensionSchemaOutput)"
+                       LogicalName="Patchouli.Infrastructure.Extensions.BuiltInExtensionSchemas.json" />
+    <None Include="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"
+          Link="ExtensionToolchain.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <_BuiltInSchemaInput Include="Translation\Extensions\**\*.fsx" />
+    <_BuiltInSchemaInput Include="Bibliography\MetadataLookup\Extensions\**\*.fsx" />
+    <_BuiltInSchemaInput Include="Translation\BuiltInTranslationExtensions.cs" />
+    <_BuiltInSchemaInput Include="Bibliography\MetadataLookup\BuiltInMetadataExtensions.cs" />
+    <_BuiltInSchemaInput Include="..\..\scripts\Patchouli.ExtensionSchemas\Program.cs" />
+    <_BuiltInSchemaInput Include="..\..\scripts\Patchouli.ExtensionSchemas\Patchouli.ExtensionSchemas.csproj" />
+    <_BuiltInSchemaInput Include="..\..\Directory.Build.props" />
+    <_BuiltInSchemaInput Include="..\..\Directory.Packages.props" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\RuntimeFrameworkReferences.fs" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\ExtensionArtifact.fs" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\ExtensionCompiler.fs" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\ExtensionSourceChecker.fs" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions\ExtensionCompilationProcess.fs" />
+    <_BuiltInSchemaInput Include="..\..\sidecar\Patchouli.Extensions.Compiler\Program.fs" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+    <_BuiltInSchemaInput Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+  </ItemGroup>
+
+  <Target Name="ResolveBuiltInExtensionSchemaGenerator">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\Patchouli.Core\Patchouli.Core.csproj;$(MSBuildProjectDirectory)\..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj;$(MSBuildProjectDirectory)\..\Patchouli.Extensions\Patchouli.Extensions.fsproj"
+             Targets="GetTargetPath"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0"
+             RemoveProperties="RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun"
+             BuildInParallel="false">
+      <Output TaskParameter="TargetOutputs" ItemName="_BuiltInSchemaApiAssembly" />
+    </MSBuild>
+    <MSBuild Projects="$(BuiltInExtensionSchemaGeneratorProject)" Targets="GetTargetPath"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0"
+             RemoveProperties="$(BuiltInExtensionSchemaGeneratorRemoveProperties)" BuildInParallel="false">
+      <Output TaskParameter="TargetOutputs" ItemName="_BuiltInSchemaGeneratorTargetPath" />
+    </MSBuild>
+    <PropertyGroup>
+      <_BuiltInSchemaGeneratorDirectory>$([System.IO.Path]::GetDirectoryName('@(_BuiltInSchemaGeneratorTargetPath)'))</_BuiltInSchemaGeneratorDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_BuiltInSchemaInput Include="$(_BuiltInSchemaGeneratorDirectory)\*.dll" />
+      <_BuiltInSchemaInput Include="@(_BuiltInSchemaApiAssembly)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="GenerateBuiltInExtensionSchemas" BeforeTargets="PrepareResourceNames"
+          DependsOnTargets="ResolveBuiltInExtensionSchemaGenerator"
+          Inputs="@(_BuiltInSchemaInput)"
+          Outputs="$(BuiltInExtensionSchemaOutput);$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json">
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))" />
+    <Exec Command="dotnet &quot;@(_BuiltInSchemaGeneratorTargetPath)&quot; &quot;$(MSBuildProjectDirectory)\..\..&quot; &quot;$(BuiltInExtensionSchemaOutput)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)\..\.." />
+  </Target>
+  <Target Name="IncludeBuiltInExtensionArtifacts" BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="ResolveProjectReferences;GenerateBuiltInExtensionSchemas">
+    <ItemGroup>
+      <_BuiltInExtensionArchive Include="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\bundled\*.zip" />
+      <EmbeddedResource Include="@(_BuiltInExtensionArchive)"
+                        LogicalName="Patchouli.Infrastructure.Extensions.Compiled.%(_BuiltInExtensionArchive.Filename).zip" />
+    </ItemGroup>
+  </Target>
+  <Target Name="CopyBuiltInExtensionToolchainStamp" AfterTargets="Build"
+          DependsOnTargets="GenerateBuiltInExtensionSchemas">
+    <Copy SourceFiles="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"
+          DestinationFiles="$(TargetDir)ExtensionToolchain.json" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="PublishBuiltInExtensionToolchainStamp" AfterTargets="Publish"
+          DependsOnTargets="GenerateBuiltInExtensionSchemas">
+    <Copy SourceFiles="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"
+          DestinationFiles="$(PublishDir)ExtensionToolchain.json" SkipUnchangedFiles="true" />
+  </Target>
   <ItemGroup>
     <PackageReference Include="Blake3" />
     <PackageReference Include="Dapper" />
@@ -32,8 +118,44 @@
                       LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.deepl-free.main.fsx" />
     <EmbeddedResource Include="Translation\Extensions\translation.deeplx\main.fsx"
                       LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.deeplx.main.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.microsoft-free\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.microsoft-free.main.fsx" />
+    <EmbeddedResource Include="Translation\Extensions\translation.tencent-free\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Translation.Extensions.translation.tencent-free.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\Support.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.Support.fsx" />
     <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.crossref\main.fsx"
                       LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.crossref.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.datacite\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.datacite.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.openalex\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.openalex.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.pubmed\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.pubmed.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.pmc-id-converter\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.pmc-id-converter.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.semantic-scholar\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.semantic-scholar.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.arxiv\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.arxiv.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.open-library\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.open-library.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.google-books\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.google-books.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.calis\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.calis.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.nlc\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.nlc.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.ndl\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.ndl.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.cinii\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.cinii.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.library-of-congress\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.library-of-congress.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.dnb\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.dnb.main.fsx" />
+    <EmbeddedResource Include="Bibliography\MetadataLookup\Extensions\metadata.bnf\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.metadata.bnf.main.fsx" />
   </ItemGroup>
 
   <PropertyGroup>

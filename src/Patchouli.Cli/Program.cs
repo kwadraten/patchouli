@@ -322,6 +322,12 @@ static void PrintUsage()
         "      send runs/translation/control start texts/<document-id>/ --target-language zh-CN --force false");
     Console.Error.WriteLine("      send runs/ocr/control cancel runs/ocr/<task-id>/");
     Console.Error.WriteLine(
+        "      send runs/metadata/control lookup items/<item-id>.yml --scheme doi --value 10.xxxx/xxxxx");
+    Console.Error.WriteLine(
+        "      send runs/metadata/control enrich items/<item-id>.yml");
+    Console.Error.WriteLine(
+        "      send runs/metadata/control enrich_batch items/ --args '{\"item_ids\":[\"<item-id>\"]}'");
+    Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(
         "The CLI is a thin client of the local MCP HTTP host; it never opens the library database directly.");

@@ -31,7 +31,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     private readonly Func<LlmAppSettings> _settings;
     private readonly CancellationToken _hostLifetime;
     private readonly TranslationExtensionRunner _extensionRunner;
-    private readonly Func<CancellationToken, Task>? _initializeExtensions;
+    private readonly Func<string, CancellationToken, Task>? _initializeEngine;
     private readonly ConcurrentDictionary<Guid, RunState> _runs = new();
     private readonly object _startGate = new();
     private readonly SemaphoreSlim _requestGate = new(1, 1);
@@ -50,7 +50,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     /// <param name="pageTranslations">Reads page translation state and commits box payloads.</param>
     /// <param name="settings">Reads the live LLM settings; called for every started run.</param>
     /// <param name="extensionRunner">Acquires the selected pinned translation extension.</param>
-    /// <param name="initializeExtensions">Initializes extension packages before a run starts.</param>
+    /// <param name="initializeEngine">Initializes the selected extension package before a run starts.</param>
     /// <param name="hostLifetime">Cancels every in-flight run when the host shuts down.</param>
     public TranslationRunService(
         IPageService pages,
@@ -58,7 +58,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         IPageTranslationService pageTranslations,
         Func<LlmAppSettings> settings,
         TranslationExtensionRunner extensionRunner,
-        Func<CancellationToken, Task>? initializeExtensions = null,
+        Func<string, CancellationToken, Task>? initializeEngine = null,
         CancellationToken hostLifetime = default)
     {
         ArgumentNullException.ThrowIfNull(pages);
@@ -70,8 +70,28 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         _settings = settings;
         _hostLifetime = hostLifetime;
         _extensionRunner = extensionRunner;
-        _initializeExtensions = initializeExtensions;
+        _initializeEngine = initializeEngine;
         _engine = new TranslationRunEngine(documents, pageTranslations, extensionRunner);
+    }
+
+    /// <summary>Preserves backwards compatibility for callers passing a parameterless extension initializer.</summary>
+    public TranslationRunService(
+        IPageService pages,
+        IDocumentTreeService documents,
+        IPageTranslationService pageTranslations,
+        Func<LlmAppSettings> settings,
+        TranslationExtensionRunner extensionRunner,
+        Func<CancellationToken, Task> initializeExtensions,
+        CancellationToken hostLifetime = default)
+        : this(
+            pages,
+            documents,
+            pageTranslations,
+            settings,
+            extensionRunner,
+            initializeExtensions is null ? null : (_, ct) => initializeExtensions(ct),
+            hostLifetime)
+    {
     }
 
     /// <inheritdoc />
@@ -127,11 +147,6 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_initializeExtensions is not null)
-        {
-            await _initializeExtensions(cancellationToken).ConfigureAwait(false);
-        }
-
         Result<IReadOnlyList<Page>> pages = await _pages.ListPagesAsync(request.DocumentInstanceId, cancellationToken)
             .ConfigureAwait(false);
         if (pages.IsFailure)
@@ -148,6 +163,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             return Result<TranslationRunStatus>.Failure(targets.ErrorCode!, targets.ErrorMessage!);
         }
 
+        bool hasExplicitTargetLanguage = !string.IsNullOrWhiteSpace(request.TargetLanguage);
         TranslationSettings settings = ResolveSettings(request.TargetLanguage);
         TranslationRunRequest runRequest = new(
             request.DocumentInstanceId,
@@ -163,47 +179,6 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             : new CancellationTokenSource();
         RunState state = new(runId, request.DocumentInstanceId, Interlocked.Increment(ref _runSequence), targets.Value,
             cancellation, request with { TargetLanguage = settings.TargetLanguage });
-        try
-        {
-            state.ExtensionRun = await _extensionRunner.AcquireAsync(settings.EngineId, state.ExecutionGate,
-                cancellationToken).ConfigureAwait(false);
-            if (state.ExtensionRun is null)
-            {
-                cancellation.Dispose();
-                return Result<TranslationRunStatus>.Failure(AppErrorCodes.InvalidState,
-                    $"Translation engine '{settings.EngineId}' is not active.");
-            }
-
-            if (string.IsNullOrWhiteSpace(request.TargetLanguage) &&
-                state.ExtensionRun.Config.Values.TryGetValue("target-language", out string? language) &&
-                !string.IsNullOrWhiteSpace(language))
-            {
-                settings = settings with { TargetLanguage = language.Trim() };
-                runRequest = runRequest with { Settings = settings };
-                state.Request = request with { TargetLanguage = settings.TargetLanguage };
-            }
-        }
-        catch (ExtensionAuthorizationException exception)
-        {
-            cancellation.Dispose();
-            return Result<TranslationRunStatus>.Failure("extension_capability_denied", exception.Message);
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
-                                              or System.Text.Json.JsonException)
-        {
-            cancellation.Dispose();
-            return Result<TranslationRunStatus>.Failure("extension_binding_failed", exception.Message);
-        }
-        catch
-        {
-            if (state.ExtensionRun is not null)
-            {
-                await state.ExtensionRun.DisposeAsync().ConfigureAwait(false);
-            }
-
-            cancellation.Dispose();
-            throw;
-        }
 
         bool rejected = false;
         lock (_startGate)
@@ -216,18 +191,14 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             else
             {
                 state.ExecutionGate.SetPaused(!_queueRunning || _globallyPaused);
-                state.RunTask = Task.Run(() => ExecuteAsync(state, runRequest), CancellationToken.None);
+                state.RunTask = Task.Run(() => ExecuteAsync(state, runRequest, settings,
+                    hasExplicitTargetLanguage), CancellationToken.None);
                 _runs[runId] = state;
             }
         }
 
         if (rejected)
         {
-            if (state.ExtensionRun is not null)
-            {
-                await state.ExtensionRun.DisposeAsync().ConfigureAwait(false);
-            }
-
             return Result<TranslationRunStatus>.Failure(AppErrorCodes.InvalidState,
                 "The translation run service has been disposed.");
         }
@@ -269,11 +240,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 $"The translation run '{runId}' does not exist."));
         }
 
-        if (run.TryMarkCancelled())
-        {
-            run.Cancellation.Cancel();
-        }
-
+        run.TryCancel();
         return Task.FromResult(Result<TranslationRunStatus>.Success(run.Snapshot()));
     }
 
@@ -386,10 +353,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
 
         foreach (RunState run in runs)
         {
-            if (run.TryMarkCancelled())
-            {
-                run.Cancellation.Cancel();
-            }
+            run.TryCancel();
         }
 
         foreach (RunState run in runs)
@@ -409,25 +373,90 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
 
         foreach (RunState run in runs)
         {
-            run.Cancellation.Dispose();
+            run.DisposeCancellation();
         }
     }
 
-    private async Task ExecuteAsync(RunState state, TranslationRunRequest request)
+    private async Task ExecuteAsync(RunState state, TranslationRunRequest request, TranslationSettings initialSettings,
+        bool hasExplicitTargetLanguage)
     {
+        CancellationToken cancellationToken = state.Token;
         try
         {
-            await state.ExecutionGate.WaitAsync(state.Cancellation.Token).ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested || state.IsCancellationRequested)
+            {
+                state.CompleteCancelled();
+                return;
+            }
+
+            state.RecordStep(new TranslationStepProgress(
+                "initializing",
+                0,
+                state.TotalPages,
+                "starting",
+                "Initializing translation engine..."));
+
+            if (_initializeEngine is not null)
+            {
+                await _initializeEngine(initialSettings.EngineId, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (cancellationToken.IsCancellationRequested || state.IsCancellationRequested)
+            {
+                state.CompleteCancelled();
+                return;
+            }
+
+            state.ExtensionRun = await _extensionRunner.AcquireAsync(
+                initialSettings.EngineId,
+                state.ExecutionGate,
+                cancellationToken).ConfigureAwait(false);
+
+            if (state.ExtensionRun is null)
+            {
+                state.Fail(AppErrorCodes.InvalidState,
+                    $"Translation engine '{initialSettings.EngineId}' is not active.");
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested || state.IsCancellationRequested)
+            {
+                state.CompleteCancelled();
+                return;
+            }
+
+            TranslationSettings settings = initialSettings;
+            if (!hasExplicitTargetLanguage &&
+                state.ExtensionRun.Config.Values.TryGetValue("target-language", out string? language) &&
+                !string.IsNullOrWhiteSpace(language))
+            {
+                settings = settings with { TargetLanguage = language.Trim() };
+                request = request with { Settings = settings };
+                state.Request = state.Request with { TargetLanguage = settings.TargetLanguage };
+            }
+
+            await state.ExecutionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
             TranslationRunResult result = await _engine.RunAsync(
                     request,
                     new RunProgress(state),
-                    state.Cancellation.Token, state.ExecutionGate, new StepProgress(state), state.ExtensionRun)
+                    cancellationToken,
+                    state.ExecutionGate,
+                    new StepProgress(state),
+                    state.ExtensionRun)
                 .ConfigureAwait(false);
+
             state.Complete(result);
         }
-        catch (OperationCanceledException) when (state.Cancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested ||
+                                                 state.IsCancellationRequested)
         {
             state.CompleteCancelled();
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                                              or System.Text.Json.JsonException)
+        {
+            state.Fail("extension_binding_failed", exception.Message);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
                                               exception, "host.translation-run"))
@@ -441,6 +470,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 state.ExtensionRun = null;
                 await lease.DisposeAsync().ConfigureAwait(false);
             }
+
+            state.DisposeCancellation();
         }
     }
 
@@ -540,13 +571,16 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         private string? _errorCode;
         private string? _errorMessage;
         private TranslationStepProgress? _currentStep;
+        private CancellationTokenSource? _cancellation;
+        private bool _cancellationDisposed;
 
         public RunState(
             Guid runId,
             DocumentInstanceId documentInstanceId,
             long sequence,
             IReadOnlyList<TranslationPageTarget> targets,
-            CancellationTokenSource cancellation, TranslationRunStartRequest request)
+            CancellationTokenSource cancellation,
+            TranslationRunStartRequest request)
         {
             Request = request;
             RunId = runId;
@@ -560,9 +594,17 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 _slotByPageIndex[_targets[index].PageIndex] = index;
             }
 
-            Cancellation = cancellation;
+            _cancellation = cancellation;
+            Token = cancellation.Token;
+            _currentStep = new TranslationStepProgress(
+                "initializing",
+                0,
+                _targets.Length,
+                "starting",
+                "Initializing translation engine...");
         }
 
+        public int TotalPages => _targets.Length;
         public TranslationRunStartRequest Request { get; set; }
         public TranslationExtensionRun? ExtensionRun { get; set; }
         public TranslationExecutionGate ExecutionGate { get; } = new();
@@ -570,8 +612,19 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         public Guid RunId { get; }
         public DocumentInstanceId DocumentInstanceId { get; }
         public long Sequence { get; }
-        public CancellationTokenSource Cancellation { get; }
+        public CancellationToken Token { get; }
         public Task RunTask { get; set; } = Task.CompletedTask;
+
+        public bool IsCancellationRequested
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _state == TranslationRunLifecycle.Cancelled || Token.IsCancellationRequested;
+                }
+            }
+        }
 
         public void RecordStep(TranslationStepProgress step)
         {
@@ -643,8 +696,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             }
         }
 
-        /// <summary>Marks a running run cancelled and reports whether the caller should signal the token.</summary>
-        public bool TryMarkCancelled()
+        /// <summary>Marks a running run cancelled and signals cancellation.</summary>
+        public bool TryCancel()
         {
             lock (_gate)
             {
@@ -656,8 +709,35 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 _state = TranslationRunLifecycle.Cancelled;
                 _errorCode = "cancelled";
                 _errorMessage = "The translation run was cancelled.";
+                try
+                {
+                    if (!_cancellationDisposed && _cancellation is { } cts)
+                    {
+                        cts.Cancel();
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
                 return true;
             }
+        }
+
+        public void DisposeCancellation()
+        {
+            CancellationTokenSource? cts = null;
+            lock (_gate)
+            {
+                if (!_cancellationDisposed)
+                {
+                    _cancellationDisposed = true;
+                    cts = _cancellation;
+                    _cancellation = null;
+                }
+            }
+
+            cts?.Dispose();
         }
 
         public TranslationRunStatus Snapshot()
@@ -681,7 +761,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                     settled.Count(static outcome => outcome.State == TranslationPageRunState.Cancelled),
                     settled,
                     _errorCode,
-                    _errorMessage, IsPaused: _state == TranslationRunLifecycle.Running && ExecutionGate.IsPaused,
+                    _errorMessage,
+                    IsPaused: _state == TranslationRunLifecycle.Running && ExecutionGate.IsPaused,
                     CurrentStep: _currentStep);
             }
         }

@@ -1,4 +1,4 @@
-﻿using FluentAssertions;
+using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;

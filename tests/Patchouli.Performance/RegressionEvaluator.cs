@@ -94,6 +94,8 @@ public static class RegressionEvaluator
                 baseline.FirstLibraryRowsHotMs, tolerance.Latency, tolerance.LatencyCeilingMs);
             CompareNullable(checks, ref failed, "ui.heartbeat_max_gap", "ms", ui.HeartbeatMaxGapMs,
                 baseline.HeartbeatMaxGapMs, tolerance.Latency, tolerance.LatencyCeilingMs);
+            CompareUiPaging(checks, ref failed, ui.PagingMeasurements, baseline.PagingMeasurements,
+                tolerance);
         }
         else
         {
@@ -115,6 +117,54 @@ public static class RegressionEvaluator
             tolerance.UiFirstLibraryRowsBudgetMs);
         CompareBudget(checks, ref failed, "ui.heartbeat_max_gap", "budget", ui.HeartbeatMaxGapMs,
             tolerance.UiHeartbeatBudgetMs);
+    }
+
+    /// <summary>
+    /// Compares the versioned split paging measurements. Values are only ratioed when both sides
+    /// were recorded under the same <see cref="ReportUiPagingMeasurements.MeasurementVersion"/>; a
+    /// version mismatch or a baseline that predates the section is flagged "warn" as
+    /// non-comparable (a new baseline is required) instead of producing a numeric comparison.
+    /// This never disables the absolute budget checks, which still run on the legacy fields.
+    /// </summary>
+    private static void CompareUiPaging(
+        List<RegressionCheck> checks,
+        ref int failed,
+        ReportUiPagingMeasurements? current,
+        ReportUiPagingMeasurements? baseline,
+        RegressionTolerance tolerance)
+    {
+        if (current is null)
+        {
+            if (baseline is not null)
+            {
+                checks.Add(new RegressionCheck("ui.paging", "measurement_version", "absent",
+                    $"v{baseline.MeasurementVersion}", "new baseline required", "warn"));
+            }
+
+            return;
+        }
+
+        if (baseline is null || baseline.MeasurementVersion != current.MeasurementVersion)
+        {
+            checks.Add(new RegressionCheck("ui.paging", "measurement_version",
+                $"v{current.MeasurementVersion}",
+                baseline is null ? "absent" : $"v{baseline.MeasurementVersion}",
+                "new baseline required", "warn"));
+            return;
+        }
+
+        CompareNullable(checks, ref failed, "ui.first_batch_ready_cold", "ms",
+            current.FirstBatchReadyColdMs, baseline.FirstBatchReadyColdMs, tolerance.Latency,
+            tolerance.LatencyCeilingMs);
+        CompareNullable(checks, ref failed, "ui.first_batch_ready_hot", "ms",
+            current.FirstBatchReadyHotMs, baseline.FirstBatchReadyHotMs, tolerance.Latency,
+            tolerance.LatencyCeilingMs);
+        CompareNullable(checks, ref failed, "ui.all_pages_drained_cold", "ms",
+            current.AllPagesDrainedColdMs, baseline.AllPagesDrainedColdMs, tolerance.Latency,
+            tolerance.LatencyCeilingMs);
+        CompareNullable(checks, ref failed, "ui.all_pages_drained_hot", "ms",
+            current.AllPagesDrainedHotMs, baseline.AllPagesDrainedHotMs, tolerance.Latency,
+            tolerance.LatencyCeilingMs);
     }
 
     private static void CompareBudget(

@@ -757,7 +757,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             await section.LoadAsync();
 
             section.TranslationEngineOptions.Select(option => option.Id).Should().Equal(
-                "translation.llm", "translation.google-free", "translation.deepl-free", "translation.deeplx");
+                "translation.llm", "translation.google-free", "translation.deepl-free",
+                "translation.microsoft-free", "translation.tencent-free", "translation.deeplx");
             section.SelectedTranslationEngine = section.TranslationEngineOptions.Single(option =>
                 option.Id == "translation.deeplx");
             section.TranslationEngineId.Should().Be("translation.deeplx");

@@ -12,6 +12,17 @@ using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
+/// <remarks>
+/// R14 shared-state audit (no case moved): the Fixture constructs <see cref="MainWindowViewModel"/>
+/// on the xunit worker thread with <c>uiScheduler: ImmediateScheduler.Instance</c> — deterministic,
+/// but not UI-free. The VM ctor calls <c>ThemePaletteApplier.Apply</c>, which writes process-global
+/// theme statics and mutates <c>Application.Current</c> resources/theme variant whenever an
+/// Application is installed by another test's dispatch. CreateAsync additionally opens a real
+/// SQLite database (OpenDatabaseCommand/Library.CreateCommand via ServicesAsync/HostServices) and
+/// binds real loopback <see cref="TcpListener"/> ports — machine-scoped resources. DisposeAsync
+/// disposes the VM and the temp settings file; SQLite pools are not purged here. Keep the class in
+/// a DisableParallelization collection.
+/// </remarks>
 [Collection("Avalonia")]
 public sealed class McpSettingsNavigationTests
 {

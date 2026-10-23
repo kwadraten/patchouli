@@ -20,13 +20,18 @@ public sealed partial class ExtensionConfigurationDialog : Window
             if (DataContext is ExtensionSettingsViewModel { IsEditorBusy: true })
             {
                 args.Cancel = true;
+                return;
             }
+
+            (DataContext as ExtensionSettingsViewModel)?.CancelPendingLoad();
         };
     }
 
     public ExtensionConfigurationDialog(ExtensionSettingsViewModel editor) : this()
     {
         DataContext = editor;
+        Opened += (_, _) => editor.LoadAsync().Observe(nameof(ExtensionConfigurationDialog), "load-extension-dialog");
+        Closed += (_, _) => editor.CancelPendingLoad();
     }
 
     public bool IsSourceVisible => SourcePanel.IsVisible;

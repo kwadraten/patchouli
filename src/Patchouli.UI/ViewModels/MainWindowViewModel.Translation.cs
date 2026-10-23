@@ -77,8 +77,7 @@ public sealed partial class MainWindowViewModel
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            ReportError($"无法启动全文翻译：{exception.Message}" +
-                        " 请检查「AI集成 → 模型连接」中的模型与凭据。");
+            ReportError($"无法启动全文翻译：{exception.Message}");
         }
     }
 
@@ -87,7 +86,15 @@ public sealed partial class MainWindowViewModel
         string detail = string.IsNullOrWhiteSpace(failure.ErrorMessage)
             ? failure.ErrorCode ?? "未知错误"
             : failure.ErrorMessage!;
-        return $"无法启动全文翻译：{detail}。请检查所选文档的页面，以及「AI集成 → 模型连接」" +
-               "中的模型与凭据。";
+        if (detail.Contains("model", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("credential", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("provider", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("api", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("key", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"无法启动全文翻译：{detail}。请检查所选文档的页面，以及「AI集成 → 模型连接」中的模型与凭据。";
+        }
+
+        return $"无法启动全文翻译：{detail}。";
     }
 }

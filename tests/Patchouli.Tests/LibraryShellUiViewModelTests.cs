@@ -16,6 +16,19 @@ namespace Patchouli.Tests;
 /// state is projected through Rx pipelines registered for disposal, and inspector loads are
 /// latest-wins.
 /// </summary>
+/// <remarks>
+/// R14 shared-state audit (no case moved): this class constructs <see cref="MainWindowViewModel"/>
+/// directly on the xunit worker thread — no headless session and no Dispatch. The VM ctor still
+/// calls <c>ThemePaletteApplier.Apply</c> unconditionally, which writes the process-global
+/// CurrentPaletteId/CurrentThemeMode/_watchedApp statics and mutates
+/// <c>Application.Current.Resources</c>/RequestedThemeVariant whenever an Application is installed
+/// by another test's dispatch. <c>_uiScheduler</c> falls back to
+/// <c>SynchronizationContext.Current</c> (xunit's context under the runner), so the Rx pipelines
+/// under observation run on that scheduler and quiescence is polled with Task.Delay. Most cases do
+/// not dispose the view model — subscriptions live until GC — which is only acceptable because the
+/// class is serialized. "No direct Dispatcher reference" is therefore NOT evidence of UI-freedom:
+/// keep the class in a DisableParallelization collection.
+/// </remarks>
 [Collection("Avalonia")]
 public sealed class LibraryShellUiViewModelTests : IDisposable
 {

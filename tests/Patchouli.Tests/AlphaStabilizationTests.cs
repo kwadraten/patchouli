@@ -143,7 +143,7 @@ public sealed class AlphaStabilizationTests : IDisposable
         string path = TestPaths.FromRepositoryRoot(".agents", "domain.md");
         File.Exists(path).Should().BeTrue();
         File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And
-            .Contain(".agents/mcp-protocol.md");
+            .Contain(".agents/protocols/mcp-protocol.md");
     }
 
     private sealed class NoopClipboard : IClipboardService

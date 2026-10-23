@@ -60,6 +60,7 @@ using Patchouli.Host.Caching;
 using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
+using Patchouli.Host.Metadata;
 using Patchouli.Host.Translation;
 using Patchouli.Host.Extensions;
 using Patchouli.Host.Settings;
@@ -92,12 +93,11 @@ public sealed class HostServices
     private AgentIntegrationAppSettings _agentSettings;
     private HttpClient? _cslCatalogHttpClient;
 
-    private readonly HttpClient _extensionHttpClient = new(new SocketsHttpHandler
+    private readonly HttpMessageInvoker _extensionHttpInvoker = new(new SocketsHttpHandler
     {
         AutomaticDecompression = System.Net.DecompressionMethods.All
-    }) { Timeout = Timeout.InfiniteTimeSpan };
+    }, true);
 
-    private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
@@ -115,7 +115,7 @@ public sealed class HostServices
 
     private HostServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
         IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null,
-        IHostActivityTracker? activityTracker = null)
+        IHostActivityTracker? activityTracker = null, HostOcrCompositionOptions? ocrComposition = null)
     {
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
@@ -158,8 +158,9 @@ public sealed class HostServices
         ItemTypeProfiles = new CslItemTypeProfileService();
         ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings.MetadataLookup);
-        _metadataLookupHttpClient = new HttpClient();
-        MetadataSources = MetadataSourceRegistry.CreateDefault(_metadataLookupHttpClient);
+        // Every built-in metadata source is an FSX extension (issue #8); the baseline registry stays
+        // empty and the extension registry below supplies the active sources at call time.
+        MetadataSources = new MetadataSourceRegistry([]);
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
         LibrarySettingCoordinator = new LibrarySettingCoordinator(LibrarySettings, LibrarySettingRecords);
@@ -208,12 +209,6 @@ public sealed class HostServices
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
-        if (settings.Runtime.UseMockOcrOnly)
-        {
-            adapterRegistry.RegisterAdapter(new MockOcrAdapter());
-            adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
-        }
-
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
         adapterRegistry.RegisterAdapter(new LayoutAwareMultimodalOcrAdapter(
             new MultimodalLlmOcrAdapter(new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)),
@@ -221,6 +216,12 @@ public sealed class HostServices
         adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
+        // Optional test/embedder adapters are registered last so an explicit dependency wins over
+        // a product adapter with the same engine id. Production composition passes none.
+        foreach (IRealOcrAdapter additionalAdapter in ocrComposition?.AdditionalOcrAdapters ?? [])
+        {
+            adapterRegistry.RegisterAdapter(additionalAdapter);
+        }
 
         OcrAdapters = adapterRegistry;
         _ndlKotenModelHttpClient = new HttpClient();
@@ -252,7 +253,7 @@ public sealed class HostServices
         VersionedEvidenceReader =
             new VersionedEvidenceReader(ConnectionFactory, Library, DocumentTrees, DocumentMarkdown);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
-        IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
+        IOcrEngine pageOcrEngine = ocrComposition?.PageOcrEngine ?? new UnavailableOcrEngine();
         _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
@@ -287,22 +288,23 @@ public sealed class HostServices
         // Issue #20 (B1): the direct batch translation engine is host-owned state, not an Agent or
         // workflow. Every run reads the live LLM/Translation settings when it starts; runs are
         // volatile and keep the engine's per-page outcomes for MCP observation and cancellation.
-        ExtensionCapabilities = new HostExtensionCapabilities(() => LlmSettings, Credentials, _extensionHttpClient);
+        ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
         TranslationExtensions = new TranslationExtensionCatalog(
             Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
-            () => LlmSettings, ExtensionCapabilities);
+            () => LlmSettings, ExtensionResources);
         ExtensionDomains = new ExtensionDomainService(TranslationExtensions, Pages, PageRenders, DocumentTrees,
             ocrTreeImporter, Search);
         MetadataSources = new ExtensionMetadataRegistry(MetadataSources, () => TranslationExtensions.MetadataSources);
         MetadataLookup =
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
+        MetadataRuns = new MetadataRunService(MetadataLookup, LifetimeToken);
         TranslationRuns = new TranslationRunService(
             Pages,
             DocumentTrees,
             PageTranslations,
             () => LlmSettings,
             TranslationExtensions.Runner,
-            TranslationExtensions.InitializeAsync,
+            TranslationExtensions.EnsureExtensionAsync,
             LifetimeToken);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         DocumentPageMaps = new DocumentPageMapService(ConnectionFactory, Clock, Documents, Pages, DocumentTrees,
@@ -327,7 +329,8 @@ public sealed class HostServices
                     : throw new InvalidOperationException(permissions.ErrorMessage);
             },
             ocrCommands: OcrCommands,
-            translationRuns: new McpHostTranslationRunsApi(TranslationRuns));
+            translationRuns: new McpHostTranslationRunsApi(TranslationRuns),
+            metadataRuns: new McpHostMetadataRunsApi(MetadataRuns));
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -484,9 +487,10 @@ public sealed class HostServices
     public IOcrRunCoordinator Ocr { get; }
     public IMcpOcrCommandApi OcrCommands { get; }
     public ITranslationRunService TranslationRuns { get; }
+    public IMetadataRunService MetadataRuns { get; }
     public TranslationExtensionCatalog TranslationExtensions { get; }
     public ExtensionDomainService ExtensionDomains { get; }
-    public HostExtensionCapabilities ExtensionCapabilities { get; }
+    public HostExtensionResources ExtensionResources { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public IDocumentPageMapService DocumentPageMaps { get; }
@@ -524,6 +528,7 @@ public sealed class HostServices
     /// coordinate on the same claims.
     /// </summary>
     public IFileOperationCoordinator FileOperations { get; }
+
     public IPageImageViewService PageImageView { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
@@ -799,7 +804,7 @@ public sealed class HostServices
         string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
         IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null,
-        RuntimeHostLease? runtimeHostLease = null)
+        RuntimeHostLease? runtimeHostLease = null, HostOcrCompositionOptions? ocrComposition = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
@@ -821,7 +826,8 @@ public sealed class HostServices
         }
 
         startupProgress?.Report(StartupStage.ComposingServices);
-        HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected, activityTracker);
+        HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected, activityTracker,
+            ocrComposition);
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.
@@ -952,9 +958,21 @@ public sealed class HostServices
             await translationRuns.DisposeAsync();
         }
 
+        await ((IAsyncDisposable)MetadataRuns).DisposeAsync();
+
         await LibraryRevisionMonitor.DisposeAsync();
         await TranslationExtensions.DisposeAsync();
-        _extensionHttpClient.Dispose();
+
+        // Page rendering owns the reusable PDFium document sessions for interactive viewing.
+        // Every render consumer has stopped above, so disposing it now closes every open
+        // document handle (waiting for in-flight renders to drain) and a stopped host never
+        // leaves source files locked after shutdown.
+        if (PageRenders is IAsyncDisposable pageRenders)
+        {
+            await pageRenders.DisposeAsync();
+        }
+
+        _extensionHttpInvoker.Dispose();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
         _updateApiHttpClient.Dispose();

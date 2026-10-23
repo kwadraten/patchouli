@@ -5,15 +5,23 @@ using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class SettingsGroupingTests
+/// <remarks>
+/// R9 classification: pure settings routing/dirty-state/layout assertions. These cases never trigger
+/// extension activation or worker startup; extension listing stays behind the lightweight descriptor
+/// boundary (bundled manifests + working-source reads). Keep them free of
+/// <c>TranslationExtensionCatalog.InitializeAsync</c>.
+/// R13 shared session: no Dispatcher statics or cross-case subscriptions; each case still owns its
+/// <see cref="TemporaryAppSettingsFile"/> and <see cref="MainWindowViewModel"/> inside the dispatch.
+/// </remarks>
+[Collection("RetainedTabUI")]
+public sealed class SettingsGroupingTests(AvaloniaSharedSessionFixture headless)
 {
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Section_errors_use_the_status_bar_and_clearing_preserves_unrelated_notifications(bool laterError)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -52,7 +60,7 @@ public sealed class SettingsGroupingTests
     [InlineData("csl_online", "在线样式", "引用与题录")]
     public async Task Stable_section_routes_select_the_correct_subpage(string id, string title, string category)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -76,7 +84,7 @@ public sealed class SettingsGroupingTests
     [Fact]
     public async Task Saving_and_discarding_include_sections_inside_inactive_groups()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();

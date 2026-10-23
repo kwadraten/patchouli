@@ -15,8 +15,11 @@ namespace Patchouli.Tests;
 public sealed class PdfiumSessionCacheIssue31Tests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
-    private static string NewDocPath() =>
-        Path.Combine(Path.GetTempPath(), $"issue31-{Guid.NewGuid():N}", "doc.pdf");
+
+    private static string NewDocPath()
+    {
+        return Path.Combine(Path.GetTempPath(), $"issue31-{Guid.NewGuid():N}", "doc.pdf");
+    }
 
     [Fact]
     public async Task Twenty_concurrent_callers_share_exactly_one_open()
@@ -33,30 +36,40 @@ public sealed class PdfiumSessionCacheIssue31Tests
         };
         await using PdfiumSessionCache cache = new(factory.OpenAsync, 8, long.MaxValue);
 
-        using ManualResetEventSlim start = new(false);
+        TaskCompletionSource start = NewSignal();
         Task<IPdfPageSession>[] callers = Enumerable.Range(0, 20)
             .Select(_ => Task.Run(async () =>
             {
-                start.Wait();
+                await start.Task;
+                // All callers are drained in finally before the cache's async-disposal scope ends.
+                // ReSharper disable once AccessToDisposedClosure
                 return await cache.GetOrOpenAsync(path);
             }))
             .ToArray();
-        start.Set();
-
-        await entered.Task.WaitAsync(Timeout);
-        callers.Should().OnlyContain(task => !task.IsCompleted,
-            "while the single shared open is blocked, every caller is still waiting on it");
-
-        release.TrySetResult();
-        IPdfPageSession[] sessions = await Task.WhenAll(callers).WaitAsync(Timeout);
-
-        factory.CallCount.Should().Be(1, "twenty concurrent callers coalesce into one actual open");
-        sessions.Should().OnlyContain(session => ReferenceEquals(session, sessions[0]));
-        cache.Opens.Should().Be(1);
-        cache.Count.Should().Be(1);
-        foreach (IPdfPageSession session in sessions)
+        try
         {
-            cache.Return(session);
+            start.TrySetResult();
+            await entered.Task.WaitAsync(Timeout);
+            callers.Should().OnlyContain(task => !task.IsCompleted,
+                "while the single shared open is blocked, every caller is still waiting on it");
+
+            release.TrySetResult();
+            IPdfPageSession[] sessions = await Task.WhenAll(callers).WaitAsync(Timeout);
+
+            factory.CallCount.Should().Be(1, "twenty concurrent callers coalesce into one actual open");
+            sessions.Should().OnlyContain(session => ReferenceEquals(session, sessions[0]));
+            cache.Opens.Should().Be(1);
+            cache.Count.Should().Be(1);
+            foreach (IPdfPageSession session in sessions)
+            {
+                cache.Return(session);
+            }
+        }
+        finally
+        {
+            start.TrySetResult();
+            release.TrySetResult();
+            await Task.WhenAll(callers).WaitAsync(Timeout);
         }
     }
 
@@ -68,6 +81,8 @@ public sealed class PdfiumSessionCacheIssue31Tests
         await using PdfiumSessionCache cache = new(factory.OpenAsync, 8, long.MaxValue);
         string path = NewDocPath();
 
+        // The delegate is invoked and awaited within the cache's async-disposal scope.
+        // ReSharper disable once AccessToDisposedClosure
         Func<Task> first = () => cache.GetOrOpenAsync(path);
         await first.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("sync-open-failure");
@@ -225,8 +240,10 @@ public sealed class PdfiumSessionCacheIssue31Tests
         cache.InUseCount.Should().Be(0, "the lease acquired across the failing drain returns normally");
     }
 
-    private static TaskCompletionSource NewSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource NewSignal()
+    {
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private sealed class FakeFactory
     {

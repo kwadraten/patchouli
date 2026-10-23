@@ -118,8 +118,9 @@ public sealed class PdfiumPageCountIssue31Tests : IDisposable
         PdfMetadataReader reader = new();
         using CancellationTokenSource cancelling = new();
         cancelling.Cancel();
+        CancellationToken token = cancelling.Token;
 
-        Func<Task> act = () => reader.GetPageCountAsync(valid, cancelling.Token);
+        Func<Task> act = () => reader.GetPageCountAsync(valid, token);
 
         await act.Should().ThrowAsync<OperationCanceledException>(
             "cancellation is not a PDFium failure and must not be converted into one");

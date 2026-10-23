@@ -109,8 +109,7 @@ public sealed class OcrPresetDefaultsTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             }, Path.Combine(root, "settings.json"));
             (await services.Library.CreateLibraryAsync("OCR defaults")).IsSuccess.Should().BeTrue();

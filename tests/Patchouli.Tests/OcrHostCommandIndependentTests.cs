@@ -609,6 +609,7 @@ public sealed class OcrHostCommandIndependentTests
     public async Task Cli_mapping_crosses_real_http_transport_to_host_queue_status_and_committed_text()
     {
         await using Context context = await Context.CreateAsync();
+        PhaseLog phases = new();
         using TcpListener listener = new(IPAddress.Loopback, 0);
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -628,14 +629,15 @@ public sealed class OcrHostCommandIndependentTests
         {
             server.IsRunning.Should().BeTrue();
             using McpHttpClient client = new(server.Endpoint, null);
-            await client.InitializeAsync();
+            await phases.RecordAsync("initialize", () => client.InitializeAsync());
             CliToolCall start = CliArguments.BuildToolCall("send",
             [
                 "runs/ocr/control", "start", $"patchouli://texts/{context.DocumentId}/", "--args",
                 """{"pages":"2","engine":"mock"}""", "--request-id", "http-cli"
             ], true);
 
-            CliToolResponse accepted = await client.CallToolAsync(start.Tool, start.Arguments);
+            CliToolResponse accepted = await phases.RecordAsync("ocr.start",
+                () => client.CallToolAsync(start.Tool, start.Arguments));
 
             accepted.IsError.Should().BeFalse(accepted.Text);
             accepted.ExitCode.Should().Be(0);
@@ -644,11 +646,15 @@ public sealed class OcrHostCommandIndependentTests
             acceptedAction.GetProperty("state").GetString().Should().Be("started");
             string statusUri = acceptedAction.GetProperty("run_uri").GetString()!;
             acceptedAction.GetProperty("result").GetProperty("status_uri").GetString().Should().Be(statusUri);
-            await context.Queue.ResumeAsync(OcrPauseScope.Global);
-            await context.Queue.StartAsync();
-            await context.Queue.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            await phases.RecordAsync("ocr.idle", async () =>
+            {
+                await context.Queue.ResumeAsync(OcrPauseScope.Global);
+                await context.Queue.StartAsync();
+                await context.Queue.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            });
             CliToolCall fetchStatus = CliArguments.BuildToolCall("fetch", [statusUri], true);
-            CliToolResponse status = await client.CallToolAsync(fetchStatus.Tool, fetchStatus.Arguments);
+            CliToolResponse status = await phases.RecordAsync("ocr.fetch.status",
+                () => client.CallToolAsync(fetchStatus.Tool, fetchStatus.Arguments));
             status.IsError.Should().BeFalse(status.Text);
             using JsonDocument statusEnvelope = JsonDocument.Parse(status.Text);
             string statusContent =
@@ -663,7 +669,8 @@ public sealed class OcrHostCommandIndependentTests
             projection.RootElement.GetProperty("index_state").GetString().Should().Be("indexed");
             CliToolCall fetchText =
                 CliArguments.BuildToolCall("fetch", [$"patchouli://texts/{context.DocumentId}/page-2.xml"], true);
-            CliToolResponse body = await client.CallToolAsync(fetchText.Tool, fetchText.Arguments);
+            CliToolResponse body = await phases.RecordAsync("ocr.fetch.body",
+                () => client.CallToolAsync(fetchText.Tool, fetchText.Arguments));
             body.IsError.Should().BeFalse(body.Text);
             using JsonDocument bodyEnvelope = JsonDocument.Parse(body.Text);
             bodyEnvelope.RootElement.GetProperty("entries")[0].GetProperty("content").GetString()
@@ -674,14 +681,14 @@ public sealed class OcrHostCommandIndependentTests
                 "runs/translation/control", "start", $"texts/{context.DocumentId}/", "--pages", "2",
                 "--target-language", "zh-CN", "--force", "false", "--request-id", "http-translation"
             ], true);
-            CliToolResponse translationAccepted =
-                await client.CallToolAsync(translationStart.Tool, translationStart.Arguments);
+            CliToolResponse translationAccepted = await phases.RecordAsync("translation.start",
+                () => client.CallToolAsync(translationStart.Tool, translationStart.Arguments));
             translationAccepted.IsError.Should().BeFalse(translationAccepted.Text);
             using JsonDocument translationReceipt = JsonDocument.Parse(translationAccepted.Text);
             string translationStatus = translationReceipt.RootElement.GetProperty("entries")[0].GetProperty("run_uri")
                 .GetString()!;
-            CliToolResponse translationReplay =
-                await client.CallToolAsync(translationStart.Tool, translationStart.Arguments);
+            CliToolResponse translationReplay = await phases.RecordAsync("translation.replay",
+                () => client.CallToolAsync(translationStart.Tool, translationStart.Arguments));
             translationReplay.IsError.Should().BeFalse(translationReplay.Text);
             using JsonDocument replayReceipt = JsonDocument.Parse(translationReplay.Text);
             replayReceipt.RootElement.GetProperty("entries")[0].GetProperty("result").GetProperty("reused").GetBoolean()
@@ -689,16 +696,57 @@ public sealed class OcrHostCommandIndependentTests
             replayReceipt.RootElement.GetProperty("entries")[0].GetProperty("run_uri").GetString().Should()
                 .Be(translationStatus);
             CliToolCall translationFetch = CliArguments.BuildToolCall("fetch", [translationStatus], true);
-            (await client.CallToolAsync(translationFetch.Tool, translationFetch.Arguments)).IsError.Should().BeFalse();
+            CliToolResponse translationFetched = await phases.RecordAsync("translation.fetch",
+                () => client.CallToolAsync(translationFetch.Tool, translationFetch.Arguments));
+            translationFetched.IsError.Should().BeFalse(translationFetched.Text);
             CliToolCall translationCancel = CliArguments.BuildToolCall("send",
                 ["runs/translation/control", "cancel", translationStatus[..^"status".Length]], true);
-            CliToolResponse translationCancelled =
-                await client.CallToolAsync(translationCancel.Tool, translationCancel.Arguments);
+            CliToolResponse translationCancelled = await phases.RecordAsync("translation.cancel",
+                () => client.CallToolAsync(translationCancel.Tool, translationCancel.Arguments));
             translationCancelled.IsError.Should().BeFalse(translationCancelled.Text);
+            using JsonDocument cancelReceipt = JsonDocument.Parse(translationCancelled.Text);
+            cancelReceipt.RootElement.GetProperty("entries")[0].GetProperty("result")
+                .GetProperty("state").GetString().Should().Be("cancelled");
+
+            phases.Names.Should().Equal(
+                "initialize", "ocr.start", "ocr.idle", "ocr.fetch.status", "ocr.fetch.body",
+                "translation.start", "translation.replay", "translation.fetch", "translation.cancel");
         }
         finally
         {
             await server.StopAsync();
+        }
+    }
+
+    /// <summary>
+    ///     Records the wall-clock duration of each real HTTP/CLI phase in a run scenario so the
+    ///     accepted/background split stays observable: receipt phases must not hide the engine
+    ///     initialization that now runs on the background run task.
+    /// </summary>
+    private sealed class PhaseLog
+    {
+        private readonly List<(string Name, TimeSpan Elapsed)> _entries = [];
+
+        public IReadOnlyList<string> Names => _entries.Select(entry => entry.Name).ToArray();
+
+        public async Task RecordAsync(string name, Func<Task> operation)
+        {
+            await RecordAsync(name, async () =>
+            {
+                await operation().ConfigureAwait(false);
+                return true;
+            }).ConfigureAwait(false);
+        }
+
+        public async Task<T> RecordAsync<T>(string name, Func<Task<T>> operation)
+        {
+            System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            T result = await operation().ConfigureAwait(false);
+            watch.Stop();
+            _entries.Add((name, watch.Elapsed));
+            Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"PHASE {name} {watch.Elapsed.TotalMilliseconds:0.##} ms"));
+            return result;
         }
     }
 
@@ -1109,7 +1157,8 @@ public sealed class OcrHostCommandIndependentTests
         HostServices services,
         IOcrQueueScheduler queue,
         DocumentInstanceId documentId,
-        OcrPreset preset) : IAsyncDisposable
+        OcrPreset preset,
+        HostOcrCompositionOptions ocrComposition) : IAsyncDisposable
     {
         public string Root { get; } = root;
         public string Source { get; } = source;
@@ -1117,6 +1166,7 @@ public sealed class OcrHostCommandIndependentTests
         public IOcrQueueScheduler Queue { get; private set; } = queue;
         public DocumentInstanceId DocumentId { get; } = documentId;
         public OcrPreset Preset { get; } = preset;
+        public HostOcrCompositionOptions OcrComposition { get; } = ocrComposition;
 
         public static async Task<Context> CreateAsync(string configuredEngine = OcrEngineIds.Mock)
         {
@@ -1129,6 +1179,9 @@ public sealed class OcrHostCommandIndependentTests
                     "real-three-page-sample.pdf"), source);
             string db = Path.Combine(root, "runtime.sqlite");
             PatchouliAppSettings settings = PatchouliAppSettings.Default();
+            // These independent host-command tests exercise the deterministic mock engine and
+            // adapter through explicit dependencies; product settings carry no mock switch.
+            HostOcrCompositionOptions ocrComposition = new(new MockOcrEngine(), [new MockOcrAdapter()]);
             HostServices services = await HostServices.CreateAsync(db, settings with
             {
                 OcrEngines = new OcrEnginesAppSettings(configuredEngine, configuredEngine, configuredEngine),
@@ -1136,9 +1189,9 @@ public sealed class OcrHostCommandIndependentTests
                 {
                     RuntimeDatabasePath = db, DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"), LogDirectory = Path.Combine(root, "logs"),
-                    FileSearchRoot = Path.Combine(root, "search"), UseMockOcrOnly = true
+                    FileSearchRoot = Path.Combine(root, "search")
                 }
-            }, Path.Combine(root, "settings.json"));
+            }, Path.Combine(root, "settings.json"), ocrComposition: ocrComposition);
             (await services.Library.CreateLibraryAsync("Independent OCR public tests")).IsSuccess.Should().BeTrue();
             IOcrQueueScheduler queue = (await services.GetOcrQueueAsync()).Value;
             await queue.PauseAsync(OcrPauseScope.Global);
@@ -1148,7 +1201,7 @@ public sealed class OcrHostCommandIndependentTests
             OcrPreset preset = (await services.OcrPresets.CreatePresetAsync("Independent mock", null, OcrEngineIds.Mock,
                 OcrModelIds.MockBasic, null, "{}", false)).Value;
             return new Context(root, source, services, queue,
-                DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), preset);
+                DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), preset, ocrComposition);
         }
 
         public async Task RestartAsync()
@@ -1156,7 +1209,8 @@ public sealed class OcrHostCommandIndependentTests
             string database = Services.RuntimeDatabasePath;
             PatchouliAppSettings settings = Services.StartupSettings;
             await Services.ShutdownAsync();
-            Services = await HostServices.CreateAsync(database, settings, Path.Combine(Root, "settings.json"));
+            Services = await HostServices.CreateAsync(database, settings, Path.Combine(Root, "settings.json"),
+                ocrComposition: OcrComposition);
             Queue = (await Services.GetOcrQueueAsync()).Value;
             await Queue.PauseAsync(OcrPauseScope.Global);
         }

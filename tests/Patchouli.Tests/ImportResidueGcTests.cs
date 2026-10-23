@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Diagnostics;

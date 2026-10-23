@@ -15,9 +15,11 @@ public sealed partial class McpCommandService
         ActionRegistry registry = new();
         foreach (ActionDescriptor descriptor in RunEndpointCatalog.Messages)
         {
-            registry.Register(descriptor, (call, ct) => descriptor.Endpoint == RunEndpointCatalog.Uri("ocr")
+            registry.Register(descriptor, (call, ct) => RunEndpointCatalog.Uri("ocr") == descriptor.Endpoint
                 ? ExecuteOcrActionAsync(descriptor.Id, call, ct)
-                : ExecuteTranslationActionAsync(descriptor.Id, call, ct));
+                : RunEndpointCatalog.Uri("translation") == descriptor.Endpoint
+                    ? ExecuteTranslationActionAsync(descriptor.Id, call, ct)
+                    : ExecuteMetadataActionAsync(descriptor.Id, call, ct));
         }
 
         return registry;
@@ -44,7 +46,8 @@ public sealed partial class McpCommandService
         if (address.IsFailure || address.Value.Kind != McpUriKind.RunEndpoint || string.IsNullOrWhiteSpace(action))
         {
             return Fail(McpErrorCode.InvalidArgument,
-                "send requires endpoint/action/target/args; use runs/ocr/control start texts/<document-id>/.");
+                "send requires endpoint/action/target/args; use runs/ocr/control start texts/<document-id>/, " +
+                "runs/translation/control start texts/<document-id>/, or runs/metadata/control lookup items/<item-id>.yml.");
         }
 
         endpoint = address.Value.CanonicalUri;
@@ -99,9 +102,17 @@ public sealed partial class McpCommandService
 
     private bool EndpointAvailable(string endpoint)
     {
-        return endpoint == RunEndpointCatalog.Uri("ocr")
-            ? _ocrCommands is not null
-            : endpoint == RunEndpointCatalog.Uri("translation") && _translationRuns is not null;
+        if (endpoint == RunEndpointCatalog.Uri("ocr"))
+        {
+            return _ocrCommands is not null;
+        }
+
+        if (endpoint == RunEndpointCatalog.Uri("translation"))
+        {
+            return _translationRuns is not null;
+        }
+
+        return endpoint == RunEndpointCatalog.Uri("metadata") && _metadataRuns is not null;
     }
 
     private bool EndpointAllowed(McpServerSettings? permissions, string endpoint)
@@ -269,6 +280,140 @@ public sealed partial class McpCommandService
             start ? "started" : "completed",
             new McpTranslationActionResult(run.TaskId, statusUri, run.State, run.Total, run.Reused),
             start ? statusUri : null));
+    }
+
+    private async Task<Result<ActionOutcome>> ExecuteMetadataActionAsync(string action, ActionInvocation invocation,
+        CancellationToken ct)
+    {
+        if (_metadataRuns is null)
+        {
+            return Result<ActionOutcome>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Metadata runs are unavailable on this host.");
+        }
+
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(invocation.Target);
+        if (parsed.IsFailure)
+        {
+            return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                parsed.ErrorMessage ?? "Invalid target.");
+        }
+
+        JsonElement args = invocation.Args;
+        switch (action)
+        {
+            case "lookup":
+            {
+                Result<McpMetadataProposalProjection> proposal = await _metadataRuns.LookupAsync(
+                    parsed.Value.ItemId!.Value.ToString(), StringArg(args, "scheme") ?? string.Empty,
+                    StringArg(args, "value") ?? string.Empty, ct);
+                if (proposal.IsFailure)
+                {
+                    return Result<ActionOutcome>.Failure(proposal.ErrorCode!,
+                        McpOutputSanitizer.Sanitize(proposal.ErrorMessage ?? "The metadata lookup failed."));
+                }
+
+                return Result<ActionOutcome>.Success(new ActionOutcome("completed", proposal.Value));
+            }
+
+            case "apply":
+            {
+                McpMetadataCandidateDto? candidate = DeserializeArg<McpMetadataCandidateDto>(args, "candidate");
+                IReadOnlyList<McpMetadataAttemptDto>? attempts = DeserializeArg<McpMetadataAttemptDto[]>(args,
+                    "attempts");
+                if (candidate is null || attempts is null)
+                {
+                    return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                        "apply requires candidate and attempts arguments.");
+                }
+
+                Result<McpMetadataApplyProjection> applied = await _metadataRuns.ApplyAsync(
+                    parsed.Value.ItemId!.Value.ToString(), StringArg(args, "expected_updated_at") ?? string.Empty,
+                    candidate, attempts, ct);
+                if (applied.IsFailure)
+                {
+                    return Result<ActionOutcome>.Failure(applied.ErrorCode!,
+                        McpOutputSanitizer.Sanitize(applied.ErrorMessage ?? "The metadata apply failed."));
+                }
+
+                return Result<ActionOutcome>.Success(new ActionOutcome("completed", applied.Value));
+            }
+
+            case "enrich":
+            {
+                Result<McpMetadataApplyProjection> enriched = await _metadataRuns.EnrichAsync(
+                    parsed.Value.ItemId!.Value.ToString(), ct);
+                if (enriched.IsFailure)
+                {
+                    return Result<ActionOutcome>.Failure(enriched.ErrorCode!,
+                        McpOutputSanitizer.Sanitize(enriched.ErrorMessage ?? "The metadata enrich failed."));
+                }
+
+                return Result<ActionOutcome>.Success(new ActionOutcome("completed", enriched.Value));
+            }
+
+            case "enrich_batch":
+            {
+                IReadOnlyList<string>? itemIds = DeserializeArg<string[]>(args, "item_ids");
+                if (itemIds is null)
+                {
+                    return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                        "enrich_batch requires item_ids.");
+                }
+
+                Result<McpMetadataTaskStatusProjection> started =
+                    await _metadataRuns.StartBatchAsync(itemIds, invocation.RequestId, ct);
+                if (started.IsFailure)
+                {
+                    return Result<ActionOutcome>.Failure(started.ErrorCode!,
+                        McpOutputSanitizer.Sanitize(started.ErrorMessage ?? "The metadata batch failed."));
+                }
+
+                McpMetadataTaskStatusProjection run = started.Value;
+                string statusUri = McpResourceUris.MetadataRunStatusUri(run.TaskId);
+                return Result<ActionOutcome>.Success(new ActionOutcome("started",
+                    new McpMetadataBatchActionResult(run.TaskId, statusUri, run.State, run.Total, run.Reused),
+                    statusUri));
+            }
+
+            default:
+            {
+                if (!Guid.TryParse(parsed.Value.RunTaskId, out _))
+                {
+                    return Result<ActionOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                        "The metadata task identity must be a UUID.");
+                }
+
+                Result<McpMetadataTaskStatusProjection> task = action == "cancel"
+                    ? await _metadataRuns.CancelAsync(parsed.Value.RunTaskId!, ct)
+                    : await _metadataRuns.RetryAsync(parsed.Value.RunTaskId!, ct);
+                if (task.IsFailure)
+                {
+                    return Result<ActionOutcome>.Failure(task.ErrorCode!,
+                        McpOutputSanitizer.Sanitize(task.ErrorMessage ?? "The metadata task command failed."));
+                }
+
+                if (action == "cancel")
+                {
+                    return Result<ActionOutcome>.Success(new ActionOutcome("completed", task.Value));
+                }
+
+                string retryUri = McpResourceUris.MetadataRunStatusUri(task.Value.TaskId);
+                return Result<ActionOutcome>.Success(new ActionOutcome("started",
+                    new McpMetadataBatchActionResult(task.Value.TaskId, retryUri, task.Value.State, task.Value.Total,
+                        task.Value.Reused), retryUri));
+            }
+        }
+    }
+
+    private static T? DeserializeArg<T>(JsonElement args, string key)
+    {
+        if (!args.TryGetProperty(key, out JsonElement value) ||
+            value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array))
+        {
+            return default;
+        }
+
+        return JsonSerializer.Deserialize<T>(value.GetRawText());
     }
 
     private static string? StringArg(JsonElement args, string key)

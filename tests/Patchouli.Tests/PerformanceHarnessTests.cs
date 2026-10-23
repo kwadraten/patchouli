@@ -416,9 +416,120 @@ public sealed class PerformanceHarnessTests
     }
 
     [Fact]
+    public void Regression_evaluator_compares_versioned_ui_paging_metrics_when_definitions_match()
+    {
+        ReportUi baseline = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion, 1000, 900, 2000, 1800));
+        ReportUi current = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion, 4000, 3600, 9000, 8000));
+
+        RegressionReport result = RegressionEvaluator.Evaluate(ReportWithUi(current),
+            ReportWithUi(baseline), "baseline.json", new RegressionTolerance(Latency: 3.0));
+
+        result.Passed.Should().BeFalse();
+        result.Checks.Where(check => check.Result == "fail").Select(check => check.Operation)
+            .Should().BeEquivalentTo(
+                "ui.first_batch_ready_cold", "ui.first_batch_ready_hot",
+                "ui.all_pages_drained_cold", "ui.all_pages_drained_hot");
+    }
+
+    [Fact]
+    public void Regression_evaluator_flags_mismatched_ui_paging_measurement_versions_as_incomparable()
+    {
+        ReportUi baseline = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion - 1, 1000, 900, 2000, 1800));
+        ReportUi current = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion, 4000, 3600, 9000, 8000));
+
+        RegressionReport result = RegressionEvaluator.Evaluate(ReportWithUi(current),
+            ReportWithUi(baseline), "baseline.json", new RegressionTolerance(Latency: 3.0));
+
+        result.Passed.Should().BeTrue(
+            "a definition mismatch is flagged as non-comparable, not failed on a numeric ratio");
+        RegressionCheck definition = result.Checks.Single(check =>
+            check.Operation == "ui.paging" && check.Metric == "measurement_version");
+        definition.Result.Should().Be("warn");
+        definition.Observed.Should().Be($"v{UiPerfProbe.PagingMeasurementVersion}");
+        result.Checks.Should().NotContain(check =>
+            check.Operation.StartsWith("ui.first_batch_ready", StringComparison.Ordinal) ||
+            check.Operation.StartsWith("ui.all_pages_drained", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Regression_evaluator_marks_versioned_ui_paging_metrics_new_when_baseline_predates_them()
+    {
+        ReportUi baseline = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20);
+        ReportUi current = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion, 4000, 3600, 9000, 8000));
+
+        RegressionReport result = RegressionEvaluator.Evaluate(ReportWithUi(current),
+            ReportWithUi(baseline), "baseline.json", new RegressionTolerance(Latency: 3.0));
+
+        result.Passed.Should().BeTrue();
+        RegressionCheck definition = result.Checks.Single(check => check.Operation == "ui.paging");
+        definition.Result.Should().Be("warn");
+        definition.Baseline.Should().Be("absent",
+            "a baseline written before the split definition exists needs a new baseline");
+        result.Checks.Should().NotContain(check =>
+            check.Operation.StartsWith("ui.first_batch_ready", StringComparison.Ordinal) ||
+            check.Operation.StartsWith("ui.all_pages_drained", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Regression_evaluator_still_enforces_ui_budgets_when_paging_definitions_differ()
+    {
+        ReportUi baseline = new(true, 500, 500, 500, 500, 112, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion - 1, 1000, 900, 2000, 1800));
+        ReportUi violating = new(true, 2500, 1500, 3500, 600, 500, 100, 40, 0, 20,
+            new ReportUiPagingMeasurements(UiPerfProbe.PagingMeasurementVersion, 4000, 3600, 9000, 8000));
+
+        RegressionReport result = RegressionEvaluator.Evaluate(ReportWithUi(violating),
+            ReportWithUi(baseline), "baseline.json",
+            new RegressionTolerance(EnforceUiBudgets: true));
+
+        result.Passed.Should().BeFalse();
+        result.Checks.Should().Contain(check =>
+            check.Operation == "ui.paging" && check.Result == "warn");
+        result.Checks.Where(check => check.Metric == "budget" && check.Result == "fail")
+            .Select(check => check.Operation)
+            .Should().BeEquivalentTo(
+                "ui.framework_cold", "ui.framework_hot", "ui.first_rows_cold", "ui.heartbeat_max_gap");
+    }
+
+    [Fact]
+    public void Report_deserializes_older_reports_without_the_versioned_ui_paging_section()
+    {
+        const string json = """
+                            {
+                              "Profile": "test",
+                              "Ui": {
+                                "Measured": true,
+                                "InteractiveFrameworkColdMs": 1000,
+                                "InteractiveFrameworkHotMs": 100,
+                                "FirstLibraryRowsColdMs": 2000,
+                                "FirstLibraryRowsHotMs": 200,
+                                "HeartbeatMaxGapMs": 111,
+                                "HeartbeatTargetMs": 100,
+                                "HeartbeatSamples": 25,
+                                "UiThreadDatabaseCommands": 0,
+                                "FirstLibraryRowCount": 20
+                              }
+                            }
+                            """;
+
+        PerformanceReport? report = PerformanceReport.FromJson(json);
+
+        report.Should().NotBeNull();
+        report!.Ui.Should().NotBeNull();
+        report.Ui!.FirstLibraryRowsColdMs.Should().Be(2000);
+        report.Ui.PagingMeasurements.Should().BeNull(
+            "reports written before the split definition carry no versioned paging section");
+    }
+
+    [Fact]
     public void UiPerfResult_maps_to_report_ui()
     {
-        UiPerfResult probe = new(true, 1000, 100, 2000, 200, 111, 25, 0, 20);
+        UiPerfResult probe = new(true, 1000, 100, 2000, 200, 111, 25, 0, 20, 2500, 300, 4000, 500);
 
         ReportUi report = probe.ToReportUi();
 
@@ -432,6 +543,16 @@ public sealed class PerformanceHarnessTests
         report.HeartbeatSamples.Should().Be(25);
         report.UiThreadDatabaseCommands.Should().Be(0);
         report.FirstLibraryRowCount.Should().Be(20);
+        report.PagingMeasurements.Should().NotBeNull();
+        report.PagingMeasurements!.MeasurementVersion.Should().Be(UiPerfProbe.PagingMeasurementVersion);
+        report.PagingMeasurements.FirstBatchReadyColdMs.Should().Be(2500);
+        report.PagingMeasurements.FirstBatchReadyHotMs.Should().Be(300);
+        report.PagingMeasurements.AllPagesDrainedColdMs.Should().Be(4000);
+        report.PagingMeasurements.AllPagesDrainedHotMs.Should().Be(500);
+
+        UiPerfResult unmeasured = new(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        unmeasured.ToReportUi().PagingMeasurements.Should().BeNull(
+            "an unmeasured probe must not emit a versioned paging section");
     }
 
     private static PerformanceReport ReportWithUi(ReportUi ui)

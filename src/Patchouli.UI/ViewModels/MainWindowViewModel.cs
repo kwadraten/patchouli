@@ -92,6 +92,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private readonly bool _ownsActivityTracker;
     private IDisposable? _activitySubscription;
     private readonly string? _settingsPath;
+    private readonly HostOcrCompositionOptions? _ocrComposition;
     private int _libraryGeneration;
     private bool _queryRewriteEnabledPersisted = true;
     private bool _synchronizingToolbarSearch;
@@ -714,7 +715,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IFilePickerService? filePicker = null, bool enforceRuntimeHostOwnership = false,
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
-        IHostActivityTracker? activityTracker = null)
+        IHostActivityTracker? activityTracker = null,
+        HostOcrCompositionOptions? ocrComposition = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
@@ -724,6 +726,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Register(_mcpSubscriptions);
         Register(_watcherSubscriptions);
         _settingsPath = settingsPath;
+        _ocrComposition = ocrComposition;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
         _settingsStore = settingsStore ?? new AppSettingsStore(settingsPath, _settings);
@@ -1979,7 +1982,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
-        Shell.Dispose();
+        await Shell.DisposeAsync();
         if (_agentWorkspace is not null)
         {
             await _agentWorkspace.ShutdownAsync();
@@ -2218,7 +2221,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             reportUnexpectedException: ReportUnexpectedException,
             startupProgress: CreateStartupStageProgress(),
             activityTracker: _activityTracker,
-            runtimeHostLease: _runtimeHostLease);
+            runtimeHostLease: _runtimeHostLease,
+            ocrComposition: _ocrComposition);
     }
 
     private async Task StopHostServicesAsync()

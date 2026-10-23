@@ -115,14 +115,19 @@ public sealed class AppPathsTests
             settings.Runtime.FileSearchRoot.Should().Be(Path.Combine(locations.DataDirectory, "search"));
 
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(locations.BundledDefaultsPath));
-            JsonElement paths = document.RootElement.GetProperty("Patchouli");
-            foreach (string name in new[]
-                     {
-                         "RuntimeDatabasePath", "DefaultSyncRoot", "DefaultStagingRoot", "LogDirectory",
-                         "FileSearchRoot"
-                     })
+            // With the mock OCR switch removed, this optional section can be absent entirely.
+            // If present, it must still leave every platform storage path unspecified.
+            if (document.RootElement.TryGetProperty("Patchouli", out JsonElement paths))
             {
-                paths.TryGetProperty(name, out _).Should().BeFalse($"{name} must come from PlatformAppPaths");
+                paths.ValueKind.Should().Be(JsonValueKind.Object);
+                foreach (string name in new[]
+                         {
+                             "RuntimeDatabasePath", "DefaultSyncRoot", "DefaultStagingRoot", "LogDirectory",
+                             "FileSearchRoot"
+                         })
+                {
+                    paths.TryGetProperty(name, out _).Should().BeFalse($"{name} must come from PlatformAppPaths");
+                }
             }
         }
         finally

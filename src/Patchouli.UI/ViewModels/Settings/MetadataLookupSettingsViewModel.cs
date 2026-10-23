@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels;
@@ -173,6 +172,7 @@ public sealed partial class MetadataSourceSettingsRowViewModel : ViewModelBase
         _isConstructing = true;
         _parent = parent;
         SourceId = sourceId;
+        ExtensionId = "metadata." + sourceId;
         Name = name;
         Description = description;
         Enabled = enabled;
@@ -186,6 +186,9 @@ public sealed partial class MetadataSourceSettingsRowViewModel : ViewModelBase
     public string Description { get; }
     public RelayCommand MoveUpCommand { get; }
     public RelayCommand MoveDownCommand { get; }
+
+    /// <summary>The built-in FSX extension package id ("metadata." + source id) configured by the gear button.</summary>
+    public string ExtensionId { get; }
 
     [ObservableProperty] public partial bool Enabled { get; set; }
 
