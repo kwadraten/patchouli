@@ -291,10 +291,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     [Fact]
     public async Task Single_biblatex_entry_skips_selection_and_opens_conflict_handling()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-single-{Guid.NewGuid():N}.sqlite");
         CapturingDialogService dialogs = new();
@@ -337,10 +334,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     [Fact]
     public async Task Invalid_biblatex_paste_keeps_the_import_error_instead_of_reloading_the_editor()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-invalid-{Guid.NewGuid():N}.sqlite");
         FakeClipboard clipboard = new();

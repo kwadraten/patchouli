@@ -461,6 +461,30 @@ public sealed record FileScanningAppSettings(IReadOnlyList<string> ExclusionPatt
     }
 }
 
+/// <summary>
+/// Device-local settings for the Better BibTeX CAYW / TexPile compatibility
+/// service (issue #14), persisted in the JSON "CitationInterop" section. The
+/// service is off by default; the port is user-configurable because 23119 is
+/// also Zotero's port, and a bind conflict must surface instead of silently
+/// moving to another port.
+/// </summary>
+public sealed record CitationInteropAppSettings(bool Enabled, int Port)
+{
+    public const int DefaultPort = 23119;
+
+    public static CitationInteropAppSettings Default()
+    {
+        return new CitationInteropAppSettings(false, DefaultPort);
+    }
+
+    public static int NormalizePort(int port)
+    {
+        return port is >= 1 and <= 65535 ? port : DefaultPort;
+    }
+
+    public string Endpoint => $"http://127.0.0.1:{NormalizePort(Port)}";
+}
+
 public sealed record SettingsSaveResult(
     bool IsSuccess,
     string? ErrorCode,
@@ -495,6 +519,7 @@ public sealed record PatchouliAppSettings(
     public FileScanningAppSettings FileScanning { get; init; } = FileScanningAppSettings.Default();
     public OcrEnginesAppSettings OcrEngines { get; init; } = OcrEnginesAppSettings.Default();
     public ImportAppSettings Import { get; init; } = ImportAppSettings.Default();
+    public CitationInteropAppSettings CitationInterop { get; init; } = CitationInteropAppSettings.Default();
 
     /// <summary>
     /// LLM provider directory and translation defaults, persisted in the JSON "Llm" section. API keys are
@@ -583,6 +608,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? import = GetSection(root, "Import");
             JsonElement? llm = GetSection(root, "Llm");
             JsonElement? agents = GetSection(root, "Agents") ?? GetSection(root, "AgentIntegration");
+            JsonElement? citationInterop = GetSection(root, "CitationInterop");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -623,6 +649,7 @@ public sealed record PatchouliAppSettings(
                     ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns)),
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Import = ReadImport(import, defaults.Import),
+                CitationInterop = ReadCitationInterop(citationInterop, defaults.CitationInterop),
                 Llm = ReadLlm(llm, defaults.Llm),
                 Agents = ReadAgents(agents, defaults.Agents),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
@@ -855,6 +882,11 @@ public sealed record PatchouliAppSettings(
             });
             root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
             root["Agents"] = SerializeAgents(Agents);
+            root["CitationInterop"] = JsonSerializer.SerializeToNode(new
+            {
+                CitationInterop.Enabled,
+                CitationInterop.Port
+            });
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -1066,6 +1098,15 @@ public sealed record PatchouliAppSettings(
                 root["Import"] = JsonSerializer.SerializeToNode(new
                 {
                     Import.MaxFailedPageRatio
+                });
+            }
+
+            if (saveAll || dirtyFields!.Contains("CitationInterop"))
+            {
+                root["CitationInterop"] = JsonSerializer.SerializeToNode(new
+                {
+                    CitationInterop.Enabled,
+                    CitationInterop.Port
                 });
             }
 
@@ -1387,6 +1428,19 @@ public sealed record PatchouliAppSettings(
         return new ImportAppSettings(
             ImportAppSettings.ClampRatio(
                 ReadDouble(element, "MaxFailedPageRatio", fallback.MaxFailedPageRatio)));
+    }
+
+    private static CitationInteropAppSettings ReadCitationInterop(JsonElement? section,
+        CitationInteropAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return new CitationInteropAppSettings(
+            ReadBool(element, "Enabled", fallback.Enabled),
+            CitationInteropAppSettings.NormalizePort(ReadInt(element, "Port", fallback.Port)));
     }
 
     /// <summary>
