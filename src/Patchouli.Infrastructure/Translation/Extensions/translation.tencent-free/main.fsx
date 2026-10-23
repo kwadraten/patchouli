@@ -79,13 +79,28 @@ let extension =
                     let batch = pending.ToArray()
                     try
                         token.ThrowIfCancellationRequested()
+                        // Canonical host tags in, Transmart codes out. Transmart has a single
+                        // Chinese code: zh-Hans, zh-Hant and bare zh all map to "zh", so a
+                        // traditional target is served instead of refused as unverified. Every
+                        // other supported canonical tag is already the Transmart code.
+                        let tencentSupported = set [ "en"; "ja"; "ko"; "fr"; "de"; "es"; "ru"; "pt"; "it"; "tr"; "ar"; "th"; "vi"; "id" ]
+                        let toTencent (language: string) =
+                            match language with
+                            | "zh" | "zh-Hans" | "zh-Hant" -> Some "zh"
+                            | other when tencentSupported.Contains(other) -> Some other
+                            | _ -> None
                         let source = sourceLanguage common job
-                        if source <> "auto" && source <> "zh-CN" && source <> "en" && source <> "ja" && source <> "ko" && source <> "fr" && source <> "de" && source <> "es" && source <> "ru" && source <> "pt" && source <> "it" && source <> "tr" && source <> "ar" && source <> "th" && source <> "vi" && source <> "id" then invalidOp ("Tencent Transmart does not have a verified language mapping for source language '" + source + "'.")
+                        let sourceCode =
+                            if source = "auto" then "auto"
+                            else
+                                match toTencent source with
+                                | Some code -> code
+                                | None -> invalidOp ("Tencent Transmart does not have a verified language mapping for source language '" + source + "'.")
                         let target = targetLanguage common job
-                        if target = "zh-TW" then invalidOp "Tencent Transmart's zh-TW output has not been verified; select another target language."
-                        if target <> "zh-CN" && target <> "en" && target <> "ja" && target <> "ko" && target <> "fr" && target <> "de" && target <> "es" && target <> "ru" && target <> "pt" && target <> "it" && target <> "tr" && target <> "ar" && target <> "th" && target <> "vi" && target <> "id" then invalidOp ("Tencent Transmart does not have a verified language mapping for target language '" + target + "'.")
-                        let sourceCode = if source = "zh-CN" then "zh" else source
-                        let targetCode = if target = "zh-CN" then "zh" else target
+                        let targetCode =
+                            match toTencent target with
+                            | Some code -> code
+                            | None -> invalidOp ("Tencent Transmart does not have a verified language mapping for target language '" + target + "'.")
                         let payload = {| header = {| fn = "auto_translation"; client_key = clientKey |}; ``type`` = "plain"; model_category = "normal"; source = {| text_list = batch |> Array.map (fun (_, text, _) -> text); lang = sourceCode |}; target = {| lang = targetCode |} |}
                         let body = jsonBody payload
                         do! resources.WaitToProceedAsync(token)

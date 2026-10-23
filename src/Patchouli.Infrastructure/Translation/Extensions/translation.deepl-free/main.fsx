@@ -19,8 +19,15 @@ type Settings = {
 
 let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = (sourceLanguage common job).ToUpperInvariant()
-    let target = (targetLanguage common job).ToUpperInvariant()
+    // DeepL web codes: Chinese collapses to the single code "ZH" for both scripts and the
+    // auto sentinel stays lowercase; every other canonical tag uppercases to its DeepL code.
+    let toDeepL (language: string) =
+        match language with
+        | "zh" | "zh-Hans" | "zh-Hant" -> "ZH"
+        | "auto" -> "auto"
+        | other -> other.ToUpperInvariant()
+    let source = toDeepL (sourceLanguage common job)
+    let target = toDeepL (targetLanguage common job)
     let timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     let count = text |> Seq.filter (fun character -> character = 'i') |> Seq.length |> int64
     let adjustedTimestamp = if count > 0L then let divisor = count + 1L in timestamp - timestamp % divisor + divisor else timestamp

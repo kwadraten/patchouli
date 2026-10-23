@@ -141,9 +141,10 @@ let extension =
             if backfill then
                 let! previous = job.GetCommittedPageTranslationAsync(pageIndex - 1, token)
                 token.ThrowIfCancellationRequested()
-                let matches language =
-                    not (String.IsNullOrWhiteSpace language) &&
-                     String.Equals(language, targetLanguage common job, StringComparison.OrdinalIgnoreCase)
+                // Both sides are canonical tags: the host canonicalized the snapshot's
+                // stored language when the snapshot was created, so tags compare directly.
+                let matches (language: LanguageTag) =
+                    not language.IsUnspecified && language = targetLanguageTag common job
                 match Option.ofObj previous |> Option.filter (fun value -> matches value.TargetLanguage) with
                 | Some translation ->
                     references.Add("Previous page translation (page " + string translation.Page.PageIndex +

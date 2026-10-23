@@ -73,8 +73,12 @@ let extension =
                     try
                         token.ThrowIfCancellationRequested()
                         do! resources.WaitToProceedAsync(token)
-                        let source = sourceLanguage common job |> fun value -> if value = "auto" then "" elif value = "zh-CN" then "zh-Hans" elif value = "zh-TW" then "zh-Hant" else value
-                        let target = targetLanguage common job |> fun value -> if value = "zh-CN" then "zh-Hans" elif value = "zh-TW" then "zh-Hant" else value
+                        // Microsoft codes are the canonical script tags themselves, so canonical
+                        // input passes straight through; the zh-CN/zh-TW branches only tolerate
+                        // pre-canonicalization values and never rewrite a canonical tag.
+                        let toMicrosoft (value: string) = if value = "zh-CN" then "zh-Hans" elif value = "zh-TW" then "zh-Hant" else value
+                        let source = sourceLanguage common job |> fun value -> if value = "auto" then "" else toMicrosoft value
+                        let target = targetLanguage common job |> toMicrosoft
                         let uri = endpoint + "?from=" + Uri.EscapeDataString(source) + "&to=" + Uri.EscapeDataString(target) + "&isEnterpriseClient=false"
                         let body = jsonBody (batch |> Array.map (fun (_, text, _) -> text))
                         use request = new HttpRequestMessage(HttpMethod.Post, Uri(uri))
