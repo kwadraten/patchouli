@@ -31,7 +31,7 @@ user-controlled permissions and no-path/secret/image/OCR/index-action boundaries
 Default search remains a committed-tree projection, with source updates marking it stale.
 
 The normative schema, compatibility behavior, limits and error contract are maintained in
-[mcp-protocol.md](../mcp-protocol.md). An unchanged payload roundtrip must preserve fields
+[mcp-protocol.md](../protocols/mcp-protocol.md). An unchanged payload roundtrip must preserve fields
 outside the editable projection. Tests cover canonical output, alias permissions, legacy
 warnings, suppressed footnotes, source history, optimistic concurrency and batch rollback.
 

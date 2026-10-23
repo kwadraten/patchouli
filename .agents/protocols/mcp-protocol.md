@@ -83,7 +83,7 @@ Source box writes create new committed revisions and document commits, reject ac
 and honor the `texts.put` permission. Historical revision addresses remain read-only.
 
 
-本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品基线见 [CONTEXT](CONTEXT.md)，任务进度通过 [GitHub Issues](issue-tracker.md) 维护。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。外部 Agent 终端集成与内置 Agent/工作流移除见 [ADR 0047](adr/0047-external-agent-cli-terminal-integration.md)，直接批量翻译、翻译端点 start/cancel 与 `runs/translation/` 投影见 [ADR 0046](adr/0046-direct-batched-translation-pipeline.md)，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 [ADR 0045](adr/0045-mcp-add-view-boundaries.md)。
+本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品基线见 [CONTEXT](../CONTEXT.md)，任务进度通过 [GitHub Issues](../issue-tracker.md) 维护。选择理由见 [ADR 0024](../adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](../adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](../adr/0028-versioned-uri-evidence.md) 为准。外部 Agent 终端集成与内置 Agent/工作流移除见 [ADR 0047](../adr/0047-external-agent-cli-terminal-integration.md)，直接批量翻译、翻译端点 start/cancel 与 `runs/translation/` 投影见 [ADR 0046](../adr/0046-direct-batched-translation-pipeline.md)，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 [ADR 0045](../adr/0045-mcp-add-view-boundaries.md)。
 
 实现状态（2026-10-19）：七动词（`find`/`fetch`/`add`/`view`/`put`/`cite`/`send`）、`runs/ocr` 与 `runs/translation` 两个易失运行时资源根、CLI HTTP 客户端、TOON/JSON、有限写入、本地文件导入、源图像读取、显式 OCR 任务队列入口与直接批量翻译入口，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（外部 Agent 与资源树变更见 ADR `0047`，直接翻译与翻译 Action 见 ADR `0046`，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 ADR `0045`，`send` 的 OCR Action 显式队列启动、取消、重试与原子幂等见 Issue #16）。回归义务继续约束后续改动。
 
@@ -97,10 +97,10 @@ MCP 设置使用 VFS 域 × 动词的权限矩阵，覆盖 `/`、`items`、`text
 `csl-styles`、`runs`、`actions`、`library.yml`，覆盖七个工具动词、三个 OCR Action 能力与两个翻译 Action 能力。禁止的组合返回
 `PERMISSION_DENIED`；授权不扩大资源本身支持的操作。`find` 按恢复后的游标作用域检查，
 根目录不列出禁止 `find` 的域；`fetch` 的混合批次包含任何禁止域时整批拒绝；`cite`
-同时检查引用域、题录域和样式域。OCR/翻译端点同时检查 send 工具开关及 runs/ocr、runs/translation 子域 send 显式授权；旧权限迁移不自动授予子域。父级三态及默认关闭见第 7 节。`cite` 专用入口仍按原引用权限检查，不要求 send 授权。
+同时检查引用域、题录域和样式域。OCR/翻译/元数据端点同时检查 send 工具开关及 runs/ocr、runs/translation、runs/metadata 子域 send 显式授权；旧权限迁移不自动授予子域。父级三态及默认关闭见第 7 节。`cite` 专用入口仍按原引用权限检查，不要求 send 授权。
 
 外部 Agent 的 MCP 客户端与 CLI 都经同一服务端权限检查；MCP listener 重载后生效。
-权限矩阵的保留与迁移规则见 [ADR 0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md)（其聊天/FSI 部分已由 ADR 0047 移除）。
+权限矩阵的保留与迁移规则见 [ADR 0038](../adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md)（其聊天/FSI 部分已由 ADR 0047 移除）。
 
 ```text
 USAGE
@@ -164,10 +164,13 @@ RESOURCE TREE
   patchouli://runs/
   patchouli://runs/ocr/control
   patchouli://runs/translation/control
+  patchouli://runs/metadata/control
   patchouli://runs/ocr/
   patchouli://runs/ocr/{task-id}/status
   patchouli://runs/translation/
   patchouli://runs/translation/{run-id}/status
+  patchouli://runs/metadata/
+  patchouli://runs/metadata/{task-id}/status
 
   patchouli://library.yml
 ```
@@ -211,9 +214,9 @@ map 不可读；逻辑目标失效的章节保留章节并退化到物理页 + �
 页面版本变化会阻止应用。扫描只读取已提交的文本，不触发 OCR；MCP `put` 仍遵守完整 YAML
 替换与严格校验契约，不受桌面章节编辑的局部更新语义影响。
 
-**`runs/` 是 VFS 首个易失运行时资源树**：`patchouli://runs/` 只投影运行时任务的实时状态，不进任何快照、不可 `put`、不属 canonical 资源——`meta.library_revision` 不因其变化，宿主的资源变更通知也不因它发布。它在宿主进程生命周期内有效，宿主退出或重启后其中的运行时投影不承诺保留，也不属于 `cite.refs` 可引用对象。`runs/` 根下只有 `ocr/` 与 `translation/` 两个独立子树：OCR 任务与直接翻译运行各自有各自的 status 语义，**不强行统一为一个通用 run 模型**。内置 Agent 会话与工作流不在其中，它们已在 0.3.13 移除（ADR `0047`）。
+**`runs/` 是 VFS 首个易失运行时资源树**：`patchouli://runs/` 只投影运行时任务的实时状态，不进任何快照、不可 `put`、不属 canonical 资源——`meta.library_revision` 不因其变化，宿主的资源变更通知也不因它发布。它在宿主进程生命周期内有效，宿主退出或重启后其中的运行时投影不承诺保留，也不属于 `cite.refs` 可引用对象。`runs/` 根下只有 `ocr/`、`translation/` 与 `metadata/` 三个独立子树：OCR 任务、直接翻译运行与元数据 enrich_batch 任务各自有各自的 status 语义，**不强行统一为一个通用 run 模型**。内置 Agent 会话与工作流不在其中，它们已在 0.3.13 移除（ADR `0047`）。
 
-`patchouli://runs/ocr/{task-id}/status` 是单个 OCR 任务的运行状态投影，也是只读的最终状态快照，`fetch` 返回当前值。`patchouli://runs/translation/` 列出当前宿主内存中的翻译运行，`patchouli://runs/translation/{run-id}/status` 返回单次翻译运行的实时状态与逐页结果；其字段、生命周期和取消语义见第 11 节。两者都是易失的：不进快照、不被 `put`、不属于 canonical 资源，也不参与 `meta.library_revision`；只在宿主运行期间保留，宿主重启后旧 URI 不保证存在。
+`patchouli://runs/ocr/{task-id}/status` 是单个 OCR 任务的运行状态投影，也是只读的最终状态快照，`fetch` 返回当前值。`patchouli://runs/translation/` 列出当前宿主内存中的翻译运行，`patchouli://runs/translation/{run-id}/status` 返回单次翻译运行的实时状态与逐页结果；其字段、生命周期和取消语义见第 11 节。`patchouli://runs/metadata/` 列出宿主内存中的元数据 enrich_batch 任务，`patchouli://runs/metadata/{task-id}/status` 返回任务实时状态与逐项 `{item_id, state, source_id?, error_code?, error_message?}` 结果；lookup/apply/enrich 是同步消息，不创建任务实例。三者都是易失的：不进快照、不被 `put`、不属于 canonical 资源，也不参与 `meta.library_revision`；只在宿主运行期间保留，宿主重启后旧 URI 不保证存在。
 
 TOON 使用 MIT `Corvus.Toon.SystemTextJson` NuGet 包作为唯一编码/解码实现，并遵循 TOON specification **v3.0**；不得维护自定义 TOON parser 或 encoder。协议编码固定使用 UTF-8/LF、`ToonWriterOptions` 的字面 TAB delimiter 与 `KeyFolding=Off`；默认 uniform entries 使用 TOON v3 tabular form，声明的 `[N]` 必须与实际行数一致。`text/toon` 是其媒体类型。本资源发现与格式决策已由 ADR `0024` 的 2026-08-01 修订同步；后续改变 URI 根、evidence 消费形式、TOON 库或默认编码时，必须同时更新本契约、ADR 与运行时契约。
 
@@ -304,7 +307,7 @@ DETAILED RESULTS (--long)
 | `patchouli://translations/` | 浏览文档级翻译进度投影 | document title 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://translations/{document-id}/` | 浏览该 document 的页面清单与每页翻译状态 | page label 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | 同上，作用于所属 document |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
-| `patchouli://runs/` | 浏览当前运行的 OCR 任务与直接翻译运行投影 | 不支持 QUERY | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
+| `patchouli://runs/` | 浏览当前运行的 OCR 任务、直接翻译运行与元数据 enrich_batch 任务投影 | 不支持 QUERY | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键（item file URI 因此接受 `tag` 与 `collection_id`） |
 
 `--in` file URI 的单资源处理只返回 discovery entry，不自动 fetch 内容或改写为父目录 scope。scope、flag 或 filter 不在矩阵中的组合必须返回 `INVALID_ARGUMENT`，不得回退为成功空列表。`--regex` 是未知选项并返回 `INVALID_ARGUMENT`；它不会被当作 literal query 或由服务端解释。
@@ -501,15 +504,23 @@ patchouli.send { "endpoint": "runs/ocr/control", "action": "start", "target": "t
 
 endpoint 是类似 Unix socket 的虚拟消息接收地址，target 是被操作的资源。MCP 必须显式提供 endpoint/action/target/args，args 为对象；request_id 是可选外层字段，不能放入 args。CLI 用三个位置参数和按同一端点 Schema 转换的 --pages、--engine、--target-language、--force true/false 等平铺选项；复杂值可用 --args JSON。平铺选项与 JSON 的重复字段或冲突、未知/重复字段、错误类型均拒绝，不静默覆盖。CLI 无领域参数时生成 `{}`。
 
-原生领域端点为 `patchouli://runs/ocr/control` 与 `patchouli://runs/translation/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
+原生领域端点为 `patchouli://runs/ocr/control`、`patchouli://runs/translation/control` 与 `patchouli://runs/metadata/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
 
 start 的合法 target 是 DocumentInstance 文档目录；cancel/retry 是同领域实例目录或其 status 定位形式。端点动作仅在本领域解释，不公开 ocr.start 等组合动词；错误目标、跨领域实例、非法 UUID 在进入执行前拒绝。轻量注册表只校验和分发，执行复用宿主服务，不新增通用调度器、持久邮箱或工作流。
 
 send meta 为 `{ library_revision, endpoint, action, state }`；成功 entries 为单项 `{ state: "completed", result }` 或 `{ state: "started", result, run_uri }`。受理不等于完成，fetch run_uri 查询进度；cancel 的 completed 只确认处理了取消请求，不保证 worker 已退出。拒绝 state 为 rejected、entries 为空，携带标准错误。task、幂等记录均进程内易失，HTTP 断连不取消任务。
 
-OCR start/retry 与翻译 start 支持外层 request_id 原子去重；同端点同 ID 同规范化消息返回原受理快照并标记 reused，同 ID 不同消息冲突。默认配置变化不改变已接受的重放；最新状态通过 fetch 查询，有意重跑用新 ID。
+OCR start/retry、翻译 start 与元数据 enrich_batch 支持外层 request_id 原子去重；同端点同 ID 同规范化消息返回原受理快照并标记 reused，同 ID 不同消息冲突。默认配置变化不改变已接受的重放；最新状态通过 fetch 查询，有意重跑用新 ID。
 
-权限必须同时允许 send 总开关与 runs/ocr 或 runs/translation 子域 send；子域授权涵盖其 Schema 中全部合法消息，不再逐 start/cancel/retry 授权。必要的目标资源读取授权及 Core 结构、事务、版本校验仍执行。旧 send/workflow/组合 Action 授权不能扩大为新子域授权，迁移默认关闭。
+权限必须同时允许 send 总开关与 runs/ocr、runs/translation 或 runs/metadata 子域 send；子域授权涵盖其 Schema 中全部合法消息，不再逐 start/cancel/retry/lookup/apply 授权。必要的目标资源读取授权（lookup/apply/enrich 的 Item 读取按既有 fetch 权限检查）及 Core 结构、事务、版本校验仍执行：lookup 不写本地题录但会把 DOI/ISBN 等标识符发给外部来源，apply 由 Core 校验结构、乐观并发（expected_updated_at）并原子提交。旧 send/workflow/组合 Action 授权不能扩大为新子域授权，迁移默认关闭。
+
+元数据端点消息（target 与 args 均按 Schema 校验）：
+
+- `lookup`：target `items/{item-id}.yml`，args `{scheme, value}`（必填）。同步返回只读 proposal `{item_id, expected_updated_at, candidate, attempts}`，state 为 completed，不创建任务、不写题录。candidate 为统一候选结构（source_id/title/identifiers/creators/dates 等）。
+- `apply`：target `items/{item-id}.yml`，args `{expected_updated_at, candidate, attempts}`。Core 校验候选结构、标识符规范化与题录乐观版本后原子提交；成功返回 `{item_id, source_id, added_identifiers, attempts}`（completed），版本冲突返回标准冲突错误。
+- `enrich`：target `items/{item-id}.yml`，args `{}`。Core 组合 lookup+apply：按来源优先级尝试题录已有标识符并应用首个成功候选（completed）。
+- `enrich_batch`：target `items/`，args `{item_ids: [...]}`（必填，至少一项）。后台受理，返回 `started + {task_id, status_uri, state, total, reused}`，逐项结果经 `runs/metadata/{task-id}/status` 投影；取消保留已提交项，未开始项标记 cancelled。
+- `cancel` / `retry`：target `runs/metadata/{task-id}/` 或其 `/status` 定位形式。cancel 返回 completed 与任务投影；retry 仅对失败项发起新任务（started，新 task_id）。
 
 UI 在权限矩阵的 runs 行旁用三角按钮展开/收起子行，不另建独立区域；父级及子域 send 复选框均对齐 send 列。父级为三态聚合：全部选中/部分选中/全部未选中。点击未选中或部分态选中所有子域，点击全选取消所有；子项变更即时重算，折叠不改变权限。只持久化子域勾选，父级不是独立授权或继承项。新增子域默认关闭，原全选父级变部分态。
 
@@ -855,7 +866,8 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC23 | find 的边界输入按契约归一化并带稳定 warning：whitespace QUERY 等同 browse；root `--limit`/`--cursor` 可分页；file URI 是单资源 scope；cursor 冲突时恢复其绑定上下文；where 在第一个 `=` 分割且重复 key 最后一项覆盖。无效 cursor 或矩阵外组合仍返回 `INVALID_ARGUMENT` |
 | V3-AC24 | `meta.library_revision` 是持久化、严格单调的 `lib:<十进制正整数>` Library revision；每次成功的协议可见 Library 写入及桌面/headless 交接均不重置它。已 fetch 内容仅为客户端快照；cursor 或 MCP 会话观察到 Library 变化时继续执行并在 `message.warnings` 给出相应 warning，不提供服务端推送式内容撤回 |
 | V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、versioned evidence URI 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
-| V3-AC26 | `runs/` 是 VFS 首个易失运行时资源：不进任何快照、不可 `put`、不属 canonical 资源，不推进 `meta.library_revision`、不发资源变更通知；根下只有 `ocr/` 与 `translation/` 两个独立子树，各自投影 status，不强行统一为一个通用 run 模型；`runs/agent/` 与 `workflows/` 已随内置 Agent 移除 |
+| V3-AC26 | `runs/` 是 VFS 首个易失运行时资源：不进任何快照、不可 `put`、不属 canonical 资源，不推进 `meta.library_revision`、不发资源变更通知；根下只有 `ocr/`、`translation/` 与 `metadata/` 三个独立子树，各自投影 status，不强行统一为一个通用 run 模型；`runs/agent/` 与 `workflows/` 已随内置 Agent 移除 |
+| V3-AC29 | 元数据端点 `runs/metadata/control` 提供 lookup/apply/enrich/enrich_batch/cancel/retry：lookup 返回只读候选 proposal 且零写入；apply 由 Core 校验结构与乐观版本后原子提交；enrich 为 Core 组合的 lookup+apply；enrich_batch 后台受理并投影 `runs/metadata/{task-id}/status` 逐项结果，取消保留已提交项；request_id 原子去重与冲突语义与其他端点一致；权限需 runs/metadata 子域 send 显式授权，默认关闭 |
 | V3-AC27 | 翻译端点 start 针对 Document 启动、cancel 针对 `runs/translation/{run-id}/status` 取消，均返回通用 send envelope；状态投影给出 `state`、页计数与逐页 `{page_index, state, committed_box_count, error_code?, error_message?}`；启动立即返回 `running`，取消保留已提交页，运行只存在于宿主内存且不构成持久任务账本 |
 | V3-AC28 | `runs/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1）。`view` 是图像输出的显式例外、`add` 是本地路径输入的显式例外（见第 8、9 节），两者输出仍不暴露宿主路径；`add`/`view` 有独立工具开关，已有 `put` 授权不自动扩展 |
 

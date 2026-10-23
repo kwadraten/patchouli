@@ -4,7 +4,7 @@ Status: accepted (2026-07-31); amended 2026-08-01, 2026-09-15, 2026-10-05 and 20
 
 ## Current contract and superseding decisions
 
-The normative parameter/response specification formerly in PRD §3.4 now lives in [mcp-protocol.md](../mcp-protocol.md). ADR `0028` supersedes historical `?evref=`/EvidenceRef consumption mentioned below with `?rev=&box=` versioned page URIs; ADR `0027` defines working/committed history. ADR `0034` adds a fourth VFS root, `patchouli://translations/`, for box-derived page translations and amends the discovery tree described below. The four tools and HTTP CLI are implemented, including limited `put`. Automatic headless launch, per-Library host ownership and desktop takeover are implemented through a canonical-database-path lifetime lock, validated device-local discovery record, and authenticated local takeover channel.
+The normative parameter/response specification formerly in PRD §3.4 now lives in [mcp-protocol.md](../protocols/mcp-protocol.md). ADR `0028` supersedes historical `?evref=`/EvidenceRef consumption mentioned below with `?rev=&box=` versioned page URIs; ADR `0027` defines working/committed history. ADR `0034` adds a fourth VFS root, `patchouli://translations/`, for box-derived page translations and amends the discovery tree described below. The four tools and HTTP CLI are implemented, including limited `put`. Automatic headless launch, per-Library host ownership and desktop takeover are implemented through a canonical-database-path lifetime lock, validated device-local discovery record, and authenticated local takeover channel.
 
 ## Context
 

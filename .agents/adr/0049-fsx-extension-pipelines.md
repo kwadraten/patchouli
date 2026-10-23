@@ -1,8 +1,12 @@
 # 0049. FSX extension pipelines and static configuration bindings
 
-Status: accepted and implemented, 2026-10-21. Issue #8.
+Status: accepted and implemented, 2026-10-21; partially superseded by ADR 0053 on 2026-10-23.
 
-The ownership and failure matrix is in [Extension contracts](../extension-contracts.md).
+ADR 0053 supersedes only this ADR's worker-process isolation and extension authorization/capability
+plumbing. Trusted compiled in-process execution replaces those mechanisms; the extension-owned
+translation policy and the remaining data/commit contracts in this ADR are retained.
+
+The ownership and failure matrix is in [Extension contracts](../protocols/extension-contracts.md).
 
 ## Decision
 
@@ -73,4 +77,4 @@ Implementation and tests must establish each capability before domain documentat
 it as shipped. Fixture-based protocol tests do not establish real endpoint availability, and
 type checking does not prove arbitrary callbacks terminate or produce correct translations.
 Current verification evidence and remaining limits are recorded in
-[Extension validation](../extension-validation.md).
+[Extension validation](../protocols/extension-validation.md).
