@@ -20,7 +20,7 @@ namespace Patchouli.UI.ViewModels;
 /// The view model formats fields for display and exposes lightweight tag editing that routes
 /// writes through <see cref="IItemTagService"/>.
 /// </summary>
-public sealed partial class ItemInspectorViewModel : ViewModelBase
+public sealed partial class ItemInspectorViewModel : ViewModelBase, IAsyncDisposable
 {
     private static readonly TimeSpan LoadRequestThrottle = TimeSpan.Zero;
     private readonly Func<Task<IItemService>> _itemServiceFactory;
@@ -28,6 +28,7 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
     private readonly Func<Task<ICslItemTypeProfileService>> _profileServiceFactory;
     private readonly Func<Task<ICollectionService>> _collectionServiceFactory;
     private readonly Subject<Unit> _loadRequests = new();
+    private readonly AsyncOperationLifetime _loadLifetime = new();
     private ItemId? _currentItemId;
     private ItemId? _latestLoadId;
     private TaskCompletionSource? _latestLoadCompletion;
@@ -62,7 +63,7 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
             TaskPoolScheduler.Default,
             uiScheduler,
             LoadLatestAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "item-inspector-load")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "item-inspector-load"), _loadLifetime));
     }
 
     [ObservableProperty] public partial string Title { get; private set; } = "";
@@ -165,6 +166,12 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
     /// </summary>
     public Task LoadAsync(ItemId? itemId)
     {
+        return LoadAsync(itemId, CancellationToken.None);
+    }
+
+    public Task LoadAsync(ItemId? itemId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_isDisposed)
         {
             return Task.CompletedTask;
@@ -177,7 +184,9 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
             new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _latestLoadId = itemId;
         _loadRequests.OnNext(Unit.Default);
-        return _latestLoadCompletion.Task;
+        // This is a publication/coalescing signal, not the database task. Cancelling
+        // a caller's wait is safe: DisposeAsync still drains the actual load lifetime.
+        return _latestLoadCompletion.Task.WaitAsync(cancellationToken);
     }
 
     private async Task LoadLatestAsync(CancellationToken cancellationToken)
@@ -234,11 +243,18 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         _isDisposed = true;
         if (disposing)
         {
+            _loadLifetime.Dispose();
             // Release any caller still awaiting an in-flight load.
             _latestLoadCompletion?.TrySetResult();
         }
 
         base.Dispose(disposing);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        await _loadLifetime.DisposeAsync();
     }
 
     private void Clear()

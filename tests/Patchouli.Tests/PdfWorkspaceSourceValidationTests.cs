@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.VisualTree;
 using Patchouli.UI.Views;
 using Avalonia.Headless;
+using Avalonia.Threading;
 using FluentAssertions;
 using Patchouli.Core.Files;
 using Patchouli.Core.Documents;
@@ -18,6 +19,7 @@ using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.Host.Composition;
+using Patchouli.Infrastructure.Rendering;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels.Dialogs;
 
@@ -39,9 +41,9 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Editing_lifecycle_releases_only_the_expected_sessions(string action)
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch<int>(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
-            using MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-lifecycle"));
+            MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-lifecycle"));
             await OpenImportedItemAsync(main, CreatePdfPath());
             HostServices services = await main.ServicesAsync();
             LibraryItemViewModel item = main.Shell.Items.Single();
@@ -92,9 +94,9 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Closing_editing_tab_waits_for_discard_and_keeps_session_on_failure(bool fail)
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch<int>(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
-            using MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-close"));
+            MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("page-edit-close"));
             await OpenImportedItemAsync(main, CreatePdfPath());
             HostServices services = await main.ServicesAsync();
             await main.ShowReadingAsync(main.Shell.Items.Single());
@@ -147,6 +149,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     }
 
     private readonly TemporaryAppSettingsFile _settings = new();
+    private MainWindowViewModel? _mainWindow;
 
     public void Dispose()
     {
@@ -159,9 +162,10 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Page_ocr_refreshes_the_open_working_box_tree_and_preview_without_committing(bool logicalPages)
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
-            using MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path,
+            MainWindowViewModel main = _mainWindow = new MainWindowViewModel(new FakeClipboard(),
+                settingsPath: _settings.Path,
                 modalOperations: new DirectModalRunner())
             {
                 RuntimeDatabasePath = CreateDatabasePath("ui-page-ocr-working")
@@ -170,6 +174,15 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             HostServices services = await main.ServicesAsync();
             services.OcrAdapters.RegisterAdapter(new WorkingPageAdapter());
             LibraryItemViewModel item = main.Shell.Items.Single();
+            // ADR 0035 commits a tree revision at import time only for placeholder pages; a
+            // successfully imported page has no current revision until something commits one.
+            // This test compares the live tree before and after OCR, so the baseline it reads
+            // must be seeded explicitly instead of assumed from import.
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
+            IReadOnlyList<Core.Layout.Page> pages =
+                (await services.Pages.ListPagesAsync(documentInstanceId)).Value;
+            DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory,
+                services.Clock, documentInstanceId, pages[0].PageId, "committed baseline");
             await item.ViewPdfCommand.ExecuteAsync();
             PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)main.ActiveTab!.Content!;
             await workspace.EnterEditModeCommand.ExecuteAsync();
@@ -177,6 +190,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
                 .Value;
             DocumentTreeRevision current = (await services.DocumentTrees.GetCurrentRevisionAsync(
                 edit.DocumentInstanceId, edit.PageId)).Value;
+            current.TreeRevisionId.Should().Be(committed.TreeRevisionId);
             if (!logicalPages)
             {
                 foreach (DocumentBox root in (await services.DocumentTrees.ListBoxesAsync(edit.DraftRevisionId)).Value
@@ -200,6 +214,42 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             await workspace.CancelEditModeCommand.ExecuteAsync();
             workspace.BoundingBoxes.Should().NotContain(box => box.Text == "new working text");
             await ReleaseDocumentSessionAsync(main, item);
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The preview render caches the PDFium document that owns the source file. Host shutdown
+    /// must close it deterministically: after ShutdownAsync the original source PDF can be
+    /// opened exclusively, with no retry window to wait out a lingering handle.
+    /// </summary>
+    [Fact]
+    public async Task Host_shutdown_closes_the_cached_source_document_handle()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await DispatchAndShutdownAsync(session, async () =>
+        {
+            string pdf = CreatePdfPath();
+            MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("pdf-source-shutdown-release"));
+            await OpenImportedItemAsync(main, pdf);
+            LibraryItemViewModel item = main.Shell.Items.Single();
+            HostServices services = await main.ServicesAsync();
+            PageRenderService renders = services.PageRenders.Should().BeOfType<PageRenderService>().Which;
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
+            IReadOnlyList<Core.Layout.Page> pages =
+                (await services.Pages.ListPagesAsync(documentInstanceId)).Value;
+
+            Result<PdfPagePixelBufferLease> preview = await services.PageRenders.RenderPreviewAsync(
+                new PageRenderRequest(documentInstanceId, pages[0].PageId,
+                    FileAssetId.Parse(item.FileAssetId!), 120, Purpose: PageRenderPurpose.Preview));
+            preview.IsSuccess.Should().BeTrue(preview.ErrorMessage);
+            preview.Value.Dispose();
+            renders.OpenDocumentSessions.Should().BeGreaterThan(0,
+                "a preview render keeps the source document open until the host releases it");
+
+            await main.ShutdownAsync();
+
+            using FileStream exclusive = new(pdf, FileMode.Open, FileAccess.Read, FileShare.None);
+            exclusive.Length.Should().BeGreaterThan(0);
         }, CancellationToken.None);
     }
 
@@ -258,7 +308,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Marquee_and_control_selection_delete_boxes_and_parent_subtrees_from_draft()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("ui-pdf-selection"));
             await OpenImportedItemAsync(main, CreatePdfPath());
@@ -288,6 +338,10 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             {
                 window.Measure(new Size(1280, 900));
                 window.Arrange(new Rect(0, 0, 1280, 900));
+                // Re-entering edit mode reloads BoundingBoxes, so the item containers for the
+                // new entries only exist after a real layout pass has run.
+                window.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
                 Border border = page.GetVisualDescendants().OfType<Border>().Single(control =>
                     control.Classes.Contains("BBox") &&
                     control.DataContext is PdfBBoxViewModel box && box.BoxId == first.BoxId);
@@ -301,6 +355,9 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             menu.IsOpen.Should().BeFalse();
             await workspace.EnterEditModeCommand.ExecuteAsync();
             edit = workspace.EditSessionId!.Value;
+            // Committing promotes the working revision in place (ADR 0027), so the persisted
+            // box identity must still be the entry the re-entered draft renders.
+            workspace.BoundingBoxes.Should().ContainSingle(box => box.BoxId == first.BoxId);
             RightClickFirstBox();
             menu.IsOpen.Should().BeTrue();
             menu.Items.OfType<MenuItem>().Single(entry => Equals(entry.Header, "删除"))
@@ -340,7 +397,8 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     [Fact]
     public void Workspace_starts_unverified_and_not_validating_or_warning()
     {
-        MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+        MainWindowViewModel vm =
+            _mainWindow = new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path);
         PdfWorkspaceViewModel pdf = new(vm, new LibraryItemViewModel(
             ItemId.New().ToString(), "Title", "book", "", "", "", null, null, null, "source.pdf", "", 0, 0, "",
             _ => Task.CompletedTask, _ => Task.CompletedTask));
@@ -355,7 +413,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Successful_render_transitions_validating_then_current_and_stays_interactive()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             string pdf = CreatePdfPath();
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-srcval"));
@@ -398,7 +456,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Changed_source_shows_a_warning_distinct_from_validating()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             string pdf = CreatePdfPath();
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-srcval-warn"));
@@ -438,7 +496,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Rapid_page_flipping_discards_obsolete_renders_and_applies_latest()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-rapid-flip"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -488,7 +546,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public async Task Clear_cancels_in_flight_render_and_leaves_workspace_clean()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-clear-render"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -547,10 +605,40 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
 
     private MainWindowViewModel CreateMainWindow(string databasePath)
     {
-        return new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path)
+        return _mainWindow = new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path)
         {
             RuntimeDatabasePath = databasePath
         };
+    }
+
+    private Task DispatchAndShutdownAsync(HeadlessUnitTestSession session, Func<Task> action,
+        CancellationToken cancellationToken)
+    {
+        return DispatchAndShutdownAsync<bool>(session, async () =>
+        {
+            await action();
+            return true;
+        }, cancellationToken);
+    }
+
+    private async Task DispatchAndShutdownAsync<T>(HeadlessUnitTestSession session, Func<Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        await session.Dispatch<T>(async () =>
+        {
+            try
+            {
+                return await action();
+            }
+            finally
+            {
+                if (_mainWindow is not null)
+                {
+                    await _mainWindow.ShutdownAsync();
+                    _mainWindow = null;
+                }
+            }
+        }, cancellationToken);
     }
 
     private string CreateDatabasePath(string prefix)

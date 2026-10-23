@@ -22,8 +22,7 @@ public sealed record AppRuntimeOptions(
     string DefaultStagingRoot,
     string LogDirectory,
     string FileSearchRoot,
-    bool RememberLastDatabase = true,
-    bool UseMockOcrOnly = false)
+    bool RememberLastDatabase = true)
 {
     public static AppRuntimeOptions FromAppSettings(string? settingsPath = null)
     {
@@ -555,14 +554,22 @@ public sealed record PatchouliAppSettings(
     private static PatchouliAppSettings LoadFile(PatchouliAppSettings defaults, string path, string pathCategory,
         Action<SettingsLoadFailure>? onFailure)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path))
         {
             return defaults;
         }
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            // Writers replace this file atomically from a sibling temp file, and some of them run
+            // fire-and-forget (the startup update check writes the UpdateCheck section) while a new
+            // window is being constructed. Opening with read/write/delete sharing lets this read
+            // keep the previous complete file instead of failing the share check with the writer's
+            // replace handle. A File.Exists pre-check would swallow the same sharing violation and
+            // silently fall back to platform defaults, switching RuntimeDatabasePath and orphaning
+            // path-scoped settings drafts, so absence is handled below from the open itself.
+            using FileStream stream = OpenSettingsFileWithRetry(path);
+            using JsonDocument document = JsonDocument.Parse(stream);
             JsonElement root = document.RootElement;
             JsonElement? patchouli = GetSection(root, "Patchouli");
             JsonElement? minerU = GetSection(root, "MinerU");
@@ -584,8 +591,7 @@ public sealed record PatchouliAppSettings(
                     ExpandPath(ReadString(patchouli, "DefaultStagingRoot", defaults.Runtime.DefaultStagingRoot)),
                     ExpandPath(ReadString(patchouli, "LogDirectory", defaults.Runtime.LogDirectory)),
                     ExpandPath(ReadString(patchouli, "FileSearchRoot", defaults.Runtime.FileSearchRoot)),
-                    ReadBool(patchouli, "RememberLastDatabase", defaults.Runtime.RememberLastDatabase),
-                    ReadBool(patchouli, "UseMockOcrOnly", defaults.Runtime.UseMockOcrOnly)),
+                    ReadBool(patchouli, "RememberLastDatabase", defaults.Runtime.RememberLastDatabase)),
                 new MinerUAppSettings(
                     ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
                     ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
@@ -635,6 +641,15 @@ public sealed record PatchouliAppSettings(
                     ReadDeviceBindings(sync, defaults.Sync.DeviceBindings ?? []))
             };
         }
+        catch (FileNotFoundException)
+        {
+            // No settings file yet (first run) or it was removed; that is not a load failure.
+            return defaults;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return defaults;
+        }
         catch (JsonException exception)
         {
             UnexpectedExceptions.Sink.Report(exception, "settings-load", "parse-settings");
@@ -655,6 +670,41 @@ public sealed record PatchouliAppSettings(
             onFailure?.Invoke(new SettingsLoadFailure("settings_access_denied",
                 $"没有权限读取设置文件，已使用默认值：{exception.Message}", pathCategory));
             return defaults;
+        }
+    }
+
+    // An atomic sibling-temp-file replace (File.Move with overwrite) leaves the destination
+    // name delete-pending for a very short window: a concurrent open observes sharing
+    // violations, access denied, or even a transient file-not-found instead of either the old
+    // or the new contents. Retrying briefly lets the read land on a complete file in both
+    // directions; genuinely absent files fall through to the same catches as before, so
+    // first-run semantics are unchanged.
+    private static FileStream OpenSettingsFileWithRetry(string path)
+    {
+        const int maxAttempts = 6;
+        const int notFoundAttempts = 2;
+        for (int attempt = 0;; attempt++)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (FileNotFoundException) when (attempt < notFoundAttempts - 1)
+            {
+                Thread.Sleep(15);
+            }
+            catch (DirectoryNotFoundException) when (attempt < notFoundAttempts - 1)
+            {
+                Thread.Sleep(15);
+            }
+            catch (Exception exception) when (attempt < maxAttempts - 1 &&
+                                              (exception is IOException and not FileNotFoundException
+                                                   and not DirectoryNotFoundException
+                                               || exception is UnauthorizedAccessException))
+            {
+                Thread.Sleep(25);
+            }
         }
     }
 
@@ -696,8 +746,7 @@ public sealed record PatchouliAppSettings(
                 Runtime.DefaultStagingRoot,
                 Runtime.LogDirectory,
                 Runtime.FileSearchRoot,
-                Runtime.RememberLastDatabase,
-                Runtime.UseMockOcrOnly
+                Runtime.RememberLastDatabase
             });
             root["MinerU"] = JsonSerializer.SerializeToNode(new
             {
@@ -884,6 +933,14 @@ public sealed record PatchouliAppSettings(
                 root = new JsonObject();
             }
 
+            // UseMockOcrOnly was a product switch with no remaining consumer. Drop any value left
+            // by an older settings file even when this save only touches another section, so a
+            // field-level merge cannot preserve the obsolete key.
+            if (root["Patchouli"] is JsonObject patchouliNode)
+            {
+                patchouliNode.Remove("UseMockOcrOnly");
+            }
+
             bool saveAll = dirtyFields == null || dirtyFields.Count == 0;
 
             if (saveAll || dirtyFields!.Contains("Runtime") || dirtyFields!.Contains("Patchouli"))
@@ -895,8 +952,7 @@ public sealed record PatchouliAppSettings(
                     Runtime.DefaultStagingRoot,
                     Runtime.LogDirectory,
                     Runtime.FileSearchRoot,
-                    Runtime.RememberLastDatabase,
-                    Runtime.UseMockOcrOnly
+                    Runtime.RememberLastDatabase
                 });
             }
 

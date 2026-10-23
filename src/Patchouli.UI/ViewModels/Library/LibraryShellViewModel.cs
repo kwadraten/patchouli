@@ -28,7 +28,7 @@ using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed partial class LibraryShellViewModel : ViewModelBase
+public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposable
 {
     internal const int LibraryPageSize = 100;
     private static readonly TimeSpan FilterSelectionThrottle = TimeSpan.FromMilliseconds(30);
@@ -36,6 +36,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private static readonly TimeSpan SidebarEventThrottle = TimeSpan.Zero;
     private static readonly TimeSpan CollectionMembershipThrottle = TimeSpan.FromMilliseconds(50);
     private readonly MainWindowViewModel _main;
+    private readonly AsyncOperationLifetime _operationLifetime = new();
+    private int _pagingDisposed;
     private readonly IScheduler _timingScheduler = TaskPoolScheduler.Default;
     private readonly IScheduler _uiScheduler;
     private readonly Subject<Unit> _selectionChangedRequests = new();
@@ -44,10 +46,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private readonly Subject<Unit> _collectionMembershipRefreshRequests = new();
     private readonly SerialDisposable _revisionSubscription = new();
     private CancellationTokenSource _pagingSession = new();
+    private TaskCompletionSource _refreshCompletion = NewRefreshCompletion(true);
     private LibraryPageQuery? _pageQuery;
     private LibraryItemCursor? _nextPageCursor;
     private int _pageLoadInFlight;
     private int _pagingGeneration;
+    private int _cursorVersion;
     private int _filterSelectionGeneration;
     private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
@@ -97,7 +101,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _timingScheduler,
             _uiScheduler,
             RefreshScopeChangedAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-scope-refresh")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-scope-refresh"),
+            _operationLifetime));
 
         IObservable<Unit> tagSelectionChanges = Observable.FromEventPattern(
                 handler => Sidebar.TagSelectionChanged += handler,
@@ -112,6 +117,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             {
                 Interlocked.Increment(ref _filterSelectionGeneration);
                 Interlocked.Increment(ref _pagingGeneration);
+                // A generation bump supersedes any in-flight refresh: release waiters on the
+                // previous completion signal even if that refresh is stuck in a wait that does
+                // not observe the paging-session token.
+                Interlocked.Exchange(ref _refreshCompletion, NewRefreshCompletion(false))
+                    .TrySetResult();
                 _pagingSession.Cancel();
                 IsRefreshingItems = true;
             }),
@@ -119,7 +129,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _timingScheduler,
             _uiScheduler,
             RefreshItemsFromFilterSelectionAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-filter-refresh")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-filter-refresh"),
+            _operationLifetime));
 
         // Rapid selection changes must not stack inspector loads: only the latest selection
         // resolves, and the inspector pipeline cancels the superseded fetch.
@@ -128,8 +139,9 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             SidebarEventThrottle,
             _timingScheduler,
             _uiScheduler,
-            _ => Inspector.LoadAsync(_pendingInspectorItemId),
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-inspector-load")));
+            token => Inspector.LoadAsync(_pendingInspectorItemId, token),
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-inspector-load"),
+            _operationLifetime));
 
         RegisterSequentialSidebarEvent(
             Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.PinToggled += handler,
@@ -205,14 +217,16 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _timingScheduler,
             _uiScheduler,
             ReconcileTagsAfterCommittedChangeAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-tag-reconcile")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-tag-reconcile"),
+            _operationLifetime));
         Register(ReactiveUiFlow.SubscribeLatest(
             _collectionReconcileRequests,
             SidebarEventThrottle,
             _timingScheduler,
             _uiScheduler,
             ReconcileCollectionsAfterCommittedChangeAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-reconcile")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-reconcile"),
+            _operationLifetime));
         // Membership checkmarks in the item context menu are latest-wins: a superseded run is
         // cancelled instead of racing the newer selection against N member-list queries.
         Register(ReactiveUiFlow.SubscribeLatest(
@@ -221,7 +235,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _timingScheduler,
             _uiScheduler,
             RefreshCollectionMembershipAsync,
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-membership")));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-membership"),
+            _operationLifetime));
 
         RemoveSelectedItemsFromCurrentCollectionCommand =
             new AsyncCommand(RemoveSelectedItemsFromCurrentCollectionAsync);
@@ -313,9 +328,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             Interlocked.Increment(ref _pagingGeneration);
             Interlocked.Increment(ref _filterSelectionGeneration);
             IsRefreshingItems = false;
+            Interlocked.Exchange(ref _refreshCompletion, NewRefreshCompletion(false))
+                .TrySetResult();
             _pagingSession.Cancel();
             _pageQuery = null;
             _nextPageCursor = null;
+            Interlocked.Increment(ref _cursorVersion);
             HasMoreItems = false;
             _observedLibraryRevisions = null;
             return;
@@ -335,7 +353,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _uiScheduler,
             (batch, cancellationToken) =>
                 ApplyBufferedChangeSetsAsync(observedRevisions, batch, cancellationToken),
-            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-revision"));
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-revision"), _operationLifetime);
     }
 
     private async Task ApplyBufferedChangeSetsAsync(
@@ -349,7 +367,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        await ApplyChangeSetAsync(MergeChangeSets(batch));
+        await ApplyChangeSetAsync(MergeChangeSets(batch), cancellationToken);
     }
 
     internal static LibraryChangeSet MergeChangeSets(IReadOnlyList<LibraryChangeSet> changeSets)
@@ -896,7 +914,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             }
 
             return Task.CompletedTask;
-        });
+        }, cancellationToken);
     }
 
     public Task RefreshItemsAsync()
@@ -904,10 +922,17 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         return RefreshItemsCoreAsync(CancellationToken.None);
     }
 
-    private async Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
+    private Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
+    {
+        return _operationLifetime.RunAsync(() => RefreshItemsTrackedAsync(cancellationToken));
+    }
+
+    private async Task RefreshItemsTrackedAsync(CancellationToken cancellationToken)
     {
         int pagingGeneration = Interlocked.Increment(ref _pagingGeneration);
         int filterGeneration = Volatile.Read(ref _filterSelectionGeneration);
+        TaskCompletionSource refreshCompletion = NewRefreshCompletion(false);
+        Interlocked.Exchange(ref _refreshCompletion, refreshCompletion).TrySetResult();
         IsRefreshingItems = true;
         CancellationTokenSource nextPagingSession = new();
         CancellationTokenSource previousPagingSession = Interlocked.Exchange(ref _pagingSession, nextPagingSession);
@@ -1040,6 +1065,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
                     .Select(row => row.LinkedFileName!));
             _pageQuery = pageQuery;
             _nextPageCursor = page.NextCursor;
+            Interlocked.Increment(ref _cursorVersion);
             HasMoreItems = page.HasMore;
 
             Raise(nameof(Items));
@@ -1065,10 +1091,66 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             {
                 IsRefreshingItems = false;
             }
+
+            refreshCompletion.TrySetResult();
         }
     }
 
-    public async Task LoadNextPageAsync()
+    /// <summary>
+    /// Completes when the paging refresh that was current at read time settles — whether it
+    /// published, was superseded by a newer generation, or faulted. A completed task means no
+    /// refresh was in flight; awaiters must re-check <see cref="GetPagingStatus"/> afterwards
+    /// because a newer refresh may already have started.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public Task CurrentRefreshCompletion => Volatile.Read(ref _refreshCompletion).Task;
+
+    /// <summary>
+    /// Privacy-safe snapshot of paging/refresh state for bounded waits and diagnostics:
+    /// generation, loading flags, row count, and cursor presence/version only — never item
+    /// content or file system paths.
+    /// </summary>
+    public LibraryPagingStatus GetPagingStatus()
+    {
+        return new LibraryPagingStatus(
+            Volatile.Read(ref _pagingGeneration),
+            IsRefreshingItems,
+            IsLoadingMoreItems,
+            HasMoreItems,
+            _pageQuery is not null,
+            _nextPageCursor is not null,
+            Items.Count,
+            Volatile.Read(ref _cursorVersion));
+    }
+
+    private static TaskCompletionSource NewRefreshCompletion(bool completed)
+    {
+        TaskCompletionSource source = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (completed)
+        {
+            source.SetResult();
+        }
+
+        return source;
+    }
+
+    public Task LoadNextPageAsync()
+    {
+        return LoadNextPageAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Loads the next keyset page. The caller token is linked to the paging-session token, so
+    /// caller cancellation surfaces as <see cref="OperationCanceledException"/> while an
+    /// internal generation switch (a newer refresh, library switch, or disposal) quietly
+    /// abandons the superseded fetch without publishing it.
+    /// </summary>
+    public Task LoadNextPageAsync(CancellationToken cancellationToken)
+    {
+        return _operationLifetime.RunAsync(() => LoadNextPageTrackedAsync(cancellationToken));
+    }
+
+    private async Task LoadNextPageTrackedAsync(CancellationToken cancellationToken)
     {
         if (IsRefreshingItems || !HasMoreItems || _pageQuery is null || _nextPageCursor is null ||
             Interlocked.CompareExchange(ref _pageLoadInFlight, 1, 0) != 0)
@@ -1079,13 +1161,16 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         IsLoadingMoreItems = true;
         LibraryPageQuery query = _pageQuery;
         LibraryItemCursor cursor = _nextPageCursor;
-        CancellationToken cancellationToken = _pagingSession.Token;
+        CancellationToken sessionToken = _pagingSession.Token;
+        using CancellationTokenSource linked =
+            CancellationTokenSource.CreateLinkedTokenSource(sessionToken, cancellationToken);
+        CancellationToken pageToken = linked.Token;
         try
         {
             HostServices services = await _main.ServicesAsync();
             LibraryVisiblePage page = await Task.Run(
-                () => FetchVisiblePageAsync(services, query, cursor, cancellationToken), cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+                () => FetchVisiblePageAsync(services, query, cursor, pageToken), pageToken);
+            pageToken.ThrowIfCancellationRequested();
             if (!ReferenceEquals(query, _pageQuery) ||
                 query.PagingGeneration != Volatile.Read(ref _pagingGeneration) ||
                 query.LibraryGeneration != _main.LibraryGeneration)
@@ -1124,11 +1209,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             }
 
             _nextPageCursor = page.NextCursor;
+            Interlocked.Increment(ref _cursorVersion);
             HasMoreItems = page.HasMore;
             Raise(nameof(LoadedItemCount));
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (sessionToken.IsCancellationRequested &&
+                                                 !cancellationToken.IsCancellationRequested)
         {
+            // A newer paging generation or shell disposal superseded this page load; the
+            // caller itself was not cancelled, so this is not an error for the caller.
         }
         finally
         {
@@ -1718,8 +1807,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     /// collection by stable primary key. Never clears and reloads the whole Library, and never
     /// runs a long database query synchronously on the UI dispatcher.
     /// </summary>
-    public async Task ApplyChangeSetAsync(IReadOnlyCollection<ItemId> itemIds)
+    public Task ApplyChangeSetAsync(IReadOnlyCollection<ItemId> itemIds)
     {
+        return ApplyChangeSetAsync(itemIds, CancellationToken.None);
+    }
+
+    public async Task ApplyChangeSetAsync(IReadOnlyCollection<ItemId> itemIds, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (itemIds.Count == 0)
         {
             return;
@@ -1732,16 +1827,18 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             // Incremental row lookup returns active items by ID without applying the current
             // sidebar relation filters. Re-run the filtered query so newly imported/scanned
             // items cannot leak into an empty collection or a tag-filtered view.
-            await DispatcherTasks.RunAsync(RefreshItemsAsync);
+            await DispatcherTasks.RunAsync(() => RefreshItemsCoreAsync(cancellationToken), cancellationToken);
             return;
         }
 
         HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<LibraryItemRow>> rowsResult =
-            await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync(itemIds));
+            await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync(itemIds, cancellationToken),
+                cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (rowsResult.IsFailure)
         {
-            await DispatcherTasks.RunAsync(RefreshItemsAsync);
+            await DispatcherTasks.RunAsync(() => RefreshItemsCoreAsync(cancellationToken), cancellationToken);
             return;
         }
 
@@ -1749,7 +1846,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         {
             ApplyRows(rowsResult.Value, itemIds);
             return Task.CompletedTask;
-        });
+        }, cancellationToken);
     }
 
     private void ApplyRows(IReadOnlyList<LibraryItemRow> rows, IReadOnlyCollection<ItemId>? removedItemIds = null)
@@ -1834,15 +1931,22 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     /// Routes the complete host notification to its affected item rows. Both item and document
     /// changes are projected by stable IDs; no full Library refresh is needed after a commit.
     /// </summary>
-    public async Task ApplyChangeSetAsync(LibraryChangeSet changeSet)
+    public Task ApplyChangeSetAsync(LibraryChangeSet changeSet)
     {
+        return ApplyChangeSetAsync(changeSet, CancellationToken.None);
+    }
+
+    public async Task ApplyChangeSetAsync(LibraryChangeSet changeSet, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         bool hasTagFilter = Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0;
         if (!hasTagFilter)
         {
-            await ApplyChangeSetAsync(changeSet.ItemIds);
-            await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds);
+            await ApplyChangeSetAsync(changeSet.ItemIds, cancellationToken);
+            await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds, cancellationToken);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (changeSet.ItemIds.Count > 0 || changeSet.DocumentInstanceIds.Count > 0)
         {
             // An active tag filter is reconciled from one refreshed cache snapshot below. Avoid
@@ -1866,8 +1970,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     /// stable primary key, so a terminal OCR event updates just the affected row instead of
     /// clearing and rebuilding the whole Library.
     /// </summary>
-    public async Task ApplyDocumentChangeSetAsync(IReadOnlyCollection<DocumentInstanceId> documentInstanceIds)
+    public Task ApplyDocumentChangeSetAsync(IReadOnlyCollection<DocumentInstanceId> documentInstanceIds)
     {
+        return ApplyDocumentChangeSetAsync(documentInstanceIds, CancellationToken.None);
+    }
+
+    public async Task ApplyDocumentChangeSetAsync(IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (documentInstanceIds.Count == 0)
         {
             return;
@@ -1875,10 +1986,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<ItemId>> itemIds = await Task.Run(() =>
-            services.LibraryItems.GetItemIdsByDocumentInstanceIdsAsync(documentInstanceIds));
+                services.LibraryItems.GetItemIdsByDocumentInstanceIdsAsync(documentInstanceIds, cancellationToken),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (itemIds.IsSuccess)
         {
-            await ApplyChangeSetAsync(itemIds.Value);
+            await ApplyChangeSetAsync(itemIds.Value, cancellationToken);
         }
     }
 
@@ -1952,7 +2065,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         {
             Sidebar.LoadCollections(collections.Value);
             return Task.CompletedTask;
-        });
+        }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
         CollectionId? currentSelection = Sidebar.SelectedCollection?.CollectionId;
@@ -2195,19 +2308,32 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         MetadataBatchProgress = 0;
         MetadataBatchStatus = $"正在获取 0/{itemIds.Length} 个题录的元数据...";
         MetadataLookupProgressInfo latest = new(0, itemIds.Length, 0, 0, null);
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             MetadataLookupOutcome outcome = await MetadataLookupUiBridge.LookupBatchAsync(
-                await _main.ServicesAsync(),
+                services,
                 itemIds,
                 progress =>
                 {
+                    if (_cancelMetadataBatchForLibrarySwitch ||
+                        !_main.IsCurrentLibraryContext(services, libraryGeneration))
+                    {
+                        return;
+                    }
+
                     latest = progress;
                     MetadataBatchProgress = progress.Total <= 0 ? 0 : 100d * progress.Completed / progress.Total;
                     MetadataBatchStatus =
                         $"正在获取 {progress.Completed}/{Math.Max(progress.Total, itemIds.Length)} 个题录的元数据...";
                 },
                 cancellation.Token);
+
+            if (_cancelMetadataBatchForLibrarySwitch || !_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
 
             await RefreshItemsOnUiThreadAsync();
             await _main.RefreshOpenItemEditorsAsync(itemIds);
@@ -2233,7 +2359,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
         catch (OperationCanceledException)
         {
-            if (!_cancelMetadataBatchForLibrarySwitch)
+            if (!_cancelMetadataBatchForLibrarySwitch && _main.IsCurrentLibraryContext(services, libraryGeneration))
             {
                 await RefreshItemsOnUiThreadAsync();
                 await _main.RefreshOpenItemEditorsAsync(itemIds);
@@ -2243,8 +2369,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
         catch (Exception exception)
         {
-            MetadataBatchStatus = $"批量获取失败：{exception.Message}";
-            _main.ReportError(MetadataBatchStatus);
+            if (!_cancelMetadataBatchForLibrarySwitch && _main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                MetadataBatchStatus = $"批量获取失败：{exception.Message}";
+                _main.ReportError(MetadataBatchStatus);
+            }
         }
         finally
         {
@@ -2456,18 +2585,48 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && Interlocked.Exchange(ref _pagingDisposed, 1) == 0)
         {
+            _operationLifetime.Dispose();
+            Interlocked.Increment(ref _pagingGeneration);
             CancellationTokenSource pagingSession =
                 Interlocked.Exchange(ref _pagingSession, new CancellationTokenSource());
             pagingSession.Cancel();
             pagingSession.Dispose();
             _pagingSession.Dispose();
+            // Wake any completion awaiters so they can re-check the detached paging state
+            // instead of waiting for a refresh that disposal already superseded.
+            Volatile.Read(ref _refreshCompletion).TrySetResult();
         }
 
         base.Dispose(disposing);
     }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        // Rx cancellation and latest-wins completion signals do not mean SQLite work that
+        // already reached the thread pool has returned its connection. Drain it before the
+        // host clears its pools or the owning runtime database can be removed.
+        await Inspector.DisposeAsync();
+        await _operationLifetime.DisposeAsync();
+    }
 }
+
+/// <summary>
+/// Privacy-safe snapshot of <see cref="LibraryShellViewModel"/> paging state: generation,
+/// loading flags, row count, and cursor presence/version. Contains no item content or file
+/// system paths, so it can be embedded in bounded-wait diagnostics.
+/// </summary>
+public sealed record LibraryPagingStatus(
+    int PagingGeneration,
+    bool IsRefreshingItems,
+    bool IsLoadingMoreItems,
+    bool HasMoreItems,
+    bool HasPageQuery,
+    bool HasNextPageCursor,
+    int RowCount,
+    int CursorVersion);
 
 internal sealed record LibraryPageQuery(
     bool IsTrashScope,
@@ -2516,14 +2675,106 @@ internal static class MetadataLookupUiBridge
         Action<MetadataLookupProgressInfo> onProgress,
         CancellationToken cancellationToken)
     {
-        Progress<MetadataBatchProgress> progress = new(value =>
-            onProgress(new MetadataLookupProgressInfo(value.Completed, value.Total, value.Succeeded, value.Failed,
-                value.Message)));
-        Result<MetadataBatchResult> result =
-            await services.MetadataLookup.LookupAndApplyBatchAsync(itemIds, progress, cancellationToken);
-        return result.IsFailure
-            ? new MetadataLookupOutcome(false, result.ErrorMessage ?? "批量元数据获取失败。")
-            : new MetadataLookupOutcome(true, "", result.Value.SucceededCount, result.Value.FailedCount);
+        return await LookupBatchAsync(services.MetadataRuns, itemIds, onProgress, cancellationToken);
+    }
+
+    internal static async Task<MetadataLookupOutcome> LookupBatchAsync(
+        IMetadataRunService metadataRuns,
+        IReadOnlyList<ItemId> itemIds,
+        Action<MetadataLookupProgressInfo> onProgress,
+        CancellationToken cancellationToken)
+    {
+        // Keep polling independent of the UI while delivering progress on the caller's context,
+        // when one exists. Non-UI consumers are invoked directly.
+        SynchronizationContext? progressContext = SynchronizationContext.Current;
+        cancellationToken.ThrowIfCancellationRequested();
+        Result<MetadataBatchRunStatus> startResult =
+            await metadataRuns.StartBatchAsync(itemIds, cancellationToken: cancellationToken);
+        if (startResult.IsFailure)
+        {
+            return new MetadataLookupOutcome(false, startResult.ErrorMessage ?? "批量元数据获取失败。");
+        }
+
+        Guid taskId = startResult.Value.TaskId;
+        MetadataBatchRunStatus current = startResult.Value;
+        try
+        {
+            await ReportProgressAsync(progressContext, onProgress,
+                new MetadataLookupProgressInfo(current.Completed, current.Total, current.Succeeded, current.Failed,
+                    current.ErrorMessage), cancellationToken);
+            while (current.State == MetadataRunState.Running)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                Result<MetadataBatchRunStatus> statusResult =
+                    await metadataRuns.GetAsync(taskId, CancellationToken.None);
+                if (statusResult.IsFailure)
+                {
+                    return new MetadataLookupOutcome(false, statusResult.ErrorMessage ?? "获取元数据任务状态失败。");
+                }
+
+                current = statusResult.Value;
+                await ReportProgressAsync(progressContext, onProgress,
+                    new MetadataLookupProgressInfo(current.Completed, current.Total, current.Succeeded, current.Failed,
+                        current.ErrorMessage), cancellationToken);
+            }
+
+            if (cancellationToken.IsCancellationRequested || current.State == MetadataRunState.Cancelled)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            if (current.State == MetadataRunState.Failed)
+            {
+                return new MetadataLookupOutcome(false, current.ErrorMessage ?? "批量元数据获取失败。",
+                    current.Succeeded, current.Failed);
+            }
+
+            bool allSucceeded = current.Failed == 0;
+            string message = allSucceeded ? "" : current.ErrorMessage ?? $"{current.Failed} 个题录获取失败。";
+            return new MetadataLookupOutcome(allSucceeded, message, current.Succeeded, current.Failed);
+        }
+        finally
+        {
+            // Once accepted, the Host run belongs to this caller. Cancellation while posting
+            // progress or polling must cancel that run rather than leave it orphaned.
+            if (cancellationToken.IsCancellationRequested && current.State == MetadataRunState.Running)
+            {
+                await metadataRuns.CancelAsync(taskId, CancellationToken.None);
+            }
+        }
+    }
+
+    private static Task ReportProgressAsync(SynchronizationContext? context,
+        Action<MetadataLookupProgressInfo> onProgress, MetadataLookupProgressInfo progress,
+        CancellationToken cancellationToken)
+    {
+        if (context is null || ReferenceEquals(SynchronizationContext.Current, context))
+        {
+            onProgress(progress);
+            return Task.CompletedTask;
+        }
+
+        TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Post(_ =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            try
+            {
+                onProgress(progress);
+                completion.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        }, null);
+        return completion.Task.WaitAsync(cancellationToken);
     }
 }
 

@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AvaloniaRichEditor;
 using AvaloniaRichEditor.Controls;
@@ -17,8 +18,8 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class TableEditorToolbarTests
+[Collection("RetainedTabUI")]
+public sealed class TableEditorToolbarTests(AvaloniaSharedSessionFixture headless)
 {
     private const string SourceHtml =
         "<table><thead><tr><th rowspan=\"2\">Metric</th><th colspan=\"2\">Value</th></tr>" +
@@ -28,47 +29,63 @@ public sealed class TableEditorToolbarTests
     [Fact]
     public async Task Upgraded_editor_keeps_the_dialog_open_gate_and_save_path_working()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(() =>
         {
-            RichEditorView view = CreateView();
-            RichEditor editor = view.Editor;
-            editor.LoadHtml(SourceHtml);
-            TableBoxPayload baseline = TableContentAdapter.CreateHtml(SourceHtml).Value;
+            using IDisposable decorationIsolation = HeadlessMarkdownDecorations.IsolateCurrentThread();
+            (RichEditorView view, Window window) = CreateView();
+            try
+            {
+                RichEditor editor = view.Editor;
+                editor.LoadHtml(SourceHtml);
+                TableBoxPayload baseline = TableContentAdapter.CreateHtml(SourceHtml).Value;
 
-            // The dialog refuses to edit when the editor cannot roundtrip the table losslessly.
-            TableContentAdapter.IsLosslessEditorRoundtrip(baseline, editor.ToHtml()).Should().BeTrue();
+                // The dialog refuses to edit when the editor cannot roundtrip the table losslessly.
+                TableContentAdapter.IsLosslessEditorRoundtrip(baseline, editor.ToHtml()).Should().BeTrue();
 
-            Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(baseline, editor.ToHtml());
-            saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
-            saved.Value.Should().Contain("<eq>LaTex</eq>").And.Contain("rowspan=\"2\"")
-                .And.Contain("colspan=\"2\"");
-            return 0;
+                Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(baseline, editor.ToHtml());
+                saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+                saved.Value.Should().Contain("<eq>LaTex</eq>").And.Contain("rowspan=\"2\"")
+                    .And.Contain("colspan=\"2\"");
+                return 0;
+            }
+            finally
+            {
+                CloseWindow(window);
+            }
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Structure_commands_are_available_and_a_saved_edit_keeps_the_new_row()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(() =>
         {
+            using IDisposable decorationIsolation = HeadlessMarkdownDecorations.IsolateCurrentThread();
             RichEditorTableStructureCommands.IsSupported.Should().BeTrue();
 
-            RichEditorView view = CreateView();
-            RichEditor editor = view.Editor;
-            editor.LoadHtml(SourceHtml);
-            TableBoxPayload baseline = TableContentAdapter.CreateHtml(SourceHtml).Value;
-            TableBlock table = editor.Document!.Blocks.OfType<TableBlock>().Single();
+            (RichEditorView view, Window window) = CreateView();
+            try
+            {
+                RichEditor editor = view.Editor;
+                editor.LoadHtml(SourceHtml);
+                TableBoxPayload baseline = TableContentAdapter.CreateHtml(SourceHtml).Value;
+                TableBlock table = editor.Document!.Blocks.OfType<TableBlock>().Single();
 
-            editor.InsertTableRow(table, 0).Should().BeTrue();
-            editor.ToHtml().Split("<tr>").Length.Should().Be(5);
+                editor.InsertTableRow(table, 0).Should().BeTrue();
+                editor.ToHtml().Split("<tr>").Length.Should().Be(5);
 
-            Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(baseline, editor.ToHtml());
-            saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
-            saved.Value.Split("<tr>").Length.Should().Be(5);
-            saved.Value.Should().Contain("<eq>LaTex</eq>");
-            return 0;
+                Result<string> saved = TableContentAdapter.TryCreateEditorSaveHtml(baseline, editor.ToHtml());
+                saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+                saved.Value.Split("<tr>").Length.Should().Be(5);
+                saved.Value.Should().Contain("<eq>LaTex</eq>");
+                return 0;
+            }
+            finally
+            {
+                CloseWindow(window);
+            }
         }, CancellationToken.None);
     }
 
@@ -125,9 +142,10 @@ public sealed class TableEditorToolbarTests
     [Fact]
     public async Task Dialog_renders_the_icon_toolbar_for_a_table()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
+            using IDisposable decorationIsolation = HeadlessMarkdownDecorations.IsolateCurrentThread();
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             LibraryItemViewModel item = new(ItemId.New().ToString(), "Book", "book", "", "", "", null, null, null,
@@ -151,33 +169,41 @@ public sealed class TableEditorToolbarTests
                 null);
             PdfBBoxViewModel viewModel = new(main, workspace, box, 1000, 800, false);
             BoxEditorDialog dialog = new() { DataContext = viewModel, Width = 1200, Height = 1000 };
-            dialog.Show();
-            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            try
+            {
+                dialog.Show();
+                AvaloniaHeadlessPlatform.ForceRenderTimerTick();
 
-            RichEditorView editorView = dialog.FindControl<RichEditorView>("TableEditorView")!;
-            editorView.Bounds.Height.Should().BeGreaterThan(700,
-                "the table editor must fill the dialog's remaining height instead of a fixed 480");
-            editorView.Bounds.Width.Should().BeGreaterThan(1050,
-                "the table editor must fill the dialog's remaining width");
+                RichEditorView editorView = dialog.FindControl<RichEditorView>("TableEditorView")!;
+                editorView.Bounds.Height.Should().BeGreaterThan(700,
+                    "the table editor must fill the dialog's remaining height instead of a fixed 480");
+                editorView.Bounds.Width.Should().BeGreaterThan(1050,
+                    "the table editor must fill the dialog's remaining width");
 
-            Button[] toolbar = dialog.GetVisualDescendants().OfType<Button>()
-                .Where(button => button.Classes.Contains("IconButton"))
-                .ToArray();
-            toolbar.Should().HaveCount(10);
-            dialog.FindControl<Button>("MergeCellsButton")!.IsEnabled.Should().BeTrue();
-            dialog.FindControl<Button>("UnmergeCellsButton")!.IsEnabled.Should().BeTrue();
+                Button[] toolbar = dialog.GetVisualDescendants().OfType<Button>()
+                    .Where(button => button.Classes.Contains("IconButton"))
+                    .ToArray();
+                toolbar.Should().HaveCount(10);
+                dialog.FindControl<Button>("MergeCellsButton")!.IsEnabled.Should().BeTrue();
+                dialog.FindControl<Button>("UnmergeCellsButton")!.IsEnabled.Should().BeTrue();
 
-            string directory = TestPaths.FromRepositoryRoot(".tmp", "tests", "box-editor-preview");
-            Directory.CreateDirectory(directory);
-            using WriteableBitmap? frame = dialog.CaptureRenderedFrame();
-            frame.Should().NotBeNull();
-            frame!.Save(Path.Combine(directory, "table-editor-toolbar.png"));
-            dialog.Close();
-            return 0;
+                string directory = TestPaths.FromRepositoryRoot(".tmp", "tests", "box-editor-preview");
+                Directory.CreateDirectory(directory);
+                using WriteableBitmap? frame = dialog.CaptureRenderedFrame();
+                frame.Should().NotBeNull();
+                frame!.Save(Path.Combine(directory, "table-editor-toolbar.png"));
+                return 0;
+            }
+            finally
+            {
+                await main.ShutdownAsync();
+                dialog.DataContext = null;
+                CloseWindow(dialog);
+            }
         }, CancellationToken.None);
     }
 
-    private static RichEditorView CreateView()
+    private static (RichEditorView View, Window Window) CreateView()
     {
         RichEditorView view = new()
         {
@@ -193,6 +219,13 @@ public sealed class TableEditorToolbarTests
         editor.AllowRemoteImagesOnPaste = false;
         editor.ShowFormattingMenu = false;
         view.Toolbar.IsVisible = false;
-        return view;
+        return (view, window);
+    }
+
+    private static void CloseWindow(Window window)
+    {
+        window.Content = null;
+        window.Close();
+        Dispatcher.UIThread.RunJobs();
     }
 }

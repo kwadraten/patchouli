@@ -139,6 +139,29 @@ public sealed class SettingsAutoSaveRegressionTests
     }
 
     [Fact]
+    public void Loading_settings_reads_the_profile_while_a_coordinated_writer_holds_the_file()
+    {
+        using TemporaryAppSettingsFile file = new();
+        PatchouliAppSettings seeded = PatchouliAppSettings.Load(file.Path);
+
+        // Coordinated writers replace settings.json from a sibling temp file. While that replace is
+        // in flight the destination is held with read/write/delete sharing; a reader that only
+        // shares read fails the share check. LoadFile used to swallow that IOException and return
+        // platform defaults, which silently moved RuntimeDatabasePath off the profile's database
+        // and orphaned path-scoped settings drafts (the Sync form fell back to "ADMIN").
+        using FileStream writerHandle = new(file.Path, FileMode.Open, FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        bool failed = false;
+        PatchouliAppSettings loaded = PatchouliAppSettings.Load(file.Path, _ => failed = true);
+
+        failed.Should().BeFalse();
+        loaded.Runtime.RuntimeDatabasePath.Should().Be(seeded.Runtime.RuntimeDatabasePath);
+        loaded.Runtime.DefaultSyncRoot.Should().Be(seeded.Runtime.DefaultSyncRoot);
+        loaded.Runtime.LogDirectory.Should().Be(seeded.Runtime.LogDirectory);
+    }
+
+    [Fact]
     public async Task A_failed_section_does_not_prevent_later_sections_from_saving()
     {
         using TemporaryAppSettingsFile file = new();

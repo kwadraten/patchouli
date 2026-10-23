@@ -1,73 +1,88 @@
-using Microsoft.Data.Sqlite;
+using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Tests;
 
 public static class TestTempFileCleanup
 {
-    public static void DeleteFileWithRetry(string? path)
+    private const int MaxAttempts = 10;
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Deletes one file with bounded, cancellable retries. For a <c>.sqlite</c> path this also
+    /// releases that database's pools and removes its -wal/-shm/-journal sidecars. Cleanup is
+    /// scoped to the given path: no process-wide pool clearing and no forced GC, so callers must
+    /// dispose their owners first and see a visible failure when they do not.
+    /// </summary>
+    public static void DeleteFileWithRetry(string? path, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(path))
         {
             return;
         }
 
-        for (int attempt = 0; attempt < 10; attempt++)
+        if (IsSqliteDatabasePath(path))
         {
-            SqliteConnection.ClearAllPools();
-            if (attempt > 0)
+            Retry(() =>
             {
-                // Finalize abandoned handles only after deletion fails; normal cleanup needs no full-heap GC.
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                SqliteConnection.ClearAllPools();
-            }
-
-            try
-            {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-
-                return;
-            }
-            catch (Exception ex) when (attempt < 9 && (ex is IOException || ex is UnauthorizedAccessException))
-            {
-                Thread.Sleep(50);
-            }
+                SqliteTestCleanup.ReleasePools(path);
+                new SqliteConnectionFactory(path).DeleteDatabaseFiles();
+            }, cancellationToken);
+            return;
         }
+
+        Retry(() =>
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }, cancellationToken);
     }
 
-    public static void DeleteDirectoryWithRetry(string? path)
+    /// <summary>
+    /// Deletes a directory tree with bounded, cancellable retries. Only pools owning
+    /// <c>*.sqlite</c> files under this directory are released before the delete.
+    /// </summary>
+    public static void DeleteDirectoryWithRetry(string? path, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(path))
         {
             return;
         }
 
-        for (int attempt = 0; attempt < 10; attempt++)
+        Retry(() =>
         {
-            SqliteConnection.ClearAllPools();
-            if (attempt > 0)
+            if (Directory.Exists(path))
             {
-                // Finalize abandoned handles only after deletion fails; normal cleanup needs no full-heap GC.
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                SqliteConnection.ClearAllPools();
+                SqliteTestCleanup.ReleasePoolsInDirectory(path);
+                Directory.Delete(path, true);
             }
+        }, cancellationToken);
+    }
 
+    private static bool IsSqliteDatabasePath(string path)
+    {
+        return string.Equals(Path.GetExtension(path), ".sqlite", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void Retry(Action action, CancellationToken cancellationToken)
+    {
+        for (int attempt = 0;; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                if (Directory.Exists(path))
-                {
-                    Directory.Delete(path, true);
-                }
-
+                action();
                 return;
             }
-            catch (Exception ex) when (attempt < 9 && (ex is IOException || ex is UnauthorizedAccessException))
+            catch (Exception ex) when (attempt < MaxAttempts - 1 &&
+                                       (ex is IOException || ex is UnauthorizedAccessException))
             {
-                Thread.Sleep(50);
+                // Wait cancellably between attempts; the final attempt lets the failure escape.
+                if (cancellationToken.WaitHandle.WaitOne(RetryDelay))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
             }
         }
     }

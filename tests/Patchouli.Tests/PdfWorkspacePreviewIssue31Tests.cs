@@ -35,6 +35,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
         HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
 
     private readonly TemporaryAppSettingsFile _settings = new();
+    private MainWindowViewModel? _mainWindow;
 
     public void Dispose()
     {
@@ -45,7 +46,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Failed_render_result_keeps_the_previous_page_on_screen()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-failure-result"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -78,7 +79,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Throwing_render_is_retried_twice_and_still_keeps_the_previous_page()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-failure-throw"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -114,7 +115,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Stale_generation_failure_does_not_replace_the_newer_page()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-stale-failure-image"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -160,7 +161,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Stale_generation_success_does_not_replace_the_newer_page()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-stale-success-image"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -205,7 +206,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Stale_generation_failure_does_not_publish_its_error_to_the_status_line()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-stale-failure-status"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -249,7 +250,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Transient_result_failure_is_retried_and_the_next_attempt_recovers()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-transient-result"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -288,7 +289,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Persistent_transient_result_failure_exhausts_retries_and_keeps_the_previous_page()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-persistent-transient"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -325,7 +326,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Deterministic_result_failure_is_not_retried()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-deterministic-result"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -361,7 +362,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
     public async Task Stale_generation_boxes_load_never_overwrites_the_newer_page()
     {
         HeadlessUnitTestSession session = SharedSession;
-        await session.Dispatch(async () =>
+        await DispatchAndShutdownAsync(session, async () =>
         {
             MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("preview-stale-boxes"));
             await OpenImportedItemAsync(vm, CreatePdfPath());
@@ -371,9 +372,9 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
 
             // Seed one text box per page so the two generations publish observably
             // different box sets, and capture the real boxes per current revision.
-            Patchouli.Host.Composition.HostServices services = await vm.ServicesAsync();
+            Host.Composition.HostServices services = await vm.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
-            IReadOnlyList<Patchouli.Core.Layout.Page> pages =
+            IReadOnlyList<Core.Layout.Page> pages =
                 (await services.Pages.ListPagesAsync(documentInstanceId)).Value;
             await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
                 documentInstanceId, pages[0].PageId, "page zero box");
@@ -443,8 +444,10 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
         }, CancellationToken.None);
     }
 
-    private static TaskCompletionSource NewSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource NewSignal()
+    {
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private static Result<PdfPagePixelBufferLease> SuccessLease(int size)
     {
@@ -454,10 +457,30 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
 
     private MainWindowViewModel CreateMainWindow(string databasePath)
     {
-        return new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path)
+        return _mainWindow = new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path)
         {
             RuntimeDatabasePath = databasePath
         };
+    }
+
+    private async Task DispatchAndShutdownAsync(HeadlessUnitTestSession session, Func<Task<bool>> action,
+        CancellationToken cancellationToken)
+    {
+        await session.Dispatch<bool>(async () =>
+        {
+            try
+            {
+                return await action();
+            }
+            finally
+            {
+                if (_mainWindow is not null)
+                {
+                    await _mainWindow.ShutdownAsync();
+                    _mainWindow = null;
+                }
+            }
+        }, cancellationToken);
     }
 
     private string CreateDatabasePath(string prefix)
@@ -476,7 +499,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
         File.Copy(TestFixtures.RealThreePagePdf, pdf);
         await vm.OpenDatabaseCommand.ExecuteAsync();
         await vm.Library.CreateCommand.ExecuteAsync();
-        Patchouli.Host.Composition.HostServices services = await vm.ServicesAsync();
+        Host.Composition.HostServices services = await vm.ServicesAsync();
         PdfImportResult imported =
             await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Preview item", null, 3));
         imported.Success.Should().BeTrue(imported.ErrorMessage);
