@@ -7,6 +7,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.UI.Diagnostics;
+using static Patchouli.UI.ViewModels.ChapterTreeOps;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -890,19 +891,6 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
         return BuildPreviewLevel(selected, ref cursor, -1);
     }
 
-    private static IReadOnlyList<ChapterNode> BuildPreviewLevel(IReadOnlyList<(ChapterNode Node, int Depth)> rows,
-        ref int cursor, int parentDepth)
-    {
-        List<ChapterNode> result = new();
-        while (cursor < rows.Count && rows[cursor].Depth > parentDepth)
-        {
-            (ChapterNode node, int depth) = rows[cursor++];
-            result.Add(node with { Children = BuildPreviewLevel(rows, ref cursor, depth) });
-        }
-
-        return result;
-    }
-
     private async Task ApplyScanAsync()
     {
         if (IsBusy || IsFormOpen || !HasPreview || _snapshot is null || _scan is null)
@@ -930,32 +918,6 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
         if (await SaveAsync(chapters, versions))
         {
             ClearPreview();
-        }
-    }
-
-    private static IReadOnlyList<ChapterNode> AppendUnique(IReadOnlyList<ChapterNode> existing,
-        IReadOnlyList<ChapterNode> incoming)
-    {
-        HashSet<string> ids = Flatten(existing).Select(n => n.ChapterId).ToHashSet(StringComparer.Ordinal);
-        return existing.Concat(PruneDuplicateNodes(incoming, ids)).ToArray();
-    }
-
-    private static IEnumerable<ChapterNode> PruneDuplicateNodes(IEnumerable<ChapterNode> nodes, HashSet<string> ids)
-    {
-        foreach (ChapterNode node in nodes)
-        {
-            ChapterNode[] children = PruneDuplicateNodes(node.Children, ids).ToArray();
-            if (ids.Add(node.ChapterId))
-            {
-                yield return node with { Children = children };
-            }
-            else
-            {
-                foreach (ChapterNode child in children)
-                {
-                    yield return child;
-                }
-            }
         }
     }
 
@@ -1004,59 +966,6 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
         }
 
         base.Dispose(disposing);
-    }
-
-    private static IEnumerable<ChapterNode> Flatten(IEnumerable<ChapterNode> nodes)
-    {
-        return nodes.SelectMany(n => new[] { n }.Concat(Flatten(n.Children)));
-    }
-
-    private static IEnumerable<(ChapterNode Node, int Depth)> FlattenWithDepth(IEnumerable<ChapterNode> nodes,
-        int depth)
-    {
-        return nodes.SelectMany(n => new[] { (n, depth) }.Concat(FlattenWithDepth(n.Children, depth + 1)));
-    }
-
-    private static int Count(IEnumerable<ChapterNode> nodes)
-    {
-        return Flatten(nodes).Count();
-    }
-
-    private static ChapterNode? Find(IEnumerable<ChapterNode> nodes, string? id)
-    {
-        return id is null ? null : Flatten(nodes).FirstOrDefault(n => n.ChapterId == id);
-    }
-
-    private static string? FindParent(IEnumerable<ChapterNode> nodes, string? id)
-    {
-        return Flatten(nodes).FirstOrDefault(n => n.Children.Any(c => c.ChapterId == id))?.ChapterId;
-    }
-
-    private static IReadOnlyList<ChapterNode> Transform(IEnumerable<ChapterNode> nodes, string id,
-        Func<ChapterNode, ChapterNode> transform)
-    {
-        return nodes.Select(n =>
-                n.ChapterId == id ? transform(n) : n with { Children = Transform(n.Children, id, transform) })
-            .ToArray();
-    }
-
-    private static IReadOnlyList<ChapterNode> Remove(IEnumerable<ChapterNode> nodes, string id)
-    {
-        return nodes.Where(n => n.ChapterId != id).Select(n => n with { Children = Remove(n.Children, id) }).ToArray();
-    }
-
-    private static IReadOnlyList<ChapterNode> Insert(IReadOnlyList<ChapterNode> nodes, string? parent, string? after,
-        ChapterNode node)
-    {
-        if (parent is not null)
-        {
-            return Transform(nodes, parent, n => n with { Children = Insert(n.Children, null, after, node) });
-        }
-
-        List<ChapterNode> result = nodes.ToList();
-        int index = after is null ? result.Count : result.FindIndex(n => n.ChapterId == after) + 1;
-        result.Insert(index, node);
-        return result;
     }
 }
 

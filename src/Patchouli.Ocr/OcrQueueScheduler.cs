@@ -354,8 +354,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         lock (_stateLock)
         {
             OcrQueueTask[] eligible = _tasks.Values
-                .Where(t => t.State == OcrQueueTaskState.Queued &&
-                            (t.ScheduledAfter is null || t.ScheduledAfter <= _clock.UtcNow) && !Paused(t))
+                .Where(t => OcrQueueSchedulingRules.IsDispatchEligible(t, _pauses, _clock.UtcNow))
                 .OrderByDescending(Score)
                 .ThenBy(t => t.CreatedAt)
                 .ToArray();
@@ -399,11 +398,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             lock (_stateLock)
             {
                 DateTimeOffset now = _clock.UtcNow;
-                bool idle = _tasks.Values.All(t =>
-                    t.State != OcrQueueTaskState.Running &&
-                    (t.State != OcrQueueTaskState.Queued ||
-                     (t.ScheduledAfter is not null && t.ScheduledAfter > now) ||
-                     Paused(t)));
+                bool idle = _tasks.Values.All(t => OcrQueueSchedulingRules.IsIdle(t, _pauses, now));
                 if (idle)
                 {
                     return;
@@ -820,10 +815,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
 
     private bool Paused(OcrQueueTask t)
     {
-        return _pauses.Contains("global:") || _pauses.Contains("task:" + t.TaskId) ||
-               (_pauses.Contains("local:") && t.AdapterKind != OcrAdapterKind.CloudApi) ||
-               (_pauses.Contains("cloud:") && t.AdapterKind == OcrAdapterKind.CloudApi) ||
-               (!string.IsNullOrEmpty(t.ProviderId) && _pauses.Contains("provider:" + t.ProviderId));
+        return OcrQueueSchedulingRules.IsPaused(_pauses, t);
     }
 
     private void RefreshActivityStates()
@@ -833,20 +825,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             return;
         }
 
-        TaskActivityState[] desired;
+        OcrQueueActivityState[] desired;
         lock (_stateLock)
         {
-            DateTimeOffset now = _clock.UtcNow;
-            HashSet<OcrQueueTaskId> retriedTaskIds = _tasks.Values
-                .Where(task => task.RetryOfTaskId is not null &&
-                               task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running)
-                .Select(task => task.RetryOfTaskId!.Value)
-                .ToHashSet();
-            desired = _tasks.Values
-                .Where(task => task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running ||
-                               (task.State == OcrQueueTaskState.Blocked && !retriedTaskIds.Contains(task.TaskId)))
-                .Select(task => CreateActivityState(task, now))
-                .ToArray();
+            desired = OcrQueueSchedulingRules.ActiveStates(_tasks.Values, _pauses, _clock.UtcNow);
         }
 
         lock (_activityLock)
@@ -858,7 +840,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                 obsoleteScope?.Dispose();
             }
 
-            foreach (TaskActivityState state in desired)
+            foreach (OcrQueueActivityState state in desired)
             {
                 if (!_activityScopes.TryGetValue(state.TaskId, out IActivityScope? scope))
                 {
@@ -877,33 +859,6 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         }
     }
 
-    private TaskActivityState CreateActivityState(OcrQueueTask task, DateTimeOffset now)
-    {
-        if (task.State == OcrQueueTaskState.Blocked)
-        {
-            string reason = string.IsNullOrWhiteSpace(task.LastErrorMessage)
-                ? "需要人工处理后重试"
-                : $"需要人工处理：{task.LastErrorMessage}";
-            return new TaskActivityState(task.TaskId, "等待人工处理", true, reason, false, null);
-        }
-
-        bool isPaused = task.State == OcrQueueTaskState.Queued && Paused(task);
-        bool isWaitingRetry = task.State == OcrQueueTaskState.Queued && !isPaused &&
-                              task.ScheduledAfter is { } scheduledAfter && scheduledAfter > now;
-        string detail = task.State == OcrQueueTaskState.Running
-            ? "正在执行"
-            : isWaitingRetry
-                ? "等待延迟重试"
-                : isPaused
-                    ? "已暂停"
-                    : "等待调度";
-        string? retryReason = isWaitingRetry
-            ? $"将在 {task.ScheduledAfter!.Value:HH:mm:ss} 重试"
-            : null;
-        return new TaskActivityState(task.TaskId, detail, isPaused, isPaused ? "OCR 队列已暂停" : null,
-            isWaitingRetry, retryReason);
-    }
-
     private void ClearActivityScopes()
     {
         lock (_activityLock)
@@ -917,60 +872,15 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         }
     }
 
-    private sealed record TaskActivityState(
-        OcrQueueTaskId TaskId,
-        string Detail,
-        bool IsPaused,
-        string? PauseReason,
-        bool IsWaitingRetry,
-        string? RetryReason);
-
     private bool CanRun(OcrQueueTask t)
     {
         OcrQueueTask[] running = _tasks.Values.Where(x => x.State == OcrQueueTaskState.Running).ToArray();
-        if (running.Length >= _limits.GlobalMaxConcurrent)
-        {
-            return false;
-        }
-
-        bool local = t.AdapterKind != OcrAdapterKind.CloudApi;
-        if (local && running.Count(x => x.AdapterKind != OcrAdapterKind.CloudApi) >= _limits.LocalMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (!local && running.Count(x => x.AdapterKind == OcrAdapterKind.CloudApi) >= _limits.CloudMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (running.Count(x => x.EngineId == t.EngineId) >= _limits.PerEngineMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (t.ProviderId is not null &&
-            running.Count(x => x.ProviderId == t.ProviderId) >= _limits.PerProviderMaxConcurrent)
-        {
-            return false;
-        }
-
-        return true;
+        return OcrQueueSchedulingRules.HasDispatchCapacity(t, running, _limits);
     }
 
     private int Score(OcrQueueTask t)
     {
-        return Priority(t.Priority) * 1000 + (int)Math.Min(999, (_clock.UtcNow - t.CreatedAt).TotalMinutes / 10);
-    }
-
-    private static int Priority(string p)
-    {
-        return p switch
-        {
-            OcrQueuePriority.InteractiveCurrentPage => 6, OcrQueuePriority.InteractiveSelectedPages => 5,
-            OcrQueuePriority.UserStartedDocument => 4, OcrQueuePriority.BackgroundRetry => 3,
-            OcrQueuePriority.BatchCollection => 2, _ => 1
-        };
+        return OcrQueueSchedulingRules.DispatchScore(t, _clock.UtcNow);
     }
 
     private void OnChanged(OcrQueueTask? task, string changeKind)

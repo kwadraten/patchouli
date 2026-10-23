@@ -2115,7 +2115,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
+        SetMcpStatus("MCP: 未启动", detail, UiTone.Neutral);
     }
 
     /// <summary>
@@ -2331,15 +2331,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        (string text, IBrush brush) = change.Status switch
+        (string text, UiTone tone) = change.Status switch
         {
-            McpServerHostStatus.Running => ("MCP: 运行中", Brushes.LimeGreen),
-            McpServerHostStatus.Starting => ("MCP: 启动中", Brushes.Goldenrod),
-            McpServerHostStatus.Error => ("MCP: 错误", Brushes.IndianRed),
-            _ => ("MCP: 未启动", Brushes.Gray)
+            McpServerHostStatus.Running => ("MCP: 运行中", UiTone.Success),
+            McpServerHostStatus.Starting => ("MCP: 启动中", UiTone.Warning),
+            McpServerHostStatus.Error => ("MCP: 错误", UiTone.Danger),
+            _ => ("MCP: 未启动", UiTone.Neutral)
         };
 
-        SetMcpStatus(text, change.Detail, brush);
+        SetMcpStatus(text, change.Detail, tone);
 
         if (change.Status == McpServerHostStatus.Running && _mcpHost is { } host)
         {
@@ -2369,11 +2369,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
-    private void SetMcpStatus(string text, string detail, IBrush brush)
+    private void SetMcpStatus(string text, string detail, UiTone tone)
     {
         McpStatusText = text;
         McpStatusDetail = detail;
-        McpStatusBrush = brush;
+        McpStatusBrush = UiToneBrushes.Resolve(tone);
         // Manual Raise: McpServerRunning bridges _mcpHost external status change into ViewModel PropertyChanged.
         Raise(nameof(McpServerRunning));
         Raise(nameof(ToggleMcpServerLabel));

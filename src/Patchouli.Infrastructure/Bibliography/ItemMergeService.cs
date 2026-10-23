@@ -1017,39 +1017,34 @@ public sealed class ItemMergeService : IItemMergeService
         await connection.ExecuteAsync("delete from item_creators where item_id = @ItemId;",
             new { ItemId = itemId.ToString() }, transaction);
 
-        for (int index = 0; index < creators.Count; index++)
+        IReadOnlyList<ItemMergeRowPlanner.CreatorRow> rows = ItemMergeRowPlanner.PlanCreators(creators);
+        foreach (ItemMergeRowPlanner.CreatorRow[] chunk in Chunk(rows, 80))
         {
-            ItemCreator creator = creators[index];
-            if (string.IsNullOrWhiteSpace(creator.Literal) &&
-                string.IsNullOrWhiteSpace(creator.Family) &&
-                string.IsNullOrWhiteSpace(creator.Given))
+            DynamicParameters parameters = new();
+            parameters.Add("ItemId", itemId.ToString());
+            parameters.Add("CreatedAt", FormatUtc(now));
+            StringBuilder sql = new(
+                "insert into item_creators (creator_id, item_id, role, family, given, literal, suffix, particles, sequence_index, created_at) values ");
+            for (int i = 0; i < chunk.Length; i++)
             {
-                continue;
+                if (i > 0)
+                {
+                    sql.Append(", ");
+                }
+
+                sql.Append(
+                    $"(@CreatorId{i}, @ItemId, @Role{i}, @Family{i}, @Given{i}, @Literal{i}, @Suffix{i}, @Particles{i}, @SequenceIndex{i}, @CreatedAt)");
+                parameters.Add($"CreatorId{i}", Guid.NewGuid().ToString("D"));
+                parameters.Add($"Role{i}", chunk[i].Role);
+                parameters.Add($"Family{i}", chunk[i].Family);
+                parameters.Add($"Given{i}", chunk[i].Given);
+                parameters.Add($"Literal{i}", chunk[i].Literal);
+                parameters.Add($"Suffix{i}", chunk[i].Suffix);
+                parameters.Add($"Particles{i}", chunk[i].Particles);
+                parameters.Add($"SequenceIndex{i}", chunk[i].SequenceIndex);
             }
 
-            await connection.ExecuteAsync(
-                """
-                insert into item_creators (
-                    creator_id, item_id, role, family, given, literal, suffix, particles, sequence_index, created_at
-                )
-                values (
-                    @CreatorId, @ItemId, @Role, @Family, @Given, @Literal, @Suffix, @Particles, @SequenceIndex, @CreatedAt
-                );
-                """,
-                new
-                {
-                    CreatorId = Guid.NewGuid().ToString("D"),
-                    ItemId = itemId.ToString(),
-                    creator.Role,
-                    creator.Family,
-                    creator.Given,
-                    creator.Literal,
-                    creator.Suffix,
-                    creator.Particles,
-                    SequenceIndex = index,
-                    CreatedAt = FormatUtc(now)
-                },
-                transaction);
+            await connection.ExecuteAsync(sql.ToString(), parameters, transaction);
         }
     }
 
@@ -1063,47 +1058,32 @@ public sealed class ItemMergeService : IItemMergeService
         await connection.ExecuteAsync("delete from item_dates where item_id = @ItemId;",
             new { ItemId = itemId.ToString() }, transaction);
 
-        foreach (ItemDate date in dates)
+        IReadOnlyList<ItemMergeRowPlanner.DateRow> rows = ItemMergeRowPlanner.PlanDates(dates);
+        foreach (ItemMergeRowPlanner.DateRow[] chunk in Chunk(rows, 100))
         {
-            if (!ItemDateRoles.Supported.Contains(date.Role))
+            DynamicParameters parameters = new();
+            parameters.Add("ItemId", itemId.ToString());
+            parameters.Add("CreatedAt", FormatUtc(now));
+            StringBuilder sql = new(
+                "insert into item_dates (date_id, item_id, role, date_parts_json, circa, season, literal, created_at) values ");
+            for (int i = 0; i < chunk.Length; i++)
             {
-                continue;
-            }
-
-            string datePartsJson = string.IsNullOrWhiteSpace(date.DatePartsJson) ? "[]" : date.DatePartsJson.Trim();
-            if (!IsJsonArray(datePartsJson))
-            {
-                datePartsJson = "[]";
-            }
-
-            if (string.IsNullOrWhiteSpace(date.Literal) &&
-                string.IsNullOrWhiteSpace(date.Season) &&
-                datePartsJson == "[]")
-            {
-                continue;
-            }
-
-            await connection.ExecuteAsync(
-                """
-                insert into item_dates (
-                    date_id, item_id, role, date_parts_json, circa, season, literal, created_at
-                )
-                values (
-                    @DateId, @ItemId, @Role, @DatePartsJson, @Circa, @Season, @Literal, @CreatedAt
-                );
-                """,
-                new
+                if (i > 0)
                 {
-                    DateId = Guid.NewGuid().ToString("D"),
-                    ItemId = itemId.ToString(),
-                    date.Role,
-                    DatePartsJson = datePartsJson,
-                    Circa = date.Circa ? 1 : 0,
-                    date.Season,
-                    date.Literal,
-                    CreatedAt = FormatUtc(now)
-                },
-                transaction);
+                    sql.Append(", ");
+                }
+
+                sql.Append(
+                    $"(@DateId{i}, @ItemId, @Role{i}, @DatePartsJson{i}, @Circa{i}, @Season{i}, @Literal{i}, @CreatedAt)");
+                parameters.Add($"DateId{i}", Guid.NewGuid().ToString("D"));
+                parameters.Add($"Role{i}", chunk[i].Role);
+                parameters.Add($"DatePartsJson{i}", chunk[i].DatePartsJson);
+                parameters.Add($"Circa{i}", chunk[i].Circa);
+                parameters.Add($"Season{i}", chunk[i].Season);
+                parameters.Add($"Literal{i}", chunk[i].Literal);
+            }
+
+            await connection.ExecuteAsync(sql.ToString(), parameters, transaction);
         }
     }
 
@@ -1117,37 +1097,37 @@ public sealed class ItemMergeService : IItemMergeService
         await connection.ExecuteAsync("delete from item_identifiers where item_id = @ItemId;",
             new { ItemId = itemId.ToString() }, transaction);
 
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        foreach (ItemIdentifier identifier in identifiers)
+        IReadOnlyList<ItemMergeRowPlanner.IdentifierRow> rows = ItemMergeRowPlanner.PlanIdentifiers(identifiers);
+        foreach (ItemMergeRowPlanner.IdentifierRow[] chunk in Chunk(rows, 150))
         {
-            string scheme = identifier.Scheme.Trim().ToLowerInvariant();
-            string value = identifier.Value.Trim();
-            if (string.IsNullOrWhiteSpace(scheme) || string.IsNullOrWhiteSpace(value))
+            DynamicParameters parameters = new();
+            parameters.Add("ItemId", itemId.ToString());
+            parameters.Add("CreatedAt", FormatUtc(now));
+            StringBuilder sql = new(
+                "insert into item_identifiers (identifier_id, item_id, scheme, value, note, created_at) values ");
+            for (int i = 0; i < chunk.Length; i++)
             {
-                continue;
-            }
-
-            string key = $"{scheme}\0{value}";
-            if (!seen.Add(key))
-            {
-                continue;
-            }
-
-            await connection.ExecuteAsync(
-                """
-                insert into item_identifiers (identifier_id, item_id, scheme, value, note, created_at)
-                values (@IdentifierId, @ItemId, @Scheme, @Value, @Note, @CreatedAt);
-                """,
-                new
+                if (i > 0)
                 {
-                    IdentifierId = IdentifierId.New().ToString(),
-                    ItemId = itemId.ToString(),
-                    Scheme = scheme,
-                    Value = value,
-                    identifier.Note,
-                    CreatedAt = FormatUtc(now)
-                },
-                transaction);
+                    sql.Append(", ");
+                }
+
+                sql.Append($"(@IdentifierId{i}, @ItemId, @Scheme{i}, @Value{i}, @Note{i}, @CreatedAt)");
+                parameters.Add($"IdentifierId{i}", IdentifierId.New().ToString());
+                parameters.Add($"Scheme{i}", chunk[i].Scheme);
+                parameters.Add($"Value{i}", chunk[i].Value);
+                parameters.Add($"Note{i}", chunk[i].Note);
+            }
+
+            await connection.ExecuteAsync(sql.ToString(), parameters, transaction);
+        }
+    }
+
+    private static IEnumerable<T[]> Chunk<T>(IReadOnlyList<T> rows, int size)
+    {
+        for (int start = 0; start < rows.Count; start += size)
+        {
+            yield return rows.Skip(start).Take(size).ToArray();
         }
     }
 
@@ -1187,19 +1167,6 @@ public sealed class ItemMergeService : IItemMergeService
             CreatedAt = FormatUtc(item.CreatedAt),
             UpdatedAt = FormatUtc(item.UpdatedAt)
         };
-    }
-
-    private static bool IsJsonArray(string value)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(value);
-            return document.RootElement.ValueKind == JsonValueKind.Array;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(

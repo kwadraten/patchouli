@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Documents;
+using Patchouli.UI.Themes;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -94,6 +95,10 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             HeadingLevel = 1;
         }
 
+        Raise(nameof(BoxTone));
+        Raise(nameof(VisualBoxTone));
+        Raise(nameof(BoxColor));
+        Raise(nameof(VisualBoxColor));
         SaveTextCommand?.NotifyCanExecuteChanged();
     }
 
@@ -101,18 +106,17 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     [ObservableProperty] public partial string? CodeLanguage { get; set; }
 
-    public IBrush BoxColor => BoxType switch
-    {
-        DocumentBoxType.Title => Brushes.Blue,
-        DocumentBoxType.Text => Brushes.Green,
-        DocumentBoxType.Table => Brushes.Orange,
-        DocumentBoxType.Image => Brushes.Red,
-        DocumentBoxType.Equation => Brushes.Purple,
-        DocumentBoxType.LogicalPage => Brushes.Teal,
-        _ => Brushes.Gray
-    };
+    // Excluded from derived generation: tone/brush resolution goes through pure mapping
+    // helpers; change notification is raised manually from OnBoxTypeChanged.
+    /// <summary>The pure display tone for this box's type; <see cref="BoxColor"/> resolves it.</summary>
+    [ExcludeFromDerivedGeneration]
+    public UiTone BoxTone => UiToneMap.ForBoxType(BoxType);
 
-    public IBrush VisualBoxColor => IsSuppressed ? Brushes.Gray : BoxColor;
+    [ExcludeFromDerivedGeneration] public UiTone VisualBoxTone => UiToneMap.ForVisualBox(BoxType, IsSuppressed);
+
+    [ExcludeFromDerivedGeneration] public IBrush BoxColor => UiToneBrushes.Resolve(BoxTone);
+
+    [ExcludeFromDerivedGeneration] public IBrush VisualBoxColor => UiToneBrushes.Resolve(VisualBoxTone);
 
     public bool IsDraft { get; }
 

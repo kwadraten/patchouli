@@ -132,7 +132,8 @@ public sealed class McpProtocolHandler
                 "initialize" => Initialize(pars),
                 "tools/list" => new
                 {
-                    tools = Tools().Where(tool => IsToolEnabled(tool.Name)).Select(tool => tool.ToWire()).ToArray()
+                    tools = McpToolCatalog.All.Where(tool => IsToolEnabled(tool.Name)).Select(tool => tool.ToWire())
+                        .ToArray()
                 },
                 "tools/call" => await CallAsync(pars, ct),
                 "shutdown" => new { },
@@ -213,14 +214,14 @@ public sealed class McpProtocolHandler
     /// <summary>Validates tool arguments against the same schemas published by tools/list.</summary>
     public static string? ValidateToolArguments(string name, JsonElement arguments)
     {
-        ToolDefinition? tool = Tools().FirstOrDefault(definition => definition.Name == name);
+        McpToolDefinition? tool = McpToolCatalog.Find(name);
         return tool is null
             ? $"Unknown tool '{name}'."
             : ValidatePublishedArguments(arguments, tool.Properties, tool.Required, name);
     }
 
     private static string? ValidatePublishedArguments(JsonElement value,
-        IReadOnlyDictionary<string, ToolSchemaProperty> properties, IReadOnlyList<string> required, string path)
+        IReadOnlyDictionary<string, McpToolSchemaProperty> properties, IReadOnlyList<string> required, string path)
     {
         if (value.ValueKind != JsonValueKind.Object)
         {
@@ -243,7 +244,7 @@ public sealed class McpProtocolHandler
                 return $"Duplicate field '{property.Name}' in {path}.";
             }
 
-            if (!properties.TryGetValue(property.Name, out ToolSchemaProperty? schema))
+            if (!properties.TryGetValue(property.Name, out McpToolSchemaProperty? schema))
             {
                 return $"Unknown field '{property.Name}' in {path}.";
             }
@@ -278,7 +279,7 @@ public sealed class McpProtocolHandler
         return null;
     }
 
-    private static string? ValidateValue(JsonElement value, ToolSchemaProperty schema, string path)
+    private static string? ValidateValue(JsonElement value, McpToolSchemaProperty schema, string path)
     {
         bool valid = schema.Type switch
         {
@@ -330,160 +331,10 @@ public sealed class McpProtocolHandler
     /// <summary>Returns one published tool's wire schema for the published-contract tests.</summary>
     internal static JsonElement PublishedToolSchema(string name)
     {
-        ToolDefinition? tool = Tools().FirstOrDefault(definition => definition.Name == name);
+        McpToolDefinition? tool = McpToolCatalog.Find(name);
         return tool is null ? default : JsonSerializer.SerializeToElement(tool.ToWire());
     }
 
-    private static ToolDefinition[] Tools()
-    {
-        return
-        [
-            new ToolDefinition(
-                "patchouli.find",
-                "Search or browse the Library resource tree and return text-only results.",
-                [],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["query"] = ToolSchemaProperty.String("Search query. Omit to browse the scope."),
-                    ["in"] = ToolSchemaProperty.String("Resource scope URI to search or browse."),
-                    ["where"] = ToolSchemaProperty.Array(
-                        "Filter clauses as KEY=VALUE; supported keys: item_type, item_status, primary_document_ocr_index_status, collection_id (exact Collection id), tag (exact, case-sensitive), citable, document_status, source_status, ocr_index_status, style_enabled.",
-                        ToolSchemaProperty.String("KEY=VALUE filter clause.")),
-                    ["literal"] = ToolSchemaProperty.Boolean("Require an exact literal substring match."),
-                    ["limit"] = ToolSchemaProperty.Integer("Maximum results, from 1 through 50."),
-                    ["cursor"] = ToolSchemaProperty.String("Pagination cursor from a previous find response."),
-                    ["detail"] = ToolSchemaProperty.String(
-                        "Detailed projection; set to \"long\" to request resource-specific status, relation, and capability metadata."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                }),
-            new ToolDefinition(
-                "patchouli.fetch",
-                "Fetch one or more existing text-only resources by their patchouli:// URIs.",
-                ["uris"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["uris"] = ToolSchemaProperty.Array(
-                        "Resource URIs: library.yml, items/<id>.yml, texts/<document-id>/, texts/<document-id>/page-<index>.xml, " +
-                        "texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>], texts/<document-id>/map.yml, " +
-                        "translations/<document-id>/, translations/<document-id>/page-<index>.xml or csl-styles/<id>.csl.",
-                        ToolSchemaProperty.String("Resource URI.")),
-                    ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
-                    ["limit_bytes"] = ToolSchemaProperty.Integer(
-                        "Maximum response bytes per URI; oversized responses return explicit partial content and RESPONSE_TRUNCATED."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                }),
-            new ToolDefinition(
-                "patchouli.put",
-                "Replace one existing writable item bibliography, CSL style, document page map, source page XML, or translation page atomically.",
-                ["uri"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["uri"] = ToolSchemaProperty.String(
-                        "Writable resource URI: items/<id>.yml, csl-styles/<id>.csl, texts/<document-id>/map.yml, " +
-                        "texts/<document-id>/page-<index>.xml, or translations/<document-id>/page-<index>.xml. " +
-                        "Legacy .bib/.md addresses remain accepted with a deprecation warning."),
-                    ["content"] =
-                        ToolSchemaProperty.String("Complete replacement content; provide this or boxes, not both."),
-                    ["source_revision"] =
-                        ToolSchemaProperty.String(
-                            "Current source revision required for source XML or translation XML writes."),
-                    ["translation_version"] =
-                        ToolSchemaProperty.Integer("Current translation version required for translation XML writes."),
-                    ["boxes"] = ToolSchemaProperty.Array(
-                        "Replace selected boxes with complete <box> XML elements; preserve structural attributes and change only translated state and payload. Provide this or content, not both. Maximum 100 boxes.",
-                        ToolSchemaProperty.Object("One box replacement.",
-                            new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                            {
-                                ["box_id"] = ToolSchemaProperty.String("Stable box id."),
-                                ["content"] = ToolSchemaProperty.String(
-                                    "Complete <box> XML element with a matching id and replacement payload.")
-                            }, ["box_id", "content"]), 1, 100),
-                    ["preserve_tags"] =
-                        ToolSchemaProperty.Boolean("Preserve existing tags when replacing an item bibliography."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                },
-                false),
-            new ToolDefinition(
-                "patchouli.add",
-                "Import a host-accessible LOCAL file (PDF or CSL) into the Library; returns the new or reused " +
-                "resource URI. Accepts only local paths, never URLs: download the file with your own ability " +
-                "first, then pass its host-local path. The host applies its configured file handling behavior; " +
-                "callers cannot override it per request.",
-                ["path"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["path"] = ToolSchemaProperty.String(
-                        "Host-local file path to import. URLs are rejected."),
-                    ["kind"] = ToolSchemaProperty.String(
-                        "Optional explicit kind: \"pdf\" or \"csl\". When given it must match the actual file " +
-                        "content; omit to content-sniff."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                },
-                false),
-            new ToolDefinition(
-                "patchouli.view",
-                "Return the source image of a library page or box for model text-image collation. Images come " +
-                "from the original PDF, never re-rendered from OCR text. One target, one image per call. " +
-                "Recommended collation flow: fetch (text plus version) to read the text, then view the same " +
-                "revision or box source image, then put with the original source_revision; if the version " +
-                "changed in the meantime the put reports a normal revision conflict instead of overwriting.",
-                ["uri"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["uri"] = ToolSchemaProperty.String(
-                        "Page, box/evidence or translation page/box URI: texts/<document-id>/page-<index>.xml" +
-                        "[?rev=<tree-revision-id>[&box=<box-id>]], or the translations/ mirror for the " +
-                        "corresponding source-document image."),
-                    ["context"] = ToolSchemaProperty.String(
-                        "\"page\" (default) returns the whole page containing the box; \"region\" returns the " +
-                        "bbox crop with a small margin."),
-                    ["max_edge"] = ToolSchemaProperty.Integer(
-                        "Longest-edge pixel cap, from 64 through 8192; default 2048."),
-                    ["format"] = ToolSchemaProperty.String(
-                        "Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the " +
-                        "image is always a native image content block.")
-                }),
-            new ToolDefinition(
-                "patchouli.cite",
-                "Render a bibliography for existing item, document, page, or evidence resource URIs using a CSL style.",
-                ["refs"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["refs"] = ToolSchemaProperty.Array(
-                        "Item, document, page, or evidence resource URIs. Evidence URIs use ?rev=<tree-revision-id>[&box=<box-id>].",
-                        ToolSchemaProperty.String("Citation-capable resource URI.")),
-                    ["style"] = ToolSchemaProperty.String(
-                        "Optional CSL style URI; omit to use the configured default style."),
-                    ["locale"] = ToolSchemaProperty.String("Optional locale."),
-                    ["bibliography"] = ToolSchemaProperty.Boolean(
-                        "Return only the bibliography without inline citations."),
-                    ["html"] = ToolSchemaProperty.Boolean("Include the HTML rendering."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                }),
-            new ToolDefinition(
-                "patchouli.send",
-                "Send a typed message to runs/<domain>/control. Fetch the endpoint for message schemas; start accepts a document target, cancel/retry accept a same-domain task target, metadata lookup/apply/enrich accept an item target.",
-                ["endpoint", "action", "target", "args"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["endpoint"] =
-                        ToolSchemaProperty.String(
-                            "Domain control endpoint URI, e.g. runs/ocr/control, runs/translation/control, or runs/metadata/control."),
-                    ["action"] =
-                        ToolSchemaProperty.String(
-                            "Endpoint message action: start, cancel, retry, lookup, apply, enrich, or enrich_batch when supported by the endpoint schema."),
-                    ["target"] =
-                        ToolSchemaProperty.String(
-                            "Operation target URI: texts/<document-id>/, items/<item-id>.yml, items/, or runs/<domain>/<task-id>/."),
-                    ["args"] = ToolSchemaProperty.Object(
-                        "Domain arguments matching the endpoint message schema; use {} when empty."),
-                    ["request_id"] =
-                        ToolSchemaProperty.String("Optional process-local idempotency key, 1 through 256 characters."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: toon (default) or json.")
-                },
-                false)
-        ];
-    }
 
     private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
     {
@@ -505,7 +356,7 @@ public sealed class McpProtocolHandler
             name = nameElement.GetString()!;
             JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
             format = ResponseFormat(a);
-            if (!Tools().Any(tool => string.Equals(tool.Name, name, StringComparison.Ordinal)))
+            if (McpToolCatalog.Find(name) is null)
             {
                 throw new McpArgumentException("Unknown tool; use the published tools/list contract.");
             }
@@ -1061,37 +912,6 @@ public sealed class McpProtocolHandler
         }
     }
 
-    private sealed record ToolDefinition(
-        string Name,
-        string Description,
-        string[] Required,
-        IReadOnlyDictionary<string, ToolSchemaProperty> Properties,
-        bool ReadOnly = true)
-    {
-        public object ToWire()
-        {
-            return new
-            {
-                name = Name,
-                description = Description,
-                inputSchema = new
-                {
-                    type = "object",
-                    additionalProperties = false,
-                    properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.ToWire(),
-                        StringComparer.Ordinal),
-                    required = Required
-                },
-                annotations = new
-                {
-                    readOnlyHint = ReadOnly,
-                    destructiveHint = Name == "patchouli.send",
-                    idempotentHint = Name != "patchouli.send",
-                    openWorldHint = Name == "patchouli.send"
-                }
-            };
-        }
-    }
 
     private sealed class MethodNotFoundException(string message) : Exception(message);
 
@@ -1292,93 +1112,6 @@ public sealed class McpProtocolHandler
         {
             return Task.FromResult(Result<EvidencePageText>.Failure(AppErrorCodes.UnsupportedOperation,
                 "Versioned evidence reader is unavailable in read-only protocol mode."));
-        }
-    }
-
-    private sealed record ToolSchemaProperty(
-        string Type,
-        string Description,
-        ToolSchemaProperty? Items = null,
-        IReadOnlyDictionary<string, ToolSchemaProperty>? Properties = null,
-        string[]? Required = null,
-        int? MinItems = null,
-        int? MaxItems = null)
-    {
-        public object ToWire()
-        {
-            if (Type == "object" && Properties is null)
-            {
-                return new { type = Type, description = Description, additionalProperties = true };
-            }
-
-            if (Type == "object")
-            {
-                return new
-                {
-                    type = Type, description = Description, additionalProperties = false,
-                    properties = Properties!.ToDictionary(pair => pair.Key, pair => pair.Value.ToWire(),
-                        StringComparer.Ordinal),
-                    required = Required!
-                };
-            }
-
-            if (Type == "array")
-            {
-                Dictionary<string, object> array = new(StringComparer.Ordinal)
-                {
-                    ["type"] = Type, ["description"] = Description, ["items"] = Items!.ToWire()
-                };
-                if (MinItems is { } min)
-                {
-                    array["minItems"] = min;
-                }
-
-                if (MaxItems is { } max)
-                {
-                    array["maxItems"] = max;
-                }
-
-                return array;
-            }
-
-            return new { type = Type, description = Description };
-        }
-
-        public static ToolSchemaProperty String(string description)
-        {
-            return new ToolSchemaProperty("string", description);
-        }
-
-        public static ToolSchemaProperty Integer(string description)
-        {
-            return new ToolSchemaProperty("integer", description);
-        }
-
-        public static ToolSchemaProperty Boolean(string description)
-        {
-            return new ToolSchemaProperty("boolean", description);
-        }
-
-        public static ToolSchemaProperty Array(string description, ToolSchemaProperty items)
-        {
-            return new ToolSchemaProperty("array", description, items);
-        }
-
-        public static ToolSchemaProperty Array(string description, ToolSchemaProperty items, int? minItems,
-            int? maxItems)
-        {
-            return new ToolSchemaProperty("array", description, items, MinItems: minItems, MaxItems: maxItems);
-        }
-
-        public static ToolSchemaProperty Object(string description)
-        {
-            return new ToolSchemaProperty("object", description);
-        }
-
-        public static ToolSchemaProperty Object(string description,
-            IReadOnlyDictionary<string, ToolSchemaProperty> properties, string[] required)
-        {
-            return new ToolSchemaProperty("object", description, Properties: properties, Required: required);
         }
     }
 }
