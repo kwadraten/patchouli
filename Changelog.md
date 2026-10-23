@@ -8,6 +8,7 @@
 - 翻译扩展改为统一任务级接口：扩展只保留一个入口并接收整个任务，自行分页、跨页合批、并发与重试；宿主按需给页、提供冻结的参考上下文，并对每一页做身份与 revision 校验后原子提交。内置翻译引擎支持跨页合批与按需读取上下文，LLM 引擎在回填上一页译文开启时保持页序。宿主 API 在经过反复修改后初步确定的版本为 `patchouli.extensions/2`：外部 FSX 翻译扩展需按新契约改写，声明旧接口的扩展包不会被加载。
 - FSX SDK 中增加对 F# `option` 的使用，以便保持函数式风格并便于Fsharp编译器检查；新增 `Job.progress` 从任务取得进度观察者，`JobTranslator.Finish` 以 `Result` 接收每项结果，失败批次不再留下空槽。宿主与扩展 worker 之间的消息按契约的可空标注严格校验，缺少必填字段的请求在到达脚本前即被拒绝。服务方明确拒绝的翻译请求以 `translation_request_rejected` 报告，不再按页重试。
 - 元数据来源改为随包 FSX 扩展（Crossref、DataCite、OpenAlex、PubMed、arXiv、Open Library、Google Books 及多国国家图书馆目录等），可在“元数据来源”中逐项配置；MCP/CLI 新增 `runs/metadata/control` 端点，提供只读查找、确认后应用、单条补全与后台批量补全，批量任务状态在 `runs/metadata/` 查询。
+- 按各来源的真实响应修复多个元数据解析问题：CiNii 改按 Dublin Core JSON-LD 解析标题、作者、出版者与标识符（原按 schema.org 词表读取导致有记录也报未找到）；中国国家图书馆兼容 Aleph 页面无引号的 HTML 属性；日本国立国会图书馆支持 URL 形 BibID 查询、摘要改取 dc:description；德国国家图书馆 GND 改查规范库端点，其 SRU 不支持的 URN 索引不再声明；法国国家图书馆 ARK 查询恢复 `ark:/` 全形、FRBNF 改用 bib.recordid 索引、260 字段按 INTERMARC 语义读取（$c 为出版者、$d 为日期）；OpenAlex 修复发现标识符时 DOI 被截断并补上 MAG；美国国会图书馆改从 item 内读取作者、语言与主题，并解析出版项自由文本。来源返回无标题记录时，查找失败会明确说明原因，不再笼统显示「未找到记录」。
 - 新增统一的 `patchouli` Agent Skill：一个入口文件加按需阅读的参考文档，涵盖领域模型、MCP/CLI 用法、页面与 OCR/翻译、引用与题录以及扩展编写，FSX 扩展作者指南并入其中；向外部 Agent 自动安装、更新与清理将在后续版本提供。
 
 ## 0.3.13
