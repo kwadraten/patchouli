@@ -7,20 +7,20 @@ open System.Threading
 open System.Threading.Tasks
 open Patchouli.Extensions.Contracts
 
-[<AllowNullLiteral; Sealed>]
-type ExecutionScope internal (maxConcurrency: int, progress: IProgress<ExtensionProgress> | null, cancellationToken: CancellationToken) =
+[<Sealed>]
+type ExecutionScope internal (maxConcurrency: int, progress: IProgress<ExtensionProgress> option, cancellationToken: CancellationToken) =
     member _.MaxConcurrency = maxConcurrency
     member _.Progress = progress
     member _.CancellationToken = cancellationToken
 
 [<RequireQualifiedAccess>]
 module ExecutionScope =
-    let private currentScope = AsyncLocal<ExecutionScope>()
+    let private currentScope = AsyncLocal<ExecutionScope option>()
     let current () = currentScope.Value
-    let run maxConcurrency (progress: IProgress<ExtensionProgress> | null) cancellationToken (work: unit -> Task<'T>) = task {
+    let run maxConcurrency (progress: IProgress<ExtensionProgress> option) cancellationToken (work: unit -> Task<'T>) = task {
         if maxConcurrency < 1 then invalidArg "maxConcurrency" "Concurrency must be positive."
         let previous = currentScope.Value
-        currentScope.Value <- ExecutionScope(maxConcurrency, progress, cancellationToken)
+        currentScope.Value <- Some (ExecutionScope(maxConcurrency, progress, cancellationToken))
         try
             cancellationToken.ThrowIfCancellationRequested()
             let! result = work ()
@@ -31,33 +31,38 @@ module ExecutionScope =
     }
 
 module private ExecutionEvents =
-    type Frame = { Id: string; Phase: string }
+    type Frame = { Id: string; Phase: string; ItemId: string | null; Attempt: Nullable<int> }
     let private currentFrame = AsyncLocal<Frame option>()
     let observer () =
         match ExecutionScope.current() with
-        | null -> null
-        | scope -> scope.Progress
+        | None -> None
+        | Some scope -> scope.Progress
 
     // An observer belongs outside the business operation's failure boundary.
-    let private publish (progress: IProgress<ExtensionProgress> | null) event =
+    let private publish (progress: IProgress<ExtensionProgress> option) event =
         match progress with
-        | null -> ()
-        | value -> try value.Report(event) with _ -> ()
+        | None -> ()
+        | Some value -> try value.Report(event) with _ -> ()
 
-    let node (progress: IProgress<ExtensionProgress> | null) phase total itemId attempt
+    let node (progress: IProgress<ExtensionProgress> option) phase total (itemId: string | null) (attempt: Nullable<int>)
              (work: (int -> unit) -> Task<'T>) = task {
         let previous = currentFrame.Value
         let identity = Guid.NewGuid().ToString("N")
         let parentId = previous |> Option.map (fun frame -> frame.Id) |> Option.toObj
         let parentPhase = previous |> Option.map (fun frame -> frame.Phase) |> Option.toObj
-        currentFrame.Value <- Some { Id = identity; Phase = phase }
+        let effectiveItemId =
+            if isNull itemId then previous |> Option.map (fun frame -> frame.ItemId) |> Option.toObj
+            else itemId
+        let effectiveAttempt =
+            if attempt.HasValue then attempt else previous |> Option.map (fun frame -> frame.Attempt) |> Option.defaultValue (Nullable())
+        currentFrame.Value <- Some { Id = identity; Phase = phase; ItemId = effectiveItemId; Attempt = effectiveAttempt }
         let timer = Stopwatch.StartNew()
         let gate = obj()
         let mutable completed = 0
         let mutable lastReport = TimeSpan.Zero
         let emit status =
             publish progress (ExtensionProgress(phase, completed, total, null, status, parentPhase,
-                attempt, identity, parentId, Nullable timer.Elapsed, itemId))
+                effectiveAttempt, identity, parentId, Nullable timer.Elapsed, effectiveItemId))
         let advance count =
             lock gate (fun () ->
                 completed <- completed + count
@@ -117,12 +122,28 @@ module PipelineOperators =
 
 [<RequireQualifiedAccess>]
 module Pipeline =
-    let run (progress: IProgress<ExtensionProgress> | null) phase (pipeline: Pipeline<'T, 'U>) input token =
+    /// Runs a pipeline inside its own scope. `None` progress inherits the ambient scope's observer.
+    let runForItemWithConcurrency maxConcurrency (progress: IProgress<ExtensionProgress> option)
+                                  phase itemId attempt (pipeline: Pipeline<'T, 'U>) input token =
         let scope = ExecutionScope.current()
-        let concurrency = if isNull scope then 1 else scope.MaxConcurrency
-        let observer = if isNull (box progress) && not (isNull scope) then scope.Progress else progress
+        let concurrency =
+            scope
+            |> Option.map (fun s -> min maxConcurrency s.MaxConcurrency)
+            |> Option.defaultValue maxConcurrency
+        let observer =
+            match progress with
+            | Some _ -> progress
+            | None -> scope |> Option.bind (fun s -> s.Progress)
         ExecutionScope.run concurrency observer token (fun () ->
-            ExecutionEvents.node observer phase 1 null (Nullable()) (fun _ -> pipeline.Run(input, token)))
+            ExecutionEvents.node observer phase 1 itemId attempt (fun _ -> pipeline.Run(input, token)))
+
+    let runForItem (progress: IProgress<ExtensionProgress> option) phase itemId attempt
+                   (pipeline: Pipeline<'T, 'U>) input token =
+        let concurrency = ExecutionScope.current() |> Option.map (fun scope -> scope.MaxConcurrency) |> Option.defaultValue 1
+        runForItemWithConcurrency concurrency progress phase itemId attempt pipeline input token
+
+    let run (progress: IProgress<ExtensionProgress> option) phase (pipeline: Pipeline<'T, 'U>) input token =
+        runForItem progress phase null (Nullable()) pipeline input token
 
 [<RequireQualifiedAccess>]
 module Parallel =
@@ -133,7 +154,11 @@ module Parallel =
         use stopped = CancellationTokenSource.CreateLinkedTokenSource(token)
         let dispatchToken = stopped.Token
         let scope = ExecutionScope.current()
-        let workers = min values.Length (if isNull scope then maxConcurrency else min maxConcurrency scope.MaxConcurrency)
+        let workers =
+            min values.Length
+                (scope
+                 |> Option.map (fun s -> min maxConcurrency s.MaxConcurrency)
+                 |> Option.defaultValue maxConcurrency)
         let output = Array.zeroCreate<'U> values.Length
         let mutable next = -1
         let worker () = task {
@@ -160,10 +185,10 @@ module Parallel =
         let values = Seq.toArray items
         ExecutionEvents.node (ExecutionEvents.observer()) "parallel" values.Length null (Nullable())
             (fun advance -> execute maxConcurrency work values advance token)
-    let mapWithProgress (progress: IProgress<ExtensionProgress> | null) phase maxConcurrency work (items: seq<'T>) token =
+    let mapWithProgress (progress: IProgress<ExtensionProgress> option) phase maxConcurrency work (items: seq<'T>) token =
         let values = Seq.toArray items
         let scope = ExecutionScope.current()
-        let concurrency = if isNull scope then maxConcurrency else scope.MaxConcurrency
+        let concurrency = scope |> Option.map (fun s -> s.MaxConcurrency) |> Option.defaultValue maxConcurrency
         ExecutionScope.run concurrency progress token (fun () ->
             ExecutionEvents.node progress phase values.Length null (Nullable())
                 (fun advance -> execute maxConcurrency work values advance token))
@@ -268,5 +293,5 @@ module Retry =
 
 [<RequireQualifiedAccess>]
 module Progress =
-    let map (progress: IProgress<ExtensionProgress> | null) phase work items token =
+    let map (progress: IProgress<ExtensionProgress> option) phase work items token =
         Parallel.mapWithProgress progress phase 1 work items token

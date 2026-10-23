@@ -1,5 +1,6 @@
 open System
 open System.Collections.Generic
+open System.Net.Http
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
@@ -8,14 +9,12 @@ open Patchouli.Core.Results
 open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
 
-let endpointBinding = Config.bind "endpoint" (Field.text "Crossref works endpoint" "https://api.crossref.org/works"
-    |> Field.describe "Crossref REST endpoint used to retrieve DOI metadata.")
-let httpBinding = Config.bind "http" (Capability.http "Crossref metadata network access")
-let configFields = Config.fields [ Config.asField endpointBinding ]
-let descriptor = ExtensionDescriptor("metadata.crossref", "Crossref", "1.0.0",
-    "Looks up DOI metadata through the Crossref REST API.", ExtensionKind.Metadata)
-let sourceDefinition = MetadataSourceDefinition("crossref", "Crossref", HashSet<string>([| "doi" |], StringComparer.OrdinalIgnoreCase), 20, true)
+[<Settings>]
+type Settings = {
+    [<Field("Crossref works endpoint", Key = "endpoint"); Default("https://api.crossref.org/works")>] Endpoint: string
+}
 
+let sourceDefinition = MetadataSourceDefinition("crossref", "Crossref", HashSet<string>([| "doi" |], StringComparer.OrdinalIgnoreCase), 20, true)
 let stringAt (element: JsonElement) (property: string) =
     let mutable value = JsonElement()
     if element.ValueKind = JsonValueKind.Object && element.TryGetProperty(property, &value) && value.ValueKind = JsonValueKind.String then
@@ -87,29 +86,31 @@ let parseCandidate (requested: NormalizedIdentifier) (message: JsonElement) =
         stringAt message "abstract" |> Option.toObj, strings message "subject", identifiers.ToArray(),
         Option.toObj suggestedType, confidence)
 
-let lookup (identifier: NormalizedIdentifier) (config: ExtensionConfigSnapshot)
-           (capabilities: IExtensionCapabilities) (cancellationToken: CancellationToken) = task {
+let lookup (identifier: NormalizedIdentifier) (settings: Settings)
+           (resources: IExtensionResources) (cancellationToken: CancellationToken) = task {
     if not (String.Equals(identifier.Scheme, "doi", StringComparison.OrdinalIgnoreCase)) then
         return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.UnsupportedIdentifier, "Crossref supports DOI identifiers.")
     else
-        let endpoint = Binding.get endpointBinding config |> fun value -> value.Trim().TrimEnd('/')
+        let endpoint = settings.Endpoint |> fun value -> value.Trim().TrimEnd('/')
         if not (Uri.IsWellFormedUriString(endpoint, UriKind.Absolute)) then invalidArg "endpoint" "Crossref endpoint must be an absolute HTTP(S) URL."
         let baseUri = Uri(endpoint)
         if baseUri.Scheme <> Uri.UriSchemeHttp && baseUri.Scheme <> Uri.UriSchemeHttps then invalidArg "endpoint" "Crossref endpoint must use HTTP or HTTPS."
-        let http = Capability.resolveHttp httpBinding config capabilities
-        do! capabilities.WaitToProceedAsync(cancellationToken)
-        let headers = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        headers["Accept"] <- "application/json"
+        let http = resources.Http
+        do! resources.WaitToProceedAsync(cancellationToken)
         let uri = Uri(endpoint + "/" + Uri.EscapeDataString(identifier.Value))
-        let! response = http.SendAsync(HttpRequest("GET", uri, headers), cancellationToken)
-        if response.StatusCode = 404 then
+        use request = new HttpRequestMessage(HttpMethod.Get, uri)
+        request.Headers.Accept.ParseAdd("application/json")
+        use! response = http.SendAsync(request, cancellationToken)
+        let statusCode = int response.StatusCode
+        if statusCode = 404 then
             return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.NotFound, "Crossref did not find this DOI.")
-        elif response.StatusCode = 429 then
+        elif statusCode = 429 then
             return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.RateLimited, "Crossref rate limited the lookup.")
-        elif response.StatusCode < 200 || response.StatusCode >= 300 then
-            return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.ProviderUnavailable, "Crossref returned HTTP " + string response.StatusCode + ".")
+        elif not response.IsSuccessStatusCode then
+            return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.ProviderUnavailable, "Crossref returned HTTP " + string statusCode + ".")
         else
-            use document = JsonDocument.Parse(response.Body)
+            let! body = response.Content.ReadAsStringAsync(cancellationToken)
+            use document = JsonDocument.Parse(body)
             let mutable message = JsonElement()
             if not (document.RootElement.TryGetProperty("message", &message)) || message.ValueKind <> JsonValueKind.Object then
                 return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.InvalidResponse, "Crossref response has no message object.")
@@ -117,10 +118,10 @@ let lookup (identifier: NormalizedIdentifier) (config: ExtensionConfigSnapshot)
                 return Result<MetadataCandidate>.Success(parseCandidate identifier message)
 }
 
-let extension : IMetadataExtension =
-    { new IMetadataExtension with
-        member _.Descriptor = descriptor
-        member _.ConfigFields = configFields
-        member _.SourceDefinition = sourceDefinition
-        member _.LookupAsync(identifier, config, capabilities, cancellationToken) =
-            lookup identifier config capabilities cancellationToken }
+/// <summary>Crossref metadata extension.</summary>
+/// <patchouli-extension id="metadata.crossref" kind="metadata" version="1.0.0" host-api="patchouli.extensions/3">
+///   <name>Crossref</name>
+/// </patchouli-extension>
+let extension =
+    Extension.createMetadata<Settings> sourceDefinition (fun settings identifier resources token ->
+        lookup identifier settings resources token)

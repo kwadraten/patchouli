@@ -34,8 +34,7 @@ public enum ConfigValueKind
     Model,
     Documents,
     PageRange,
-    CredentialReference,
-    Capability
+    CredentialReference
 }
 
 public sealed record ConfigFieldDescriptor(
@@ -47,24 +46,17 @@ public sealed record ConfigFieldDescriptor(
     string? DefaultValue = null,
     decimal? Minimum = null,
     decimal? Maximum = null,
-    IReadOnlyList<string>? Choices = null);
+    IReadOnlyList<string>? Choices = null)
+{
+    public bool FollowDefault { get; init; }
+    public string? DefaultDomain { get; init; }
+    public bool Hidden { get; init; }
+}
 
 public static class ExtensionHostApi
 {
-    public const string Current = "patchouli.extensions/1";
+    public const string Current = "patchouli.extensions/3";
 }
-
-public enum ExtensionCapabilityKind
-{
-    Llm,
-    Http
-}
-
-/// <summary>A package's static request for a managed capability; host authorization is stored separately.</summary>
-public sealed record ExtensionCapabilityRequest(
-    ExtensionCapabilityKind Kind,
-    string Key,
-    string? DefaultDomain = null);
 
 public enum ExtensionKind
 {
@@ -74,31 +66,14 @@ public enum ExtensionKind
     Retrieval
 }
 
-public enum ExtensionPageExecutionMode
-{
-    BoundedParallel,
-    Sequential
-}
-
 public sealed record ExtensionDescriptor(
     string Id,
     string Name,
     string Version,
     string Description,
-    ExtensionKind Kind = ExtensionKind.Translation,
-    ExtensionPageExecutionMode PageExecutionMode = ExtensionPageExecutionMode.BoundedParallel)
+    ExtensionKind Kind = ExtensionKind.Translation)
 {
     public string HostApi { get; init; } = ExtensionHostApi.Current;
-    public IReadOnlyList<ExtensionCapabilityRequest> CapabilityRequests { get; init; } = [];
-
-    public ExtensionDescriptor WithCapabilityRequests(IReadOnlyList<ExtensionCapabilityRequest> requests)
-    {
-        ArgumentNullException.ThrowIfNull(requests);
-        return this with
-        {
-            CapabilityRequests = Array.AsReadOnly(requests.ToArray())
-        };
-    }
 }
 
 /// <summary>An immutable, content-addressed package view. Source keys are normalized relative paths.</summary>
@@ -107,9 +82,16 @@ public sealed class ExtensionPackageSnapshot
     private static readonly StringComparer SourcePathComparer = StringComparer.OrdinalIgnoreCase;
 
     public ExtensionPackageSnapshot(string id, IReadOnlyDictionary<string, string> sources)
+        : this(id, sources, new Dictionary<string, ReadOnlyMemory<byte>>())
+    {
+    }
+
+    public ExtensionPackageSnapshot(string id, IReadOnlyDictionary<string, string> sources,
+        IReadOnlyDictionary<string, ReadOnlyMemory<byte>> binaryFiles)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentNullException.ThrowIfNull(sources);
+        ArgumentNullException.ThrowIfNull(binaryFiles);
         if (!System.Text.RegularExpressions.Regex.IsMatch(id, "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
                 System.Text.RegularExpressions.RegexOptions.CultureInvariant))
         {
@@ -128,10 +110,31 @@ public sealed class ExtensionPackageSnapshot
             }
         }
 
+        Dictionary<string, ReadOnlyMemory<byte>> normalizedBinaryFiles = new(SourcePathComparer);
+        foreach ((string path, ReadOnlyMemory<byte> content) in binaryFiles)
+        {
+            string canonicalPath = NormalizeSourcePath(path);
+            if (normalized.ContainsKey(canonicalPath))
+            {
+                throw new ArgumentException(
+                    $"Package path is declared as both source and binary content: {canonicalPath}",
+                    nameof(binaryFiles));
+            }
+
+            byte[] copy = content.ToArray();
+            if (!normalizedBinaryFiles.TryAdd(canonicalPath, new ReadOnlyMemory<byte>(copy)))
+            {
+                throw new ArgumentException($"Duplicate extension binary path after normalization: {canonicalPath}",
+                    nameof(binaryFiles));
+            }
+        }
+
         Id = id;
         Sources = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(
             new Dictionary<string, string>(normalized, StringComparer.Ordinal));
-        Fingerprint = PackageFingerprint.Compute(Sources);
+        BinaryFiles = new System.Collections.ObjectModel.ReadOnlyDictionary<string, ReadOnlyMemory<byte>>(
+            new Dictionary<string, ReadOnlyMemory<byte>>(normalizedBinaryFiles, StringComparer.Ordinal));
+        Fingerprint = PackageFingerprint.Compute(Sources, BinaryFiles);
     }
 
     public static string NormalizeSourcePath(string path)
@@ -155,8 +158,18 @@ public sealed class ExtensionPackageSnapshot
         return string.Join('/', segments);
     }
 
+    /// <summary>Only known textual formats are decoded; all other package assets remain byte-for-byte binary.</summary>
+    public static bool IsTextSourcePath(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() is
+            ".fsx" or ".fs" or ".fsi" or ".json" or ".xml" or ".txt" or ".md" or
+            ".yaml" or ".yml" or ".csv" or ".tsv" or ".toml" or ".ini" or ".config" or
+            ".props" or ".targets" or ".html" or ".htm" or ".css" or ".js";
+    }
+
     public string Id { get; }
     public IReadOnlyDictionary<string, string> Sources { get; }
+    public IReadOnlyDictionary<string, ReadOnlyMemory<byte>> BinaryFiles { get; }
     public string Fingerprint { get; }
 }
 
@@ -187,13 +200,61 @@ public static class PackageFingerprint
         writer.Flush();
         return Convert.ToHexString(Blake3.Hasher.Hash(stream.ToArray()).AsSpan().ToArray()).ToLowerInvariant();
     }
+
+    public static string Compute(IReadOnlyDictionary<string, string> sources,
+        IReadOnlyDictionary<string, ReadOnlyMemory<byte>> binaryFiles)
+    {
+        ArgumentNullException.ThrowIfNull(sources);
+        ArgumentNullException.ThrowIfNull(binaryFiles);
+        if (binaryFiles.Count == 0)
+        {
+            return Compute(sources);
+        }
+
+        Dictionary<string, (bool IsBinary, byte[] Content)> entries = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string path, string content) in sources)
+        {
+            string canonicalPath = ExtensionPackageSnapshot.NormalizeSourcePath(path);
+            ArgumentNullException.ThrowIfNull(content);
+            if (!entries.TryAdd(canonicalPath, (false, System.Text.Encoding.UTF8.GetBytes(content))))
+            {
+                throw new ArgumentException($"Duplicate package path after normalization: {canonicalPath}",
+                    nameof(sources));
+            }
+        }
+
+        foreach ((string path, ReadOnlyMemory<byte> content) in binaryFiles)
+        {
+            string canonicalPath = ExtensionPackageSnapshot.NormalizeSourcePath(path);
+            if (!entries.TryAdd(canonicalPath, (true, content.ToArray())))
+            {
+                throw new ArgumentException($"Duplicate package path after normalization: {canonicalPath}",
+                    nameof(binaryFiles));
+            }
+        }
+
+        using MemoryStream stream = new();
+        using BinaryWriter writer = new(stream, System.Text.Encoding.UTF8, true);
+        foreach ((string path, (bool isBinary, byte[] content)) in entries.OrderBy(static item => item.Key,
+                     StringComparer.Ordinal))
+        {
+            byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(path);
+            // Negative path lengths tag binary entries while leaving the legacy source-only encoding untouched.
+            writer.Write(isBinary ? -pathBytes.Length : pathBytes.Length);
+            writer.Write(pathBytes);
+            writer.Write(content.Length);
+            writer.Write(content);
+        }
+
+        writer.Flush();
+        return Convert.ToHexString(Blake3.Hasher.Hash(stream.ToArray()).AsSpan().ToArray()).ToLowerInvariant();
+    }
 }
 
 public sealed record ExtensionCheckResult(
     bool Succeeded,
     IReadOnlyList<ConfigFieldDescriptor> ConfigFields,
-    IReadOnlyList<ExtensionDiagnostic> Diagnostics,
-    IReadOnlyList<ExtensionCapabilityRequest>? CapabilityRequests = null);
+    IReadOnlyList<ExtensionDiagnostic> Diagnostics);
 
 public sealed record ExtensionConfigSnapshot
 {
@@ -278,21 +339,94 @@ public sealed record TranslationExtensionOptions(
     string? ProviderId = null,
     string? Model = null);
 
-public sealed record TranslationExtensionContext(
-    ExtensionPageIdentity Page,
+/// <summary>
+/// Immutable facts about one translation job. The config snapshot is the run-pinned view; the host
+/// never changes these values while the job lives.
+/// </summary>
+public sealed record TranslationJobInfo(
+    string JobId,
+    DocumentInstanceId DocumentId,
     string SourceLanguage,
     string TargetLanguage,
-    IReadOnlyList<ExtensionBox> Boxes,
-    ExtensionConfigSnapshot Config,
-    IProgress<ExtensionProgress>? Progress = null,
-    IReadOnlyList<string>? ReferenceContexts = null,
-    TranslationExtensionOptions? Options = null,
-    TranslationContextSnapshot? ContextSnapshot = null)
+    TranslationExtensionOptions Options,
+    ExtensionConfigSnapshot Config);
+
+/// <summary>One page the host has frozen for this job. Boxes are read-only source snapshots.</summary>
+public sealed record TranslationPageInput(
+    ExtensionPageIdentity Page,
+    IReadOnlyList<ExtensionBox> Boxes);
+
+/// <summary>One page's extension results. The host validates identity and ownership before commit.</summary>
+public sealed record TranslationPageResult(
+    ExtensionPageIdentity Page,
+    IReadOnlyList<ExtensionBoxOutcome> Outcomes);
+
+/// <summary>The host's decision for one committed or rejected page attempt.</summary>
+public enum TranslationPageCommitState
 {
-    public TranslationExtensionContext WithReferenceContexts(IReadOnlyList<string>? references)
-    {
-        return this with { ReferenceContexts = references };
-    }
+    Committed,
+    Partial,
+    Skipped,
+    Failed,
+
+    /// <summary>The page changed concurrently; <see cref="TranslationPageCommit.RetryPage"/> carries a reload.</summary>
+    Conflict
+}
+
+/// <summary>
+/// The result of one <see cref="ITranslationJob.CommitPageAsync"/> call. A <see cref="TranslationPageCommitState.Conflict"/>
+/// always carries the reloaded page, and the host has not consumed this attempt's outcomes.
+/// </summary>
+public sealed record TranslationPageCommit(
+    TranslationPageCommitState State,
+    int CommittedBoxCount = 0,
+    TranslationPageInput? RetryPage = null,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);
+
+/// <summary>
+/// The task-level host interface for one translation run. The extension owns page order, batching,
+/// concurrency and retry policy; the host owns page identity, revision checks, context snapshots,
+/// per-page atomic commit and cancellation.
+/// </summary>
+public interface ITranslationJob
+{
+    /// <summary>Run-pinned job facts, including the frozen configuration snapshot.</summary>
+    TranslationJobInfo Info { get; }
+
+    /// <summary>Optional progress sink; page-scoped events set <see cref="ExtensionProgress.ItemId"/> to the page index.</summary>
+    IProgress<ExtensionProgress>? Progress { get; }
+
+    /// <summary>
+    /// Returns the next page that still needs a translation, in request order. Pages that need no work
+    /// (no translatable text, already current and not forced, or unreadable) are settled by the host and
+    /// skipped here. Returns null when no page remains.
+    /// </summary>
+    ValueTask<TranslationPageInput?> NextPageAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads read-only reference context for a page: neighboring source pages within
+    /// <paramref name="neighborRadius"/> and the previously stored translation of the page before it.
+    /// The host freezes what it reads for the remainder of the job.
+    /// </summary>
+    ValueTask<TranslationContextSnapshot> ReadContextAsync(TranslationPageInput page, int neighborRadius,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads the currently committed translation of one page, including pages committed earlier in this job.
+    /// Returns null when no current translation exists. This is how sequential policies consume the
+    /// translation a previous page just committed.
+    /// </summary>
+    ValueTask<TranslationContextTranslationSnapshot?> GetCommittedPageTranslationAsync(int pageIndex,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Validates the page results and commits them in one atomic page write. The host records the page's
+    /// terminal outcome; callers must not commit a page twice unless a preceding call returned
+    /// <see cref="TranslationPageCommitState.Conflict"/>.
+    /// </summary>
+    ValueTask<TranslationPageCommit> CommitPageAsync(TranslationPageResult result,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>A neighboring source page frozen for the lifetime of one translation run.</summary>
@@ -350,8 +484,6 @@ public sealed record ExtensionBoxOutcome(
     }
 }
 
-public sealed record TranslationExtensionResult(IReadOnlyList<ExtensionBoxOutcome> Outcomes);
-
 public sealed record LlmMessage(string Role, string Content);
 
 public sealed record LlmRequest(
@@ -368,61 +500,44 @@ public interface ILlmCapability
     Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default);
 }
 
-public sealed record HttpRequest(
-    string Method,
-    Uri Uri,
-    IReadOnlyDictionary<string, string> Headers,
-    string? Body = null,
-    string? CredentialReference = null);
-
-public sealed record HttpResponse(int StatusCode, IReadOnlyDictionary<string, string> Headers, string Body);
-
-public interface IHttpCapability
-{
-    Task<HttpResponse> SendAsync(HttpRequest request, CancellationToken cancellationToken = default);
-}
-
-public interface IExtensionCapabilities
+public interface IExtensionResources
 {
     ILlmCapability Llm { get; }
-    IHttpCapability Http { get; }
+    HttpClient Http { get; }
     string ConfigurationFingerprint => string.Empty;
-    IExtensionCapabilities ForRun(ExtensionConfigSnapshot config);
+    IExtensionResources ForRun(ExtensionConfigSnapshot config);
 
     ILlmCapability ResolveLlm(string? defaultDomain, ExtensionModelSelection? selection)
     {
         return Llm;
     }
 
-    IHttpCapability ResolveHttp(string? defaultDomain, ExtensionConfigSnapshot config)
-    {
-        return Http;
-    }
-
-    ILlmCapability ResolveLlmSlot(string key, string? defaultDomain, ExtensionModelSelection? selection)
-    {
-        return ResolveLlm(defaultDomain, selection);
-    }
-
-    IHttpCapability ResolveHttpSlot(string key, string? defaultDomain, ExtensionConfigSnapshot config)
-    {
-        return ResolveHttp(defaultDomain, config);
-    }
-
     Task WaitToProceedAsync(CancellationToken cancellationToken = default);
+
+    Task<string?> GetCredentialAsync(string reference, CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// One translation engine. There is exactly one entry point: the extension receives the whole task and
+/// owns page order, batching, concurrency and retry policy. The host supplies pages and reference context
+/// and validates each atomic page commit.
+/// </summary>
 public interface ITranslationExtension
     : IExtensionDefinition, IExtensionDerivedState
 {
-    Task<TranslationExtensionResult> TranslateAsync(TranslationExtensionContext context,
-        IExtensionCapabilities capabilities, CancellationToken cancellationToken = default);
+    Task RunAsync(ITranslationJob job, IExtensionResources resources,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IExtensionDefinition
 {
-    ExtensionDescriptor Descriptor { get; }
-    IReadOnlyList<ConfigFieldDescriptor> ConfigFields { get; }
+    ExtensionDescriptor Descriptor => new("", "", "", "");
+    IReadOnlyList<ConfigFieldDescriptor> ConfigFields => Array.Empty<ConfigFieldDescriptor>();
+}
+
+public interface IExtensionSettingsDefinition
+{
+    Type SettingsType { get; }
 }
 
 /// <summary>Optional extension-owned cache invalidation for rebuildable derived data.</summary>
@@ -452,7 +567,7 @@ public interface IMetadataExtension : IExtensionDefinition
     MetadataSourceDefinition SourceDefinition { get; }
 
     Task<Result<MetadataCandidate>> LookupAsync(NormalizedIdentifier identifier,
-        ExtensionConfigSnapshot config, IExtensionCapabilities capabilities,
+        ExtensionConfigSnapshot config, IExtensionResources resources,
         CancellationToken cancellationToken = default);
 }
 
@@ -510,7 +625,7 @@ public sealed record OcrExtensionCandidate(
 public interface IOcrExtension : IExtensionDefinition
 {
     Task<OcrExtensionCandidate> RecognizeAsync(OcrExtensionContext context,
-        IExtensionCapabilities capabilities, CancellationToken cancellationToken = default);
+        IExtensionResources resources, CancellationToken cancellationToken = default);
 }
 
 public sealed record RetrievalExtensionContext(
@@ -526,7 +641,7 @@ public sealed record RetrievalExtensionResult(IReadOnlyList<RetrievalExtensionMa
 public interface IRetrievalExtension : IExtensionDefinition
 {
     Task<RetrievalExtensionResult> RankAsync(RetrievalExtensionContext context,
-        IExtensionCapabilities capabilities, CancellationToken cancellationToken = default);
+        IExtensionResources resources, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Host-side validation for extension proposals before domain ownership checks or commits.</summary>
@@ -671,6 +786,16 @@ public interface IExtensionManager : IAsyncDisposable
 
     Task SaveSourceAsync(string id, IReadOnlyDictionary<string, string> sources,
         CancellationToken cancellationToken = default);
+
+    Task SavePackageAsync(ExtensionPackageSnapshot package, CancellationToken cancellationToken = default)
+    {
+        if (package.BinaryFiles.Count != 0)
+        {
+            throw new NotSupportedException("This extension store cannot persist binary package dependencies.");
+        }
+
+        return SaveSourceAsync(package.Id, package.Sources, cancellationToken);
+    }
 
     Task<ExtensionPackageSnapshot> ReadSourceAsync(string id, CancellationToken cancellationToken = default);
     ValueTask<IExtensionLease?> AcquireAsync(string id, CancellationToken cancellationToken = default);

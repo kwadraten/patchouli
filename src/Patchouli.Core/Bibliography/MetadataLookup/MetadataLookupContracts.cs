@@ -150,6 +150,17 @@ public interface IMetadataLookupService
         IReadOnlyList<ItemId> itemIds,
         IProgress<MetadataBatchProgress>? progress = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Core-composed enrich for one item: tries the item's own identifiers in source-preference
+    ///     order and applies the first successful candidate. The default keeps existing hosts valid.
+    /// </summary>
+    Task<Result<MetadataLookupOutcome>> EnrichAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<MetadataLookupOutcome>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Metadata enrichment is unavailable."));
+    }
 }
 
 /// <summary>A read-only proposal bound to one item version; applying it still requires host validation.</summary>

@@ -49,6 +49,30 @@ public sealed class MetadataLookupTests
     }
 
     [Fact]
+    public async Task Lookup_queries_matching_sources_in_parallel_and_keeps_priority_order()
+    {
+        FakeSource first = new("first", Result<MetadataCandidate>.Success(new MetadataCandidate("first", "First")));
+        FakeSource second = new("second", Result<MetadataCandidate>.Success(new MetadataCandidate("second", "Second")));
+        FakeSource unrelated = new("unrelated",
+            Result<MetadataCandidate>.Success(new MetadataCandidate("unrelated", "X")), BuiltInIdentifierSchemes.ISBN);
+        FakeItemService items = new(CreateItem("Old"));
+        MetadataLookupService service = new(items, new MetadataSourceRegistry([first, second, unrelated]));
+
+        Result<MetadataLookupOutcome> result = await service.LookupAndMergeAsync(
+            items.Item.ItemId,
+            BuiltInIdentifierSchemes.DOI,
+            "10.1000/example",
+            [new MetadataSourcePreference("second", true, 20), new MetadataSourcePreference("first", true, 10)]);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.Candidate.Title.Should().Be("First");
+        result.Value.Attempts.Select(attempt => attempt.SourceId).Should().ContainInOrder("first", "second");
+        first.CallCount.Should().Be(1);
+        second.CallCount.Should().Be(1, "every matching source is queried concurrently");
+        unrelated.CallCount.Should().Be(0, "sources that do not declare the scheme are never invoked");
+    }
+
+    [Fact]
     public async Task Lookup_reloads_and_merges_non_empty_fields_roles_tags_and_identifiers()
     {
         ItemMetadata existing = CreateItem(
@@ -142,228 +166,6 @@ public sealed class MetadataLookupTests
         service.CanLookup(scheme).Should().BeTrue();
     }
 
-    [Fact]
-    public async Task Ndl_parses_dublin_core_for_ndlbibid()
-    {
-        const string xml = """
-                           <rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcndl="http://ndl.go.jp/dcndl/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><channel><item><dc:title>別資料</dc:title><dc:identifier xsi:type="dcndl:NDLBibID">000000</dc:identifier></item><item><dc:title>在村蘭学の展開</dc:title><dc:creator>田崎, 哲郎, 1934-</dc:creator><dc:date>1992</dc:date><dc:publisher>思文閣出版</dc:publisher><dc:identifier xsi:type="dcndl:ISBN">4-7842-0701-5</dc:identifier><dc:identifier xsi:type="dcndl:NDLBibID">000002179229</dc:identifier><dc:identifier xsi:type="dcndl:JPNO">92042014</dc:identifier></item></channel></rss>
-                           """;
-        FakeHttpHandler handler = new(xml, "application/xml");
-        NdlMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.Ndlbibid, "000002179229"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("在村蘭学の展開");
-        result.Value.Identifiers.Should().Contain(identifier =>
-            identifier.Scheme == BuiltInIdentifierSchemes.Jpno && identifier.Value == "92042014");
-        result.Value.Identifiers.Should().Contain(identifier =>
-            identifier.Scheme == BuiltInIdentifierSchemes.ISBN && identifier.Value == "4-7842-0701-5");
-        handler.LastRequest!.RequestUri!.Host.Should().Be("ndlsearch.ndl.go.jp");
-        handler.LastRequest.RequestUri.AbsolutePath.Should().Be("/api/opensearch");
-        handler.LastRequest.RequestUri.Query.Should().Contain("any=000002179229");
-    }
-
-    [Fact]
-    public async Task Crossref_parses_representative_json_response()
-    {
-        const string json = """
-                            {"message":{"title":["A fetched article"],"subtitle":["Evidence"],"author":[{"family":"Lovelace","given":"Ada"}],"published-print":{"date-parts":[[1843,8]]},"container-title":["Scientific Memoirs"],"publisher":"Taylor","volume":"3","issue":"1","page":"10-20","subject":["History"],"DOI":"10.1000/example","type":"journal-article"}}
-                            """;
-        FakeHttpHandler handler = new(json, "application/json");
-        CrossrefMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.DOI, "10.1000/example"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("A fetched article");
-        result.Value.Creators.Should().ContainSingle(creator => creator.Family == "Lovelace" && creator.Given == "Ada");
-        result.Value.Dates.Should().ContainSingle(date => date.DateParts!.SequenceEqual(new[] { 1843, 8 }));
-        result.Value.PublicationTitle.Should().Be("Scientific Memoirs");
-        result.Value.SuggestedItemType.Should().Be("article-journal");
-        handler.LastRequest!.RequestUri!.AbsoluteUri.Should().Contain("10.1000%2Fexample");
-    }
-
-    [Fact]
-    public async Task PubMed_parses_representative_xml_response()
-    {
-        const string xml = """
-                           <PubmedArticleSet><PubmedArticle><MedlineCitation><Article><ArticleTitle>XML article</ArticleTitle><Abstract><AbstractText>Summary.</AbstractText></Abstract><AuthorList><Author><LastName>Curie</LastName><ForeName>Marie</ForeName></Author></AuthorList><Journal><Title>Journal of Tests</Title><JournalIssue><Volume>7</Volume><Issue>2</Issue><PubDate><Year>1911</Year><Month>Dec</Month></PubDate></JournalIssue></Journal><Pagination><MedlinePgn>1-5</MedlinePgn></Pagination><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">123</ArticleId><ArticleId IdType="doi">10.1000/xml</ArticleId></ArticleIdList></PubmedData></PubmedArticle></PubmedArticleSet>
-                           """;
-        PubMedMetadataSource source = new(new HttpClient(new FakeHttpHandler(xml, "application/xml")));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.Pmid, "123"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("XML article");
-        result.Value.Creators.Should().ContainSingle(creator => creator.Family == "Curie" && creator.Given == "Marie");
-        result.Value.Dates.Should().ContainSingle(date => date.DateParts!.SequenceEqual(new[] { 1911, 12 }));
-        result.Value.Identifiers.Should().Contain(identifier =>
-            identifier.Scheme == BuiltInIdentifierSchemes.DOI && identifier.Value == "10.1000/xml");
-    }
-
-    [Fact]
-    public async Task Google_books_zero_daily_quota_is_not_reported_as_retryable_rate_limit()
-    {
-        const string json = """
-                            {"error":{"code":429,"message":"Quota exceeded for quota metric 'Queries' and limit 'Queries per day'.","details":[{"metadata":{"quota_limit_value":"0"}}]}}
-                            """;
-        GoogleBooksMetadataSource source =
-            new(new HttpClient(new FakeHttpHandler(json, "application/json", HttpStatusCode.TooManyRequests)));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(MetadataLookupErrorCodes.QuotaUnavailable);
-        result.ErrorMessage.Should().Contain("Google Books").And.Contain("retrying will not help");
-    }
-
-    [Fact]
-    public async Task Ndl_isbn_lookup_uses_isbn_route_and_matches_hyphenated_response()
-    {
-        const string xml = """
-                           <rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcndl="http://ndl.go.jp/dcndl/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><channel><item><dc:title>中国图书</dc:title><dc:identifier xsi:type="dcndl:ISBN13">978-7-209-10854-6</dc:identifier><dc:identifier xsi:type="dcndl:NDLBibID">123</dc:identifier></item></channel></rss>
-                           """;
-        FakeHttpHandler handler = new(xml, "application/xml");
-        NdlMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("中国图书");
-        handler.LastRequest!.RequestUri!.Query.Should().Contain("isbn=9787209108546");
-    }
-
-    [Fact]
-    public async Task Calis_uses_isbn_search_then_maps_unimarc_detail()
-    {
-        const string marc = """
-                            {"leader":"x","fields":[{"001":"CAL 012026046037"},{"010":{"subfields":[{"a":"978-7-5228-6527-0"}]}},{"101":{"subfields":[{"a":"chi"}]}},{"200":{"subfields":[{"a":"明代京师银库研究"},{"f":"李义琼著"}]}},{"210":{"subfields":[{"a":"北京"},{"c":"社会科学文献出版社"},{"d":"2026"}]}},{"215":{"subfields":[{"a":"405页"}]}},{"330":{"subfields":[{"a":"本书研究明代财政史。"}]}},{"606":{"subfields":[{"a":"财政史"}]}},{"690":{"subfields":[{"a":"F812.948"}]}},{"701":{"subfields":[{"a":"李义琼"},{"4":"著"}]}}]}
-                            """;
-        string search = """{"data":{"instances":[{"rid":"a5440f47f2da16b57a52ea525e41f84b"}]}}""";
-        string detail = JsonSerializer.Serialize(new { data = new { MARC = marc } });
-        RoutingHttpHandler handler = new(request => request.Method == HttpMethod.Post
-            ? JsonResponse(search)
-            : JsonResponse(detail));
-        CalisMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787522865270"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("明代京师银库研究");
-        result.Value.Publisher.Should().Be("社会科学文献出版社");
-        result.Value.Creators.Should().ContainSingle(creator => creator.Literal == "李义琼");
-        result.Value.Tags.Should().Contain(["财政史", "F812.948"]);
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests[0].Body.Should().Contain("KGJhdGguaXNibj0iOTc4NzUyMjg2NTI3MCoiKQ==");
-        handler.Requests[1].Uri.Should().EndWith("/marc/a5440f47f2da16b57a52ea525e41f84b");
-    }
-
-    [Fact]
-    public async Task Calis_skips_non_matching_marc_records()
-    {
-        const string marc = """
-                            {"fields":[{"010":{"subfields":[{"a":"978-7-5228-6527-0"}]}},{"200":{"subfields":[{"a":"Different book"}]}}]}
-                            """;
-        string search = """{"data":{"instances":[{"rid":"different"}]}}""";
-        string detail = JsonSerializer.Serialize(new { data = new { MARC = marc } });
-        RoutingHttpHandler handler = new(request => request.Method == HttpMethod.Post
-            ? JsonResponse(search)
-            : JsonResponse(detail));
-        CalisMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(MetadataLookupErrorCodes.NotFound);
-    }
-
-    [Fact]
-    public async Task Calis_reports_empty_results_and_invalid_json()
-    {
-        CalisMetadataSource empty =
-            new(new HttpClient(new FakeHttpHandler("""{"data":{"instances":[]}}""", "application/json")));
-        CalisMetadataSource invalid = new(new HttpClient(new FakeHttpHandler("not json", "application/json")));
-
-        Result<MetadataCandidate> emptyResult =
-            await empty.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-        Result<MetadataCandidate> invalidResult =
-            await invalid.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        emptyResult.ErrorCode.Should().Be(MetadataLookupErrorCodes.NotFound);
-        invalidResult.ErrorCode.Should().Be(MetadataLookupErrorCodes.InvalidResponse);
-    }
-
-    [Fact]
-    public async Task Calis_and_nlc_preserve_rate_limit_errors()
-    {
-        CalisMetadataSource calis =
-            new(new HttpClient(new FakeHttpHandler("", "application/json", HttpStatusCode.TooManyRequests)));
-        NationalLibraryOfChinaMetadataSource nlc =
-            new(new HttpClient(new FakeHttpHandler("", "text/html", HttpStatusCode.TooManyRequests)));
-
-        Result<MetadataCandidate> calisResult =
-            await calis.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-        Result<MetadataCandidate> nlcResult =
-            await nlc.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        calisResult.ErrorCode.Should().Be(MetadataLookupErrorCodes.RateLimited);
-        nlcResult.ErrorCode.Should().Be(MetadataLookupErrorCodes.RateLimited);
-    }
-
-    [Fact]
-    public async Task National_library_of_china_maps_aleph_html()
-    {
-        const string html = """
-                            <html><table id="td">
-                              <tr><td class="td1">ISBN</td><td class="td1">978-7-209-10854-6</td></tr>
-                              <tr><td class="td1">题名与责任</td><td class="td1">山东文化世家研究书系 [专著]</td></tr>
-                              <tr><td class="td1">著者</td><td class="td1">王明 著</td></tr>
-                              <tr><td class="td1">出版项</td><td class="td1">济南 : 山东人民出版社, 2017</td></tr>
-                              <tr><td class="td1">主题</td><td class="td1">齐鲁文化--家族史</td></tr>
-                              <tr><td class="td1">中图分类号</td><td class="td1">K820.9</td></tr>
-                              <tr><td class="td1">内容提要</td><td class="td1">中国家族文化研究。</td></tr>
-                            </table></html>
-                            """;
-        FakeHttpHandler handler = new(html, "text/html");
-        NationalLibraryOfChinaMetadataSource source = new(new HttpClient(handler));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        result.Value.Title.Should().Be("山东文化世家研究书系");
-        result.Value.Publisher.Should().Be("山东人民出版社");
-        result.Value.Creators.Should().ContainSingle(creator => creator.Literal == "王明");
-        result.Value.Tags.Should().Contain(["齐鲁文化", "家族史", "K820.9"]);
-        handler.LastRequest!.RequestUri!.Query.Should().Contain("find_code=ISB").And.Contain("request=9787209108546");
-    }
-
-    [Fact]
-    public async Task National_library_of_china_rejects_a_non_matching_isbn_record()
-    {
-        const string html = """
-                            <html><table id="td">
-                              <tr><td class="td1">ISBN</td><td class="td1">978-7-5228-6527-0</td></tr>
-                              <tr><td class="td1">题名与责任</td><td class="td1">Different book [专著]</td></tr>
-                            </table></html>
-                            """;
-        NationalLibraryOfChinaMetadataSource source = new(new HttpClient(new FakeHttpHandler(html, "text/html")));
-
-        Result<MetadataCandidate> result =
-            await source.LookupAsync(new NormalizedIdentifier(BuiltInIdentifierSchemes.ISBN, "9787209108546"));
-
-        result.IsFailure.Should().BeTrue();
-        result.ErrorCode.Should().Be(MetadataLookupErrorCodes.NotFound);
-    }
-
     private static ItemMetadata CreateItem(
         string title,
         string? subtitle = null,
@@ -398,10 +200,14 @@ public sealed class MetadataLookupTests
         return new ItemIdentifier(IdentifierId.New(), default, scheme, value, null, DateTimeOffset.UnixEpoch);
     }
 
-    private sealed class FakeSource(string id, Result<MetadataCandidate> result) : IMetadataSource
+    private sealed class FakeSource(
+        string id,
+        Result<MetadataCandidate> result,
+        string scheme = BuiltInIdentifierSchemes.DOI)
+        : IMetadataSource
     {
         public MetadataSourceDefinition Definition { get; } = new(id, id,
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { BuiltInIdentifierSchemes.DOI }, 10);
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { scheme }, 10);
 
         public int CallCount { get; private set; }
 
@@ -422,45 +228,6 @@ public sealed class MetadataLookupTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.NotFound, "missing"));
-        }
-    }
-
-    private sealed class FakeHttpHandler(
-        string response,
-        string contentType,
-        HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
-    {
-        public HttpRequestMessage? LastRequest { get; private set; }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            LastRequest = request;
-            return Task.FromResult(new HttpResponseMessage(statusCode)
-            {
-                Content = new StringContent(response, Encoding.UTF8, contentType)
-            });
-        }
-    }
-
-    private static HttpResponseMessage JsonResponse(string body)
-    {
-        return new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(body, Encoding.UTF8, "application/json")
-        };
-    }
-
-    private sealed class RoutingHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
-    {
-        public List<(string Uri, string? Body)> Requests { get; } = [];
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            string? body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            Requests.Add((request.RequestUri!.AbsoluteUri, body));
-            return response(request);
         }
     }
 

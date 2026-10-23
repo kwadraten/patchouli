@@ -4,6 +4,7 @@ using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Tests;
 
+[Trait("Category", "fcs")]
 public sealed class ExtensionCompilerTests
 {
     [Fact]
@@ -21,7 +22,7 @@ public sealed class ExtensionCompilerTests
             ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(package, CancellationToken.None);
 
             File.Exists(marker).Should().BeFalse("checking an extension must only parse and typecheck its source");
-            result.Succeeded.Should().BeFalse("top-level arbitrary file writes are not a valid extension initializer");
+            result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
         }
         finally
         {
@@ -33,16 +34,14 @@ public sealed class ExtensionCompilerTests
     }
 
     [Fact]
-    public async Task Renaming_a_binding_label_preserves_its_stable_key()
+    public async Task Renaming_a_settings_label_preserves_its_stable_key()
     {
         ExtensionCompiler compiler = new();
         ExtensionCheckResult first = await compiler.CheckAsync(
-            Package(
-                "open Patchouli.Extensions.Sdk\nlet bindings = [ Config.language \"source.language\" \"Source language\" \"auto\" ]"),
+            Package(SettingsSource("Source language")),
             CancellationToken.None);
         ExtensionCheckResult renamed = await compiler.CheckAsync(
-            Package(
-                "open Patchouli.Extensions.Sdk\nlet bindings = [ Config.language \"source.language\" \"Input language\" \"auto\" ]"),
+            Package(SettingsSource("Input language")),
             CancellationToken.None);
 
         first.Succeeded.Should().BeTrue("{0}", FormatDiagnostics(first));
@@ -53,14 +52,16 @@ public sealed class ExtensionCompilerTests
     }
 
     [Fact]
-    public async Task Duplicate_binding_keys_are_rejected()
+    public async Task Duplicate_settings_keys_are_rejected()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
-            open Patchouli.Extensions.Sdk
-            let bindings = [
-                Config.text "api.key" "API key" "first";
-                Config.text "api.key" "Another API key" "second"
-            ]
+            [<Settings>]
+            type Settings = {
+                [<Field("API key", Key = "api.key")>]
+                First: string
+                [<Field("Another API key", Key = "api.key")>]
+                Second: string
+            }
             """), CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
@@ -68,16 +69,36 @@ public sealed class ExtensionCompilerTests
     }
 
     [Fact]
-    public async Task Dynamic_binding_keys_are_rejected()
+    public async Task Settings_schema_reads_default_and_numeric_range_attributes()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
-            open Patchouli.Extensions.Sdk
-            let prefix = "api"
-            let bindings = [ Config.text (prefix + ".key") "API key" "default" ]
+            [<Settings>]
+            type Settings = {
+                [<Field("Concurrency", Kind = ConfigValueKind.Integer)>]
+                [<Range(1, 8)>]
+                [<Default(4)>]
+                Concurrency: int
+            }
             """), CancellationToken.None);
 
-        result.Succeeded.Should().BeFalse();
-        result.Diagnostics.Should().Contain(issue => issue.Severity == ExtensionDiagnosticSeverity.Error);
+        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+        ConfigFieldDescriptor field = result.ConfigFields.Should().ContainSingle().Subject;
+        field.Key.Should().Be("concurrency");
+        field.DefaultValue.Should().Be("4");
+        field.Minimum.Should().Be(1);
+        field.Maximum.Should().Be(8);
+    }
+
+    [Fact]
+    public async Task Dynamic_values_are_not_extracted_as_configuration_fields()
+    {
+        ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
+            let prefix = "api"
+            let generatedKey = prefix + ".key"
+            """), CancellationToken.None);
+
+        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+        result.ConfigFields.Should().BeEmpty();
     }
 
     [Fact]
@@ -95,17 +116,24 @@ public sealed class ExtensionCompilerTests
     }
 
     [Fact]
-    public async Task Typed_model_binding_cannot_be_read_as_an_integer()
+    public async Task Model_setting_attributes_are_read_as_schema_metadata()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
             open Patchouli.Extensions.Contracts
             open Patchouli.Extensions.Sdk
-            let model = Config.model "model" "Model"
-            let readModelAsInteger (snapshot: ExtensionConfigSnapshot) : int = Binding.get model snapshot
+            [<Settings>]
+            type Settings = {
+                [<Model("Translation model", Key = "model")>]
+                Model: ExtensionModelSelection
+            }
+            let readModel (snapshot: ExtensionConfigSnapshot) : ExtensionModelSelection =
+                (ConfigSettings.Read<Settings>(snapshot)).Model
             """), CancellationToken.None);
 
-        result.Succeeded.Should().BeFalse();
-        result.Diagnostics.Should().Contain(issue => issue.Severity == ExtensionDiagnosticSeverity.Error);
+        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+        ConfigFieldDescriptor field = result.ConfigFields.Should().ContainSingle().Subject;
+        field.Key.Should().Be("model");
+        field.Kind.Should().Be(ConfigValueKind.Model);
     }
 
     [Fact]
@@ -121,137 +149,59 @@ public sealed class ExtensionCompilerTests
     }
 
     [Fact]
-    public async Task Unrecognized_configuration_namespace_is_not_extracted_as_a_binding()
+    public async Task Null_literal_for_non_nullable_reference_is_reported_by_compiler_nullness_checks()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
-            let fake = FakeSdk.Config.text "secret" "Secret" "plaintext"
+            let invalid: string = null
             """), CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
-        result.ConfigFields.Should().BeEmpty();
-        result.Diagnostics.Should().Contain(issue => issue.Severity == ExtensionDiagnosticSeverity.Error);
+        result.Diagnostics.Should().Contain(issue => issue.Code == "FS3261" &&
+                                                     issue.Severity == ExtensionDiagnosticSeverity.Error);
     }
 
     [Fact]
-    public async Task Llm_capability_descriptor_cannot_be_used_as_an_http_capability()
+    public async Task Ordinary_source_without_settings_metadata_has_an_empty_schema()
+    {
+        ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("let ordinaryValue = 1"),
+            CancellationToken.None);
+
+        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+        result.ConfigFields.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Standard_http_client_usage_is_accepted()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
             open Patchouli.Extensions.Contracts
             open Patchouli.Extensions.Sdk
-            let invalidCapability: IHttpCapability = Capability.llm
+            let send (resources: IExtensionResources) (token: CancellationToken) =
+                resources.Http.GetAsync("https://unit.test", token)
             """), CancellationToken.None);
+
+        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+    }
+
+    [Fact]
+    public async Task Compiler_rejects_a_package_with_an_unsupported_host_api()
+    {
+        ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(
+            Package("let ordinaryValue = 1", "2"), CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
         result.Diagnostics.Should().Contain(issue => issue.Severity == ExtensionDiagnosticSeverity.Error);
     }
 
     [Fact]
-    public async Task Static_capability_bindings_are_extracted_as_host_authorization_requests()
-    {
-        ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package("""
-            let model = bind "llm.primary" (Capability.llm "Translation model" |> Capability.followDefault Domains.translation)
-            let http = bind "http" (Capability.http "Managed HTTP")
-            """), CancellationToken.None);
-
-        result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
-        result.CapabilityRequests.Should().Contain(request => request.Kind == ExtensionCapabilityKind.Llm &&
-                                                              request.Key == "llm.primary" &&
-                                                              request.DefaultDomain == "translation");
-        result.CapabilityRequests.Should().Contain(request => request.Kind == ExtensionCapabilityKind.Http &&
-                                                              request.Key == "http");
-    }
-
-    [Fact]
-    public async Task Results_from_http_llm_and_batch_calls_must_be_explicitly_handled()
-    {
-        string[] discardedSdkCalls =
-        [
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                let! _ = capabilities.Http.SendAsync(HttpRequest("GET", Uri("https://unit.test"), Dictionary<string, string>()), token)
-                return ()
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                do! capabilities.Http.SendAsync(HttpRequest("GET", Uri("https://unit.test"), Dictionary<string, string>()), token)
-                return ()
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                return ignore (capabilities.Http.SendAsync(HttpRequest("GET", Uri("https://unit.test"), Dictionary<string, string>()), token))
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                let request = LlmRequest([| LlmMessage("user", "input") |], null, Nullable<decimal>(), Nullable<int>(), null)
-                let! _ = capabilities.Llm.CompleteAsync(request, token)
-                return ()
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                let request = LlmRequest([| LlmMessage("user", "input") |], null, Nullable<decimal>(), Nullable<int>(), null)
-                do! capabilities.Llm.CompleteAsync(request, token)
-                return ()
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) = task {
-                let request = LlmRequest([| LlmMessage("user", "input") |], null, Nullable<decimal>(), Nullable<int>(), null)
-                return ignore (capabilities.Llm.CompleteAsync(request, token))
-            }
-            """,
-            """
-            let discard (capabilities: IExtensionCapabilities) (token: CancellationToken) =
-                let request = LlmRequest([| LlmMessage("user", "input") |], null, Nullable<decimal>(), Nullable<int>(), null)
-                capabilities.Llm.CompleteAsync(request, token) |> ignore
-            """,
-            """
-            let discard (token: CancellationToken) = task {
-                let work (batch: int array) (_: CancellationToken) : Task<Result<int, exn> array> =
-                    Task.FromResult(batch |> Array.map (fun value -> Ok value))
-                let! _ = Batch.map 2 work [ [| 1 |] ] token
-                return ()
-            }
-            """,
-            """
-            let discard (token: CancellationToken) = task {
-                let work (batch: int array) (_: CancellationToken) : Task<Result<int, exn> array> =
-                    Task.FromResult(batch |> Array.map (fun value -> Ok value))
-                do! Batch.map 2 work [ [| 1 |] ] token
-                return ()
-            }
-            """,
-            """
-            let discard (token: CancellationToken) = task {
-                let work (batch: int array) (_: CancellationToken) : Task<Result<int, exn> array> =
-                    Task.FromResult(batch |> Array.map (fun value -> Ok value))
-                return ignore (Batch.map 2 work [ [| 1 |] ] token)
-            }
-            """
-        ];
-
-        foreach (string source in discardedSdkCalls)
-        {
-            ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package(source),
-                CancellationToken.None);
-
-            result.Succeeded.Should().BeFalse(source);
-            result.Diagnostics.Should().Contain(issue => issue.Code == "EXT0021", source);
-        }
-    }
-
-    [Fact]
-    public async Task Ignoring_an_ordinary_non_sdk_result_remains_valid()
+    public async Task Ordinary_dll_compilation_does_not_apply_the_removed_discarded_result_policy()
     {
         ExtensionCheckResult result = await new ExtensionCompiler().CheckAsync(Package(
                 "open System\nignore (String.Concat(\"ordinary\", \" result\"))"),
             CancellationToken.None);
 
         result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
-        result.Diagnostics.Should().NotContain(issue => issue.Code == "EXT0021");
+        result.Diagnostics.Should().NotContain(issue => issue.Severity == ExtensionDiagnosticSeverity.Error);
     }
 
     [Fact]
@@ -289,17 +239,15 @@ public sealed class ExtensionCompilerTests
 
     private static Task<ExtensionCheckResult> CheckPackageWithHelperAsync(string helperPath, string helperSource)
     {
-        string mainSource = $"#load \"{helperPath}\"\n" + """
-                                                          open System.Threading.Tasks
-                                                          open Patchouli.Extensions.Contracts
-                                                          open Patchouli.Extensions.Sdk
-                                                          let extension : ITranslationExtension =
-                                                              { new ITranslationExtension with
-                                                                  member _.Descriptor = ExtensionDescriptor("test.extension", "Test", "1.0", "")
-                                                                  member _.ConfigFields = [||]
-                                                                  member _.TranslateAsync(_, _, _) =
-                                                                      Task.FromResult(TranslationExtensionResult([||])) }
-                                                          """;
+        string mainSource = $"#load \"{helperPath}\"\n" +
+                            "open System.Threading.Tasks\n" +
+                            "open Patchouli.Extensions.Contracts\n" +
+                            "open Patchouli.Extensions.Sdk\n" +
+                            "/// <summary>Compiler test extension.</summary>\n" +
+                            "/// <patchouli-extension id=\"test.extension\" kind=\"translation\" version=\"1.0.0\" host-api=\"patchouli.extensions/3\">\n" +
+                            "/// <name>Test</name>\n" +
+                            "/// </patchouli-extension>\n" +
+                            "let extension = Extension.createTranslation<unit> (fun () _ _ _ -> Task.CompletedTask)\n";
         ExtensionPackageSnapshot package = new("test.extension", new Dictionary<string, string>
         {
             ["main.fsx"] = mainSource,
@@ -308,26 +256,37 @@ public sealed class ExtensionCompilerTests
         return new ExtensionCompiler().CheckAsync(package, CancellationToken.None);
     }
 
-    private static ExtensionPackageSnapshot Package(string mainSource)
+    private static string SettingsSource(string label)
     {
+        return $$"""
+                 [<Settings>]
+                 type Settings = {
+                     [<Field("{{label}}", Key = "source.language")>]
+                     SourceLanguage: string
+                 }
+                 let readSourceLanguage (snapshot: ExtensionConfigSnapshot) =
+                     (ConfigSettings.Read<Settings>(snapshot)).SourceLanguage
+                 """;
+    }
+
+    private static ExtensionPackageSnapshot Package(string mainSource, string hostApi = "3")
+    {
+        string completeSource = "open System.Threading.Tasks\n" +
+                                "open System.Threading\n" +
+                                "open System.Collections.Generic\n" +
+                                "open System\n" +
+                                "open Patchouli.Extensions.Contracts\n" +
+                                "open Patchouli.Extensions.Sdk\n" +
+                                "\n" +
+                                mainSource + "\n" +
+                                "/// <summary>Compiler test extension.</summary>\n" +
+                                $"/// <patchouli-extension id=\"test.extension\" kind=\"translation\" version=\"1.0.0\" host-api=\"patchouli.extensions/{hostApi}\">\n" +
+                                "/// <name>Test extension</name>\n" +
+                                "/// </patchouli-extension>\n" +
+                                "let extension = Extension.createTranslation<unit> (fun () _ _ _ -> Task.CompletedTask)\n";
         return new ExtensionPackageSnapshot("test.extension", new Dictionary<string, string>
         {
-            ["main.fsx"] = """
-                           open System.Threading.Tasks
-                           open System.Threading
-                           open System.Collections.Generic
-                           open System
-                           open Patchouli.Extensions.Contracts
-                           open Patchouli.Extensions.Sdk
-                           """ + Environment.NewLine + mainSource + Environment.NewLine + """
-                let extension : ITranslationExtension =
-                    { new ITranslationExtension with
-                        member _.Descriptor = ExtensionDescriptor("test.extension", "Test extension", "1.0", "")
-                        member _.ConfigFields = [||]
-                        member _.TranslateAsync(context, capabilities, cancellationToken) =
-                            Task.FromResult(TranslationExtensionResult([||]))
-                    }
-                """
+            ["main.fsx"] = completeSource
         });
     }
 

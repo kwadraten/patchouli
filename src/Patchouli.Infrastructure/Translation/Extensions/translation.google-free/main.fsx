@@ -1,6 +1,7 @@
 #load "Support.fsx"
 open System
-open System.Collections.Generic
+open System.Net.Http
+open System.Text
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
@@ -8,53 +9,48 @@ open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
 open BuiltInTranslation.Support
 
-let endpointBinding = Config.bind "endpoint" (Field.text "Google Translate endpoint" "https://translate.googleapis.com/translate_a/single"
-    |> Field.describe "Google's free GTX endpoint. No API key is used.")
-let queryCharacterLimitBinding = Config.bind "max-query-characters" (Field.integer "Maximum query characters" 500
-    |> Field.range 1 500
-    |> Field.describe "Caps each URL-encoded GET query to leave room for UTF-8 percent encoding and endpoint parameters.")
-let httpAccessBinding = Config.bind "http" (Capability.http "Google Translate network access")
-let configFields = Config.fields (sharedBindings @ [ Config.asField endpointBinding; Config.asField queryCharacterLimitBinding ])
-let descriptor = ExtensionDescriptor("translation.google-free", "Google Translate (free)", "1.0.0", "Uses Google's free GTX web endpoint without an API key.")
+[<Settings>]
+type Settings = {
+    [<Override("concurrency", 1); Override("request-interval", 1)>]
+    Common: CommonSettings
+    [<Field("Google Translate endpoint", Key = "endpoint"); Default("https://translate.googleapis.com/translate_a/single")>]
+    Endpoint: string
+    [<Field("Maximum query characters", Key = "max-query-characters"); Default(500); Range(1, 500)>]
+    QueryCharacterLimit: int
+}
 
-let translateOne (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (http: IHttpCapability) (endpoint: string) (segment: Segment) cancellationToken = task {
+let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = sourceLanguage context
-    let target = targetLanguage context
+    let source = sourceLanguage common job
+    let target = targetLanguage common job
     let uri = endpoint + "?client=gtx&dt=t&dj=1&sl=" + Uri.EscapeDataString(source) + "&tl=" + Uri.EscapeDataString(target) + "&q=" + Uri.EscapeDataString(text)
     if uri.Length > 8192 then invalidOp "The Google Translate URL exceeds the safe request length. Reduce the maximum query characters or use another provider."
-    let options = effectiveOptions context
+    let options = effectiveEngineOptions common job (Some 1) (Some 1M)
     let send (token: CancellationToken) = task {
-        do! pace capabilities options token
-        use timeout = timeoutToken options token
-        let headers = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        headers["Accept"] <- "application/json"
-        let request = HttpRequest("GET", Uri(uri), headers)
-        let! result = http.SendAsync(request, timeout.Token)
-        ensureHttpSuccess "Google Translate" result.StatusCode
-        return result.Body
+        do! resources.WaitToProceedAsync(token)
+        use request = new HttpRequestMessage(HttpMethod.Get, Uri(uri))
+        request.Headers.TryAddWithoutValidation("Accept", "application/json") |> ignore
+        use! response = http.SendAsync(request, HttpCompletionOption.ResponseContentRead, token)
+        ensureHttpResponseSuccess "Google Translate" response
+        return! response.Content.ReadAsStringAsync(token)
     }
-    let! response = retryTransient options.MaxRetries (TimeSpan.FromMilliseconds(350.0)) (TimeSpan.FromSeconds(5.0)) send cancellationToken
-    use document = JsonDocument.Parse(response)
-    let mutable sentences = JsonElement()
-    if not (document.RootElement.TryGetProperty("sentences", &sentences)) || sentences.ValueKind <> JsonValueKind.Array then
-        invalidOp "Google Translate response has no sentences array."
-    let translatedText = sentences.EnumerateArray() |> Seq.choose (fun sentence -> parseStringAt sentence "trans") |> String.concat ""
-    if String.IsNullOrWhiteSpace translatedText then invalidOp "Google Translate returned empty text."
-    return translated segment.Id (restore translatedText tokens)
+    let! response = retryTransient 0 (TimeSpan.FromMilliseconds(350.0)) (TimeSpan.FromSeconds(5.0)) send cancellationToken
+    return translated segment.Id (restore (parseGoogleResponse response) tokens)
 }
 
-let translate (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (cancellationToken: CancellationToken) = task {
-    let endpoint = validateHttpEndpoint (Binding.get endpointBinding context.Config)
-    let http = Capability.resolveHttp httpAccessBinding context.Config capabilities
-    let queryLimit = Binding.get queryCharacterLimitBinding context.Config
-    return! translateBySegmentsWithCharacterLimit context "google-translation" queryLimit
-        (translateOne context capabilities http endpoint) cancellationToken
-}
-let extension : ITranslationExtension =
-    { new ITranslationExtension with
-        member _.Descriptor = descriptor
-        member _.ConfigFields = configFields
-        member _.ClearDerivedStateAsync(cancellationToken) = clearDerivedState cancellationToken
-        member _.TranslateAsync(context, capabilities, cancellationToken) = translate context capabilities cancellationToken }
-
+/// <summary>Google Free translation extension.</summary>
+/// <patchouli-extension id="translation.google-free" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+///   <name>Google Free</name>
+/// </patchouli-extension>
+let extension =
+     Extension.createTranslation<Settings> (fun settings (job: ITranslationJob) (resources: IExtensionResources) cancellationToken -> task {
+        let common = settings.Common
+        let endpoint = validateHttpEndpoint settings.Endpoint
+        let http = resources.Http
+        let queryLimit = settings.QueryCharacterLimit
+        let options = effectiveEngineOptions common job (Some 1) (Some 1M)
+        let work = segmentTranslatorStable common job "google-translation" queryLimit (translateOne common job resources http endpoint)
+        let budget = { MaxItems = 1; MaxCharacters = queryLimit; MaxTokens = None }
+        do! runSegmentPagesStable job options budget work cancellationToken
+    })
+    |> Extension.withDerivedState clearDerivedState

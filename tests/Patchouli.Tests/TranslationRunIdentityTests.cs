@@ -24,8 +24,7 @@ public sealed class TranslationRunIdentityTests
                 Interlocked.Increment(ref settingsReads);
                 return LlmAppSettings.Default();
             },
-            TranslationTestExtensionHarness.CreateRunner((_, _, _) =>
-                Task.FromResult(new TranslationExtensionResult([]))),
+            TranslationTestExtensionHarness.CreateRunner((_, _, _) => Task.CompletedTask, true, null),
             _ => Task.CompletedTask);
         McpHostTranslationRunsApi first = new(service);
         McpHostTranslationRunsApi second = new(service);
