@@ -11,7 +11,7 @@
 | `find [QUERY] --in <URI>` | `patchouli.find` | 浏览目录（无查询）或在范围内搜索（有查询） |
 | `fetch <URI>...` | `patchouli.fetch` | 读取已知资源，逐 URI 独立返回结果 |
 | `add <PATH> [--kind pdf\|csl]` | `patchouli.add { path, kind }` | 导入宿主机本地文件 |
-| `view <URI> --output <PNG>` | `patchouli.view { uri, context?, max_edge? }` | 读取页面或 box 的源图像 |
+| `view <URI> --output <PNG>` | `patchouli.view { uri, context?, max_edge?, boxes? }` | 读取页面或 box 的源图像；`--boxes` 叠加与页面 XML 顺序一致的带序号边界框 |
 | `put <URI> --from/--stdin` 或 `--boxes-from/--boxes-stdin` | `patchouli.put` | 替换一个可写资源 |
 | `cite <REF>...` | `patchouli.cite` | 渲染引用 |
 | `send <ENDPOINT> <ACTION> <TARGET> [选项]` | `patchouli.send` | 向领域端点发送类型化消息 |
@@ -67,7 +67,7 @@ patchouli.send { "endpoint": "runs/ocr/control", "action": "start",
 ```
 
 - 端点是类似 Unix socket 的虚拟接收地址，target 是被操作的资源，领域参数都放在 `args` 对象中。CLI 的平铺选项（如 `--pages`、`--engine`、`--target-language`、`--force`）按端点 Schema 转换为 `args`；复杂值用 `--args '<JSON>'`。未知字段、重复字段、错误类型以及平铺选项与 `--args` 冲突时都会被拒绝。
-- 发送前先 `find patchouli://runs/<domain>/` 发现端点，再 `fetch` 该端点，取得当前授权下的 `messages`（action、合法 target、输入与结果 Schema、副作用）。以这里返回的 Schema 为准。
+- 发送前先 `find patchouli://runs/<domain>/` 发现端点，再 `fetch` 该端点，取得当前授权下的 `messages`（action、合法 target、输入与结果 Schema、副作用）与 `implementations`（该域可用的内部实现：OCR 引擎 id、翻译扩展 id、元数据来源 id 及其支持的标识符 scheme）。以这里返回的 Schema 与实现列表为准，不要猜测可传入的 id。实现列表中，内置包恒列出；第三方包在首次激活后出现。
 - 结果是 `completed + result`（同步完成）或 `started + result + run_uri`（后台受理）。`fetch run_uri` 查询进度。HTTP 断连不会取消任务，取消必须显式发送 `cancel`。
 - 外层 `request_id` 用于幂等：同一 ID、同一消息返回原受理回执，并标记 `reused: true`；同一 ID、不同消息返回冲突。需要有意重跑时使用新 ID。
 - 当前端点为 `runs/ocr/control`、`runs/translation/control`（见 [DOCUMENTS](DOCUMENTS.md)）和 `runs/metadata/control`（见 [CITATIONS](CITATIONS.md)）。

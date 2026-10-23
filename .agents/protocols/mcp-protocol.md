@@ -504,7 +504,7 @@ patchouli.send { "endpoint": "runs/ocr/control", "action": "start", "target": "t
 
 endpoint 是类似 Unix socket 的虚拟消息接收地址，target 是被操作的资源。MCP 必须显式提供 endpoint/action/target/args，args 为对象；request_id 是可选外层字段，不能放入 args。CLI 用三个位置参数和按同一端点 Schema 转换的 --pages、--engine、--target-language、--force true/false 等平铺选项；复杂值可用 --args JSON。平铺选项与 JSON 的重复字段或冲突、未知/重复字段、错误类型均拒绝，不静默覆盖。CLI 无领域参数时生成 `{}`。
 
-原生领域端点为 `patchouli://runs/ocr/control`、`patchouli://runs/translation/control` 与 `patchouli://runs/metadata/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
+原生领域端点为 `patchouli://runs/ocr/control`、`patchouli://runs/translation/control` 与 `patchouli://runs/metadata/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages, implementations }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。implementations 实时枚举该域可用的内部实现（来自宿主真实注册表而非静态表）：OCR 域为适配器引擎列表（含字面量 `default` 别名条目与当前配置默认引擎的 `is_default` 标记），翻译域为翻译扩展列表（当前设置引擎标记 `is_default`），元数据域为来源列表（id、名称、`identifier_schemes`、声明默认启用状态）；内置包恒列出，第三方包在首次激活后出现；宿主未接目录服务时省略该字段，目录读取失败时 fetch 明确失败而不返回缺失列表的描述。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
 
 start 的合法 target 是 DocumentInstance 文档目录；cancel/retry 是同领域实例目录或其 status 定位形式。端点动作仅在本领域解释，不公开 ocr.start 等组合动词；错误目标、跨领域实例、非法 UUID 在进入执行前拒绝。轻量注册表只校验和分发，执行复用宿主服务，不新增通用调度器、持久邮箱或工作流。
 
@@ -544,9 +544,11 @@ CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路
 
 ## 9 `view`（源图像读取）
 
-`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048}`（`max_edge` 默认 2048）。
+`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048, "boxes": true}`（`max_edge` 默认 2048；`boxes` 默认 false）。
 
 - 目标：一页 URI 返回整页源图像；box/证据 URI 返回带小边距的 bbox 裁剪；翻译页/box 返回对应源文档图像；目录 URI 必须指定页面。一次调用一个目标、一张图；v1 不接受任意坐标输入。
+- 无框树页面：页面尚无已提交 revision 时，整页 URI 仍返回整页源图像（与 PDF 工作台直接显示页面图的人机对等），canonical URI 不带 `rev` 锁定；box 目标此时明确以目标不存在失败。显式指定不存在的 revision 仍是过期 revision 失败，绝不替换。
+- `boxes: true` 时，页面全部 box 以序号描边叠加在返回图像上；序号按页面 XML 文档顺序（先序、兄弟链顺序）编号，即第 n 号就是 fetch 到的页面 XML 中第 n 个 `<box>` 元素，文本元数据的 `boxes` 字段给出序号→box id 对照。裁剪视图只绘制与裁剪范围相交的 box，序号保持全页稳定编号；无框树页面该字段为空数组。
 - 图像来自原始 PDF，不从 OCR 文本重渲染，不做桌面导航，不触发 OCR，不修改正文。
 - 未指定 revision 时锁定为本次调用实际使用的 revision；历史 box 使用其自身 revision 的 bbox；源缺失/变化、目标缺失、坐标过期一律显式失败，绝不悄悄替换为最新 revision、其他页面或未校验来源。
 - **几何例外**：裁剪范围使用页面归一化坐标（可复现）；这是 `view` 对"不暴露几何"旧约束的显式例外（见 ADR `0045`）。
@@ -555,7 +557,7 @@ CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路
 - `view` 检查目标域权限；翻译源图像同时检查源文本域。
 - 外部 Agent 与 MCP 客户端的推荐对照流程：`fetch`（文本+版本）→ `view`（同 revision/box 源图像）→ `put`（带原 `source_revision`）；版本变化走正常 revision 冲突。图像以 MCP 原生 ImageContent 返回，由客户端自行提供给它自己的模型；Patchouli 不保存会话媒体区，也不伪造无视觉能力客户端的对照结果。
 
-CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
+CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同；`--boxes` 对应 `boxes: true`）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
 
 ## 10 OCR Actions（通过 send 调用）
 
@@ -696,7 +698,7 @@ CLI                                             MCP
 patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
 patchouli-cli add <PATH> [--kind pdf|csl]       patchouli.add { path, kind }
-patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge? }
+patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge?, boxes? }
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
 patchouli-cli put <URI> --boxes-from <PATH>|--boxes-stdin
                                                 patchouli.put { uri, source_revision, translation_version?, boxes }
