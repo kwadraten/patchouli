@@ -20,11 +20,15 @@ public sealed record BibliographicSearchFilter(string Key, string Value);
 
 /// <summary>A bibliographic (metadata) search over library items: the free-text query matches
 /// title/citation key/creators/identifiers (contains), and every filter must also match.
-/// Items in the trash or merged away are always excluded.</summary>
+/// Items in the trash or merged away are always excluded. <paramref name="ExcludeGeneralItems"/>
+/// additionally excludes <c>general</c> items in the query itself (before the limit applies),
+/// for consumers whose results must all be citable — the citation interop search. It is off by
+/// default so library search and the picker keep seeing general items.</summary>
 public sealed record BibliographicItemSearch(
     string? Query,
     IReadOnlyList<BibliographicSearchFilter> Filters,
-    int Limit = 500);
+    int Limit = 500,
+    bool ExcludeGeneralItems = false);
 
 /// <summary>A selectable filter value with its UI label.</summary>
 public sealed record SearchFilterOption(string Value, string Label);

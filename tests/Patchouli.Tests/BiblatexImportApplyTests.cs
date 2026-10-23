@@ -14,10 +14,7 @@ public sealed class BiblatexImportApplyTests
     [Fact]
     public async Task Apply_single_creates_item_and_roundtrips_export()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-apply-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -91,10 +88,7 @@ public sealed class BiblatexImportApplyTests
     [Fact]
     public async Task Apply_batch_without_candidates_creates_all()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-batch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);

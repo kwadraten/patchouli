@@ -119,6 +119,7 @@ public sealed class PdfiumPageCountIssue31Tests : IDisposable
         using CancellationTokenSource cancelling = new();
         cancelling.Cancel();
 
+        // ReSharper disable once AccessToDisposedClosure -- the delegate is awaited inside the using scope, so the token source is never used after disposal.
         Func<Task> act = () => reader.GetPageCountAsync(valid, cancelling.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>(

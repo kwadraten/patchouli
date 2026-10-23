@@ -73,9 +73,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         CslLocalizationSettings = new CslLocalizationSettingsViewModel(main);
         CslStyleManager = new CslStyleManagerViewModel(main);
         CslOnlineStyles = new CslOnlineStylesSettingsViewModel(CslStyleManager);
+        CaywSettings = new CaywSettingsViewModel(main);
         Register(CslLocalizationSettings);
         Register(CslStyleManager);
         Register(CslOnlineStyles);
+        Register(CaywSettings);
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
         ImportSettings = new ImportSettingsViewModel(main);
@@ -86,6 +88,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
+            CaywSettings,
             UpdateSettings, ExtensionSettings
         ];
 
@@ -122,6 +125,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("csl_localization", "题录本地化", CslLocalizationSettings),
             new SettingsSectionEntryViewModel("csl_installed", "已安装样式", CslStyleManager),
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
+            new SettingsSectionEntryViewModel("csl_cayw", "Cite As You Write", CaywSettings),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
             new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
@@ -142,7 +146,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("translation", "文献翻译", new TranslationDefaultsViewModel(LlmSettings)));
         SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
-            Entry("csl_online"));
+            Entry("csl_online"), Entry("csl_cayw"));
         Categories =
         [
             new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
@@ -213,6 +217,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public CslLocalizationSettingsViewModel CslLocalizationSettings { get; }
     public CslStyleManagerViewModel CslStyleManager { get; }
     public CslOnlineStylesSettingsViewModel CslOnlineStyles { get; }
+    public CaywSettingsViewModel CaywSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
     public ImportSettingsViewModel ImportSettings { get; }

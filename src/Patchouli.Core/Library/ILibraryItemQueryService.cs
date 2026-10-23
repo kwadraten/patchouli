@@ -43,6 +43,16 @@ public interface ILibraryItemQueryService
         BibliographicItemSearch search,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Resolves citation keys against the current library in bulk (issue #14).
+    /// Only selectable items are returned — trashed and merged-away items are
+    /// excluded — ordered by the first occurrence of each key in
+    /// <paramref name="citationKeys"/>; keys with no selectable item are absent.
+    /// </summary>
+    Task<Result<IReadOnlyList<LibraryItemRow>>> ResolveRowsByCitationKeysAsync(
+        IReadOnlyCollection<string> citationKeys,
+        CancellationToken cancellationToken = default);
+
     Task<Result<BibliographicSearchFilterOptions>> GetSearchFilterOptionsAsync(
         CancellationToken cancellationToken = default);
 }

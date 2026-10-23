@@ -391,6 +391,27 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public int LoadedItemCount => Items.Count;
 
+    /// <summary>
+    /// Replaces the current selection with the loaded items matching
+    /// <paramref name="itemIds"/> (CAYW <c>select</c> flag, issue #14). Must be
+    /// called on the UI thread. Returns how many items were selected; items
+    /// that are not part of the currently loaded list are skipped.
+    /// </summary>
+    public int SelectItemsByIds(IReadOnlyList<ItemId> itemIds)
+    {
+        HashSet<string> wanted = itemIds.Select(static id => id.ToString()).ToHashSet(StringComparer.Ordinal);
+        List<LibraryItemViewModel> matches = Items
+            .Where(item => wanted.Contains(item.ItemId))
+            .ToList();
+        SelectedItems.Clear();
+        foreach (LibraryItemViewModel match in matches)
+        {
+            SelectedItems.Add(match);
+        }
+
+        return matches.Count;
+    }
+
     private static ItemId? ParseItemIdOrNull(string? itemId)
     {
         if (string.IsNullOrWhiteSpace(itemId))

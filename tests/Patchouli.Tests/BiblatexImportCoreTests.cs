@@ -300,11 +300,7 @@ public sealed class BiblatexImportCoreTests
     [Fact]
     public async Task Helper_roundtrips_cjk_title_and_note()
     {
-        string helper = BiblatexHelperClient.ResolveDefaultHelperPath();
-        if (!File.Exists(helper))
-        {
-            return;
-        }
+        string helper = BiblatexHelperTestSupport.RequireHelperPath();
 
         BiblatexHelperClient client = new(helper);
         const string source =
@@ -349,11 +345,7 @@ public sealed class BiblatexImportCoreTests
     [Fact]
     public async Task Helper_reports_parse_failure()
     {
-        string helper = BiblatexHelperClient.ResolveDefaultHelperPath();
-        if (!File.Exists(helper))
-        {
-            return;
-        }
+        string helper = BiblatexHelperTestSupport.RequireHelperPath();
 
         BiblatexHelperClient client = new(helper);
         Result<IReadOnlyList<BiblatexEntryDto>> parsed = await client.ParseAsync("@book{broken,");

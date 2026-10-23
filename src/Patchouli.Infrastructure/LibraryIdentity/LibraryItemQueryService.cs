@@ -119,7 +119,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         BibliographicItemSearch search,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0)
+        if (string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0 &&
+            !search.ExcludeGeneralItems)
         {
             return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
         }
@@ -130,6 +131,91 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             limit, null, QueryScope.Active, cancellationToken, extraFilter: filterSql,
             extraParameters: filterParameters);
         return result;
+    }
+
+    public async Task<Result<IReadOnlyList<LibraryItemRow>>> ResolveRowsByCitationKeysAsync(
+        IReadOnlyCollection<string> citationKeys,
+        CancellationToken cancellationToken = default)
+    {
+        // Preserve first-occurrence order of the requested keys; duplicates and
+        // blanks never reach SQL.
+        List<string> orderedKeys = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (string key in citationKeys)
+        {
+            string trimmed = key.Trim();
+            if (trimmed.Length > 0 && seen.Add(trimmed))
+            {
+                orderedKeys.Add(trimmed);
+            }
+        }
+
+        if (orderedKeys.Count == 0)
+        {
+            return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            IEnumerable<CitationKeyItemRow> pairs = await connection.QueryAsync<CitationKeyItemRow>(
+                """
+                select citation_key as CitationKey, item_id as ItemId
+                from items
+                where citation_key in @Keys
+                  and deleted_at is null
+                  and merged_into_item_id is null;
+                """,
+                new { Keys = orderedKeys.ToArray() });
+            Dictionary<string, ItemId> idByKey = new(StringComparer.Ordinal);
+            foreach (CitationKeyItemRow pair in pairs)
+            {
+                idByKey[pair.CitationKey] = ItemId.Parse(pair.ItemId);
+            }
+
+            List<ItemId> orderedIds = new();
+            foreach (string key in orderedKeys)
+            {
+                if (idByKey.TryGetValue(key, out ItemId itemId))
+                {
+                    orderedIds.Add(itemId);
+                }
+            }
+
+            if (orderedIds.Count == 0)
+            {
+                return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
+            }
+
+            Result<IReadOnlyList<LibraryItemRow>> rows = await GetRowsByIdsAsync(orderedIds, cancellationToken);
+            if (rows.IsFailure)
+            {
+                return rows;
+            }
+
+            Dictionary<ItemId, LibraryItemRow> rowById = rows.Value.ToDictionary(row => row.ItemId);
+            List<LibraryItemRow> ordered = new(orderedIds.Count);
+            foreach (ItemId itemId in orderedIds)
+            {
+                if (rowById.TryGetValue(itemId, out LibraryItemRow? row))
+                {
+                    ordered.Add(row);
+                }
+            }
+
+            return Result<IReadOnlyList<LibraryItemRow>>.Success(ordered);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-item-query"))
+        {
+            return Result<IReadOnlyList<LibraryItemRow>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
+        }
     }
 
     public async Task<Result<BibliographicSearchFilterOptions>> GetSearchFilterOptionsAsync(
@@ -183,13 +269,31 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         BibliographicItemSearch search)
     {
         (List<string> clauses, Dictionary<string, object?> parameters) = BuildFilterClauses(search.Filters, "F");
+        if (search.ExcludeGeneralItems)
+        {
+            // Pushed into the WHERE so the caller's limit counts post-filter
+            // rows: general items are not citable (the same rule export and
+            // pick validation enforce) and must not consume result slots.
+            clauses.Add("i.item_type <> 'general'");
+        }
+
         if (!string.IsNullOrWhiteSpace(search.Query))
         {
+            // Free text covers title, citation key, creators, identifiers, the
+            // publication (journal/container) title and the issued year
+            // (issue #14: BBT/TexPile search parity for year and venue).
             clauses.Insert(0,
                 """
                 (instr(lower(i.title), @Q) > 0
                  or instr(lower(i.citation_key), @Q) > 0
                  or instr(lower(i.creators_json), @Q) > 0
+                 or instr(lower(coalesce(i.publication_title, '')), @Q) > 0
+                 or instr(i.date, @Q) > 0
+                 or exists (select 1 from item_dates issued_date
+                            where issued_date.item_id = i.item_id
+                              and issued_date.role = 'issued'
+                              and (instr(lower(coalesce(issued_date.literal, '')), @Q) > 0
+                                   or instr(issued_date.date_parts_json, @Q) > 0))
                  or exists (select 1 from item_identifiers ident
                             where ident.item_id = i.item_id
                               and (instr(lower(ident.value), @Q) > 0
@@ -807,6 +911,12 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     {
         public string CollectionId { get; init; } = "";
         public string Name { get; init; } = "";
+    }
+
+    private sealed class CitationKeyItemRow
+    {
+        public string CitationKey { get; init; } = "";
+        public string ItemId { get; init; } = "";
     }
 
     private sealed class CoreRow

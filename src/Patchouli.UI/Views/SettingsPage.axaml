@@ -1336,6 +1336,57 @@
             </ContentControl>
           </DataTemplate>
 
+          <!-- Cite As You Write (CAYW / TexPile compatibility, issue #14) -->
+          <DataTemplate DataType="settings:CaywSettingsViewModel">
+            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="服务状态" Classes="CardTitle" />
+                    <Button Grid.Column="1" Content="重启服务" Command="{Binding RestartServiceCommand}"
+                            ToolTip.Tip="按当前已保存的设置停止并重新启动兼容服务。" />
+                  </Grid>
+                  <TextBlock Text="{Binding ServiceStatusText}" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding ServiceStatusDetail}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding RunningEndpoint, StringFormat='端点：{0}'}" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding Status}" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="兼容服务" Classes="CardTitle" />
+                  <CheckBox Content="启用 CAYW / TexPile 兼容服务（仅本机 127.0.0.1）" IsChecked="{Binding Enabled}" />
+                  <TextBlock Text="端口" FontSize="12" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535" />
+                  <TextBlock Text="{Binding Endpoint, StringFormat='当前端点：{0}'}" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             Text="默认端口 23119 与 Zotero（Better BibTeX）相同。若端口已被占用，服务会明确报错并显示在上方状态区，不会自动改用其他端口；请关闭 Zotero 或在此修改端口，并同步更新编辑器 / TexPile 的连接地址。修改后立即保存并重启服务。" />
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="支持范围" Classes="CardTitle" />
+                  <TextBlock Text="{Binding SupportedText}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding UnsupportedText}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             Text="说明：json 格式返回 Patchouli 条目 ID，不伪造 Zotero 条目身份；item.search 是常用文本搜索（最多 100 条），与 Better BibTeX 全库搜索不完全等价。" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+
           <!-- Search Rewrite Settings -->
           <DataTemplate DataType="settings:SearchRewriteSettingsViewModel">
             <StackPanel Spacing="20" MaxWidth="720" Margin="32">
