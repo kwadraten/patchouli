@@ -19,6 +19,14 @@ public static class ExtensionConfiguration
                 resolved[field.Key] = value;
             }
 
+            if (field.Kind == ConfigValueKind.Language)
+            {
+                // A declared language field is stored canonically, through the same factory the
+                // job boundary uses, so a saved value and a run value can never drift apart.
+                value = LanguageTag.Create(value).Value;
+                resolved[field.Key] = value;
+            }
+
             Validate(field, value);
         }
 
@@ -95,6 +103,6 @@ public static class ExtensionConfiguration
 
     private static ArgumentException Invalid(ConfigFieldDescriptor field, string message)
     {
-        return new($"EXTCFG001: {field.Key}: {message}", field.Key);
+        return new ArgumentException($"EXTCFG001: {field.Key}: {message}", field.Key);
     }
 }
