@@ -3,7 +3,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Patchouli.Extensions.Worker\Patchouli.Extensions.Worker.csproj" GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained" />
+    <ProjectReference Include="..\..\sidecar\Patchouli.Extensions.Compiler\Patchouli.Extensions.Compiler.fsproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun" />
     <ProjectReference Include="..\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
     <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />

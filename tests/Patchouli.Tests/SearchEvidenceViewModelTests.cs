@@ -9,6 +9,18 @@ using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.Tests;
 
+/// <remarks>
+/// R14 shared-state audit (no case moved): most cases construct <see cref="MainWindowViewModel"/>
+/// on the xunit worker thread — no headless session, no Dispatch. The VM ctor calls
+/// <c>ThemePaletteApplier.Apply</c> unconditionally, writing the process-global
+/// CurrentPaletteId/CurrentThemeMode/_watchedApp statics and mutating
+/// <c>Application.Current</c> resources when an app is installed by another test's dispatch.
+/// Dispose runs <see cref="SqliteConnection.ClearAllPools"/>, a process-global pool purge.
+/// Snippet/unit-row cases construct only plain view models (no MainWindow) but share the class;
+/// Toolbar_search_box_enter_key_uses_the_same_command_path_as_the_button is a pure XAML/C#
+/// source-contract case — extraction to a source-contract class is a separately approved step and
+/// is deliberately not done in this audit. Keep the class in a DisableParallelization collection.
+/// </remarks>
 [Collection("Avalonia")]
 public sealed class SearchEvidenceViewModelTests : IDisposable
 {

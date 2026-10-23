@@ -3,18 +3,34 @@
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- The JetBrains CLI host has no F# source model (see Directory.Build.targets), so
+         the F# compiler is the static-analysis gate for .fs sources and this project must
+         stay warning-free. Fix warnings in code; do not add NoWarn/#nowarn suppressions. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="FSharp.Compiler.Service" />
     <PackageReference Include="Blake3" />
     <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Config.fs" />
     <Compile Include="Capabilities.fs" />
     <Compile Include="Pipeline.fs" />
+    <Compile Include="Job.fs" />
+    <Compile Include="ExtensionFactories.fs" />
     <Compile Include="RuntimeFrameworkReferences.fs" />
-    <Compile Include="ExtensionCompiler.fs" />
+    <Compile Include="ExtensionDiagnostics.fs" />
+    <Compile Include="ExtensionArtifact.fs" />
+    <Compile Include="ExtensionSourceChecker.fs" />
+    <Compile Include="ExtensionCompilationProcess.fs" />
+    <Compile Include="ExtensionUnload.fs" />
     <Compile Include="ExtensionRuntime.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Extensions.Compiler</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.ExtensionSchemas</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

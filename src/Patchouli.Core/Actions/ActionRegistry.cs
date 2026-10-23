@@ -210,7 +210,8 @@ public sealed class ActionRegistry
         return typeElement.GetString() switch
         {
             "string" => ValidateString(propertySchema, propertyValue, path),
-            "integer" => ValidateInteger(propertySchema, propertyValue, path),
+            "integer" => ValidateInteger(propertyValue, path),
+            "number" => ValidateNumber(propertyValue, path),
             "boolean" => ValidateBoolean(propertyValue, path),
             "array" => ValidateArray(propertySchema, propertyValue, path),
             "object" => ValidateObject(propertySchema, propertyValue, path),
@@ -236,11 +237,21 @@ public sealed class ActionRegistry
         return null;
     }
 
-    private static string? ValidateInteger(JsonElement schema, JsonElement value, string path)
+    private static string? ValidateInteger(JsonElement value, string path)
     {
         if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out _))
         {
             return $"Argument at '{path}' must be an integer.";
+        }
+
+        return null;
+    }
+
+    private static string? ValidateNumber(JsonElement value, string path)
+    {
+        if (value.ValueKind != JsonValueKind.Number)
+        {
+            return $"Argument at '{path}' must be a number.";
         }
 
         return null;
@@ -281,7 +292,7 @@ public sealed class ActionRegistry
                 string? error = itemType.GetString() switch
                 {
                     "string" => ValidateString(items, item, $"{path}[{index}]"),
-                    "integer" => ValidateInteger(items, item, $"{path}[{index}]"),
+                    "integer" => ValidateInteger(item, $"{path}[{index}]"),
                     "boolean" => ValidateBoolean(item, $"{path}[{index}]"),
                     "array" => ValidateArray(items, item, $"{path}[{index}]"),
                     "object" => ValidateObject(items, item, $"{path}[{index}]"),

@@ -205,6 +205,7 @@ public sealed class WorkspaceTabContentHostTests
     {
         await _headless.Session.Dispatch<int>(async () =>
         {
+            using IDisposable decorationIsolation = HeadlessMarkdownDecorations.IsolateCurrentThread();
             using TemporaryAppSettingsFile settings = new();
             MainWindowViewModel viewModel = new(settingsPath: settings.Path);
             MainWindow window = new(viewModel);

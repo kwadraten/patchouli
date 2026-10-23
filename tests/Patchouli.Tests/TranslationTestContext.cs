@@ -12,7 +12,6 @@ using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Documents.Translations;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
-using Patchouli.Infrastructure.Migrations;
 
 namespace Patchouli.Tests;
 
@@ -63,9 +62,11 @@ internal sealed class TranslationTestContext : IAsyncDisposable
 
     public static async Task<TranslationTestContext> CreateAsync(string? label = null)
     {
-        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        // Opt-in template pilot: the migrated schema comes from the shared template copy. The
+        // library/item/document/page seeding, the clock and the real services below all stay
+        // per-case, so nothing is shared between tests except the read-only template file.
+        TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateMigratedAsync();
         FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
-        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
         await libraries.CreateLibraryAsync(label ?? "Translation tests");
         ItemMetadata item = (await new ItemService(database.ConnectionFactory, libraries, clock)

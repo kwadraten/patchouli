@@ -1,6 +1,11 @@
 [CmdletBinding()]
 param(
-    [string[]]$Include = @('src/**/*.cs', 'tests/**/*.cs', 'src/**/*.axaml', 'tests/**/*.axaml', 'src/**/*.fs', 'tests/**/*.fs', 'src/**/*.fsx'),
+    # The JetBrains CLI host has no F# source model (see Directory.Build.targets), so the
+    # default scope is C# and Avalonia XAML only. .fs sources are gated by the F# compiler
+    # (TreatWarningsAsErrors in each .fsproj) and F# unit tests; .fsx scripts are gated by
+    # the production real-FCS policy checks and script execution tests. Fantomas is a
+    # formatting tool only, never a correctness gate.
+    [string[]]$Include = @('src/**/*.cs', 'tests/**/*.cs', 'scripts/**/*.cs', 'src/**/*.axaml', 'tests/**/*.axaml'),
     [string]$ArtifactsPath = '.tmp/build/cleanup',
     [switch]$UseExistingBuild,
     [string]$CachesPath = '.tmp/build/cleanup-caches'
@@ -22,8 +27,9 @@ if ($actualVersion -ne $expectedVersion) {
     throw "JetBrains Cleanup Code $expectedVersion is required; found '$actualVersion'."
 }
 
-$includeValue = $Include -join ';'
-$resolvedCachesPath = [IO.Path]::GetFullPath($CachesPath, $root)
+$includeItems = @($Include | ForEach-Object { $_ -split '[,;]' })
+$includeValue = ($includeItems | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim().Replace('/', [IO.Path]::DirectorySeparatorChar) }) -join ';'
+$resolvedCachesPath = [IO.Path]::GetFullPath((Join-Path $root $CachesPath))
 $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
 if (-not $resolvedCachesPath.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Cleanup caches must be inside the repository .tmp directory.'
@@ -35,7 +41,7 @@ if ($UseExistingBuild) {
     $additionalArguments += '--no-build'
     $additionalArguments += '--properties=PatchouliUseBuiltExtensionAssembly=true'
 } elseif (-not [string]::IsNullOrWhiteSpace($ArtifactsPath)) {
-    $resolvedArtifactsPath = [IO.Path]::GetFullPath($ArtifactsPath, $root)
+    $resolvedArtifactsPath = [IO.Path]::GetFullPath((Join-Path $root $ArtifactsPath))
     $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
     if (-not $resolvedArtifactsPath.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Cleanup build outputs must be inside the repository .tmp directory.'

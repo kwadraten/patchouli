@@ -72,7 +72,7 @@ public sealed class CredentialStore : ICredentialStore
     public async Task<Result<string>> GetActiveSecretForProviderAsync(string providerId,
         CancellationToken cancellationToken = default)
     {
-        JsonObject root = await ReadRootAsync(cancellationToken);
+        JsonObject root = await ReadRootWithCoordinatorAsync(cancellationToken);
         JsonArray providers = GetArray(GetObject(root, "Credentials"), "Providers");
         JsonObject? value = providers.OfType<JsonObject>().FirstOrDefault(item =>
             string.Equals(item["ProviderId"]?.GetValue<string>(), providerId.Trim(),
@@ -117,12 +117,14 @@ public sealed class CredentialStore : ICredentialStore
     public async Task<Result<IReadOnlyList<ProviderCredentialMetadata>>> ListAsync(
         CancellationToken cancellationToken = default)
     {
-        JsonObject root = await ReadRootAsync(cancellationToken);
+        JsonObject root = await ReadRootWithCoordinatorAsync(cancellationToken);
         JsonArray providers = GetArray(GetObject(root, "Credentials"), "Providers");
         return Result<IReadOnlyList<ProviderCredentialMetadata>>.Success(
             providers.OfType<JsonObject>().Select(ToMetadata).ToArray());
     }
 
+    // Callers must hold the SettingsFileWriteCoordinator gate for _path. Writers replace the file while
+    // holding that gate; an unguarded File.OpenRead can race with the replacement and fail.
     private async Task<JsonObject> ReadRootAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(_path))
@@ -133,6 +135,22 @@ public sealed class CredentialStore : ICredentialStore
         await using FileStream stream = File.OpenRead(_path);
         return await JsonNode.ParseAsync(stream, cancellationToken: cancellationToken) as JsonObject ??
                new JsonObject();
+    }
+
+    // Startup credential restore can run while the AppSettingsStore debounce writer replaces the same
+    // settings file, so reads take the same per-path gate as every writer.
+    private async Task<JsonObject> ReadRootWithCoordinatorAsync(CancellationToken cancellationToken)
+    {
+        SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await ReadRootAsync(cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<bool> WriteRootAsync(JsonObject root, CancellationToken cancellationToken)

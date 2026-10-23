@@ -370,6 +370,13 @@ public sealed class TagSidebarViewModelTests
             return Task.FromResult(Result<IReadOnlyList<LibraryItemRow>>.Success(_rows));
         }
 
+        public Task<Result<IReadOnlyList<LibraryItemRow>>> ResolveRowsByCitationKeysAsync(
+            IReadOnlyCollection<string> citationKeys,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<LibraryItemRow>>.Success([]));
+        }
+
         public Task<Result<BibliographicSearchFilterOptions>> GetSearchFilterOptionsAsync(
             CancellationToken cancellationToken = default)
         {

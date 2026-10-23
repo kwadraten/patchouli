@@ -14,7 +14,9 @@ public static class BuiltInTranslationExtensions
         "translation.llm",
         "translation.google-free",
         "translation.deepl-free",
-        "translation.deeplx"
+        "translation.deeplx",
+        "translation.microsoft-free",
+        "translation.tencent-free"
     ];
 
     private static readonly IReadOnlyList<ExtensionPackageSnapshot> BuiltInPackages =
@@ -27,7 +29,6 @@ public static class BuiltInTranslationExtensions
         string mainResource = ResourcePrefix + id + ".main.fsx";
         Dictionary<string, string> sources = new(StringComparer.Ordinal)
         {
-            ["extension.yml"] = $"id: {id}\nversion: 1.0.0\nhost_api: patchouli.extensions/1\nentry: main.fsx\n",
             ["main.fsx"] = ReadResource(mainResource),
             ["Support.fsx"] = ReadResource(ResourcePrefix + "Support.fsx")
         };

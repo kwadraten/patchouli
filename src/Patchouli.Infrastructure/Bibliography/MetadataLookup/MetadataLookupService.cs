@@ -92,18 +92,33 @@ public sealed class MetadataLookupService : IMetadataLookupService
             }
 
             providers = _sources.Resolve(lookupIdentifier.Scheme, preferences);
-            foreach (IMetadataSource provider in providers)
+            if (providers.Count == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                Result<MetadataCandidate> result = await provider.LookupAsync(lookupIdentifier, cancellationToken);
+                continue;
+            }
+
+            // Query every enabled provider for this identifier concurrently. The resolved order still
+            // decides which success wins, so priority and fallback semantics stay deterministic while
+            // network-bound extensions overlap instead of running one after another.
+            Result<MetadataCandidate>[] results = await Task.WhenAll(providers.Select(provider =>
+                provider.LookupAsync(lookupIdentifier, cancellationToken))).ConfigureAwait(false);
+            for (int providerIndex = 0; providerIndex < providers.Count; providerIndex++)
+            {
+                IMetadataSource provider = providers[providerIndex];
+                Result<MetadataCandidate> result = results[providerIndex];
+                attempts.Add(result.IsFailure
+                    ? new MetadataLookupAttempt(provider.Definition.Id, result.ErrorCode, result.ErrorMessage)
+                    : new MetadataLookupAttempt(provider.Definition.Id, null, null));
+            }
+
+            for (int providerIndex = 0; providerIndex < providers.Count; providerIndex++)
+            {
+                Result<MetadataCandidate> result = results[providerIndex];
                 if (result.IsFailure)
                 {
-                    attempts.Add(new MetadataLookupAttempt(provider.Definition.Id, result.ErrorCode,
-                        result.ErrorMessage));
                     continue;
                 }
 
-                attempts.Add(new MetadataLookupAttempt(provider.Definition.Id, null, null));
                 foreach (MetadataIdentifier raw in result.Value.Identifiers ?? Array.Empty<MetadataIdentifier>())
                 {
                     Result<NormalizedIdentifier> normalized = IdentifierNormalizer.Normalize(raw.Scheme, raw.Value);
@@ -229,6 +244,16 @@ public sealed class MetadataLookupService : IMetadataLookupService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result<MetadataLookupOutcome>> EnrichAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<ItemMetadata> item = await _items.GetItemAsync(itemId, cancellationToken);
+        return item.IsFailure
+            ? Result<MetadataLookupOutcome>.Failure(item.ErrorCode!, item.ErrorMessage!)
+            : await LookupAndApplyBestAsync(item.Value, cancellationToken);
+    }
+
     public async Task<Result<MetadataBatchResult>> LookupAndApplyBatchAsync(
         IReadOnlyList<ItemId> itemIds,
         IProgress<MetadataBatchProgress>? progress = null,
@@ -249,39 +274,18 @@ public sealed class MetadataLookupService : IMetadataLookupService
             try
             {
                 Result<ItemMetadata> item = await _items.GetItemAsync(itemId, cancellationToken);
-                Result<MetadataLookupOutcome>? outcome = null;
-                if (item.IsSuccess)
-                {
-                    foreach (ItemIdentifier identifier in OrderIdentifiers(item.Value.Identifiers))
-                    {
-                        outcome = await LookupAndApplyAsync(itemId, identifier, cancellationToken);
-                        if (outcome.IsSuccess)
-                        {
-                            break;
-                        }
-                    }
-                }
-
                 if (item.IsFailure)
                 {
                     results[index] =
                         new MetadataBatchItemResult(itemId, false, null, item.ErrorCode, item.ErrorMessage);
                 }
-                else if (outcome is null)
-                {
-                    results[index] = new MetadataBatchItemResult(itemId, false, null,
-                        MetadataLookupErrorCodes.UnsupportedIdentifier,
-                        "The item has no enabled supported identifier.");
-                }
-                else if (outcome.IsFailure)
-                {
-                    results[index] =
-                        new MetadataBatchItemResult(itemId, false, null, outcome.ErrorCode, outcome.ErrorMessage);
-                }
                 else
                 {
-                    results[index] =
-                        new MetadataBatchItemResult(itemId, true, outcome.Value.Candidate.SourceId, null, null);
+                    Result<MetadataLookupOutcome> outcome =
+                        await LookupAndApplyBestAsync(item.Value, cancellationToken);
+                    results[index] = outcome.IsSuccess
+                        ? new MetadataBatchItemResult(itemId, true, outcome.Value.Candidate.SourceId, null, null)
+                        : new MetadataBatchItemResult(itemId, false, null, outcome.ErrorCode, outcome.ErrorMessage);
                 }
             }
             finally
@@ -420,6 +424,29 @@ public sealed class MetadataLookupService : IMetadataLookupService
     private static string Key(NormalizedIdentifier identifier)
     {
         return $"{identifier.Scheme}\0{identifier.Value}";
+    }
+
+    /// <summary>
+    ///     Tries the item's identifiers in source-preference order and applies the first successful
+    ///     candidate. Shared by the batch loop and the single-item enrich endpoint message so both
+    ///     select identifiers identically.
+    /// </summary>
+    private async Task<Result<MetadataLookupOutcome>> LookupAndApplyBestAsync(ItemMetadata item,
+        CancellationToken cancellationToken)
+    {
+        Result<MetadataLookupOutcome>? outcome = null;
+        foreach (ItemIdentifier identifier in OrderIdentifiers(item.Identifiers))
+        {
+            outcome = await LookupAndApplyAsync(item.ItemId, identifier, cancellationToken);
+            if (outcome.IsSuccess)
+            {
+                return outcome;
+            }
+        }
+
+        return Result<MetadataLookupOutcome>.Failure(
+            outcome?.ErrorCode ?? MetadataLookupErrorCodes.UnsupportedIdentifier,
+            outcome?.ErrorMessage ?? "The item has no enabled supported identifier.");
     }
 
     private IEnumerable<ItemIdentifier> OrderIdentifiers(IReadOnlyList<ItemIdentifier> identifiers)

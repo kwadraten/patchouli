@@ -1,10 +1,13 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Headless;
 using Avalonia.LogicalTree;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using System.Reactive.Disposables;
 using FluentAssertions;
 using LiveMarkdown.Avalonia;
 using Patchouli.UI;
@@ -127,6 +130,7 @@ public sealed class ChangelogTests
     {
         await _headless.Session.Dispatch<int>(async () =>
         {
+            using IDisposable decorationIsolation = HeadlessMarkdownDecorations.IsolateCurrentThread();
             using TemporaryAppSettingsFile settings = new();
             MainWindowViewModel main = new(settingsPath: settings.Path);
             MainWindow window = new(main);
@@ -202,5 +206,102 @@ public sealed class ChangelogTests
 
             return 0;
         }, CancellationToken.None);
+    }
+}
+
+/// <summary>
+/// LiveMarkdown's compiled <c>Styles.axaml</c> assigns Avalonia's process-wide
+/// <see cref="TextDecorations.Underline"/> / <see cref="TextDecorations.Strikethrough"/> collections
+/// to every <c>Link</c> and strikethrough span. Those collections contain <see cref="TextDecoration"/>
+/// AvaloniaObjects owned by the first UI thread that read them, so a second headless session that
+/// renders the same document throws in <c>TextDecoration.get_StrokeThickness</c>. Replace only the
+/// cross-thread instances with equivalent objects created on the rendering thread: the locations are
+/// identical, so the rendered output is unchanged while the objects are no longer shared.
+/// </summary>
+internal static class HeadlessMarkdownDecorations
+{
+    public static IDisposable IsolateCurrentThread()
+    {
+        IDisposable inlines = Inline.TextDecorationsProperty.Changed.AddClassHandler<Inline>((inline, change) =>
+        {
+            if (change.NewValue is not TextDecorationCollection decorations)
+            {
+                return;
+            }
+
+            TextDecorationCollection? local = TryCreateThreadLocal(decorations);
+            if (local is not null)
+            {
+                inline.TextDecorations = local;
+            }
+        });
+        // Rich-editor toolbar styles assign the same static decorations directly to TextBlock,
+        // rather than an Inline. They need the same per-thread resource isolation.
+        IDisposable textBlocks = TextBlock.TextDecorationsProperty.Changed.AddClassHandler<TextBlock>((text, change) =>
+        {
+            if (change.NewValue is TextDecorationCollection decorations &&
+                TryCreateThreadLocal(decorations) is { } local)
+            {
+                text.TextDecorations = local;
+            }
+        });
+        return new CompositeDisposable(inlines, textBlocks);
+    }
+
+    private static TextDecorationCollection? TryCreateThreadLocal(TextDecorationCollection decorations)
+    {
+        TextDecorationCollection local = [];
+        bool hasForeign = false;
+        foreach (TextDecoration decoration in decorations)
+        {
+            if (decoration.CheckAccess())
+            {
+                // Preserve custom strokes/thicknesses on objects already owned by this thread.
+                local.Add(decoration);
+                continue;
+            }
+
+            hasForeign = true;
+            TextDecorationLocation? location = ResolveLocation(decoration);
+            if (location is null)
+            {
+                // An unknown decoration is left untouched so a genuine render failure is never masked.
+                return null;
+            }
+
+            local.Add(new TextDecoration { Location = location.Value });
+        }
+
+        if (!hasForeign)
+        {
+            return null;
+        }
+
+        return local;
+    }
+
+    private static TextDecorationLocation? ResolveLocation(TextDecoration decoration)
+    {
+        if (TextDecorations.Underline.Contains(decoration))
+        {
+            return TextDecorationLocation.Underline;
+        }
+
+        if (TextDecorations.Strikethrough.Contains(decoration))
+        {
+            return TextDecorationLocation.Strikethrough;
+        }
+
+        if (TextDecorations.Overline.Contains(decoration))
+        {
+            return TextDecorationLocation.Overline;
+        }
+
+        if (TextDecorations.Baseline.Contains(decoration))
+        {
+            return TextDecorationLocation.Baseline;
+        }
+
+        return null;
     }
 }

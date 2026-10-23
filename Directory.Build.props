@@ -12,4 +12,8 @@
     <Title>Patchouli.NET</Title>
     <AssemblyTitle>Patchouli.NET</AssemblyTitle>
   </PropertyGroup>
+  <ItemGroup Condition="'$(MSBuildProjectExtension)' == '.fsproj'">
+    <!-- Do not fall back to the SDK-shipped FSharp.Core when a project stops depending on FCS. -->
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
 </Project>

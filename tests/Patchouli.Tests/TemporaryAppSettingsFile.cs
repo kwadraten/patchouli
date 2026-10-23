@@ -24,8 +24,7 @@ public sealed class TemporaryAppSettingsFile : IDisposable
             DefaultSyncRoot = System.IO.Path.Combine(_root, "sync"),
             DefaultStagingRoot = System.IO.Path.Combine(_root, "staging"),
             LogDirectory = System.IO.Path.Combine(_root, "logs"),
-            FileSearchRoot = System.IO.Path.Combine(_root, "search"),
-            UseMockOcrOnly = true
+            FileSearchRoot = System.IO.Path.Combine(_root, "search")
         };
         (PatchouliAppSettings.Default() with { Runtime = runtime }).Save(Path).IsSuccess.Should().BeTrue();
     }

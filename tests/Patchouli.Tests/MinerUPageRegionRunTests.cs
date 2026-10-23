@@ -9,6 +9,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -549,6 +550,75 @@ public sealed class MinerUPageRegionRunTests
             CoordinateBasis.NormalizedPage, null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
     }
 
+    /// <summary>
+    /// R12 bounded diagnostic: verifies the environment prerequisites (checked-in PDF
+    /// fixture, Rust biblatex helper, SkiaSharp and PDFium native runtimes) before a
+    /// MinerU scenario is measured. A failure here is classified as a missing
+    /// prerequisite — an environment issue — not as a product or runner regression.
+    /// </summary>
+    private static async Task VerifyEnvironmentPrerequisitesAsync()
+    {
+        bool fixturePresent = File.Exists(TestFixtures.RealThreePagePdf);
+        string helperPath = BiblatexHelperClient.ResolveDefaultHelperPath();
+        bool helperPresent = File.Exists(helperPath);
+        bool skiaAvailable;
+        string? skiaError = null;
+        try
+        {
+            using SKBitmap probe = new(1, 1);
+            using SKImage image = SKImage.FromBitmap(probe);
+            using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+            skiaAvailable = png is { Size: > 0 };
+        }
+        catch (Exception exception)
+        {
+            skiaAvailable = false;
+            skiaError = exception.Message;
+        }
+
+        bool pdfiumAvailable = false;
+        string? pdfiumError = null;
+        if (fixturePresent)
+        {
+            try
+            {
+                pdfiumAvailable =
+                    await new PdfiumDocumentEngine().GetPageCountAsync(TestFixtures.RealThreePagePdf) == 3;
+            }
+            catch (Exception exception)
+            {
+                pdfiumError = exception.Message;
+            }
+        }
+
+        Console.WriteLine(
+            $"PREREQ fixture={fixturePresent} rust-helper={helperPresent} skia={skiaAvailable} pdfium={pdfiumAvailable}");
+
+        List<string> missing = [];
+        if (!fixturePresent)
+        {
+            missing.Add($"fixture PDF '{TestFixtures.RealThreePagePdf}'");
+        }
+
+        if (!helperPresent)
+        {
+            missing.Add($"Rust helper '{helperPath}'");
+        }
+
+        if (!skiaAvailable)
+        {
+            missing.Add($"SkiaSharp native runtime{(skiaError is null ? "" : $" ({skiaError})")}");
+        }
+
+        if (!pdfiumAvailable)
+        {
+            missing.Add($"PDFium native runtime{(pdfiumError is null ? "" : $" ({pdfiumError})")}");
+        }
+
+        missing.Should().BeEmpty(
+            "missing test prerequisites (environment issue, not a product/regression failure)");
+    }
+
     private sealed class Context : IAsyncDisposable
     {
         private readonly TemporarySqliteDatabase _database;
@@ -589,6 +659,7 @@ public sealed class MinerUPageRegionRunTests
 
         public static async Task<Context> CreateAsync(int pageCount, bool autoApply = false)
         {
+            await VerifyEnvironmentPrerequisitesAsync();
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
             string rootDirectory = Directory.CreateDirectory(

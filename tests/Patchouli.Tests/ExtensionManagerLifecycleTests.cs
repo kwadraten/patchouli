@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using FluentAssertions;
 using Patchouli.Extensions;
 using Patchouli.Extensions.Contracts;
@@ -8,11 +9,12 @@ namespace Patchouli.Tests;
 public sealed class ExtensionManagerLifecycleTests
 {
     [Fact]
+    [Trait("Category", "fcs")]
     public async Task Failed_candidate_keeps_the_current_generation_active()
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new();
-        await using IExtensionManager manager = CreateManager(store, loader);
+        await using IExtensionManager manager = CreateRealCheckerStateMachineManager(store, loader);
         ExtensionPackageSnapshot active = Package("let marker = 1");
         ExtensionPackageSnapshot invalid = Package("let marker: int = \"not an integer\"");
 
@@ -31,7 +33,8 @@ public sealed class ExtensionManagerLifecycleTests
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new();
-        await using IExtensionManager manager = CreateManager(store, loader);
+        RecordingSourceChecker checker = new();
+        await using IExtensionManager manager = CreateStateMachineManager(store, loader, checker);
         ExtensionPackageSnapshot first = Package("let marker = 1");
         ExtensionPackageSnapshot second = Package("let marker = 2");
 
@@ -45,32 +48,38 @@ public sealed class ExtensionManagerLifecycleTests
         active.Translation.Descriptor.Id.Should().Be(first.Id);
         loader.Generations.Should().HaveCount(2);
         loader.Generations.Count(generation => generation.DisposeCount == 0).Should().Be(1);
+        checker.Calls.Select(call => call.Fingerprint).Should()
+            .BeEquivalentTo([first.Fingerprint, second.Fingerprint]);
     }
 
     [Fact]
-    public async Task Real_fsi_extension_instance_is_disposed_after_its_last_lease_is_released()
+    [Trait("Category", "compiled-extension")]
+    public async Task Active_lease_remains_pinned_to_its_generation_after_new_version_activation()
     {
-        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-fsi-dispose-{Guid.NewGuid():N}");
+        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-compiled-lease-{Guid.NewGuid():N}");
         try
         {
             await using IExtensionManager manager = new ExtensionManager(runtimeDirectory,
-                new FakeCapabilities(), new FileExtensionStore(runtimeDirectory),
-                new FsiExtensionGenerationLoader(runtimeDirectory));
-            ExtensionPackageSnapshot first = DisposablePackage("let marker = 1");
-            ExtensionPackageSnapshot replacement = Package("let marker = 2");
+                TestExtensionResources.Unavailable(), new FileExtensionStore(runtimeDirectory),
+                new CompiledExtensionGenerationLoader(runtimeDirectory));
+            ExtensionPackageSnapshot first = Package("let marker = 1", "1.0.0");
+            ExtensionPackageSnapshot replacement = Package("let marker = 2", "2.0.0");
 
             (await manager.ActivateAsync(first.Id, first, CancellationToken.None)).Succeeded.Should().BeTrue();
             IExtensionLease lease = (await manager.AcquireAsync(first.Id, CancellationToken.None))!;
-            ITranslationExtension extension = lease.Translation;
-            extension.Descriptor.Description.Should().Be("alive");
+            string originalFingerprint = lease.Fingerprint;
+            lease.Descriptor.Version.Should().Be("1.0.0");
 
             (await manager.ActivateAsync(replacement.Id, replacement, CancellationToken.None)).Succeeded.Should()
                 .BeTrue();
-            extension.Descriptor.Description.Should().Be("alive");
+            lease.Fingerprint.Should().Be(originalFingerprint);
+            lease.Descriptor.Version.Should().Be("1.0.0");
 
             await lease.DisposeAsync();
 
-            extension.Descriptor.Description.Should().Be("disposed");
+            await using IExtensionLease current = (await manager.AcquireAsync(first.Id, CancellationToken.None))!;
+            current.Fingerprint.Should().Be(replacement.Fingerprint);
+            current.Descriptor.Version.Should().Be("2.0.0");
         }
         finally
         {
@@ -82,14 +91,15 @@ public sealed class ExtensionManagerLifecycleTests
     }
 
     [Fact]
-    public async Task Fsi_initialization_failure_keeps_the_previous_generation_active()
+    [Trait("Category", "compiled-extension")]
+    public async Task Initialization_failure_keeps_the_previous_generation_active()
     {
-        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-fsi-init-{Guid.NewGuid():N}");
+        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-compiled-init-{Guid.NewGuid():N}");
         try
         {
             await using IExtensionManager manager = new ExtensionManager(runtimeDirectory,
-                new FakeCapabilities(), new FileExtensionStore(runtimeDirectory),
-                new FsiExtensionGenerationLoader(runtimeDirectory));
+                TestExtensionResources.Unavailable(), new FileExtensionStore(runtimeDirectory),
+                new CompiledExtensionGenerationLoader(runtimeDirectory));
             ExtensionPackageSnapshot active = Package("let marker = 1");
             (await manager.ActivateAsync(active.Id, active, CancellationToken.None)).Succeeded.Should().BeTrue();
             await using IExtensionLease previousLease =
@@ -119,15 +129,17 @@ public sealed class ExtensionManagerLifecycleTests
     }
 
     [Fact]
-    public async Task Built_in_crossref_package_passes_the_real_fsi_checker()
+    [Trait("Category", "fcs")]
+    public async Task Built_in_crossref_package_passes_the_real_compiler_checker()
     {
         string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-crossref-fsi-{Guid.NewGuid():N}");
         try
         {
             await using IExtensionManager manager = new ExtensionManager(runtimeDirectory,
-                new FakeCapabilities(), new FileExtensionStore(runtimeDirectory),
-                new FsiExtensionGenerationLoader(runtimeDirectory));
-            ExtensionPackageSnapshot package = BuiltInMetadataExtensions.Packages.Single();
+                TestExtensionResources.Unavailable(), new FileExtensionStore(runtimeDirectory),
+                new CompiledExtensionGenerationLoader(runtimeDirectory));
+            ExtensionPackageSnapshot package =
+                BuiltInMetadataExtensions.Packages.Single(item => item.Id == "metadata.crossref");
 
             ExtensionCheckResult check = await manager.CheckAsync(package, CancellationToken.None);
 
@@ -150,8 +162,8 @@ public sealed class ExtensionManagerLifecycleTests
         string runtimeDirectory = Path.Combine(Path.GetTempPath(),
             $"patchouli-extension-check-drain-{Guid.NewGuid():N}");
         BlockingSourceChecker checker = new();
-        IExtensionManager manager = new ExtensionManager(runtimeDirectory, new FakeCapabilities(),
-            new FileExtensionStore(runtimeDirectory), new FsiExtensionGenerationLoader(runtimeDirectory), checker);
+        IExtensionManager manager = new ExtensionManager(runtimeDirectory, TestExtensionResources.Unavailable(),
+            new FileExtensionStore(runtimeDirectory), new CompiledExtensionGenerationLoader(runtimeDirectory), checker);
 
         try
         {
@@ -185,7 +197,8 @@ public sealed class ExtensionManagerLifecycleTests
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new();
-        await using IExtensionManager manager = CreateManager(store, loader);
+        RecordingSourceChecker checker = new();
+        await using IExtensionManager manager = CreateStateMachineManager(store, loader, checker);
         ExtensionPackageSnapshot first = Package("let marker = 1");
         ExtensionPackageSnapshot second = Package("let marker = 2");
 
@@ -204,6 +217,7 @@ public sealed class ExtensionManagerLifecycleTests
 
         loader.Generations[0].DisposeCount.Should().Be(1);
         loader.Generations[1].DisposeCount.Should().Be(0);
+        checker.Calls.Select(call => call.Fingerprint).Should().Equal(first.Fingerprint, second.Fingerprint);
     }
 
     [Fact]
@@ -211,7 +225,8 @@ public sealed class ExtensionManagerLifecycleTests
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new();
-        await using IExtensionManager manager = CreateManager(store, loader);
+        RecordingSourceChecker checker = new();
+        await using IExtensionManager manager = CreateStateMachineManager(store, loader, checker);
         ExtensionPackageSnapshot package = Package("let marker = 1");
 
         ExtensionCheckResult loaded = await manager.LoadAsync(package, CancellationToken.None);
@@ -221,6 +236,7 @@ public sealed class ExtensionManagerLifecycleTests
         manager.List().Should().BeEmpty();
         loader.Generations.Should().ContainSingle();
         loader.Generations[0].DisposeCount.Should().Be(0);
+        checker.Calls.Should().ContainSingle().Which.Fingerprint.Should().Be(package.Fingerprint);
     }
 
     [Fact]
@@ -228,7 +244,8 @@ public sealed class ExtensionManagerLifecycleTests
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new("another.extension");
-        await using IExtensionManager manager = CreateManager(store, loader);
+        RecordingSourceChecker checker = new();
+        await using IExtensionManager manager = CreateStateMachineManager(store, loader, checker);
 
         ExtensionCheckResult result = await manager.ActivateAsync("test.extension", Package("let marker = 1"),
             CancellationToken.None);
@@ -238,6 +255,7 @@ public sealed class ExtensionManagerLifecycleTests
         (await manager.AcquireAsync("test.extension", CancellationToken.None)).Should().BeNull();
         loader.Generations.Should().ContainSingle();
         loader.Generations[0].DisposeCount.Should().Be(1);
+        checker.Calls.Should().ContainSingle();
     }
 
     [Fact]
@@ -245,7 +263,8 @@ public sealed class ExtensionManagerLifecycleTests
     {
         MemoryExtensionFileStore store = new();
         CountingGenerationLoader loader = new();
-        await using IExtensionManager manager = CreateManager(store, loader);
+        RecordingSourceChecker checker = new();
+        await using IExtensionManager manager = CreateStateMachineManager(store, loader, checker);
         ExtensionPackageSnapshot package = Package("let marker = 1");
         (await manager.ActivateAsync("test.extension", package, CancellationToken.None)).Succeeded.Should().BeTrue();
         Dictionary<string, string> originalValues = new(StringComparer.Ordinal) { ["model"] = "first" };
@@ -262,6 +281,7 @@ public sealed class ExtensionManagerLifecycleTests
         runLease.Config.Values["model"].Should().Be("first");
         nextLease.Config.Revision.Should().Be(2);
         nextLease.Config.Values["model"].Should().Be("second");
+        checker.Calls.Should().ContainSingle().Which.Fingerprint.Should().Be(package.Fingerprint);
     }
 
     [Fact]
@@ -273,7 +293,9 @@ public sealed class ExtensionManagerLifecycleTests
         try
         {
             CountingGenerationLoader firstLoader = new();
-            await using (IExtensionManager manager = CreatePersistentManager(runtimeDirectory, firstLoader))
+            RecordingSourceChecker firstChecker = new();
+            await using (IExtensionManager manager =
+                         CreatePersistentStateMachineManager(runtimeDirectory, firstLoader, firstChecker))
             {
                 (await manager.ActivateAsync("test.extension", first, CancellationToken.None)).Succeeded.Should()
                     .BeTrue();
@@ -283,7 +305,9 @@ public sealed class ExtensionManagerLifecycleTests
             }
 
             CountingGenerationLoader restoredLoader = new();
-            await using IExtensionManager restored = CreatePersistentManager(runtimeDirectory, restoredLoader);
+            RecordingSourceChecker restoredChecker = new();
+            await using IExtensionManager restored =
+                CreatePersistentStateMachineManager(runtimeDirectory, restoredLoader, restoredChecker);
             (await restored.RestoreAsync("test.extension", CancellationToken.None)).Should().BeTrue();
             await using IExtensionLease active =
                 (await restored.AcquireAsync("test.extension", CancellationToken.None))!;
@@ -293,6 +317,8 @@ public sealed class ExtensionManagerLifecycleTests
             await using IExtensionLease rolledBack =
                 (await restored.AcquireAsync("test.extension", CancellationToken.None))!;
             rolledBack.Fingerprint.Should().Be(first.Fingerprint);
+            restoredChecker.Calls.Select(call => call.Fingerprint).Should()
+                .Equal(second.Fingerprint, first.Fingerprint);
         }
         finally
         {
@@ -311,7 +337,8 @@ public sealed class ExtensionManagerLifecycleTests
         try
         {
             await using (IExtensionManager manager =
-                         CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader()))
+                         CreatePersistentStateMachineManager(runtimeDirectory,
+                             new CountingGenerationLoader(), new RecordingSourceChecker()))
             {
                 (await manager.ActivateAsync("test.extension", package, CancellationToken.None)).Succeeded.Should()
                     .BeTrue();
@@ -321,10 +348,14 @@ public sealed class ExtensionManagerLifecycleTests
                 package.Fingerprint, "main.fsx");
             File.WriteAllText(savedSource, "tampered source");
 
+            RecordingSourceChecker restoredChecker = new();
             await using IExtensionManager restored =
-                CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader());
+                CreatePersistentStateMachineManager(runtimeDirectory, new CountingGenerationLoader(),
+                    restoredChecker);
             (await restored.RestoreAsync("test.extension", CancellationToken.None)).Should().BeFalse();
             (await restored.AcquireAsync("test.extension", CancellationToken.None)).Should().BeNull();
+            restoredChecker.Calls.Should().BeEmpty(
+                "the content fingerprint check rejects the tampered snapshot before source checking runs");
         }
         finally
         {
@@ -344,7 +375,8 @@ public sealed class ExtensionManagerLifecycleTests
         try
         {
             await using (IExtensionManager manager =
-                         CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader()))
+                         CreatePersistentStateMachineManager(runtimeDirectory,
+                             new CountingGenerationLoader(), new RecordingSourceChecker()))
             {
                 (await manager.ActivateAsync(package.Id, package, CancellationToken.None)).Succeeded.Should().BeTrue();
                 (await manager.PromoteLastKnownGoodAsync(package.Id, CancellationToken.None)).Should().BeTrue();
@@ -355,11 +387,14 @@ public sealed class ExtensionManagerLifecycleTests
             string activeDirectory = Path.Combine(runtimeDirectory, "extensions", package.Id, ".generations");
             Directory.Delete(activeDirectory, true);
 
+            RecordingSourceChecker restoredChecker = new();
             await using IExtensionManager restored =
-                CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader());
+                CreatePersistentStateMachineManager(runtimeDirectory, new CountingGenerationLoader(),
+                    restoredChecker);
             (await restored.RestoreAsync(package.Id, CancellationToken.None)).Should().BeTrue();
             await using IExtensionLease lease = (await restored.AcquireAsync(package.Id, CancellationToken.None))!;
             lease.Fingerprint.Should().Be(package.Fingerprint);
+            restoredChecker.Calls.Should().ContainSingle().Which.Fingerprint.Should().Be(package.Fingerprint);
         }
         finally
         {
@@ -379,7 +414,8 @@ public sealed class ExtensionManagerLifecycleTests
         try
         {
             await using (IExtensionManager manager =
-                         CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader()))
+                         CreatePersistentStateMachineManager(runtimeDirectory,
+                             new CountingGenerationLoader(), new RecordingSourceChecker()))
             {
                 (await manager.ActivateAsync(package.Id, package, CancellationToken.None)).Succeeded.Should().BeTrue();
                 (await manager.PromoteLastKnownGoodAsync(package.Id, CancellationToken.None)).Should().BeTrue();
@@ -390,13 +426,16 @@ public sealed class ExtensionManagerLifecycleTests
             string lkgSource = Path.Combine(packageDirectory, ".lkg", package.Fingerprint, "main.fsx");
             File.WriteAllText(activeSource, "tampered active generation");
 
+            RecordingSourceChecker restoredChecker = new();
             await using IExtensionManager restored =
-                CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader());
+                CreatePersistentStateMachineManager(runtimeDirectory, new CountingGenerationLoader(),
+                    restoredChecker);
             (await restored.RestoreAsync(package.Id, CancellationToken.None)).Should().BeTrue();
             await using IExtensionLease lease = (await restored.AcquireAsync(package.Id, CancellationToken.None))!;
             lease.Fingerprint.Should().Be(package.Fingerprint);
             File.ReadAllText(activeSource).Should().Be(package.Sources["main.fsx"]);
             File.ReadAllText(lkgSource).Should().Be(package.Sources["main.fsx"]);
+            restoredChecker.Calls.Should().ContainSingle().Which.Fingerprint.Should().Be(package.Fingerprint);
         }
         finally
         {
@@ -416,8 +455,9 @@ public sealed class ExtensionManagerLifecycleTests
         ExtensionPackageSnapshot second = Package("let marker = 2");
         try
         {
+            RecordingSourceChecker checker = new();
             await using IExtensionManager manager =
-                CreatePersistentManager(runtimeDirectory, new CountingGenerationLoader());
+                CreatePersistentStateMachineManager(runtimeDirectory, new CountingGenerationLoader(), checker);
             (await manager.ActivateAsync(first.Id, first, CancellationToken.None)).Succeeded.Should().BeTrue();
             (await manager.PromoteLastKnownGoodAsync(first.Id, CancellationToken.None)).Should().BeTrue();
             (await manager.ActivateAsync(second.Id, second, CancellationToken.None)).Succeeded.Should().BeTrue();
@@ -438,6 +478,8 @@ public sealed class ExtensionManagerLifecycleTests
             (await manager.RollbackAsync(first.Id, CancellationToken.None)).Should().BeFalse();
             await using IExtensionLease current = (await manager.AcquireAsync(first.Id, CancellationToken.None))!;
             current.Fingerprint.Should().Be(second.Fingerprint);
+            checker.Calls.Select(call => call.Fingerprint).Should()
+                .Equal(first.Fingerprint, second.Fingerprint, first.Fingerprint, second.Fingerprint);
         }
         finally
         {
@@ -448,50 +490,64 @@ public sealed class ExtensionManagerLifecycleTests
         }
     }
 
-    private static IExtensionManager CreateManager(MemoryExtensionFileStore store, CountingGenerationLoader loader)
+    // State-machine fake-checker path: the recording checker supplies preset results while the real
+    // manager lifecycle (staging, activation, leases, draining) still runs underneath it.
+    private static IExtensionManager CreateStateMachineManager(MemoryExtensionFileStore store,
+        CountingGenerationLoader loader, RecordingSourceChecker checker)
     {
         return new ExtensionManager(Path.Combine(Path.GetTempPath(), $"patchouli-extensions-{Guid.NewGuid():N}"),
-            new FakeCapabilities(), store, loader);
+            TestExtensionResources.Unavailable(), store, loader, checker);
     }
 
-    private static IExtensionManager CreatePersistentManager(string runtimeDirectory, CountingGenerationLoader loader)
+    // Persistent state-machine fake-checker path: same preset check boundary over the real
+    // FileExtensionStore so snapshot persistence and content-hash verification still run.
+    private static IExtensionManager CreatePersistentStateMachineManager(string runtimeDirectory,
+        CountingGenerationLoader loader, RecordingSourceChecker checker)
     {
-        return new ExtensionManager(runtimeDirectory, new FakeCapabilities(), new FileExtensionStore(runtimeDirectory),
-            loader);
+        return new ExtensionManager(runtimeDirectory, TestExtensionResources.Unavailable(),
+            new FileExtensionStore(runtimeDirectory),
+            loader, checker);
     }
 
-    private static ExtensionPackageSnapshot Package(string body)
+    // Real-checker anchor path: the default constructor wires the real FCS-based ExtensionCompiler.
+    private static IExtensionManager CreateRealCheckerStateMachineManager(MemoryExtensionFileStore store,
+        CountingGenerationLoader loader)
     {
-        return new ExtensionPackageSnapshot("test.extension", new Dictionary<string, string>
-        {
-            ["main.fsx"] =
-                "open System.Threading.Tasks\nopen Patchouli.Extensions.Contracts\n" +
-                "let extension : ITranslationExtension =\n" +
-                "    { new ITranslationExtension with\n" +
-                "        member _.Descriptor = ExtensionDescriptor(\"test.extension\", \"Test\", \"1.0\", \"\")\n" +
-                "        member _.ConfigFields = [||]\n" +
-                "        member _.TranslateAsync(_, _, _) = Task.FromResult(TranslationExtensionResult([||])) }\n" +
-                body
-        });
+        return new ExtensionManager(Path.Combine(Path.GetTempPath(), $"patchouli-extensions-{Guid.NewGuid():N}"),
+            TestExtensionResources.Unavailable(), store, loader);
     }
 
-    private static ExtensionPackageSnapshot DisposablePackage(string body)
+    private static ExtensionPackageSnapshot Package(string body, string version = "1.0.0")
     {
         return new ExtensionPackageSnapshot("test.extension", new Dictionary<string, string>
         {
             ["main.fsx"] =
-                "open System\nopen System.Threading.Tasks\nopen Patchouli.Extensions.Contracts\n" +
-                "let mutable disposed = false\n" +
-                "let extension : ITranslationExtension =\n" +
-                "    { new ITranslationExtension with\n" +
-                "        member _.Descriptor = ExtensionDescriptor(\"test.extension\", \"Test\", \"1.0\", " +
-                "(if disposed then \"disposed\" else \"alive\"))\n" +
-                "        member _.ConfigFields = [||]\n" +
-                "        member _.TranslateAsync(_, _, _) = Task.FromResult(TranslationExtensionResult([||]))\n" +
-                "      interface IDisposable with\n" +
-                "        member _.Dispose() = disposed <- true }\n" +
-                body
+                "open System.Threading.Tasks\nopen Patchouli.Extensions.Contracts\nopen Patchouli.Extensions.Sdk\n" +
+                body + "\n" +
+                "/// <summary>Lifecycle test extension.</summary>\n" +
+                $"/// <patchouli-extension id=\"test.extension\" kind=\"translation\" version=\"{version}\" host-api=\"patchouli.extensions/3\">\n" +
+                "/// <name>Test extension</name>\n/// </patchouli-extension>\n" +
+                "let extension = Extension.createTranslation<unit> (fun () _ _ _ -> Task.CompletedTask)\n"
         });
+    }
+
+    // Preset check boundary for the deterministic state-machine cases only. It honors cancellation and
+    // records each call with the package identity, but it never parses F# and never judges tampering;
+    // the manager's real state, file, and hash verification remains responsible for those decisions.
+    private sealed class RecordingSourceChecker(ExtensionCheckResult? preset = null) : IExtensionSourceChecker
+    {
+        private readonly ConcurrentQueue<ExtensionPackageSnapshot> _calls = new();
+        private readonly ExtensionCheckResult _preset = preset ?? new ExtensionCheckResult(true, [], []);
+
+        public IReadOnlyList<ExtensionPackageSnapshot> Calls => _calls.ToArray();
+
+        public Task<ExtensionCheckResult> CheckAsync(ExtensionPackageSnapshot package,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _calls.Enqueue(package);
+            return Task.FromResult(_preset);
+        }
     }
 
     private sealed class BlockingSourceChecker : IExtensionSourceChecker
@@ -556,7 +612,13 @@ public sealed class ExtensionManagerLifecycleTests
         public Task<IExtensionGeneration> LoadAsync(ExtensionPackageSnapshot package,
             CancellationToken cancellationToken)
         {
-            CountingGeneration generation = new(new FakeTranslationExtension(_descriptorId ?? package.Id));
+            ExtensionDescriptor descriptor = ExtensionEntryMetadata.Parse(package).ToDescriptor();
+            if (_descriptorId is not null)
+            {
+                descriptor = descriptor with { Id = _descriptorId };
+            }
+
+            CountingGeneration generation = new(new FakeTranslationExtension(descriptor));
             lock (Generations)
             {
                 Generations.Add(generation);
@@ -578,47 +640,15 @@ public sealed class ExtensionManagerLifecycleTests
         }
     }
 
-    private sealed class FakeTranslationExtension(string id) : ITranslationExtension
+    private sealed class FakeTranslationExtension(ExtensionDescriptor descriptor) : ITranslationExtension
     {
-        public ExtensionDescriptor Descriptor { get; } = new(id, "Test extension", "1.0", "Test");
+        public ExtensionDescriptor Descriptor { get; } = descriptor;
         public IReadOnlyList<ConfigFieldDescriptor> ConfigFields { get; } = [];
 
-        public Task<TranslationExtensionResult> TranslateAsync(TranslationExtensionContext context,
-            IExtensionCapabilities capabilities, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new TranslationExtensionResult([]));
-        }
-    }
-
-    private sealed class FakeCapabilities : IExtensionCapabilities
-    {
-        public ILlmCapability Llm { get; } = new FakeLlmCapability();
-        public IHttpCapability Http { get; } = new FakeHttpCapability();
-
-        public IExtensionCapabilities ForRun(ExtensionConfigSnapshot config)
-        {
-            return this;
-        }
-
-        public Task WaitToProceedAsync(CancellationToken cancellationToken = default)
+        public Task RunAsync(ITranslationJob job, IExtensionResources resources,
+            CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
-        }
-    }
-
-    private sealed class FakeLlmCapability : ILlmCapability
-    {
-        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new LlmResponse(string.Empty));
-        }
-    }
-
-    private sealed class FakeHttpCapability : IHttpCapability
-    {
-        public Task<HttpResponse> SendAsync(HttpRequest request, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new HttpResponse(200, new Dictionary<string, string>(), "{}"));
         }
     }
 }

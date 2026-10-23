@@ -18,15 +18,30 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class ExtensionConfigurationDialogTests
+/// <remarks>
+/// R9 classification: these cases keep the real path on purpose — compile-save, invalid-source
+/// rejection, fingerprint stability and unlisted-config preservation all require a real check and a
+/// real activated generation. These custom-engine cases save their fixture source and activate that
+/// package directly; activating every bundled package is not part of their coverage.
+/// Only assertions that are purely about dialog layout could move to the lightweight descriptor
+/// boundary; none of the current assertions is layout-only.
+/// R13 shared session: each case still owns its source snapshots, config, real extension
+/// manager/compiled generation and windows inside the dispatch; <see cref="ThemePaletteApplier"/> mutations are
+/// restored per case. ThemePaletteApplierTests mutates the same statics and shares this session.
+/// </remarks>
+[Collection("RetainedTabUI")]
+[Trait("Category", "ui")]
+[Trait("Category", "compiled-extension")]
+public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixture headless)
 {
     private const string EngineId = "translation.ui-dialog-test";
 
-    [Fact]
-    public async Task Engine_gear_opens_a_form_and_expands_a_highlighted_multifile_editor_without_losing_drafts()
+    [Theory]
+    [InlineData("translation.google-free")]
+    [InlineData("metadata.crossref")]
+    public async Task Cold_bundled_editor_shows_entry_source_and_schema_without_activating_packages(string id)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -34,7 +49,86 @@ public sealed class ExtensionConfigurationDialogTests
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
-            await services.TranslationExtensions.InitializeAsync();
+            services.TranslationExtensions.Manager.List().Should().BeEmpty();
+
+            using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
+            await editor.OpenAsync(id);
+            await editor.LoadAsync();
+
+            editor.SourceFiles.Should().Contain("main.fsx").And.NotContain("extension.yml");
+            editor.SourceText.Should().Contain("<patchouli-extension");
+            editor.Fields.Should().Contain(field => field.Descriptor.Key == "endpoint");
+            editor.IsConfigurationSchemaAvailable.Should().BeTrue();
+            services.TranslationExtensions.Manager.List().Should().BeEmpty("viewing configuration is not activation");
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Stable_parameters_change_only_rate_fields_in_the_unsaved_draft()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
+            editor.SelectedExtension = new ExtensionListItem("translation.google-free", "Google", "source");
+            editor.Fields.Add(Field("concurrency", "4"));
+            editor.Fields.Add(Field("request-interval", "0.25"));
+            editor.Fields.Add(Field("endpoint", "https://example.invalid"));
+
+            editor.ApplyStableParametersCommand.Execute(null);
+
+            editor.Fields.Single(field => field.Descriptor.Key == "concurrency").Value.Should().Be("1");
+            editor.Fields.Single(field => field.Descriptor.Key == "request-interval").Value.Should().Be("1");
+            editor.Fields.Single(field => field.Descriptor.Key == "endpoint").Value.Should()
+                .Be("https://example.invalid");
+            editor.Status.Should().Contain("点击保存");
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Missing_schema_does_not_save_an_empty_configuration()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            await services.TranslationExtensions.Manager.SaveSourceAsync(EngineId, Package(16).Sources);
+
+            using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
+            await editor.OpenAsync(EngineId);
+            await editor.LoadAsync();
+
+            editor.IsConfigurationSchemaAvailable.Should().BeFalse();
+            editor.Fields.Should().BeEmpty();
+            ExtensionConfigSnapshot before = await services.TranslationExtensions.Manager.ReadConfigAsync(EngineId);
+            await editor.SaveConfigurationCommand.ExecuteAsync();
+            ExtensionConfigSnapshot after = await services.TranslationExtensions.Manager.ReadConfigAsync(EngineId);
+
+            after.Revision.Should().Be(before.Revision);
+            editor.LastError.Should().Contain("可信配置描述");
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Engine_gear_opens_a_form_and_expands_a_highlighted_multifile_editor_without_losing_drafts()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
             await services.TranslationExtensions.Manager.SaveSourceAsync(EngineId, Package(16).Sources);
             ExtensionCheckResult activation = await services.TranslationExtensions.ActivateAsync(Package(16));
             activation.Succeeded.Should()
@@ -63,6 +157,7 @@ public sealed class ExtensionConfigurationDialogTests
                 try
                 {
                     ExtensionSettingsViewModel editor = (ExtensionSettingsViewModel)dialog.DataContext!;
+                    await editor.LoadAsync();
                     editor.SelectedExtension!.Id.Should().Be(EngineId);
                     dialog.IsSourceVisible.Should().BeFalse();
                     double compactWidth = dialog.Width;
@@ -76,13 +171,13 @@ public sealed class ExtensionConfigurationDialogTests
                     TextEditor source = dialog.FindControl<TextEditor>("SourceEditor")!;
                     source.ShowLineNumbers.Should().BeTrue();
                     source.SyntaxHighlighting.Should().NotBeNull();
-                    source.Text.Should().Contain("Config.bind");
+                    source.Text.Should().Contain("[<Settings>]");
                     source.Text += "\n// unsaved source draft";
                     editor.SourceText.Should().EndWith("// unsaved source draft");
                     ComboBox files = dialog.FindControl<ComboBox>("SourceFileSelector")!;
-                    files.SelectedItem = "extension.yml";
+                    files.SelectedItem = "main.fsx";
                     Pump(dialog);
-                    source.Text.Should().Contain("host_api:");
+                    source.Text.Should().Contain("<patchouli-extension");
                     files.SelectedItem = "main.fsx";
                     Pump(dialog);
                     source.Text.Should().EndWith("// unsaved source draft");
@@ -106,12 +201,10 @@ public sealed class ExtensionConfigurationDialogTests
                     dialog.IsSourceVisible.Should().BeFalse();
                     dialog.Width.Should().BeApproximately(compactWidth, 1);
                     editor.Fields.Single().Value.Should().Be("6");
-                    editor.AllowHttp = true;
                     Click(dialog, dialog.FindControl<Button>("DiscardConfigurationButton")!);
                     dialog.IsVisible.Should().BeFalse();
                     (await services.TranslationExtensions.Manager.ReadConfigAsync(EngineId)).Values
                         .Should().NotContainKey("limit");
-                    services.TranslationExtensions.Authorization.Get(EngineId).Http.Should().BeFalse();
                     (await services.TranslationExtensions.Manager.ReadSourceAsync(EngineId)).Sources["main.fsx"]
                         .Should().NotContain("unsaved source draft");
                 }
@@ -132,7 +225,7 @@ public sealed class ExtensionConfigurationDialogTests
     [Fact]
     public async Task Checking_source_updates_only_valid_forms_and_saving_config_preserves_unlisted_values()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -140,7 +233,6 @@ public sealed class ExtensionConfigurationDialogTests
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
-            await services.TranslationExtensions.InitializeAsync();
             await services.TranslationExtensions.Manager.SaveSourceAsync(EngineId, Package(16).Sources);
             ExtensionCheckResult activation = await services.TranslationExtensions.ActivateAsync(Package(16));
             activation.Succeeded.Should()
@@ -152,6 +244,7 @@ public sealed class ExtensionConfigurationDialogTests
 
             using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
             await editor.OpenAsync(EngineId);
+            await editor.LoadAsync();
             editor.Fields.Single().Value = "6";
             editor.SourceText = Package(8).Sources["main.fsx"];
             await editor.CheckAndSaveSourceCommand.ExecuteAsync();
@@ -176,7 +269,6 @@ public sealed class ExtensionConfigurationDialogTests
             (await editor.SaveDialogAsync()).Should().BeFalse();
             (await manager.ReadConfigAsync(EngineId)).Values.Should().NotContainKey("limit");
             editor.Fields.Single().Value = "3";
-            editor.AllowHttp = true;
             (await editor.SaveDialogAsync()).Should().BeTrue();
             ExtensionConfigSnapshot config = await manager.ReadConfigAsync(EngineId);
             config.Values["limit"].Should().Be("3");
@@ -191,8 +283,6 @@ public sealed class ExtensionConfigurationDialogTests
             editor.Fields.Single().Value.Should().Be("3");
             editor.IsEditorBusy.Should().BeFalse();
             (await manager.ReadConfigAsync(copyId)).Values["reserved-option"].Should().Be("retain-me");
-            services.TranslationExtensions.Authorization.Get(EngineId).Http.Should().BeTrue();
-            services.TranslationExtensions.Authorization.Get(copyId).Http.Should().BeFalse();
             return 0;
         }, CancellationToken.None);
     }
@@ -203,22 +293,28 @@ public sealed class ExtensionConfigurationDialogTests
                           open System.Threading.Tasks
                           open Patchouli.Extensions.Contracts
                           open Patchouli.Extensions.Sdk
-                          let limit = Config.bind "limit" (Field.integer "并发项数" 4 |> Field.range 1 {{maximum}})
-                          let fields = Config.fields [ Config.asField limit ]
-                          let extension : ITranslationExtension =
-                              { new ITranslationExtension with
-                                  member _.Descriptor = ExtensionDescriptor("{{EngineId}}", "界面测试引擎", "1.0", "用于验证表单与源码编辑。")
-                                  member _.ConfigFields = fields
-                                  member _.ClearDerivedStateAsync(_) = Task.CompletedTask
-                                  member _.TranslateAsync(context, _, _) =
-                                      Task.FromResult(TranslationExtensionResult([||])) }
+                          [<Settings>]
+                          type Settings = {
+                              [<Field("并发项数", Kind = ConfigValueKind.Integer)>]
+                              [<Range(1, {{maximum}})>]
+                              [<Default(4)>]
+                              Limit: int
+                          }
+
+                          /// <summary>用于验证表单与源码编辑。</summary>
+                          /// <patchouli-extension id="{{EngineId}}" kind="translation" version="1.0.0" host-api="patchouli.extensions/3"><name>界面测试引擎</name></patchouli-extension>
+                          let extension = Extension.createTranslation<Settings> (fun _ _ _ _ -> Task.CompletedTask)
                           """;
         return new ExtensionPackageSnapshot(EngineId, new Dictionary<string, string>
         {
-            ["extension.yml"] =
-                $"id: {EngineId}\nversion: 1.0\nhost_api: patchouli.extensions/1\nkind: translation\nentry: main.fsx",
             ["main.fsx"] = source
         });
+    }
+
+    private static ExtensionConfigFieldViewModel Field(string key, string value)
+    {
+        ConfigFieldDescriptor descriptor = new(key, key, ConfigValueKind.Text, false, "", value);
+        return new ExtensionConfigFieldViewModel(descriptor, value, []);
     }
 
     private static async Task<ExtensionConfigurationDialog> WaitForDialogAsync(Window owner)

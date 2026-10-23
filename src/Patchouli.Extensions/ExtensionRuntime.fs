@@ -9,7 +9,8 @@ open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
-open FSharp.Compiler.Interactive.Shell
+open System.Reflection
+open System.Runtime.Loader
 open Patchouli.Core.Ids
 open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
@@ -34,7 +35,11 @@ type ILastKnownGoodExtensionFileStore =
     abstract PersistLastKnownGoodSnapshotAsync: ExtensionPackageSnapshot * CancellationToken -> Task
     abstract ReadLastKnownGoodSnapshotAsync: id: string * fingerprint: string * CancellationToken -> Task<ExtensionPackageSnapshot option>
 
-/// One evaluated FSI generation. Its session is disposed only after it is retired and its leases drain.
+type IPackageExtensionFileStore =
+    abstract ReadPackageAsync: id: string * CancellationToken -> Task<ExtensionPackageSnapshot>
+    abstract WritePackageAsync: ExtensionPackageSnapshot * CancellationToken -> Task
+
+/// One compiled extension loaded in a collectible context.
 type IExtensionGeneration =
     inherit IAsyncDisposable
     abstract Translation: ITranslationExtension
@@ -47,18 +52,14 @@ type IExtensionGenerationLoader =
 type ICheckedExtensionGenerationLoader =
     abstract LoadCheckedAsync: ExtensionPackageSnapshot * ExtensionCheckResult * CancellationToken -> Task<IExtensionGeneration>
 
+/// Optional compiler result hand-off that avoids checking and compiling the same package twice.
+/// Optional generation loader that consumes the exact artifact produced by its source checker.
+type ICompiledExtensionGenerationLoader =
+    abstract LoadCompiledAsync: ExtensionPackageSnapshot * ExtensionCompilationResult * CancellationToken -> Task<IExtensionGeneration>
+
 /// Optional newer contract carried by generations that export more than translation.
 type IExtensionGenerationDefinition =
     abstract Definition: IExtensionDefinition
-
-[<Sealed>]
-type private FsiInitializationException(diagnostics: ExtensionDiagnostic array) =
-    inherit Exception(String.Join(Environment.NewLine,
-        diagnostics |> Array.map (fun issue ->
-            let location = issue.Location
-            sprintf "%s(%d,%d): %s %s" location.FileName location.Line location.Column
-                issue.Code issue.Message)))
-    member _.Diagnostics = diagnostics
 
 [<Sealed>]
 type FileExtensionStore(runtimeDirectory: string) =
@@ -83,6 +84,7 @@ type FileExtensionStore(runtimeDirectory: string) =
         match Path.GetDirectoryName path with
         | null -> invalidArg "path" "The target path must have a parent directory."
         | parent -> Directory.CreateDirectory(parent) |> ignore
+    let isBinaryPath (path: string) = not (ExtensionPackageSnapshot.IsTextSourcePath(path))
     let readState id = task {
         let path = statePath id
         if not (File.Exists path) then return (None, None)
@@ -100,11 +102,16 @@ type FileExtensionStore(runtimeDirectory: string) =
         if not (Directory.Exists path) then return None
         else
             let sources = Dictionary<string, string>(StringComparer.Ordinal)
+            let binaryFiles = Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal)
             for filePath in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories) do
                 let relative = Path.GetRelativePath(path, filePath).Replace('\\', '/')
-                let! content = File.ReadAllTextAsync(filePath)
-                sources[relative] <- content
-            let package = ExtensionPackageSnapshot(id, sources)
+                if isBinaryPath relative then
+                    let! content = File.ReadAllBytesAsync(filePath)
+                    binaryFiles[relative] <- ReadOnlyMemory<byte>(content)
+                else
+                    let! content = File.ReadAllTextAsync(filePath)
+                    sources[relative] <- content
+            let package = ExtensionPackageSnapshot(id, sources, binaryFiles)
             return if package.Fingerprint = fingerprint then Some package else None
     }
     let readPackage id fingerprint = readPackageAt id fingerprint (generationDirectory id fingerprint)
@@ -131,7 +138,8 @@ type FileExtensionStore(runtimeDirectory: string) =
                     if not (relative.StartsWith(".generations/", StringComparison.Ordinal))
                         && not (relative.StartsWith(".lkg/", StringComparison.OrdinalIgnoreCase))
                         && relative <> "extension-state.json" && relative <> "config.json"
-                        && not (relative.EndsWith(".tmp", StringComparison.Ordinal)) then
+                         && not (relative.EndsWith(".tmp", StringComparison.Ordinal))
+                         && not (isBinaryPath relative) then
                         let! content = File.ReadAllTextAsync(path, cancellationToken)
                         sources[relative] <- content
             return sources :> IReadOnlyDictionary<string, string>
@@ -156,8 +164,8 @@ type FileExtensionStore(runtimeDirectory: string) =
                     if not (relative.StartsWith(".generations/", StringComparison.Ordinal))
                         && not (relative.StartsWith(".lkg/", StringComparison.OrdinalIgnoreCase))
                         && relative <> "extension-state.json" && relative <> "config.json"
-                        && not (relative.EndsWith(".tmp", StringComparison.Ordinal))
-                        && not (normalizedSources.ContainsKey(relative)) then
+                         && not (relative.EndsWith(".tmp", StringComparison.Ordinal))
+                         && not (normalizedSources.ContainsKey(relative)) && not (isBinaryPath relative) then
                         File.Delete(existingPath)
             for KeyValue(normalized, content) in normalizedSources do
                 let path = Path.Combine(target, normalized.Replace('/', Path.DirectorySeparatorChar))
@@ -201,6 +209,12 @@ type FileExtensionStore(runtimeDirectory: string) =
                         let path = Path.Combine(staging, normalized.Replace('/', Path.DirectorySeparatorChar))
                         createParentDirectory path
                         do! File.WriteAllTextAsync(path, content, cancellationToken)
+                    for KeyValue(relative, content) in package.BinaryFiles do
+                        cancellationToken.ThrowIfCancellationRequested()
+                        let normalized = ExtensionPackageSnapshot.NormalizeSourcePath(relative)
+                        let path = Path.Combine(staging, normalized.Replace('/', Path.DirectorySeparatorChar))
+                        createParentDirectory path
+                        do! File.WriteAllBytesAsync(path, content.ToArray(), cancellationToken)
                     let! verified = readPackageAt package.Id package.Fingerprint staging
                     if verified.IsNone then
                         invalidOp "The staged extension snapshot failed its content fingerprint check."
@@ -264,6 +278,12 @@ type FileExtensionStore(runtimeDirectory: string) =
                         let path = Path.Combine(staging, normalized.Replace('/', Path.DirectorySeparatorChar))
                         createParentDirectory path
                         do! File.WriteAllTextAsync(path, content, cancellationToken)
+                    for KeyValue(relative, content) in package.BinaryFiles do
+                        cancellationToken.ThrowIfCancellationRequested()
+                        let normalized = ExtensionPackageSnapshot.NormalizeSourcePath(relative)
+                        let path = Path.Combine(staging, normalized.Replace('/', Path.DirectorySeparatorChar))
+                        createParentDirectory path
+                        do! File.WriteAllBytesAsync(path, content.ToArray(), cancellationToken)
                     let! verified = readPackageAt package.Id package.Fingerprint staging
                     if verified.IsNone then
                         invalidOp "The staged Last Known Good snapshot failed its content fingerprint check."
@@ -281,151 +301,252 @@ type FileExtensionStore(runtimeDirectory: string) =
             cancellationToken.ThrowIfCancellationRequested()
             return! readLastKnownGoodPackage id fingerprint
         }
+    interface IPackageExtensionFileStore with
+        member this.WritePackageAsync(package, cancellationToken) = task {
+            do! (this :> IExtensionFileStore).WriteSourcesAsync(package.Id, package.Sources, cancellationToken)
+            for KeyValue(relative, content) in package.BinaryFiles do
+                let normalized = ExtensionPackageSnapshot.NormalizeSourcePath(relative)
+                let path = Path.Combine(directory package.Id, normalized.Replace('/', Path.DirectorySeparatorChar))
+                createParentDirectory path
+                let staging = path + ".tmp"
+                do! File.WriteAllBytesAsync(staging, content.ToArray(), cancellationToken)
+                File.Move(staging, path, true)
+        }
+        member _.ReadPackageAsync(id, cancellationToken) = task {
+            cancellationToken.ThrowIfCancellationRequested()
+            let basePath = directory id
+            let sources = Dictionary<string, string>(StringComparer.Ordinal)
+            let binaryFiles = Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal)
+            if Directory.Exists basePath then
+                for path in Directory.EnumerateFiles(basePath, "*", SearchOption.AllDirectories) do
+                    let relative = Path.GetRelativePath(basePath, path).Replace('\\', '/')
+                    if not (relative.StartsWith(".generations/", StringComparison.Ordinal))
+                       && not (relative.StartsWith(".lkg/", StringComparison.OrdinalIgnoreCase))
+                       && relative <> "extension-state.json" && relative <> "config.json"
+                       && not (relative.EndsWith(".tmp", StringComparison.Ordinal)) then
+                        if isBinaryPath relative then
+                            let! content = File.ReadAllBytesAsync(path, cancellationToken)
+                            binaryFiles[relative] <- ReadOnlyMemory<byte>(content)
+                        else
+                            let! content = File.ReadAllTextAsync(path, cancellationToken)
+                            sources[relative] <- content
+            return ExtensionPackageSnapshot(id, sources, binaryFiles)
+        }
 
 [<Sealed>]
-type FsiExtensionGenerationLoader(runtimeDirectory: string) =
-    let createParentDirectory (path: string) =
-        match Path.GetDirectoryName path with
-        | null -> invalidArg "path" "The target path must have a parent directory."
-        | parent -> Directory.CreateDirectory(parent) |> ignore
-    let disposeExtensionAndSession (extension: obj) (session: FsiEvaluationSession) =
-        ValueTask(task {
-            try
-                match extension with
-                | :? IAsyncDisposable as asyncDisposable -> do! asyncDisposable.DisposeAsync().AsTask()
-                | :? IDisposable as disposable -> disposable.Dispose()
-                | _ -> ()
-            finally
-                (session :> IDisposable).Dispose()
-        })
-    new() = FsiExtensionGenerationLoader(Path.Combine(Path.GetTempPath(), "patchouli-extension-generations"))
+type private ExtensionLoadContext(artifactDirectory: string) =
+    inherit AssemblyLoadContext("patchouli-extension-" + Guid.NewGuid().ToString("N"), true)
+    let sharedNames = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    let defaultAssemblies = Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase)
+    let managedDependencies = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    let nativeDependencies = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    do
+        for frameworkReference in RuntimeFrameworkReferences.paths() do
+            match Path.GetFileNameWithoutExtension(frameworkReference) |> Option.ofObj with
+            | Some simpleName when not (String.IsNullOrWhiteSpace simpleName) -> sharedNames.Add(simpleName) |> ignore
+            | _ -> ()
+        for assembly in
+            [| typeof<Patchouli.Core.Ids.DocumentInstanceId>.Assembly
+               typeof<IExtensionDefinition>.Assembly
+               typeof<ExtensionCompilationProcess>.Assembly
+               typeof<int option>.Assembly |] do
+            match Option.ofObj (assembly.GetName().Name) with
+            | Some name -> sharedNames.Add(name) |> ignore
+            | None -> ()
+        for assembly in AssemblyLoadContext.Default.Assemblies do
+            match Option.ofObj (assembly.GetName().Name) with
+            | Some name -> defaultAssemblies.TryAdd(name, assembly) |> ignore
+            | None -> ()
+        if Directory.Exists artifactDirectory then
+            for path in Directory.EnumerateFiles(artifactDirectory, "*", SearchOption.AllDirectories) |> Seq.sort do
+                let extension = Path.GetExtension(path) |> Option.ofObj |> Option.defaultValue "" |> fun value -> value.ToLowerInvariant()
+                let fileName = Path.GetFileName(path) |> Option.ofObj |> Option.defaultValue ""
+                let simpleName = Path.GetFileNameWithoutExtension(path) |> Option.ofObj |> Option.defaultValue ""
+                if extension = ".dll" && not (String.IsNullOrWhiteSpace simpleName) then
+                    managedDependencies.TryAdd(simpleName, Path.GetFullPath path) |> ignore
+                if extension = ".dll" || extension = ".so" || extension = ".dylib" then
+                    if not (String.IsNullOrWhiteSpace fileName) then nativeDependencies.TryAdd(fileName, Path.GetFullPath path) |> ignore
+                    if not (String.IsNullOrWhiteSpace simpleName) then
+                        nativeDependencies.TryAdd(simpleName, Path.GetFullPath path) |> ignore
+                        if simpleName.StartsWith("lib", StringComparison.OrdinalIgnoreCase) && simpleName.Length > 3 then
+                            nativeDependencies.TryAdd(simpleName.Substring(3), Path.GetFullPath path) |> ignore
+    override this.Load(assemblyName: AssemblyName) =
+        match Option.ofObj assemblyName.Name with
+        | None -> null
+        | Some name ->
+            if sharedNames.Contains name then
+                match defaultAssemblies.TryGetValue name with
+                | true, assembly -> assembly
+                | _ -> null
+            else
+                match managedDependencies.TryGetValue name with
+                | true, path -> this.LoadFromAssemblyPath path
+                | _ ->
+                    match defaultAssemblies.TryGetValue name with
+                    | true, assembly -> assembly
+                    | _ -> null
+    override this.LoadUnmanagedDll(name: string) =
+        let fileName = Path.GetFileName(name) |> Option.ofObj |> Option.defaultValue name
+        let withoutExtension = Path.GetFileNameWithoutExtension(fileName) |> Option.ofObj |> Option.defaultValue fileName
+        match nativeDependencies.TryGetValue name with
+        | true, path -> this.LoadUnmanagedDllFromPath path
+        | _ ->
+            match nativeDependencies.TryGetValue fileName with
+            | true, path -> this.LoadUnmanagedDllFromPath path
+            | _ ->
+                match nativeDependencies.TryGetValue withoutExtension with
+                | true, path -> this.LoadUnmanagedDllFromPath path
+                | _ -> IntPtr.Zero
+
+[<Sealed>]
+type private CompiledExtensionGeneration(packageId: string, context: AssemblyLoadContext, rawExtension: IExtensionDefinition,
+                                         definition: IExtensionDefinition) =
+    let mutable context = Some context
+    let mutable rawExtension = Some rawExtension
+    let mutable definition = Some definition
+    let current () =
+        match definition with
+        | Some value -> value
+        | None -> raise (ObjectDisposedException(nameof CompiledExtensionGeneration))
+    interface IExtensionGeneration with
+        member _.Translation =
+            match current () with
+            | :? ITranslationExtension as value -> value
+            | _ -> invalidOp "This generation does not contain a translation extension."
+        member _.DisposeAsync() =
+            ValueTask(task {
+                match rawExtension with
+                | Some (:? IAsyncDisposable as value) ->
+                    try do! value.DisposeAsync().AsTask()
+                    finally
+                        rawExtension <- None
+                        definition <- None
+                        match context with
+                        | Some value -> ExtensionUnload.unload packageId value; context <- None
+                        | None -> ()
+                | Some (:? IDisposable as value) ->
+                    try value.Dispose()
+                    finally
+                        rawExtension <- None
+                        definition <- None
+                        match context with
+                        | Some value -> ExtensionUnload.unload packageId value; context <- None
+                        | None -> ()
+                | _ ->
+                    rawExtension <- None
+                    definition <- None
+                    match context with
+                    | Some value -> ExtensionUnload.unload packageId value; context <- None
+                    | None -> ()
+            })
+    interface IExtensionGenerationDefinition with
+        member _.Definition = current ()
+
+[<Sealed>]
+type CompiledExtensionGenerationLoader(runtimeDirectory: string) =
+    let compilationProcess = ExtensionCompilationProcess(runtimeDirectory)
+    let artifactRoot = Path.Combine(Path.GetFullPath runtimeDirectory, ".compiled")
+    let load (package: ExtensionPackageSnapshot) (result: ExtensionCompilationResult) (token: CancellationToken) = task {
+        token.ThrowIfCancellationRequested()
+        if not result.CheckResult.Succeeded then invalidOp "Cannot load an extension whose static compilation failed."
+        if not (File.Exists result.AssemblyPath) then
+            invalidOp "The compiled extension assembly is missing from its artifact bundle."
+        let context = ExtensionLoadContext(result.ArtifactDirectory)
+        try
+            use stream = File.OpenRead result.AssemblyPath
+            let assembly = context.LoadFromStream stream
+            let metadata = ExtensionEntryMetadata.Parse(package)
+            let exports =
+                assembly.GetTypes()
+                |> Array.collect (fun candidate ->
+                    candidate.GetProperties(BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Static)
+                    |> Array.filter (fun property -> property.Name = "__patchouli_extension_contract"))
+            if exports.Length <> 1 then
+                invalidOp "Compiled assembly must contain exactly one compiler-generated entrypoint."
+            let export =
+                match exports[0].GetValue(null) with
+                | :? IExtensionDefinition as value -> value
+                | _ -> invalidOp "Compiled assembly has no typed extension definition."
+            let fields = result.CheckResult.ConfigFields
+            let projected =
+                match export with
+                | :? ITranslationExtension as extension ->
+                    { new ITranslationExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.ClearDerivedStateAsync(token) = extension.ClearDerivedStateAsync(token)
+                        member _.RunAsync(job, resources, token) =
+                            ExecutionScope.run job.Info.Options.Concurrency (Job.progress job) token (fun () -> task {
+                                do! extension.RunAsync(job, resources, token)
+                                return () })
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? IMetadataExtension as extension ->
+                    { new IMetadataExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.SourceDefinition = extension.SourceDefinition
+                        member _.LookupAsync(identifier, config, resources, token) =
+                            extension.LookupAsync(identifier, config, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? IOcrExtension as extension ->
+                    { new IOcrExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.RecognizeAsync(context, resources, token) = extension.RecognizeAsync(context, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? IRetrievalExtension as extension ->
+                    { new IRetrievalExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.RankAsync(context, resources, token) = extension.RankAsync(context, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
+                | _ -> invalidOp "Compiled extension kind is not supported by this host API."
+            return CompiledExtensionGeneration(package.Id, context, export, projected) :> IExtensionGeneration
+        with error ->
+            context.Unload()
+            return raise error
+    }
+    member _.CompileAsync(package, token) = compilationProcess.CompileAsync(package, token)
+    interface ICompiledExtensionSourceChecker with
+        member this.CompileAsync(package, token) = this.CompileAsync(package, token)
+    interface IExtensionSourceChecker with
+        member this.CheckAsync(package, token) = task {
+            let! compilation = this.CompileAsync(package, token)
+            return compilation.CheckResult
+        }
+    interface ICompiledExtensionGenerationLoader with
+        member _.LoadCompiledAsync(package, compilation, token) = load package compilation token
     interface IExtensionGenerationLoader with
-        member _.LoadAsync(package, cancellationToken) = backgroundTask {
-            cancellationToken.ThrowIfCancellationRequested()
-            match package.Sources.TryGetValue("main.fsx") with
-            | false, _ -> return raise (InvalidOperationException("Extension package is missing main.fsx."))
-            | true, source ->
-                let generationPath = Path.Combine(Path.GetFullPath runtimeDirectory, package.Id, package.Fingerprint)
-                Directory.CreateDirectory generationPath |> ignore
-                for KeyValue(relative, content) in package.Sources do
-                    let normalized = ExtensionPackageSnapshot.NormalizeSourcePath(relative)
-                    let path = Path.Combine(generationPath, normalized.Replace('/', Path.DirectorySeparatorChar))
-                    createParentDirectory path
-                    if not (File.Exists path) then do! File.WriteAllTextAsync(path, content, cancellationToken)
-                    else
-                        let! existing = File.ReadAllTextAsync(path, cancellationToken)
-                        if not (String.Equals(existing, content, StringComparison.Ordinal)) then
-                            invalidOp "A generation staging path contains different source content."
-                let output = new StringWriter()
-                let error = new StringWriter()
-                let configuration = FsiEvaluationSession.GetDefaultConfiguration()
-                let arguments =
-                    Array.append
-                        [| "fsi.exe"; "--noninteractive"; "--nologo"; "--readline-"; "--gui-"
-                           "--langversion:10.0"; "--checknulls+"; "--multiemit-"
-                           "--reference:" + typeof<ITranslationExtension>.Assembly.Location
-                           "--reference:" + typeof<DocumentInstanceId>.Assembly.Location
-                           "--reference:" + typeof<ExtensionCompiler>.Assembly.Location
-                           "--usesdkrefs-" |]
-                        (RuntimeFrameworkReferences.compilerFlags())
-                // FSI's default multi-emit path loads byte arrays into the non-collectible ALC;
-                // single-emit honors the collectible setting passed to Create below.
-                let session = FsiEvaluationSession.Create(configuration, arguments, new StringReader(""), output, error, collectible = true)
-                let raiseFsiDiagnostics (items: FSharp.Compiler.Diagnostics.FSharpDiagnostic array) =
-                    let errors = items |> Array.filter (fun item -> item.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
-                    if errors.Length > 0 then
-                        let issues = errors |> Array.map (fun item ->
-                            let file =
-                                if String.IsNullOrWhiteSpace item.FileName then "main.fsx"
-                                else
-                                    try
-                                        let fullPath =
-                                            if Path.IsPathRooted item.FileName then Path.GetFullPath item.FileName
-                                            else Path.GetFullPath(Path.Combine(generationPath, item.FileName))
-                                        let relative = Path.GetRelativePath(generationPath, fullPath).Replace('\\', '/')
-                                        if Path.IsPathRooted relative || relative = ".."
-                                           || relative.StartsWith("../", StringComparison.Ordinal) then "main.fsx"
-                                        else relative
-                                    with :? ArgumentException -> "main.fsx"
-                            ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, item.ErrorNumberText,
-                                item.Message, ExtensionSourceLocation(file, max 1 item.StartLine, item.StartColumn,
-                                    max 1 item.EndLine, item.EndColumn)))
-                        raise (FsiInitializationException issues)
-                try
-                    let mainPath = Path.Combine(generationPath, "main.fsx")
-                    let includePath = sprintf "#I @\"%s\"" generationPath
-                    let includeOutcome, includeDiagnostics = session.EvalInteractionNonThrowing(includePath, mainPath)
-                    raiseFsiDiagnostics includeDiagnostics
-                    match includeOutcome with
-                    | Choice2Of2 failure -> raise failure
-                    | Choice1Of2 _ -> ()
-                    let outcome, diagnostics = session.EvalInteractionNonThrowing(source, mainPath)
-                    raiseFsiDiagnostics diagnostics
-                    match outcome with
-                    | Choice2Of2 failure -> raise failure
-                    | Choice1Of2 _ -> ()
-                    let value, expressionDiagnostics = session.EvalExpressionNonThrowing("extension", mainPath)
-                    raiseFsiDiagnostics expressionDiagnostics
-                    let reflected =
-                        match value with
-                        | Choice1Of2 (Some result) -> result.ReflectionValue
-                        | Choice1Of2 None -> null
-                        | Choice2Of2 failure -> raise failure
-                    match reflected with
-                    | :? ITranslationExtension as extension ->
-                        let scopedExtension =
-                            { new ITranslationExtension with
-                                member _.Descriptor = extension.Descriptor
-                                member _.ConfigFields = extension.ConfigFields
-                                member _.ClearDerivedStateAsync(token) = extension.ClearDerivedStateAsync(token)
-                                member _.TranslateAsync(context, capabilities, token) =
-                                    let concurrency =
-                                        match context.Config.Values.TryGetValue("concurrency") with
-                                        | true, configured ->
-                                            match Int32.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture) with
-                                            | true, value when value >= 1 && value <= 32 -> value
-                                            | _ -> invalidOp "The frozen extension concurrency setting must be an integer from 1 through 32."
-                                        | false, _ ->
-                                            let fallback =
-                                                match Option.ofObj context.Options with
-                                                | Some options -> options.Concurrency
-                                                | None -> 4
-                                            if fallback < 1 || fallback > 32 then
-                                                invalidOp "The extension concurrency option must be from 1 through 32."
-                                            fallback
-                                    ExecutionScope.run concurrency context.Progress token (fun () ->
-                                        extension.TranslateAsync(context, capabilities, token)) }
-                        return
-                            { new IExtensionGeneration with
-                                member _.Translation = scopedExtension
-                                member _.DisposeAsync() = disposeExtensionAndSession (extension :> obj) session
-                              interface IExtensionGenerationDefinition with
-                                member _.Definition = scopedExtension }
-                    | :? IMetadataExtension as extension ->
-                        return
-                            { new IExtensionGeneration with
-                                member _.Translation = invalidOp "This generation exports a metadata extension."
-                                member _.DisposeAsync() = disposeExtensionAndSession (extension :> obj) session
-                              interface IExtensionGenerationDefinition with
-                                member _.Definition = extension }
-                    | :? IOcrExtension as extension ->
-                        return
-                            { new IExtensionGeneration with
-                                member _.Translation = invalidOp "This generation exports an OCR extension."
-                                member _.DisposeAsync() = disposeExtensionAndSession (extension :> obj) session
-                              interface IExtensionGenerationDefinition with
-                                member _.Definition = extension }
-                    | :? IRetrievalExtension as extension ->
-                        return
-                            { new IExtensionGeneration with
-                                member _.Translation = invalidOp "This generation exports a retrieval extension."
-                                member _.DisposeAsync() = disposeExtensionAndSession (extension :> obj) session
-                              interface IExtensionGenerationDefinition with
-                                member _.Definition = extension }
-                    | _ -> return raise (InvalidOperationException("The script must declare an extension value implementing IExtensionDefinition."))
-                with error ->
-                    (session :> IDisposable).Dispose()
-                    return raise error
+        member _.LoadAsync(package, token) = task {
+            let! result = compilationProcess.CompileAsync(package, token)
+            if not result.CheckResult.Succeeded then
+                let message = result.CheckResult.Diagnostics |> Seq.map (fun issue -> issue.Message) |> String.concat Environment.NewLine
+                return raise (InvalidOperationException(message))
+            else return! load package result token
+        }
+    interface ICheckedExtensionGenerationLoader with
+        member _.LoadCheckedAsync(package, checkResult, token) = task {
+            if not checkResult.Succeeded then invalidOp "Cannot load an extension whose static check failed."
+            let result =
+                ExtensionArtifact.tryReadCached package artifactRoot (ExtensionArtifact.runtimeToolchainIdentity())
+                |> Option.defaultWith (fun () -> invalidOp "The checked extension has no cached compiled artifact; recheck it before loading.")
+            return! load package result token
         }
 
 [<Sealed>]
@@ -437,11 +558,32 @@ type private ActiveGeneration(package: ExtensionPackageSnapshot, generation: IEx
     let mutable retired = false
     let mutable disposed = false
     let mutable disposalCompleted = false
+    let mutable generationReference = Some generation
+    let mutable definitionReference = Some definition
     let mutable configSnapshot = config
     let frozenConfigFields = Array.AsReadOnly(configFields |> Seq.toArray)
+    let releaseGeneration () = task {
+        try
+            try
+                match generationReference with
+                | Some value ->
+                    do! ExtensionDiagnostics.segmentTask "extension.generation.release" package.Id package.Fingerprint
+                            (fun () -> task { do! value.DisposeAsync().AsTask() })
+                | None -> ()
+            with error ->
+                System.Diagnostics.Trace.WriteLine(
+                    "Extension resources could not be fully released (" + error.GetType().Name + "). Restart the application if old code remains active.")
+        finally
+            lock gate (fun () ->
+                generationReference <- None
+                definitionReference <- None
+                disposalCompleted <- true)
+    }
     member _.Package = package
-    member _.Generation = generation
-    member _.Definition = definition
+    member _.Definition =
+        match definitionReference with
+        | Some value -> value
+        | None -> raise (ObjectDisposedException(nameof ActiveGeneration))
     member _.Descriptor = descriptor
     member _.ConfigFields = frozenConfigFields
     member _.Config = lock gate (fun () -> configSnapshot)
@@ -459,8 +601,7 @@ type private ActiveGeneration(package: ExtensionPackageSnapshot, generation: IEx
                 true
             else false)
         if dispose then
-            do! generation.DisposeAsync().AsTask()
-            lock gate (fun () -> disposalCompleted <- true)
+            do! releaseGeneration ()
     }
     member _.ReleaseAsync() = task {
         let dispose = lock gate (fun () ->
@@ -470,46 +611,53 @@ type private ActiveGeneration(package: ExtensionPackageSnapshot, generation: IEx
                 true
             else false)
         if dispose then
-            do! generation.DisposeAsync().AsTask()
-            lock gate (fun () -> disposalCompleted <- true)
+            do! releaseGeneration ()
     }
 
 [<Sealed>]
 type private ExtensionLease(active: ActiveGeneration) =
     let mutable disposed = 0
     let config = active.Config
+    let mutable generation = Some active
+    let current () =
+        match generation with
+        | Some value -> value
+        | None -> raise (ObjectDisposedException(nameof ExtensionLease))
     do active.Acquire()
     interface IExtensionLease with
-        member _.Descriptor = active.Descriptor
-        member _.Fingerprint = active.Package.Fingerprint
+        member _.Descriptor = (current ()).Descriptor
+        member _.Fingerprint = (current ()).Package.Fingerprint
         member _.Config = config
-        member _.ConfigFields = active.ConfigFields
-        member _.Definition = active.Definition
+        member _.ConfigFields = (current ()).ConfigFields
+        member _.Definition = (current ()).Definition
         member _.Translation =
-            match active.Definition with
+            match (current ()).Definition with
             | :? ITranslationExtension as extension -> extension
             | _ -> invalidOp "This lease does not contain a translation extension."
         member _.Metadata =
-            match active.Definition with
+            match (current ()).Definition with
             | :? IMetadataExtension as extension -> Some extension
             | _ -> None
             |> Option.toObj
         member _.Ocr =
-            match active.Definition with
+            match (current ()).Definition with
             | :? IOcrExtension as extension -> Some extension
             | _ -> None
             |> Option.toObj
         member _.Retrieval =
-            match active.Definition with
+            match (current ()).Definition with
             | :? IRetrievalExtension as extension -> Some extension
             | _ -> None
             |> Option.toObj
         member _.DisposeAsync() =
-            if Interlocked.Exchange(&disposed, 1) = 0 then ValueTask(active.ReleaseAsync())
+            if Interlocked.Exchange(&disposed, 1) = 0 then
+                let value = current ()
+                generation <- None
+                ValueTask(value.ReleaseAsync())
             else ValueTask.CompletedTask
 
 [<Sealed>]
-type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabilities,
+type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionResources,
                       fileStore: IExtensionFileStore, generationLoader: IExtensionGenerationLoader,
                       sourceChecker: IExtensionSourceChecker) =
     let gate = new SemaphoreSlim(1, 1)
@@ -523,7 +671,85 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
     let mutable checkStopping = false
     let mutable activeOperations = 0
     let mutable operationDrain: TaskCompletionSource<unit> option = None
+    let mutable compiledCleanupRequested = false
     let mutable disposed = false
+
+    let cleanUnretainedCompiledArtifacts () = task {
+        try
+            let compiledRoot = Path.Combine(Path.GetFullPath runtimeDirectory, ".compiled")
+            if Directory.Exists compiledRoot then
+                let identity = ExtensionArtifact.runtimeToolchainIdentity()
+                let manifests =
+                    Directory.EnumerateDirectories(compiledRoot)
+                    |> Seq.choose (fun path -> ExtensionArtifact.tryRead path |> Option.map (fun manifest -> path, manifest))
+                    |> Seq.toArray
+                let persistedLastKnownGood = HashSet<string>(StringComparer.Ordinal)
+                let failedLastKnownGoodReads = HashSet<string>(StringComparer.Ordinal)
+                match fileStore with
+                | :? IPersistentExtensionFileStore as persistent ->
+                    for packageId in manifests |> Array.map (fun (_, manifest) -> manifest.PackageId) |> Array.distinct do
+                        try
+                            let! fingerprint = persistent.ReadLastKnownGoodFingerprintAsync(packageId, CancellationToken.None)
+                            fingerprint |> Option.iter (fun value -> persistedLastKnownGood.Add(value) |> ignore)
+                        with error ->
+                            failedLastKnownGoodReads.Add(packageId) |> ignore
+                            System.Diagnostics.Trace.TraceWarning(
+                                "Could not read the retained extension fingerprint ({0}); leaving its artifact untouched.",
+                                error.GetType().Name)
+                | _ -> ()
+
+                let cleanupCompleted = lock checkSync (fun () ->
+                    if activeOperations <> 0 then
+                        compiledCleanupRequested <- true
+                        false
+                    elif not (gate.Wait(0)) then
+                        compiledCleanupRequested <- true
+                        false
+                    else
+                        try
+                            let protectedFingerprints = HashSet<string>(persistedLastKnownGood, StringComparer.Ordinal)
+                            let protectedDirectories = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                            let protectPackageArtifact (package: ExtensionPackageSnapshot) =
+                                let key = ExtensionArtifact.artifactKey package identity
+                                protectedDirectories.Add(Path.GetFullPath(Path.Combine(compiledRoot, key))) |> ignore
+                            try
+                                for generation in active.Values do protectPackageArtifact generation.Package
+                                for generation in staged.Values do protectPackageArtifact generation.Package
+                                for generation in draining do
+                                    if not generation.IsDisposed then protectPackageArtifact generation.Package
+                                for KeyValue(_, fingerprint) in lastKnownGood do protectedFingerprints.Add(fingerprint) |> ignore
+                                for manifestPath, manifest in manifests do
+                                    if failedLastKnownGoodReads.Contains(manifest.PackageId) then
+                                        protectedFingerprints.Add(manifest.PackageFingerprint) |> ignore
+                                    if manifest.ToolchainIdentity = identity
+                                       && protectedFingerprints.Contains(manifest.PackageFingerprint) then
+                                        protectedDirectories.Add(Path.GetFullPath manifestPath) |> ignore
+                            finally gate.Release() |> ignore
+
+                            let mutable deletionFailed = false
+                            for path, _ in manifests do
+                                if not (protectedDirectories.Contains(Path.GetFullPath path)) then
+                                    try Directory.Delete(path, true)
+                                    with error ->
+                                        deletionFailed <- true
+                                        System.Diagnostics.Trace.TraceWarning(
+                                            "Could not remove an unretained compiled extension artifact ({0}); it will be retried later.",
+                                            error.GetType().Name)
+                            if deletionFailed then compiledCleanupRequested <- true
+                            true
+                        with error ->
+                            compiledCleanupRequested <- true
+                            System.Diagnostics.Trace.TraceWarning(
+                                "Compiled extension cache cleanup failed ({0}); the active extension remains unchanged.",
+                                error.GetType().Name)
+                            false)
+                if not cleanupCompleted then ()
+        with error ->
+            lock checkSync (fun () -> compiledCleanupRequested <- true)
+            System.Diagnostics.Trace.TraceWarning(
+                "Compiled extension cache cleanup failed ({0}); the active extension remains unchanged.",
+                error.GetType().Name)
+    }
 
     let beginCheck () =
         lock checkSync (fun () ->
@@ -535,23 +761,21 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                 true)
 
     let endCheck () =
-        let completed =
-            lock checkSync (fun () ->
-                activeOperations <- activeOperations - 1
-                if activeOperations = 0 then
-                    let drain = operationDrain
-                    operationDrain <- None
-                    drain
-                else None)
+        let completed, queueCleanup = lock checkSync (fun () ->
+            activeOperations <- activeOperations - 1
+            if activeOperations = 0 then
+                let drain = operationDrain
+                operationDrain <- None
+                let queue = compiledCleanupRequested
+                compiledCleanupRequested <- false
+                drain, queue
+            else None, false)
+        if queueCleanup then
+            Task.Run(Func<Task>(fun () -> cleanUnretainedCompiledArtifacts () :> Task)) |> ignore
         completed |> Option.iter (fun drain -> drain.TrySetResult(()) |> ignore)
 
     let loadFailure (error: exn) =
         match error with
-        | :? FsiInitializationException as fsiError ->
-            let issues = fsiError.Diagnostics |> Array.map (fun issue ->
-                ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "EXT0099",
-                    "Extension initialization failed: " + issue.Code + " " + issue.Message, issue.Location))
-            ExtensionCheckResult(false, [||], issues)
         | _ -> ExtensionCheckResult(false, [||], [| ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error,
                 "EXT0099", "Extension initialization failed: " + error.Message,
                 ExtensionSourceLocation("main.fsx", 1, 0, 1, 1)) |])
@@ -568,19 +792,6 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
         diagnostics[packageId] <- result.Diagnostics
         result
 
-    let packageKind (package: ExtensionPackageSnapshot) =
-        match package.Sources.TryGetValue("extension.yml") with
-        | true, text ->
-            let matched = Regex.Match(text, "(?m)^\\s*kind\\s*:\\s*['\"]?([^'\"#\\s]+)")
-            if matched.Success then
-                match matched.Groups[1].Value.ToLowerInvariant() with
-                | "metadata" -> ExtensionKind.Metadata
-                | "ocr" -> ExtensionKind.Ocr
-                | "retrieval" -> ExtensionKind.Retrieval
-                | _ -> ExtensionKind.Translation
-            else ExtensionKind.Translation
-        | _ -> ExtensionKind.Translation
-
     let resolveDefinition (generation: IExtensionGeneration) = task {
         try
             let definition =
@@ -594,18 +805,32 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
     }
 
     let loadCoreWhenAlive (package: ExtensionPackageSnapshot) (cancellationToken: CancellationToken) = task {
-        let! check = task {
-            try return! sourceChecker.CheckAsync(package, cancellationToken)
+        let! (check, compilation) = task {
+            try
+                return! ExtensionDiagnostics.segmentTaskResult "extension.manager.check" package.Id package.Fingerprint
+                            (fun (value: ExtensionCheckResult * ExtensionCompilationResult option) ->
+                                let check, _ = value
+                                seq { "extension.check.succeeded", (if check.Succeeded then "true" else "false") })
+                            (fun () -> task {
+                                match sourceChecker with
+                                | :? ICompiledExtensionSourceChecker as compiledChecker ->
+                                    let! result = compiledChecker.CompileAsync(package, cancellationToken)
+                                    return result.CheckResult, Some result
+                                | _ ->
+                                    let! result = sourceChecker.CheckAsync(package, cancellationToken)
+                                    return result, None
+                            })
             with
             | :? OperationCanceledException as error when cancellationToken.IsCancellationRequested -> return raise error
-            | error -> return loadFailure error |> rememberFailure package.Id
+            | error -> return (loadFailure error |> rememberFailure package.Id), None
         }
         if not check.Succeeded then
             diagnostics[package.Id] <- check.Diagnostics
             return check
         else
             let! capacityAvailable = task {
-                do! gate.WaitAsync(cancellationToken)
+                do! ExtensionDiagnostics.segmentTask "extension.manager.gate" package.Id package.Fingerprint
+                        (fun () -> task { do! gate.WaitAsync(cancellationToken) })
                 try
                     draining.RemoveAll(Predicate<ActiveGeneration>(fun value -> value.IsDisposed)) |> ignore
                     // Staged generations have no leases; release their process before reserving a replacement.
@@ -615,16 +840,20 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                         staged.Remove(package.Id) |> ignore
                     | _ -> ()
                     // The per-package keyed gate reserves capacity before a new process is started.
-                    return not (draining |> Seq.exists (fun value -> value.Package.Id = package.Id))
+                    // A retired generation may continue running under outstanding leases. It
+                    // does not prevent staging or atomically activating its replacement.
+                    return true
                 finally gate.Release() |> ignore
             }
             if not capacityAvailable then
-                return loadFailure (InvalidOperationException("An older extension generation is still draining; release its leases before loading another generation.")) |> rememberFailure package.Id
+                return loadFailure (InvalidOperationException("Extension activation capacity is unavailable.")) |> rememberFailure package.Id
             else
               let! persistError = task {
                   try
                       match fileStore with
-                      | :? IPersistentExtensionFileStore as persistent -> do! persistent.PersistSnapshotAsync(package, cancellationToken)
+                      | :? IPersistentExtensionFileStore as persistent ->
+                          do! ExtensionDiagnostics.segmentTask "extension.manager.persist" package.Id package.Fingerprint
+                                  (fun () -> task { do! persistent.PersistSnapshotAsync(package, cancellationToken) })
                       | _ -> ()
                       return None
                   with
@@ -637,9 +866,16 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                   let! generationResult = task {
                       try
                           let! value =
-                              match generationLoader with
-                              | :? ICheckedExtensionGenerationLoader as checkedLoader -> checkedLoader.LoadCheckedAsync(package, check, cancellationToken)
-                              | _ -> generationLoader.LoadAsync(package, cancellationToken)
+                              ExtensionDiagnostics.segmentTask "extension.manager.load" package.Id package.Fingerprint
+                                  (fun () ->
+                                       match compilation, generationLoader with
+                                       | Some compiled, (:? ICompiledExtensionGenerationLoader as compiledLoader) ->
+                                           compiledLoader.LoadCompiledAsync(package, compiled, cancellationToken)
+                                       | Some compiled, (:? ICheckedExtensionGenerationLoader as checkedLoader) ->
+                                           checkedLoader.LoadCheckedAsync(package, compiled.CheckResult, cancellationToken)
+                                       | None, (:? ICheckedExtensionGenerationLoader as checkedLoader) ->
+                                           checkedLoader.LoadCheckedAsync(package, check, cancellationToken)
+                                       | _ -> generationLoader.LoadAsync(package, cancellationToken))
                           return Choice1Of2 value
                       with
                       | :? OperationCanceledException as error when cancellationToken.IsCancellationRequested -> return raise error
@@ -648,28 +884,26 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                   match generationResult with
                   | Choice2Of2 error -> return loadFailure error |> rememberFailure package.Id
                   | Choice1Of2 generation ->
-                      let! (definition, descriptor) = resolveDefinition generation
-                      let expectedKind = packageKind package
-                      let manifestVersion =
-                          match package.Sources.TryGetValue("extension.yml") with
-                          | true, text ->
-                              let matched = Regex.Match(text, "(?m)^\\s*version\\s*:\\s*['\"]?([^'\"#\\s]+)")
-                              if matched.Success then Some matched.Groups[1].Value else None
-                          | _ -> None
+                      let! (definition, descriptor) =
+                          ExtensionDiagnostics.segmentTask "extension.manager.descriptor" package.Id package.Fingerprint
+                              (fun () -> resolveDefinition generation)
+                      let metadata = ExtensionEntryMetadata.Parse(package)
+                      let expectedKind = metadata.Kind
                       let kindMatches =
                           descriptor.Kind = expectedKind
                           && (expectedKind <> ExtensionKind.Metadata || definition :? IMetadataExtension)
                           && (expectedKind <> ExtensionKind.Ocr || definition :? IOcrExtension)
                           && (expectedKind <> ExtensionKind.Retrieval || definition :? IRetrievalExtension)
                           && (expectedKind <> ExtensionKind.Translation || definition :? ITranslationExtension)
-                      if descriptor.Id <> package.Id || descriptor.HostApi <> ExtensionHostApi.Current
-                         || not kindMatches || (manifestVersion |> Option.exists (fun version -> version <> descriptor.Version)) then
+                      if descriptor.Id <> metadata.Id || descriptor.HostApi <> metadata.HostApi
+                          || descriptor.Name <> metadata.Name || descriptor.Description <> metadata.Summary
+                          || descriptor.Version <> metadata.Version || not kindMatches then
                           do! generation.DisposeAsync().AsTask()
                           let code, message, file =
-                              if descriptor.Id <> package.Id then "EXT0002", "The extension descriptor id must match the package id.", "main.fsx"
-                              elif descriptor.HostApi <> ExtensionHostApi.Current then "EXT0007", "The extension descriptor targets an unsupported Patchouli host API.", "main.fsx"
-                              elif not kindMatches then "EXT0009", "The extension implementation kind must match extension.yml.", "extension.yml"
-                              else "EXT0008", "The extension descriptor version must match extension.yml.", "extension.yml"
+                              if descriptor.Id <> metadata.Id then "EXT0002", "The exported extension id must match entry metadata.", "main.fsx"
+                              elif descriptor.HostApi <> metadata.HostApi then "EXT0007", "The extension targets an unsupported Patchouli host API.", "main.fsx"
+                              elif not kindMatches then "EXT0009", "The extension implementation kind must match entry metadata.", "main.fsx"
+                              else "EXT0008", "The exported descriptor must be projected from entry metadata.", "main.fsx"
                           let issue = ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, code, message,
                               ExtensionSourceLocation(file, 1, 0, 1, 1))
                           let failed = ExtensionCheckResult(false, check.ConfigFields,
@@ -678,7 +912,9 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                       else
                           let! configResult = task {
                               try
-                                  let! value = fileStore.ReadConfigAsync(package.Id, cancellationToken)
+                                  let! value =
+                                      ExtensionDiagnostics.segmentTask "extension.manager.config" package.Id package.Fingerprint
+                                          (fun () -> fileStore.ReadConfigAsync(package.Id, cancellationToken))
                                   return Choice1Of2 value
                               with
                               | :? OperationCanceledException as error when cancellationToken.IsCancellationRequested ->
@@ -691,13 +927,11 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                           match configResult with
                           | Choice2Of2 error -> return loadFailure error |> rememberFailure package.Id
                           | Choice1Of2 config ->
-                              let requests: IReadOnlyList<ExtensionCapabilityRequest> =
-                                  Option.ofObj check.CapabilityRequests |> Option.defaultValue Array.empty
-                              let descriptor = descriptor.WithCapabilityRequests(requests)
                               let candidate = ActiveGeneration(package, generation, definition, descriptor, check.ConfigFields, config)
                               let! gateResult = task {
                                   try
-                                      do! gate.WaitAsync(cancellationToken)
+                                      do! ExtensionDiagnostics.segmentTask "extension.manager.gate" package.Id package.Fingerprint
+                                              (fun () -> task { do! gate.WaitAsync(cancellationToken) })
                                       return Ok ()
                                   with error -> return Error error
                               }
@@ -732,15 +966,18 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
         | error -> return loadFailure error |> rememberFailure package.Id
     }
 
-    new(runtimeDirectory: string, capabilities: IExtensionCapabilities,
+    new(runtimeDirectory: string, capabilities: IExtensionResources,
         fileStore: IExtensionFileStore, generationLoader: IExtensionGenerationLoader) =
-        ExtensionManager(runtimeDirectory, capabilities, fileStore, generationLoader,
-            ExtensionCompiler(Path.Combine(Path.GetFullPath runtimeDirectory, ".check")) :> IExtensionSourceChecker)
+        let sourceChecker =
+            match generationLoader with
+            | :? IExtensionSourceChecker as checker -> checker
+            | _ -> ExtensionCompilationProcess(runtimeDirectory) :> IExtensionSourceChecker
+        ExtensionManager(runtimeDirectory, capabilities, fileStore, generationLoader, sourceChecker)
 
-    new(runtimeDirectory: string, capabilities: IExtensionCapabilities) =
+    new(runtimeDirectory: string, capabilities: IExtensionResources) =
+        let loader = CompiledExtensionGenerationLoader(runtimeDirectory)
         ExtensionManager(runtimeDirectory, capabilities, FileExtensionStore(runtimeDirectory) :> IExtensionFileStore,
-            (let workerType = Type.GetType("Patchouli.Extensions.Worker.WorkerGenerationLoader, Patchouli.Extensions.Worker", throwOnError = true) |> nonNull
-             Activator.CreateInstance(workerType, [| box runtimeDirectory |]) |> nonNull :?> IExtensionGenerationLoader))
+            loader :> IExtensionGenerationLoader, loader :> IExtensionSourceChecker)
 
     member _.CheckAsync(package, cancellationToken) =
         runTrackedOperation (loadFailure (ObjectDisposedException(nameof ExtensionManager)))
@@ -749,7 +986,8 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
     member _.LoadAsync(package: ExtensionPackageSnapshot, cancellationToken: CancellationToken) =
         runTrackedOperation (loadFailure (ObjectDisposedException(nameof ExtensionManager))) (fun () -> task {
             let keyedGate = keyedGates.GetOrAdd(package.Id, fun _ -> new SemaphoreSlim(1, 1))
-            do! keyedGate.WaitAsync(cancellationToken)
+            do! ExtensionDiagnostics.segmentTask "extension.manager.keyed-gate" package.Id package.Fingerprint
+                    (fun () -> task { do! keyedGate.WaitAsync(cancellationToken) })
             try return! loadCore package cancellationToken
             finally keyedGate.Release() |> ignore
         })
@@ -758,7 +996,8 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
       runTrackedOperation (loadFailure (ObjectDisposedException(nameof ExtensionManager))) (fun () -> task {
         if id <> package.Id then invalidArg "id" "Activation id must match the package id."
         let keyedGate = keyedGates.GetOrAdd(id, fun _ -> new SemaphoreSlim(1, 1))
-        do! keyedGate.WaitAsync(cancellationToken)
+        do! ExtensionDiagnostics.segmentTask "extension.manager.keyed-gate" id package.Fingerprint
+                (fun () -> task { do! keyedGate.WaitAsync(cancellationToken) })
         try
             let! result = loadCore package cancellationToken
             if not result.Succeeded then return result
@@ -782,12 +1021,14 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
                             match fileStore with
                             | :? IPersistentExtensionFileStore as persistent ->
                                 // Persisting the pointer is the activation commit point; finish the in-memory swap after it.
-                                do! persistent.SaveStateAsync(id, Some candidate.Package.Fingerprint, lkg, CancellationToken.None)
+                                do! ExtensionDiagnostics.segmentTask "extension.manager.persist" id package.Fingerprint
+                                        (fun () -> task { do! persistent.SaveStateAsync(id, Some candidate.Package.Fingerprint, lkg, CancellationToken.None) })
                             | _ -> ()
                             savedLkg |> Option.iter (fun value -> lastKnownGood[id] <- value)
                             let previous = match active.TryGetValue(id) with | true, value -> Some value | _ -> None
                             active[id] <- candidate
                             staged.Remove(id) |> ignore
+                            lock checkSync (fun () -> compiledCleanupRequested <- true)
                             match previous with
                             | Some value ->
                                 draining.Add(value)
@@ -800,9 +1041,18 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
       })
 
     member _.SaveSourceAsync(id, sources, cancellationToken) = fileStore.WriteSourcesAsync(id, sources, cancellationToken)
+    member _.SavePackageAsync(package: ExtensionPackageSnapshot, cancellationToken: CancellationToken) = task {
+        match fileStore with
+        | :? IPackageExtensionFileStore as packageStore -> do! packageStore.WritePackageAsync(package, cancellationToken)
+        | _ when package.BinaryFiles.Count = 0 -> do! fileStore.WriteSourcesAsync(package.Id, package.Sources, cancellationToken)
+        | _ -> invalidOp "This extension store cannot persist binary package dependencies."
+    }
     member _.ReadSourceAsync(id, cancellationToken) = task {
-        let! sources = fileStore.ReadSourcesAsync(id, cancellationToken)
-        return ExtensionPackageSnapshot(id, sources)
+        match fileStore with
+        | :? IPackageExtensionFileStore as packageStore -> return! packageStore.ReadPackageAsync(id, cancellationToken)
+        | _ ->
+            let! sources = fileStore.ReadSourcesAsync(id, cancellationToken)
+            return ExtensionPackageSnapshot(id, sources)
     }
     member _.SaveConfigAsync(id: string, config: ExtensionConfigSnapshot, cancellationToken: CancellationToken) = task {
         if isNull (box config) then nullArg "config"
@@ -921,6 +1171,7 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionCapabili
         member this.LoadAsync(package, token) = this.LoadAsync(package, token)
         member this.ActivateAsync(id, package, token) = this.ActivateAsync(id, package, token)
         member this.SaveSourceAsync(id, sources, token) = this.SaveSourceAsync(id, sources, token)
+        member this.SavePackageAsync(package, token) = this.SavePackageAsync(package, token)
         member this.ReadSourceAsync(id, token) = this.ReadSourceAsync(id, token)
         member this.AcquireAsync(id, token) = this.AcquireAsync(id, token)
         member this.List() = this.List()

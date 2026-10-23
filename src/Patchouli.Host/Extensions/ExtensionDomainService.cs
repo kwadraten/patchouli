@@ -233,8 +233,9 @@ public sealed class ExtensionDomainService
             }
 
             ExtensionConfigSnapshot config = ExtensionConfiguration.Resolve(lease.ConfigFields, lease.Config);
-            IExtensionCapabilities capabilities = _extensions.Authorization.Freeze(_extensions.Capabilities,
-                lease.Descriptor, config);
+            IExtensionResources capabilities = (_extensions.Resources is HostExtensionResources host
+                ? host.ForDomain(expectedKind.ToString().ToLowerInvariant())
+                : _extensions.Resources).ForRun(config);
             return new ExtensionDomainRun(lease, capabilities, config);
         }
         catch

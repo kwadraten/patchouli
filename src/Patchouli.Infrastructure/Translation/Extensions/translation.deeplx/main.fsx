@@ -1,6 +1,7 @@
 #load "Support.fsx"
 open System
-open System.Collections.Generic
+open System.Net.Http
+open System.Text
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
@@ -8,46 +9,51 @@ open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
 open BuiltInTranslation.Support
 
-let endpointBinding = Config.bind "endpoint" (Field.text "DeepLX translation URL" "http://127.0.0.1:1188/translate"
-    |> Field.describe "Full URL for a self-hosted or trusted DeepLX-compatible /translate endpoint.")
-let credentialBinding = Config.bind "credential-reference" (Field.credentialReference "DeepLX API credential")
-let httpAccessBinding = Config.bind "http" (Capability.http "DeepLX network access")
-let configFields = Config.fields (sharedBindings @ [ Config.asField endpointBinding; Config.asField credentialBinding ])
-let descriptor = ExtensionDescriptor("translation.deeplx", "DeepLX", "1.0.0", "Sends box text to a configurable DeepLX-compatible translation endpoint.")
+[<Settings>]
+type Settings = {
+    Common: CommonSettings
+    [<Field("DeepLX translation URL", Key = "endpoint"); Default("http://127.0.0.1:1188/translate")>]
+    Endpoint: string
+    [<Field("DeepLX API credential", Key = "credential-reference", Kind = ConfigValueKind.CredentialReference); Default("")>]
+    CredentialReference: string
+}
 
-let translateOne (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (http: IHttpCapability) (endpoint: string) (credentialReference: string) (segment: Segment) cancellationToken = task {
+let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (credentialReference: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = sourceLanguage context
-    let body = jsonBody {| text = text; source_lang = source; target_lang = targetLanguage context |}
-    let options = effectiveOptions context
-    let send (token: CancellationToken) = sendJson capabilities http endpoint body options token credentialReference []
-    let! response = retryTransient options.MaxRetries (TimeSpan.FromMilliseconds(350.0)) (TimeSpan.FromSeconds(5.0)) send cancellationToken
-    use document = JsonDocument.Parse(response)
-    let mutable data = JsonElement()
-    if not (document.RootElement.TryGetProperty("data", &data)) || data.ValueKind <> JsonValueKind.String then
-        invalidOp "DeepLX response has no translated data field."
-    let translatedText = data.GetString() |> Option.ofObj |> Option.defaultValue String.Empty
-    if String.IsNullOrWhiteSpace translatedText then invalidOp "DeepLX returned empty text."
-    return translated segment.Id (restore translatedText tokens)
+    let source = sourceLanguage common job
+    let body = jsonBody {| text = text; source_lang = source; target_lang = targetLanguage common job |}
+    let options = effectiveEngineOptions common job (Some 2) (Some 0.25M)
+    let send (token: CancellationToken) = task {
+        do! resources.WaitToProceedAsync(token)
+        use request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        request.Content <- new StringContent(body, Encoding.UTF8, "application/json")
+        if not (String.IsNullOrWhiteSpace credentialReference) then
+            let! credential = resources.GetCredentialAsync(credentialReference, token)
+            if not (String.IsNullOrWhiteSpace credential) then
+                request.Headers.Authorization <- System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential)
+            else invalidOp "The configured credential is unavailable."
+        use! response = http.SendAsync(request, HttpCompletionOption.ResponseContentRead, token)
+        ensureHttpResponseSuccess "DeepLX" response
+        return! response.Content.ReadAsStringAsync(token)
+    }
+    let! response = retryTransient 0 (TimeSpan.FromMilliseconds(350.0)) (TimeSpan.FromSeconds(5.0)) send cancellationToken
+    return translated segment.Id (restore (parseDeepLxResponse response) tokens)
 }
 
-let translate (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (cancellationToken: CancellationToken) = task {
-    let endpoint = validateHttpEndpoint (Binding.get endpointBinding context.Config)
-    let credentialReference =
-        match context.Config.Values.TryGetValue("credential-reference") with
-        | true, value when not (String.IsNullOrWhiteSpace value) -> value.Trim()
-        | _ -> String.Empty
-    let http = Capability.resolveHttp httpAccessBinding context.Config capabilities
-    let translateSegment : Segment -> CancellationToken -> Task<SegmentOutcome> =
-        translateOne context capabilities http endpoint credentialReference
-    let runSegments : CancellationToken -> Task<TranslationExtensionResult> =
-        translateBySegments context "deeplx-translation" translateSegment
-    return! runSegments cancellationToken
-}
-let extension : ITranslationExtension =
-    { new ITranslationExtension with
-        member _.Descriptor = descriptor
-        member _.ConfigFields = configFields
-        member _.ClearDerivedStateAsync(cancellationToken) = clearDerivedState cancellationToken
-        member _.TranslateAsync(context, capabilities, cancellationToken) = translate context capabilities cancellationToken }
-
+/// <summary>Deeplx translation extension.</summary>
+/// <patchouli-extension id="translation.deeplx" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+///   <name>Deeplx</name>
+/// </patchouli-extension>
+let extension =
+     Extension.createTranslation<Settings> (fun settings (job: ITranslationJob) (resources: IExtensionResources) cancellationToken -> task {
+        let common = settings.Common
+        let endpoint = validateHttpEndpoint settings.Endpoint
+        let http = resources.Http
+        let credentialReference = settings.CredentialReference
+        let options = effectiveEngineOptions common job (Some 2) (Some 0.25M)
+        let work = segmentTranslator common job "deeplx-translation" options.MaxBatchCharacters
+                        (translateOne common job resources http endpoint credentialReference)
+        let budget = { MaxItems = 1; MaxCharacters = max 1 options.MaxBatchCharacters; MaxTokens = None }
+        do! runSegmentPages job options budget work cancellationToken
+    })
+    |> Extension.withDerivedState clearDerivedState

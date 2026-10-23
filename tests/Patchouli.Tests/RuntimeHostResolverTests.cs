@@ -73,8 +73,7 @@ public sealed class RuntimeHostResolverTests : IDisposable
                 RuntimeDatabasePath = database,
                 DefaultSyncRoot = Path.Combine(_root, "sync"),
                 DefaultStagingRoot = Path.Combine(_root, "staging"),
-                LogDirectory = Path.Combine(_root, "logs"),
-                UseMockOcrOnly = true
+                LogDirectory = Path.Combine(_root, "logs")
             }
         };
         HostServices services = await HostServices.CreateAsync(database, settings);

@@ -15,7 +15,7 @@ using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Rendering;
 
-public sealed class PageRenderService : IPageRenderService
+public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
 {
     public const long DefaultPreviewRasterByteLimit = 256L * 1024 * 1024;
 
@@ -67,6 +67,30 @@ public sealed class PageRenderService : IPageRenderService
 
     public async ValueTask DisposeAsync()
     {
+        // Pending preview renders are detached from their callers' tokens on purpose, so a
+        // cached document session they hold (or are still opening) would outlive a shutdown
+        // that only waits for the session cache. Wait them out first: their finally blocks
+        // return every session lease before the cache closes its handles.
+        Task<PreviewPixels>[] pendingPreviews;
+        lock (_pendingPreviewSync)
+        {
+            pendingPreviews = _pendingPreviews.Values.ToArray();
+        }
+
+        foreach (Task<PreviewPixels> pending in pendingPreviews)
+        {
+            try
+            {
+                await pending;
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                  exception, "infrastructure.page-render"))
+            {
+                // A preview failing during teardown has no caller left to report to; the wait
+                // exists only so its session lease is released before the cache disposes.
+            }
+        }
+
         if (_viewingSessions is not null)
         {
             await _viewingSessions.DisposeAsync();

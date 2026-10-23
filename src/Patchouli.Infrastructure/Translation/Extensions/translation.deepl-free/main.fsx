@@ -1,7 +1,7 @@
 #load "Support.fsx"
 open System
-open System.Collections.Generic
-open System.Globalization
+open System.Net.Http
+open System.Text
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
@@ -9,50 +9,51 @@ open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
 open BuiltInTranslation.Support
 
-let endpointBinding = Config.bind "endpoint" (Field.text "DeepL web endpoint" "https://www2.deepl.com/jsonrpc"
-    |> Field.describe "Uses DeepL's anonymous web JSON-RPC method. This is an unofficial keyless web adapter, not DeepL's official API free tier.")
-let httpAccessBinding = Config.bind "http" (Capability.http "DeepL web network access")
-let configFields = Config.fields (sharedBindings @ [ Config.asField endpointBinding ])
-let descriptor = ExtensionDescriptor("translation.deepl-free", "DeepL (keyless web)", "1.0.0", "Uses the anonymous DeepL web JSON-RPC endpoint without an API key.")
+[<Settings>]
+type Settings = {
+    [<Override("concurrency", 1); Override("request-interval", 1)>]
+    Common: CommonSettings
+    [<Field("DeepL web endpoint", Key = "endpoint"); Default("https://www2.deepl.com/jsonrpc")>]
+    Endpoint: string
+}
 
-let translateOne (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (http: IHttpCapability) (endpoint: string) (segment: Segment) cancellationToken = task {
+let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = (sourceLanguage context).ToUpperInvariant()
-    let target = (targetLanguage context).ToUpperInvariant()
+    let source = (sourceLanguage common job).ToUpperInvariant()
+    let target = (targetLanguage common job).ToUpperInvariant()
     let timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     let count = text |> Seq.filter (fun character -> character = 'i') |> Seq.length |> int64
     let adjustedTimestamp = if count > 0L then let divisor = count + 1L in timestamp - timestamp % divisor + divisor else timestamp
     let body = jsonBody {| jsonrpc = "2.0"; method = "LMT_handle_texts"; id = Random.Shared.Next(1000000, 999999999); ``params`` = {| splitting = "newlines"; lang = {| source_lang_user_selected = source; target_lang = target |}; texts = [| {| text = text; requestAlternatives = 0 |} |]; timestamp = adjustedTimestamp |} |}
-    let options = effectiveOptions context
-    let deeplHeaders = [ "Origin", "https://www.deepl.com"; "Referer", "https://www.deepl.com/translator";
-                         "Accept", "*/*"; "User-Agent", "Mozilla/5.0" ]
-    let send (token: CancellationToken) = sendJson capabilities http endpoint body options token String.Empty deeplHeaders
-    let! response = retryTransient options.MaxRetries (TimeSpan.FromMilliseconds(500.0)) (TimeSpan.FromSeconds(6.0)) send cancellationToken
-    use document = JsonDocument.Parse(response)
-    let mutable error = JsonElement()
-    if document.RootElement.TryGetProperty("error", &error) then invalidOp "DeepL returned a JSON-RPC error."
-    let mutable result = JsonElement()
-    let mutable texts = JsonElement()
-    if not (document.RootElement.TryGetProperty("result", &result)) || not (result.TryGetProperty("texts", &texts)) || texts.ValueKind <> JsonValueKind.Array || texts.GetArrayLength() <> 1 then
-        invalidOp "DeepL response does not map to the single requested box."
-    let translatedText = parseStringAt (texts[0]) "text"
-    let value =
-        match translatedText with
-        | None -> invalidOp "DeepL returned empty text."
-        | Some text when String.IsNullOrWhiteSpace text -> invalidOp "DeepL returned empty text."
-        | Some text -> text
-    return translated segment.Id (restore value tokens)
+    let options = effectiveEngineOptions common job (Some 1) (Some 1M)
+    let send (token: CancellationToken) = task {
+        do! resources.WaitToProceedAsync(token)
+        use request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        request.Content <- new StringContent(body, Encoding.UTF8, "application/json")
+        request.Headers.TryAddWithoutValidation("Origin", "https://www.deepl.com") |> ignore
+        request.Headers.TryAddWithoutValidation("Referer", "https://www.deepl.com/translator") |> ignore
+        request.Headers.TryAddWithoutValidation("Accept", "*/*") |> ignore
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0") |> ignore
+        use! response = http.SendAsync(request, HttpCompletionOption.ResponseContentRead, token)
+        ensureHttpResponseSuccess "DeepL" response
+        return! response.Content.ReadAsStringAsync(token)
+    }
+    let! response = retryTransient 0 (TimeSpan.FromMilliseconds(500.0)) (TimeSpan.FromSeconds(6.0)) send cancellationToken
+    return translated segment.Id (restore (parseDeepLResponse response) tokens)
 }
 
-let translate (context: TranslationExtensionContext) (capabilities: IExtensionCapabilities) (cancellationToken: CancellationToken) = task {
-    let endpoint = validateHttpEndpoint (Binding.get endpointBinding context.Config)
-    let http = Capability.resolveHttp httpAccessBinding context.Config capabilities
-    return! translateBySegments context "deepl-translation" (translateOne context capabilities http endpoint) cancellationToken
-}
-let extension : ITranslationExtension =
-    { new ITranslationExtension with
-        member _.Descriptor = descriptor
-        member _.ConfigFields = configFields
-        member _.ClearDerivedStateAsync(cancellationToken) = clearDerivedState cancellationToken
-        member _.TranslateAsync(context, capabilities, cancellationToken) = translate context capabilities cancellationToken }
-
+/// <summary>Deepl Free translation extension.</summary>
+/// <patchouli-extension id="translation.deepl-free" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+///   <name>Deepl Free</name>
+/// </patchouli-extension>
+let extension =
+     Extension.createTranslation<Settings> (fun settings (job: ITranslationJob) (resources: IExtensionResources) cancellationToken -> task {
+        let common = settings.Common
+        let endpoint = validateHttpEndpoint settings.Endpoint
+        let http = resources.Http
+        let options = effectiveEngineOptions common job (Some 1) (Some 1M)
+        let work = segmentTranslatorStable common job "deepl-translation" options.MaxBatchCharacters (translateOne common job resources http endpoint)
+        let budget = { MaxItems = 1; MaxCharacters = max 1 options.MaxBatchCharacters; MaxTokens = None }
+        do! runSegmentPagesStable job options budget work cancellationToken
+    })
+    |> Extension.withDerivedState clearDerivedState

@@ -94,11 +94,6 @@ public sealed class MetadataSourceRegistry : IMetadataSourceRegistry
             .ToArray();
     }
 
-    public static MetadataSourceRegistry CreateDefault(HttpClient httpClient, TimeSpan? requestTimeout = null)
-    {
-        return new MetadataSourceRegistry(PublicMetadataSources.Create(httpClient, requestTimeout));
-    }
-
     public static MetadataSourceRegistry Combine(
         IMetadataSourceRegistry existing,
         IEnumerable<IMetadataSource> extensionSources)

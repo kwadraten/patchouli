@@ -10,8 +10,11 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class DialogCloseBindingTests
+// R13 shared session registration: every case creates and closes its own dialogs, owners and
+// view models inside the dispatch; RequestClose callbacks are per view model and are asserted
+// detached on close, leaving nothing for the next case.
+[Collection("RetainedTabUI")]
+public sealed class DialogCloseBindingTests(AvaloniaSharedSessionFixture headless)
 {
     [Theory]
     [InlineData("Confirm")]
@@ -21,10 +24,10 @@ public sealed class DialogCloseBindingTests
     [InlineData("ItemMergePreview")]
     [InlineData("PurgeConfirm")]
     [InlineData("TagNamePrompt")]
-    public void Callback_is_detached_when_context_changes_and_when_window_closes(string name)
+    public async Task Callback_is_detached_when_context_changes_and_when_window_closes(string name)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        session.Dispatch(() =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch(() =>
         {
             (Window dialog, object original) = CreateDialog(name);
             (_, object replacement) = CreateDialog(name);
@@ -59,7 +62,7 @@ public sealed class DialogCloseBindingTests
     public async Task Confirmation_returns_explicit_choices_and_cancels_title_bar_close(
         string action, ConfirmDialogResult expected)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             Window owner = new();

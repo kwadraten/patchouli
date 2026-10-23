@@ -1,0 +1,6 @@
+# Expected case multiset matching all-passed.trx (project::full.test.name,
+# one per line; duplicates intentional — Adds_two_numbers ran twice).
+Patchouli.Tests::Patchouli.Tests.SampleTests.Adds_two_numbers
+Patchouli.Tests::Patchouli.Tests.SampleTests.Adds_two_numbers
+Patchouli.Tests::Patchouli.Tests.SampleTests.Theory_doubles(value: 2)
+Patchouli.Tests::Patchouli.Tests.SampleTests.Theory_doubles(value: 5)

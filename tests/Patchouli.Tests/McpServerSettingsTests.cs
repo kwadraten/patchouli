@@ -69,7 +69,8 @@ public sealed class McpServerSettingsTests
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
         loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false),
             new McpDomainPermission("runs/ocr", "send", false),
-            new McpDomainPermission("runs/translation", "send", false));
+            new McpDomainPermission("runs/translation", "send", false),
+            new McpDomainPermission("runs/metadata", "send", false));
     }
 
     [Fact]

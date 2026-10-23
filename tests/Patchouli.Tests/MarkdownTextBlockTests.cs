@@ -1,4 +1,5 @@
 using Avalonia.Controls.Documents;
+using Avalonia.Headless;
 using Avalonia.Media;
 using FluentAssertions;
 using Patchouli.UI.Controls;
@@ -58,7 +59,9 @@ public sealed class MarkdownTextBlockTests
             Run[] runs = (textBlock.Inlines?.OfType<Run>() ?? []).ToArray();
             runs.Single(run => run.Text == "bold").FontWeight.Should().Be(FontWeight.SemiBold);
             runs.Single(run => run.Text == "italic").FontStyle.Should().Be(FontStyle.Italic);
-            runs.Single(run => run.Text == "gone").TextDecorations.Should().Equal(TextDecorations.Strikethrough);
+            TextDecorationCollection strikethrough = runs.Single(run => run.Text == "gone").TextDecorations!;
+            strikethrough.Should().ContainSingle();
+            strikethrough[0].Location.Should().Be(TextDecorationLocation.Strikethrough);
         }, CancellationToken.None);
     }
 
@@ -83,8 +86,34 @@ public sealed class MarkdownTextBlockTests
             MarkdownTextBlock textBlock = new() { Markdown = "see [the docs](https://example.com)" };
 
             Run link = (textBlock.Inlines?.OfType<Run>() ?? []).Single(run => run.Text == "the docs");
-            link.TextDecorations.Should().Equal(TextDecorations.Underline);
+            TextDecorationCollection underline = link.TextDecorations!;
+            underline.Should().ContainSingle();
+            underline[0].Location.Should().Be(TextDecorationLocation.Underline);
             link.Foreground.Should().NotBeNull();
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task MarkdownTextBlock_decorations_are_created_per_headless_session()
+    {
+        await using HeadlessUnitTestSession firstSession = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await using HeadlessUnitTestSession secondSession = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+
+        TextDecoration first = await GetDecoration(firstSession);
+        TextDecoration second = await GetDecoration(secondSession);
+
+        first.Should().NotBeSameAs(second);
+    }
+
+    private static Task<TextDecoration> GetDecoration(HeadlessUnitTestSession session)
+    {
+        return session.Dispatch(() =>
+        {
+            MarkdownTextBlock textBlock = new() { Markdown = "~~decorated~~" };
+            TextDecorationCollection decorations = textBlock.Inlines!.OfType<Run>().Single().TextDecorations!;
+            decorations.Should().ContainSingle();
+            decorations[0].Location.Should().Be(TextDecorationLocation.Strikethrough);
+            return decorations[0];
         }, CancellationToken.None);
     }
 

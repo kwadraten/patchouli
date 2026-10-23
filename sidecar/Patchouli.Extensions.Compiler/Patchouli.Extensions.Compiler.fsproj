@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Compiler.Service" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\Patchouli.Extensions\NugetResolverPreflight.fs" Link="NugetResolverPreflight.fs" />
+    <Compile Include="..\..\src\Patchouli.Extensions\ExtensionDependencies.fs" Link="ExtensionDependencies.fs" />
+    <Compile Include="..\..\src\Patchouli.Extensions\ExtensionCompiler.fs" Link="ExtensionCompiler.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

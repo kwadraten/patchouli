@@ -17,8 +17,9 @@ Before exploring, read these when they exist:
 - `.agents/CONTEXT.md` for project domain language and glossary.
 - `.agents/adr/` for architectural decision records relevant to the area being changed.
 - `.agents/issue-tracker.md` for issue-driven product work; there is no dedicated PRD document.
-- `.agents/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations.
+- `.agents/protocols/` for normative protocol and contract specifications: `.agents/protocols/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations; `extension-contracts.md` and `extension-validation.md` for the FSX extension contract and its verification evidence; `ocr-normalization.md` for OCR content semantics.
 - `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
+- `.agents/skills/patchouli/` is the single Agent Skill Patchouli distributes to external agents (issue #23). It is the source of truth for user-facing usage guidance, including FSX extension authoring (`references/EXTENDING.md`). Repository contracts under `.agents/` stay normative for implementation; the skill states only delivered behaviour and must not describe planned Plugin VFS or Action projection as available.
 
 If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do not suggest creating them upfront unless the current task is explicitly about domain modeling, architecture documentation, or recording a decision.
 
@@ -29,9 +30,11 @@ If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do
 ├── AGENTS.md
 ├── .agents/
 │   ├── CONTEXT.md
-│   ├── mcp-protocol.md
 │   ├── domain.md
 │   ├── issue-tracker.md
+│   ├── protocols/
+│   │   ├── mcp-protocol.md
+│   │   └── ...
 │   └── adr/
 │       ├── 0001-example-decision.md
 │       └── 0002-example-decision.md
@@ -88,11 +91,13 @@ own commits.
 ## External agent and translation runtime ownership
 
 The built-in Agent, workflow and chat runtime has been removed (ADR `0047`).
-ADR `0049` restores FSI solely for trusted, replaceable Extension implementations;
-it does not restore Agent sessions or a durable workflow scheduler.
-The revised execution boundary is a host-managed worker process per package generation,
-with source checking, credentials, managed capability dispatch and data commits owned by
-the host. See [Extension validation](extension-validation.md) for migration evidence.
+ADR `0053` defines the in-progress target: trusted FSX packages compile to cached DLLs and execute
+in a per-generation collectible host `AssemblyLoadContext`. This does not restore Agent sessions
+or a durable workflow scheduler. Leases/draining and LKG remain; unload is best-effort and warns
+without blocking activation. External BCL, package DLLs and NuGet are allowed. Cold NuGet restore
+requires an installed SDK; BCL, package-local DLLs and verified compiled cache hits bypass that
+restore requirement. See [ADR 0053](adr/0053-trusted-compiled-fsx-extensions.md) and the
+[extension contract](protocols/extension-contracts.md); this is not an acceptance claim.
 `Patchouli.Core/Agents` owns the compiled catalog (`AgentCatalog.g.cs`), detection, launch
 and integration-settings contracts. `Patchouli.Terminal` owns the PTY session and embedded
 terminal host. `Patchouli.Host/Agents` owns workspace location, launch preparation and
@@ -113,8 +118,16 @@ source watching and desktop/headless composition. The volatile `TranslationRunSe
 `runs/translation/{id}/status`; the processing settings card and shared task queue page are thin
 clients. Runs are in-memory only; committed translations follow ADR `0034`/`0044`.
 
+Bibliographic metadata lookup follows the same extension boundary. Every built-in source is a
+`metadata.*` FSX package; `BuiltInMetadataExtensions` declares the package ids and source
+definitions, and `TranslationExtensionCatalog` seeds them before initialization and replaces
+them from active leases. `MetadataRunService` in `Patchouli.Host/Metadata` owns volatile
+enrich_batch tasks; MCP exposes lookup/apply/enrich/enrich_batch at `runs/metadata/control`
+and `runs/metadata/{id}/status`. Core still owns candidate validation, optimistic item versions
+and atomic metadata/identifier commits; the in-process HTTP sources were removed.
+
 MCP/CLI parameters, runtime roots and regression obligations are in
-[mcp-protocol](mcp-protocol.md). Agent integration rationale is ADR `0047`; extension
+[mcp-protocol](protocols/mcp-protocol.md). Agent integration rationale is ADR `0047`; extension
 translation rationale is ADR `0049`, which supersedes ADR `0046`'s fixed orchestration.
 Code/contract delivery does not establish real-device end-to-end acceptance or full-scale performance budgets.
 
@@ -127,6 +140,6 @@ Code/contract delivery does not establish real-device end-to-end acceptance or f
 
 ## Document ownership and remaining implementation gaps
 
-Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in mcp-protocol, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
+Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in protocols/, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
 
 The shared composition layer and ADR `0024` one-host-per-Library target are implemented. A device-local lifetime lock keyed before SQLite open by the canonical database path elects exactly one Desktop or Headless owner; an atomic discovery record publishes the live process identity, Library ID and MCP endpoint, and the authenticated local lifecycle channel performs Desktop takeover. Normal UI, CLI and MCP writes therefore share the in-process revision event path. `LibraryRevisionMonitor` remains available for explicit abnormal external-write recovery, but the Desktop no longer starts its polling loop during normal operation. Full incremental cache invalidation remains V3-T7 work.

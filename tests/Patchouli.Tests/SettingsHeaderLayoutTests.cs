@@ -14,8 +14,18 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class SettingsHeaderLayoutTests
+/// <remarks>
+/// R9 classification: pure header/tab layout assertions. Opening a database creates
+/// <see cref="Patchouli.Host.Composition.HostServices"/> but never calls
+/// <c>TranslationExtensionCatalog.InitializeAsync</c>; the section switch path reads only settings
+/// state. Keep it that way — real extension behaviour belongs to
+/// ExtensionConfigurationDialogTests.
+/// R13 shared session: Pump uses <see cref="Dispatcher.UIThread"/>, which is the shared session's
+/// thread while this collection runs; each case still owns its settings file, database, window and
+/// <see cref="MainWindowViewModel"/> inside the dispatch.
+/// </remarks>
+[Collection("RetainedTabUI")]
+public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headless)
 {
     [Fact]
     public async Task Ai_tabs_fill_the_header_and_stay_fixed_while_retaining_subpage_content()
@@ -170,9 +180,9 @@ public sealed class SettingsHeaderLayoutTests
         Pump(window);
     }
 
-    private static async Task RunAsync(Func<MainWindowViewModel, Window, SettingsPage, Task> action)
+    private async Task RunAsync(Func<MainWindowViewModel, Window, SettingsPage, Task> action)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();

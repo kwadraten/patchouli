@@ -3,7 +3,8 @@
   <PropertyGroup>
     <VSTestResultsDirectory>$(MSBuildThisFileDirectory)..\.tmp\test-results\$(MSBuildProjectName)</VSTestResultsDirectory>
   </PropertyGroup>
-  <ItemGroup>
+  <!-- F# tests consume this same initializer through the shared C# support assembly. -->
+  <ItemGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
     <Compile Include="$(MSBuildThisFileDirectory)Shared\RepositoryTestEnvironment.cs"
              Link="Shared\RepositoryTestEnvironment.cs" />
   </ItemGroup>

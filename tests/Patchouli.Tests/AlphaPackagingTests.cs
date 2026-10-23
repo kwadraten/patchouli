@@ -24,7 +24,6 @@ public sealed class AlphaPackagingTests
     {
         AppRuntimeOptions o = AppRuntimeOptions.FromAppSettings();
         Path.GetFullPath(o.RuntimeDatabasePath).Should().NotStartWith(Path.GetFullPath(o.DefaultSyncRoot));
-        o.UseMockOcrOnly.Should().BeFalse();
     }
 
     [Fact]
@@ -34,10 +33,9 @@ public sealed class AlphaPackagingTests
         try
         {
             File.WriteAllText(path,
-                """{"Patchouli":{"RuntimeDatabasePath":"C:/patchouli/runtime.sqlite","DefaultSyncRoot":"C:/patchouli/sync","DefaultStagingRoot":"C:/patchouli/staging","LogDirectory":"C:/patchouli/logs","UseMockOcrOnly":false},"MinerU":{"BaseUrl":"https://mineru.example.test","ModelVersion":"vlm","Token":"configured-token"}}""");
+                """{"Patchouli":{"RuntimeDatabasePath":"C:/patchouli/runtime.sqlite","DefaultSyncRoot":"C:/patchouli/sync","DefaultStagingRoot":"C:/patchouli/staging","LogDirectory":"C:/patchouli/logs"},"MinerU":{"BaseUrl":"https://mineru.example.test","ModelVersion":"vlm","Token":"configured-token"}}""");
             PatchouliAppSettings settings = PatchouliAppSettings.Load(path);
             settings.Runtime.RuntimeDatabasePath.Should().Contain("patchouli");
-            settings.Runtime.UseMockOcrOnly.Should().BeFalse();
             settings.MinerU.BaseUrl.Should().Be("https://mineru.example.test");
             settings.MinerU.Should().NotBeNull();
         }
@@ -47,6 +45,44 @@ public sealed class AlphaPackagingTests
             {
                 File.Delete(path);
             }
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_use_mock_ocr_only_key_is_ignored_and_removed_by_field_level_save()
+    {
+        string root = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-legacy-mock-{Guid.NewGuid():N}")).FullName;
+        string path = Path.Combine(root, "settings.json");
+        string runtimePath = Path.Combine(root, "runtime.sqlite").Replace("\\", "/");
+        try
+        {
+            string legacyJson = $$"""
+                                  {
+                                    "Patchouli": {
+                                      "RuntimeDatabasePath": "{{runtimePath}}",
+                                      "RememberLastDatabase": true,
+                                      "UseMockOcrOnly": true
+                                    },
+                                    "Ui": { "PaletteId": "legacy" }
+                                  }
+                                  """;
+            await File.WriteAllTextAsync(path, legacyJson);
+            PatchouliAppSettings loaded = PatchouliAppSettings.Load(path);
+            Path.GetFullPath(loaded.Runtime.RuntimeDatabasePath).Should().Be(Path.GetFullPath(runtimePath));
+            loaded.Runtime.RememberLastDatabase.Should().BeTrue();
+
+            // A field-level save that does not touch "Patchouli" must still drop the removed key
+            // instead of merging it forward from the legacy file.
+            (await loaded.SaveFieldLevelAsync(path, new HashSet<string> { "Ui" })).IsSuccess.Should().BeTrue();
+            string saved = await File.ReadAllTextAsync(path);
+            saved.Should().NotContain("UseMockOcrOnly");
+            Path.GetFullPath(PatchouliAppSettings.Load(path).Runtime.RuntimeDatabasePath).Should()
+                .Be(Path.GetFullPath(runtimePath));
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -456,14 +492,18 @@ public sealed class AlphaPackagingTests
             AppRuntimeOptions runtime = PatchouliAppSettings.Default().Runtime with
             {
                 RuntimeDatabasePath = path, DefaultSyncRoot = Path.Combine(root, "sync"),
-                DefaultStagingRoot = Path.Combine(root, "staging"), LogDirectory = Path.Combine(root, "logs"),
-                UseMockOcrOnly = false
+                DefaultStagingRoot = Path.Combine(root, "staging"), LogDirectory = Path.Combine(root, "logs")
             };
             HostServices services =
                 await HostServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
+            // MCP OCR start and the settings engine catalog both enumerate this registry, so an
+            // adapter absent here can neither be listed nor started.
             services.OcrAdapters.ListCapabilities().Select(x => x.EngineId).Should()
                 .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten, OcrEngineIds.NdlLite,
-                    OcrEngineIds.RapidOcr);
+                    OcrEngineIds.RapidOcr)
+                .And.NotContain(OcrEngineIds.Mock).And.NotContain(OcrEngineIds.LocalPlaceholder);
+            services.OcrAdapters.GetAdapter(OcrEngineIds.Mock).Should().BeNull();
+            services.OcrAdapters.GetAdapter(OcrEngineIds.LocalPlaceholder).Should().BeNull();
         }
         finally
         {

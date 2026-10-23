@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,11 +27,13 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     private Task _selectionLoadTask = Task.CompletedTask;
     private bool _settingSelection;
     private long _selectionVersion;
+    private long _loadGeneration;
     private long _configRevision;
     private IReadOnlyList<string> _credentialReferences = [];
     private Dictionary<string, string> _draftSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, string>> _pendingSources = new(StringComparer.Ordinal);
     private bool _loadingSource;
+    private CancellationTokenSource? _loadCancellation;
 
     public ExtensionSettingsViewModel(MainWindowViewModel main)
     {
@@ -44,8 +48,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         PromoteCommand = EditorCommand(PromoteAsync);
         RollbackCommand = EditorCommand(RollbackAsync);
         ResetCommand = new RelayCommand(_ => ResetConfiguration());
+        ApplyStableParametersCommand = new RelayCommand(_ => ApplyStableTranslationParameters());
         ClearCacheCommand = EditorCommand(ClearCacheAsync);
-        SaveAuthorizationCommand = EditorCommand(SaveAuthorizationAsync);
         TestDraftCommand = EditorCommand(TestDraftAsync);
         CheckAndSaveSourceCommand = EditorCommand(CheckAndSaveSourceAsync);
     }
@@ -60,11 +64,19 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     [ObservableProperty] public partial string CopyId { get; set; } = "";
     [ObservableProperty] public partial string SampleText { get; set; } = "Hello, world.";
     [ObservableProperty] public partial string SampleResult { get; set; } = "";
-    [ObservableProperty] public partial bool AllowHttp { get; set; }
-    [ObservableProperty] public partial bool AllowLlm { get; set; }
     [ObservableProperty] public partial bool IsEditorBusy { get; set; }
-    public bool CanEdit => !IsEditorBusy;
+    [ObservableProperty] public partial bool IsEditorLoading { get; set; }
+    [ObservableProperty] public partial string SchemaSourceText { get; set; } = "";
+    [ObservableProperty] public partial string ActiveFingerprintText { get; set; } = "";
+    [ObservableProperty] public partial string ConfigurationRevisionText { get; set; } = "";
+    [ObservableProperty] public partial bool IsConfigurationSchemaAvailable { get; set; }
+    public bool CanEdit => !IsEditorBusy && !IsEditorLoading;
+    public bool CanSaveConfiguration => IsConfigurationSchemaAvailable && !IsEditorBusy && !IsEditorLoading;
     public bool IsTranslation => SelectedExtension?.Kind == ExtensionKind.Translation;
+
+    public bool IsStableTraditionalTranslation => SelectedExtension?.Id is "translation.google-free" or
+        "translation.deepl-free" or "translation.microsoft-free" or "translation.tencent-free";
+
     public string EditorTitle => (SelectedExtension?.Name ?? "扩展") + "配置";
     public AsyncCommand CheckAndSaveSourceCommand { get; }
     public AsyncCommand RefreshCommand { get; }
@@ -77,8 +89,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public AsyncCommand PromoteCommand { get; }
     public AsyncCommand RollbackCommand { get; }
     public RelayCommand ResetCommand { get; }
+    public RelayCommand ApplyStableParametersCommand { get; }
     public AsyncCommand ClearCacheCommand { get; }
-    public AsyncCommand SaveAuthorizationCommand { get; }
     public AsyncCommand TestDraftCommand { get; }
     public override bool SupportsEditing => false;
     public override bool IsDirty => false;
@@ -87,11 +99,12 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public async Task OpenAsync(string id)
     {
         SelectedExtension = new ExtensionListItem(id, id, "");
-        await LoadAsync();
-        if (SelectedExtension?.Id != id)
-        {
-            throw new InvalidOperationException("找不到扩展：" + id);
-        }
+        await Task.CompletedTask;
+    }
+
+    public void CancelPendingLoad()
+    {
+        _loadCancellation?.Cancel();
     }
 
     private AsyncCommand EditorCommand(Func<Task> operation)
@@ -111,10 +124,6 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             }
 
             await SaveConfigurationAsync();
-            if (LastError is null)
-            {
-                await SaveAuthorizationAsync();
-            }
         });
     }
 
@@ -153,6 +162,22 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
     }
 
+    partial void OnIsEditorLoadingChanged(bool value)
+    {
+        Raise(nameof(CanEdit));
+        Raise(nameof(CanSaveConfiguration));
+    }
+
+    partial void OnIsEditorBusyChanged(bool value)
+    {
+        Raise(nameof(CanSaveConfiguration));
+    }
+
+    partial void OnIsConfigurationSchemaAvailableChanged(bool value)
+    {
+        Raise(nameof(CanSaveConfiguration));
+    }
+
     partial void OnSelectedSourceFileChanged(string? value)
     {
         if (value is not null)
@@ -167,6 +192,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     {
         Raise(nameof(EditorTitle));
         Raise(nameof(IsTranslation));
+        Raise(nameof(IsStableTraditionalTranslation));
         if (_source is { } previous)
         {
             bool changed = _draftSources.Count != previous.Sources.Count || _draftSources.Any(pair =>
@@ -181,103 +207,205 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             }
         }
 
-        long version = Interlocked.Increment(ref _selectionVersion);
         if (_settingSelection)
         {
             return;
         }
 
+        long version = Interlocked.Increment(ref _selectionVersion);
+        Interlocked.Increment(ref _loadGeneration);
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        _loadCancellation = new CancellationTokenSource();
+        IsEditorLoading = true;
+        Status = "正在读取所选扩展描述…";
+
         IExtensionManager? manager = _manager;
         HostServices? services = _services;
         _selectionLoadTask = manager is null || services is null
             ? Task.CompletedTask
-            : LoadSelectedAsync(value, version, manager, services);
+            : LoadSelectedAsync(value, version, manager, services, _loadCancellation.Token);
         _selectionLoadTask.Observe(nameof(ExtensionSettingsViewModel), "load-extension");
     }
 
+    /// <summary>
+    /// Lists display descriptors only: active generations from <see cref="IExtensionManager.List"/>,
+    /// working and bundled package metadata — never a check, activation or run. Check, activate,
+    /// test and save stay on their explicit commands through the real catalog path; listed items are
+    /// not validated runtime descriptors.
+    /// </summary>
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        HostServices services = await _main.ServicesAsync();
-        await services.TranslationExtensions.InitializeAsync(cancellationToken);
-        if (!ReferenceEquals(services, await _main.ServicesAsync()))
-        {
-            return;
-        }
-
-        _services = services;
-        IExtensionManager manager = services.TranslationExtensions.Manager;
-        _manager = manager;
-        Result<IReadOnlyList<ProviderCredentialMetadata>> credentials =
-            await services.Credentials.ListAsync(cancellationToken);
-        _credentialReferences = credentials.IsSuccess
-            ? credentials.Value.Where(item => item.Status == ProviderCredentialStatus.Active)
-                .Select(item => item.ProviderId).ToArray()
-            : [];
-        string? selected = SelectedExtension?.Id;
-        Extensions.Clear();
-        foreach (ExtensionGenerationInfo generation in manager.List().Where(item => item.IsActive))
-        {
-            await using IExtensionLease? lease = await manager.AcquireAsync(generation.Id, cancellationToken);
-            if (lease is not null)
-            {
-                Extensions.Add(new ExtensionListItem(lease.Descriptor.Id, lease.Descriptor.Name,
-                    generation.Fingerprint, lease.Descriptor.Kind));
-            }
-        }
-
-        HashSet<string> listed = Extensions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (string id in services.TranslationExtensions.ListWorkingPackages().Where(id => !listed.Contains(id)))
-        {
-            ExtensionPackageSnapshot working = await manager.ReadSourceAsync(id, cancellationToken);
-            Extensions.Add(new ExtensionListItem(id, id + "（未激活）", working.Fingerprint, IsActive: false));
-        }
-
-        if (!ReferenceEquals(services, await _main.ServicesAsync()))
-        {
-            return;
-        }
-
-        _settingSelection = true;
+        long loadGeneration = Interlocked.Increment(ref _loadGeneration);
+        IsEditorLoading = true;
+        Status = "正在读取扩展描述…";
         try
         {
-            SelectedExtension = Extensions.FirstOrDefault(item => item.Id == selected) ?? Extensions.FirstOrDefault();
+            _loadCancellation?.Cancel();
+            _loadCancellation?.Dispose();
+            _loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            CancellationToken token = _loadCancellation.Token;
+            HostServices services = await _main.ServicesAsync();
+
+            if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested ||
+                !ReferenceEquals(services, await _main.ServicesAsync()))
+            {
+                return;
+            }
+
+            _services = services;
+            IExtensionManager manager = services.TranslationExtensions.Manager;
+            _manager = manager;
+            Result<IReadOnlyList<ProviderCredentialMetadata>> credentials =
+                await services.Credentials.ListAsync(token);
+            if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _credentialReferences = credentials.IsSuccess
+                ? credentials.Value.Where(item => item.Status == ProviderCredentialStatus.Active)
+                    .Select(item => item.ProviderId).ToArray()
+                : [];
+            string? selected = SelectedExtension?.Id;
+            List<ExtensionListItem> discovered = [];
+            foreach (ExtensionGenerationInfo generation in manager.List().Where(item => item.IsActive))
+            {
+                ExtensionPackageSnapshot activeSource = await ReadDisplaySourceAsync(manager,
+                    services.TranslationExtensions.BundledPackageSnapshots, generation.Id, token);
+                if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                discovered.Add(CreateListItem(activeSource, generation.Fingerprint, true));
+            }
+
+            HashSet<string> listed = discovered.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (string id in services.TranslationExtensions.ListWorkingPackages()
+                         .Where(id => !listed.Contains(id)))
+            {
+                ExtensionPackageSnapshot working = await ReadDisplaySourceAsync(manager,
+                    services.TranslationExtensions.BundledPackageSnapshots, id, token);
+                if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                discovered.Add(CreateListItem(working, working.Fingerprint, false));
+            }
+
+            // Bundled packages that were never activated are still listed so their configuration and
+            // source can be inspected and repaired (a failed activation persists the editable source).
+            foreach (ExtensionPackageSnapshot bundled in services.TranslationExtensions.BundledPackageSnapshots)
+            {
+                if (listed.Contains(bundled.Id) || discovered.Any(item => item.Id == bundled.Id))
+                {
+                    continue;
+                }
+
+                discovered.Add(CreateListItem(bundled, bundled.Fingerprint, false));
+            }
+
+            if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested ||
+                !ReferenceEquals(services, await _main.ServicesAsync()))
+            {
+                return;
+            }
+
+            Extensions.Clear();
+            foreach (ExtensionListItem item in discovered)
+            {
+                Extensions.Add(item);
+            }
+
+            _settingSelection = true;
+            try
+            {
+                SelectedExtension = Extensions.FirstOrDefault(item => item.Id == selected) ??
+                                    (selected is null
+                                        ? Extensions.FirstOrDefault()
+                                        : new ExtensionListItem(selected, selected + "（不可用）", "", null, false));
+            }
+            finally
+            {
+                _settingSelection = false;
+            }
+
+            long selectionVersion = Interlocked.Increment(ref _selectionVersion);
+            _selectionLoadTask = LoadSelectedAsync(SelectedExtension, selectionVersion, manager, services, token);
+            _selectionLoadTask.Observe(nameof(ExtensionSettingsViewModel), "load-extension");
+            await _selectionLoadTask;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (loadGeneration == Volatile.Read(ref _loadGeneration))
+            {
+                UnexpectedExceptions.Sink.Report(exception, "extension-description",
+                    nameof(ExtensionSettingsViewModel));
+                LastError = exception.Message;
+                Status = "配置描述读取失败；仍可查看源码并显式检查。";
+                ValidationState = SettingsValidationState.Unknown;
+            }
         }
         finally
         {
-            _settingSelection = false;
-        }
-
-        long selectionVersion = Interlocked.Increment(ref _selectionVersion);
-        _selectionLoadTask = LoadSelectedAsync(SelectedExtension, selectionVersion, manager, services);
-        _selectionLoadTask.Observe(nameof(ExtensionSettingsViewModel), "load-extension");
-        await _selectionLoadTask;
-        if (ValidationState != SettingsValidationState.Invalid)
-        {
-            Status = "填写配置，或编辑扩展源码。";
+            if (loadGeneration == Volatile.Read(ref _loadGeneration))
+            {
+                IsEditorLoading = false;
+            }
         }
     }
 
     private async Task LoadSelectedAsync(ExtensionListItem? item, long version,
-        IExtensionManager manager, HostServices services)
+        IExtensionManager manager, HostServices services, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await LoadSelectedCoreAsync(item, version, manager, services, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Selection changes and dialog close cancel stale description reads.
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (version == Volatile.Read(ref _selectionVersion))
+            {
+                UnexpectedExceptions.Sink.Report(exception, "extension-description",
+                    nameof(ExtensionSettingsViewModel));
+                LastError = exception.Message;
+                Status = "配置描述读取失败；仍可查看源码并显式检查。";
+            }
+        }
+        finally
+        {
+            if (version == Volatile.Read(ref _selectionVersion))
+            {
+                IsEditorLoading = false;
+            }
+        }
+    }
+
+    private async Task LoadSelectedCoreAsync(ExtensionListItem? item, long version,
+        IExtensionManager manager, HostServices services, CancellationToken cancellationToken)
     {
         if (item is null)
         {
             return;
         }
 
-        ExtensionPackageSnapshot source = await manager.ReadSourceAsync(item.Id);
-        ExtensionConfigSnapshot config = await manager.ReadConfigAsync(item.Id);
-        ExtensionCheckResult check = await manager.CheckAsync(source);
+        ExtensionPackageSnapshot source = await ReadDisplaySourceAsync(manager,
+            services.TranslationExtensions.BundledPackageSnapshots, item.Id, cancellationToken);
+        ExtensionConfigSnapshot config = await manager.ReadConfigAsync(item.Id, cancellationToken);
         if (version != Volatile.Read(ref _selectionVersion)
-            || !ReferenceEquals(services, _services) || !ReferenceEquals(manager, _manager))
+            || !ReferenceEquals(services, _services) || !ReferenceEquals(manager, _manager)
+            || !ReferenceEquals(services, await _main.ServicesAsync()))
         {
             return;
         }
 
         _source = source;
-        ExtensionNetworkGrant grant = services.TranslationExtensions.Authorization.Get(item.Id);
-        AllowHttp = grant.Http;
-        AllowLlm = grant.Llm;
         _configRevision = config.Revision;
         _draftSources = new Dictionary<string, string>(
             _pendingSources.GetValueOrDefault(source.Id) ?? source.Sources, StringComparer.Ordinal);
@@ -289,22 +417,85 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         SelectedSourceFile = null;
         SelectedSourceFile = SourceFiles.Contains("main.fsx") ? "main.fsx" : SourceFiles.FirstOrDefault();
-        IReadOnlyList<ConfigFieldDescriptor> descriptors = check.ConfigFields;
-        if (!check.Succeeded)
+        ExtensionConfigurationDescription description =
+            await services.TranslationExtensions.GetConfigurationDescriptionAsync(item.Id, cancellationToken);
+        if (version != Volatile.Read(ref _selectionVersion) || !ReferenceEquals(services, await _main.ServicesAsync()))
         {
-            await using IExtensionLease? active = await manager.AcquireAsync(item.Id);
-            if (version != Volatile.Read(ref _selectionVersion))
-            {
-                return;
-            }
-
-            descriptors = active?.ConfigFields ?? [];
+            return;
         }
+
+        IReadOnlyList<ConfigFieldDescriptor> descriptors = description.HasTrustedSchema ? description.Fields : [];
+        IsConfigurationSchemaAvailable = description.HasTrustedSchema;
+        string toolchainId = description.ToolchainIdentity is { Length: > 0 } identity
+            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..12]
+            : "runtime";
+        SchemaSourceText = description.HasTrustedSchema
+            ? $"{description.Source} · API {description.SchemaHostApi ?? "unknown"} · toolchain {toolchainId} · schema {description.SchemaFingerprint} · source {description.SourceFingerprint}" +
+              (description.SchemaMatchesSource ? "" : " · 与当前工作源码不同")
+            : "未检查 / schema 不可用";
+        ActiveFingerprintText = manager.List().FirstOrDefault(info => info.Id == item.Id && info.IsActive)?.Fingerprint
+                                ?? "无 Active generation";
+        ConfigurationRevisionText = config.Revision.ToString(CultureInfo.InvariantCulture);
 
         ApplyFields(descriptors, config.Values);
 
-        ShowDiagnostics(check);
+        Diagnostics.Clear();
+        foreach (ExtensionDiagnostic diagnostic in description.Diagnostics)
+        {
+            Diagnostics.Add(diagnostic);
+        }
+
+        ValidationState =
+            description.Diagnostics.Any(diagnostic => diagnostic.Severity == ExtensionDiagnosticSeverity.Error)
+                ? SettingsValidationState.Invalid
+                : description.HasTrustedSchema
+                    ? SettingsValidationState.Valid
+                    : SettingsValidationState.Unknown;
+        Status = !description.HasTrustedSchema
+            ? "配置描述尚未检查；源码可查看。点击“检查”以生成可信配置表单。"
+            : description.SchemaMatchesSource
+                ? "已读取同指纹配置描述；未执行检查或启动扩展。"
+                : "表单属于 Active generation；工作源码 fingerprint 不同，请先检查源码以更新表单。";
         CopyId = item.Id + ".custom";
+    }
+
+    private static ExtensionListItem CreateListItem(ExtensionPackageSnapshot package, string fingerprint, bool active)
+    {
+        try
+        {
+            ExtensionEntryMetadata metadata = ExtensionEntryMetadata.Parse(package);
+            string suffix = active
+                ? package.Fingerprint == fingerprint ? "" : "（工作源码不同）"
+                : "（未激活）";
+            return new ExtensionListItem(metadata.Id, metadata.Name + suffix, fingerprint,
+                metadata.Kind, active, metadata.Summary);
+        }
+        catch (ExtensionMetadataException error)
+        {
+            return new ExtensionListItem(package.Id, package.Id + "（元数据无效" + (active ? "）" : " / 未激活）"),
+                fingerprint, null, active, error.Message);
+        }
+    }
+
+    private static async Task<ExtensionPackageSnapshot> ReadDisplaySourceAsync(IExtensionManager manager,
+        IReadOnlyList<ExtensionPackageSnapshot> bundled, string id, CancellationToken cancellationToken)
+    {
+        ExtensionPackageSnapshot source;
+        try
+        {
+            source = await manager.ReadSourceAsync(id, cancellationToken);
+        }
+        catch (Exception exception) when (exception is DirectoryNotFoundException or FileNotFoundException)
+        {
+            return bundled.FirstOrDefault(package => package.Id == id)
+                   ?? throw new DirectoryNotFoundException($"找不到扩展源码：{id}", exception);
+        }
+
+        // A new package (or one with only saved config) has no working source yet.
+        // Non-empty broken drafts must remain visible instead of being replaced by bundled code.
+        return source.Sources.Count == 0 && source.BinaryFiles.Count == 0
+            ? bundled.FirstOrDefault(package => package.Id == id) ?? source
+            : source;
     }
 
     private void ApplyFields(IReadOnlyList<ConfigFieldDescriptor> descriptors,
@@ -313,6 +504,11 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         Fields.Clear();
         foreach (ConfigFieldDescriptor field in descriptors)
         {
+            if (field.Hidden)
+            {
+                continue;
+            }
+
             string value = values.GetValueOrDefault(field.Key) ?? field.DefaultValue ?? "";
             if (keepOnlyValidValues && !IsValidValue(field, value))
             {
@@ -384,6 +580,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         _source = draft;
         _pendingSources.Remove(draft.Id);
+        IsConfigurationSchemaAvailable = true;
+        SchemaSourceText = $"已检查工作副本 · schema {draft.Fingerprint} · source {draft.Fingerprint}";
         ApplyFields(check.ConfigFields, Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value), true);
         Status = "检查通过，源码草稿已保存，表单已更新。点击“应用源码”后对后续任务生效。";
     }
@@ -395,7 +593,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             throw new InvalidOperationException("请先选择扩展。");
         }
 
-        return new ExtensionPackageSnapshot(_source.Id, _draftSources);
+        return new ExtensionPackageSnapshot(_source.Id, _draftSources, _source.BinaryFiles);
     }
 
     private async Task CheckAsync()
@@ -412,6 +610,9 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             ShowDiagnostics(check);
             if (check.Succeeded)
             {
+                IsConfigurationSchemaAvailable = true;
+                string fingerprint = Draft().Fingerprint;
+                SchemaSourceText = $"已检查工作副本 · schema {fingerprint} · source {fingerprint}";
                 ApplyFields(check.ConfigFields,
                     Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value));
             }
@@ -452,7 +653,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         ExtensionCheckResult result = await services.TranslationExtensions.ActivateAsync(draft);
         if (result.Succeeded)
         {
-            await _manager.SaveSourceAsync(draft.Id, draft.Sources);
+            await _manager.SavePackageAsync(draft);
         }
 
         if (version != Volatile.Read(ref _selectionVersion))
@@ -477,6 +678,13 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
+        if (!IsConfigurationSchemaAvailable)
+        {
+            LastError = "没有与当前或 Active fingerprint 匹配的可信配置描述；请显式检查源码后再保存配置。";
+            Status = LastError;
+            return;
+        }
+
         string? error = Fields.Select(field => field.Validate()).FirstOrDefault(value => value is not null);
         if (error is not null)
         {
@@ -495,6 +703,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         long revision = Math.Max(_configRevision, current.Revision) + 1;
         await _manager.SaveConfigAsync(_source.Id, new ExtensionConfigSnapshot(values, revision));
         _configRevision = revision;
+        ConfigurationRevisionText = revision.ToString(CultureInfo.InvariantCulture);
         LastError = null;
         Status = "配置已保存，对之后启动的任务生效。";
     }
@@ -516,18 +725,20 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        Dictionary<string, string> sources = new(Draft().Sources, StringComparer.Ordinal);
-        // The export descriptor is part of the ordinary source; replace only its explicit identity literal.
-        sources["main.fsx"] =
-            sources["main.fsx"].Replace('"' + _source.Id + '"', '"' + id + '"', StringComparison.Ordinal);
-        if (sources.TryGetValue("extension.yml", out string? manifest))
+        ExtensionPackageSnapshot copy;
+        try
         {
-            sources["extension.yml"] = string.Join("\n", manifest.Replace("\r\n", "\n", StringComparison.Ordinal)
-                .Split('\n').Select(line => line.StartsWith("id:", StringComparison.Ordinal) ? "id: " + id : line));
+            copy = ExtensionEntryMetadata.RewriteId(Draft(), id);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                                              or ExtensionMetadataException)
+        {
+            LastError = "无法安全复制扩展入口元数据：" + exception.Message;
+            Status = LastError;
+            return;
         }
 
-        ExtensionPackageSnapshot copy = new(id, sources);
-        await _manager.SaveSourceAsync(id, sources);
+        await _manager.SavePackageAsync(copy);
         ExtensionConfigSnapshot original = await _manager.ReadConfigAsync(_source.Id);
         Dictionary<string, string> copiedValues = new(original.Values, StringComparer.Ordinal);
         foreach (ExtensionConfigFieldViewModel field in Fields)
@@ -551,7 +762,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
 
         HostServices services = await _main.ServicesAsync();
-        TranslationExtensionResult result = await services.TranslationExtensions.TestAsync(
+        TranslationPageResult result = await services.TranslationExtensions.TestAsync(
             SelectedExtension.Id, SampleText, _main.AppOptions.Llm.Translation.TargetLanguage);
         SampleResult = string.Join("\n", result.Outcomes.Select(item =>
             item.GetTranslatedText() ?? item.ErrorMessage ?? item.Kind.ToString()));
@@ -580,24 +791,11 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         HostServices services = await _main.ServicesAsync();
         ExtensionConfigSnapshot config = new(Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value),
             _configRevision);
-        TranslationExtensionResult result = await services.TranslationExtensions.TestDraftAsync(Draft(), config,
+        TranslationPageResult result = await services.TranslationExtensions.TestDraftAsync(Draft(), config,
             SampleText, _main.AppOptions.Llm.Translation.TargetLanguage);
         SampleResult = string.Join("\n",
             result.Outcomes.Select(item => item.GetTranslatedText() ?? item.ErrorMessage ?? item.Kind.ToString()));
         Status = "草稿样例契约测试完成；当前 Active、LKG 和书库内容均未变更。";
-    }
-
-    private async Task SaveAuthorizationAsync()
-    {
-        if (SelectedExtension is not { } selected)
-        {
-            return;
-        }
-
-        ExtensionNetworkGrant grant = new(AllowHttp, AllowLlm);
-        HostServices services = await _main.ServicesAsync();
-        services.TranslationExtensions.Authorization.Save(selected.Id, grant);
-        Status = "联网授权已保存，对之后启动的任务生效。";
     }
 
     private async Task PromoteAsync()
@@ -629,6 +827,43 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         Status = "已填入默认值，保存配置后生效。";
     }
 
+    private void ApplyStableTranslationParameters()
+    {
+        if (SelectedExtension?.Id is not ("translation.google-free" or "translation.deepl-free" or
+            "translation.microsoft-free" or "translation.tencent-free"))
+        {
+            return;
+        }
+
+        ExtensionConfigFieldViewModel? concurrency =
+            Fields.FirstOrDefault(field => field.Descriptor.Key == "concurrency");
+        ExtensionConfigFieldViewModel? interval =
+            Fields.FirstOrDefault(field => field.Descriptor.Key == "request-interval");
+        if (concurrency is null || interval is null)
+        {
+            Status = "当前可信配置描述未包含并发/间隔字段；请显式检查源码后再应用稳定参数。";
+            return;
+        }
+
+        concurrency.Value = "1";
+        interval.Value = "1";
+        Status = "已将并发设为 1、请求间隔设为 1 秒；点击保存后对后续任务生效。";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Interlocked.Increment(ref _loadGeneration);
+            Interlocked.Increment(ref _selectionVersion);
+            _loadCancellation?.Cancel();
+            _loadCancellation?.Dispose();
+            _loadCancellation = null;
+        }
+
+        base.Dispose(disposing);
+    }
+
     private void ShowDiagnostics(ExtensionCheckResult result)
     {
         Diagnostics.Clear();
@@ -656,7 +891,7 @@ public sealed record ExtensionListItem(
     string Id,
     string Name,
     string Fingerprint,
-    ExtensionKind Kind = ExtensionKind.Translation,
+    ExtensionKind? Kind = ExtensionKind.Translation,
     bool IsActive = true,
     string Description = "")
 {
@@ -665,6 +900,8 @@ public sealed record ExtensionListItem(
         "translation.llm" => "使用已配置的大语言模型翻译文献，支持上下文与术语配置。",
         "translation.google-free" => "使用 Google 翻译免费接口，无需 API 密钥。",
         "translation.deepl-free" => "使用 DeepL 网页翻译免费接口，无需 API 密钥。",
+        "translation.microsoft-free" => "使用 Microsoft Edge 网页翻译接口；非官方接口，服务可用性未保证。",
+        "translation.tencent-free" => "使用腾讯翻译君网页接口；非官方接口，服务可用性未保证。",
         "translation.deeplx" => "连接自定义 DeepLX 翻译服务，可配置服务地址与凭据。",
         _ => string.IsNullOrWhiteSpace(Description) ? "自定义扩展，可配置参数并编辑源码。" : Description
     };
@@ -694,7 +931,6 @@ public sealed partial class ExtensionConfigFieldViewModel : ViewModelBase
         IsBoolean = descriptor.Kind == ConfigValueKind.Boolean;
         IsChoice = descriptor.Kind == ConfigValueKind.Choice;
         IsCredential = descriptor.Kind == ConfigValueKind.CredentialReference;
-        IsCapability = descriptor.Kind == ConfigValueKind.Capability;
     }
 
     public ConfigFieldDescriptor Descriptor { get; }
@@ -705,8 +941,7 @@ public sealed partial class ExtensionConfigFieldViewModel : ViewModelBase
     public bool IsBoolean { get; }
     public bool IsChoice { get; }
     public bool IsCredential { get; }
-    public bool IsCapability { get; }
-    public bool IsText => !IsModel && !IsBoolean && !IsChoice && !IsCredential && !IsCapability;
+    public bool IsText => !IsModel && !IsBoolean && !IsChoice && !IsCredential;
     [ObservableProperty] public partial string Value { get; set; } = "";
 
     public bool BooleanValue

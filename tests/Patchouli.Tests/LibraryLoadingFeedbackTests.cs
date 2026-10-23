@@ -14,13 +14,13 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class LibraryLoadingFeedbackTests
+[Collection("RetainedTabUI")]
+public sealed class LibraryLoadingFeedbackTests(AvaloniaSharedSessionFixture headless)
 {
     [Fact]
     public async Task Refresh_keeps_old_rows_disables_only_the_grid_and_centers_the_loading_ring()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile file = new();
@@ -79,7 +79,11 @@ public sealed class LibraryLoadingFeedbackTests
             }
             finally
             {
+                await main.ShutdownAsync();
+                page.DataContext = null;
+                window.Content = null;
                 window.Close();
+                Dispatcher.UIThread.RunJobs();
             }
 
             return 0;
@@ -89,7 +93,7 @@ public sealed class LibraryLoadingFeedbackTests
     [Fact]
     public async Task Rapid_collection_and_tag_changes_share_loading_and_only_publish_the_latest_filter()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile file = new();
@@ -146,7 +150,7 @@ public sealed class LibraryLoadingFeedbackTests
     [Fact]
     public async Task Failed_refresh_releases_the_loading_overlay()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile file = new();

@@ -310,6 +310,7 @@ public sealed class MetadataLookupSettingsTests
 
         string settingsPath = Path.Combine(Path.GetTempPath(),
             $"patchouli-sync-load-generation-{Guid.NewGuid():N}.json");
+        MainWindowViewModel? main = null;
         try
         {
             PatchouliAppSettings settings = PatchouliAppSettings.Default() with
@@ -317,7 +318,7 @@ public sealed class MetadataLookupSettingsTests
                 Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = database.Path }
             };
             settings.Save(settingsPath).IsSuccess.Should().BeTrue();
-            MainWindowViewModel main = new(settingsPath: settingsPath) { RuntimeDatabasePath = database.Path };
+            main = new MainWindowViewModel(settingsPath: settingsPath) { RuntimeDatabasePath = database.Path };
             SyncSettingsViewModel sync = main.Settings.SyncSettings;
 
             Task load = sync.LoadAsync();
@@ -332,6 +333,11 @@ public sealed class MetadataLookupSettingsTests
         }
         finally
         {
+            if (main is not null)
+            {
+                await main.ShutdownAsync();
+            }
+
             if (File.Exists(settingsPath))
             {
                 File.Delete(settingsPath);

@@ -13,7 +13,7 @@ defining competing content semantics. Application-owned Box IDs, geometry and re
 remain independent of the producing engine. Import adapters accept the shared model or
 legacy content lists, validate their shape, and normalize type aliases before creating
 page-local leaf candidates. The evidence boundary is recorded in
-[OCR normalization](../ocr-normalization.md). No producer,
+[OCR normalization](../protocols/ocr-normalization.md). No producer,
 provider, source-format or provenance fields are added to canonical document storage.
 Unmapped input types block adoption rather than silently degrading to ordinary text.
 

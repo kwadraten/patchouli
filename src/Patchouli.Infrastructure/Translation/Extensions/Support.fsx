@@ -11,6 +11,7 @@ open System.Text.RegularExpressions
 open System.Security.Cryptography
 open System.Threading
 open System.Threading.Tasks
+open System.Net.Http
 open Patchouli.Core.Ids
 open Patchouli.Core.Documents
 open Patchouli.Extensions.Contracts
@@ -22,28 +23,36 @@ module Support =
         options.TypeInfoResolver <- DefaultJsonTypeInfoResolver()
         options
 
-    let batchSizeBinding = Config.bind "batch-size" (Field.integer "Batch size" 8 |> Field.range 1 128)
-    let concurrencyBinding = Config.bind "concurrency" (Field.integer "Parallel requests" 4 |> Field.range 1 32)
-    let maxCharactersBinding = Config.bind "max-batch-characters" (Field.integer "Maximum batch characters" 24000 |> Field.range 1 1000000)
-    let maxTokensBinding = Config.bind "max-batch-tokens" (Field.integer "Maximum output tokens" 0 |> Field.range 0 1000000)
-    let requestIntervalBinding = Config.bind "request-interval" (Field.decimal "Request interval (seconds)" 0M |> Field.decimalRange 0M 3600M)
-    let requestTimeoutBinding = Config.bind "request-timeout" (Field.decimal "Request timeout (seconds)" 120M |> Field.decimalRange 1M 3600M)
-    let maxRetriesBinding = Config.bind "max-retries" (Field.integer "Maximum retries" 2 |> Field.range 0 10)
-    let sourceLanguageBinding = Config.bind "source-language" (Field.language "Source language" "auto")
-    let targetLanguageBinding = Config.bind "target-language" (Field.language "Target language fallback" "")
-    let cacheBinding = Config.bind "cache-enabled" (Field.boolean "Cache successful translations" true)
-    let boxTypesBinding = Config.bind "box-types" (Field.text "Box type filter" "" |> Field.describe "Optional comma-separated box type IDs to translate.")
-    let sharedBindings = [ Config.asField batchSizeBinding; Config.asField concurrencyBinding; Config.asField maxCharactersBinding
-                           Config.asField maxTokensBinding; Config.asField requestIntervalBinding; Config.asField requestTimeoutBinding
-                           Config.asField maxRetriesBinding; Config.asField sourceLanguageBinding; Config.asField targetLanguageBinding
-                           Config.asField cacheBinding; Config.asField boxTypesBinding ]
-    let llmBindings = sharedBindings
+    /// Shared typed settings. Keys intentionally match the legacy persisted configuration keys.
+    type CommonSettings =
+        { [<Field("Batch size", Key = "batch-size"); Default(8); Range(1, 128)>]
+          BatchSize: int
+          [<Field("Parallel requests", Key = "concurrency"); Default(4); Range(1, 32)>]
+          Concurrency: int
+          [<Field("Maximum batch characters", Key = "max-batch-characters"); Default(24000); Range(1, 1000000)>]
+          MaxBatchCharacters: int
+          [<Field("Maximum output tokens", Key = "max-batch-tokens"); Default(0); Range(0, 1000000)>]
+          MaxBatchTokens: int
+          [<Field("Request interval (seconds)", Key = "request-interval"); Default(0.0); Range(0.0, 3600.0)>]
+          RequestInterval: double
+          [<Field("Request timeout (seconds)", Key = "request-timeout"); Default(120.0); Range(1.0, 3600.0)>]
+          RequestTimeout: double
+          [<Field("Maximum retries", Key = "max-retries"); Default(2); Range(0, 10)>]
+          MaxRetries: int
+          [<Field("Source language", Key = "source-language", Kind = ConfigValueKind.Language); Default("auto")>]
+          SourceLanguage: string
+          [<Field("Target language fallback", Key = "target-language", Kind = ConfigValueKind.Language); Default("")>]
+          TargetLanguage: string
+          [<Field("Cache successful translations", Key = "cache-enabled"); Default(true)>]
+          CacheEnabled: bool
+          [<Field("Box type filter", Key = "box-types"); Default("")>]
+          BoxTypes: string }
 
     let private translationCache = ConcurrentDictionary<string, string>(StringComparer.Ordinal)
     let private translationCacheOrder = ConcurrentQueue<string>()
     let mutable private cacheEpoch = 0L
 
-    let clearDerivedState (cancellationToken: CancellationToken) = task {
+    let clearDerivedState (cancellationToken: CancellationToken) : Task = task {
         cancellationToken.ThrowIfCancellationRequested()
         Interlocked.Increment(&cacheEpoch) |> ignore
         translationCache.Clear()
@@ -58,46 +67,49 @@ module Support =
                 if translationCacheOrder.TryDequeue(&oldest) then
                     translationCache.TryRemove(oldest) |> ignore
 
-    let sharedFields () = Config.fields sharedBindings
+    /// The run-pinned options. Engine settings only override them when the host froze that key.
+    let option (job: ITranslationJob) = job.Info.Options
 
-    let option (context: TranslationExtensionContext) =
-        match context.Options with
-        | null -> TranslationExtensionOptions()
-        | options -> options
+    let config (job: ITranslationJob) = job.Info.Config
 
-    let sourceLanguage (context: TranslationExtensionContext) =
-        if String.IsNullOrWhiteSpace context.SourceLanguage || String.Equals(context.SourceLanguage, "auto", StringComparison.OrdinalIgnoreCase) then
-            let configured = Binding.get sourceLanguageBinding context.Config
+    let sourceLanguage (common: CommonSettings) (job: ITranslationJob) =
+        let language = job.Info.SourceLanguage
+        if String.IsNullOrWhiteSpace language || String.Equals(language, "auto", StringComparison.OrdinalIgnoreCase) then
+            let configured = common.SourceLanguage
             if String.IsNullOrWhiteSpace configured then "auto" else configured
-        else context.SourceLanguage
+        else language
 
-    let targetLanguage (context: TranslationExtensionContext) =
-        if String.IsNullOrWhiteSpace context.TargetLanguage then
-            let configured = Binding.get targetLanguageBinding context.Config
-            if String.IsNullOrWhiteSpace configured then context.TargetLanguage else configured
-        else context.TargetLanguage
+    let targetLanguage (common: CommonSettings) (job: ITranslationJob) =
+        let language = job.Info.TargetLanguage
+        if String.IsNullOrWhiteSpace language then
+            let configured = common.TargetLanguage
+            if String.IsNullOrWhiteSpace configured then language else configured
+        else language
 
-    let filteredBoxes (context: TranslationExtensionContext) (boxes: ExtensionBox array) =
-        let configured = Binding.get boxTypesBinding context.Config
+    let filteredBoxes (common: CommonSettings) (boxes: ExtensionBox array) =
+        let configured = common.BoxTypes
         if String.IsNullOrWhiteSpace configured then boxes
         else
             let selected = Set.ofArray (configured.Split(',', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries))
             boxes |> Array.filter (fun box -> selected.Contains(box.Type))
 
-    let translatableBoxes (context: TranslationExtensionContext) =
+    /// Leaf boxes that carry translatable text; a box holding children is translated through them.
+    let translatableBoxes (page: TranslationPageInput) =
+        let boxes = page.Boxes
         let parentIds = HashSet<DocumentBoxId>(
-            context.Boxes |> Seq.choose (fun box -> if box.ParentId.HasValue then Some box.ParentId.Value else None))
+            boxes |> Seq.choose (fun box -> if box.ParentId.HasValue then Some box.ParentId.Value else None))
         let allowedTypes = set [ "text"; "title"; "ref_text"; "list"; "table"; "algorithm"; "index"; "header"; "footer";
                                 "aside_text"; "page_footnote"; "image_caption"; "image_footnote"; "table_caption";
                                 "table_footnote"; "chart_caption"; "chart_footnote"; "code_caption"; "code_footnote" ]
-        context.Boxes
+        boxes
         |> Seq.filter (fun box -> not box.Suppressed && not (parentIds.Contains(box.Id)) && allowedTypes.Contains(box.Type)
                                   && not (String.IsNullOrWhiteSpace box.Text))
         |> Seq.toArray
 
-    let glossary (context: TranslationExtensionContext) =
+    let glossary (job: ITranslationJob) =
+        let frozen = config job
         let configured =
-            match context.Config.Values.TryGetValue("glossary") with
+            match frozen.Values.TryGetValue("glossary") with
             | true, value -> value
             | _ -> String.Empty
         let fromConfig =
@@ -118,15 +130,12 @@ module Support =
                         else Some (line.Substring(0, index).Trim() + " = " + value))
                 |> Array.toList
         let fromRun =
-            match context.Options with
+            match job.Info.Options.Glossary with
             | null -> []
-            | options ->
-                match options.Glossary with
-                | null -> []
-                | entries -> entries |> Seq.map (fun term ->
-                    let note = term.Note |> Option.ofObj |> Option.filter (String.IsNullOrWhiteSpace >> not)
-                               |> Option.map (fun value -> " (" + value.Trim() + ")") |> Option.defaultValue ""
-                    term.Source + " = " + term.Translation + note) |> Seq.toList
+            | entries -> entries |> Seq.map (fun term ->
+                let note = term.Note |> Option.ofObj |> Option.filter (String.IsNullOrWhiteSpace >> not)
+                           |> Option.map (fun value -> " (" + value.Trim() + ")") |> Option.defaultValue ""
+                term.Source + " = " + term.Translation + note) |> Seq.toList
         fromConfig @ fromRun
 
     type SegmentOutcome =
@@ -146,28 +155,36 @@ module Support =
 
     let skipped (boxId: DocumentBoxId) = ExtensionBoxOutcome(boxId, ExtensionBoxOutcomeKind.Skipped)
 
-    let effectiveOptions (context: TranslationExtensionContext) =
-        let run = option context
-        let has key = context.Config.Values.ContainsKey(key)
-        let batchSize = if has "batch-size" then Binding.get batchSizeBinding context.Config else run.BatchSize
-        let concurrency = if has "concurrency" then Binding.get concurrencyBinding context.Config else run.Concurrency
-        let maxCharacters = if has "max-batch-characters" then Binding.get maxCharactersBinding context.Config else run.MaxBatchCharacters
+    /// Config keys frozen in the job override the run options; optional engine-specific defaults apply when neither sets the key.
+    let effectiveEngineOptions (common: CommonSettings) (job: ITranslationJob) (defaultConcurrency: int option) (defaultIntervalSeconds: decimal option) =
+        let run = option job
+        let frozen = config job
+        let has key = frozen.Values.ContainsKey(key)
+        let batchSize = if has "batch-size" then common.BatchSize else run.BatchSize
+        let concurrency =
+            if has "concurrency" then common.Concurrency
+            elif defaultConcurrency.IsSome then defaultConcurrency.Value
+            else run.Concurrency
+        let maxCharacters = if has "max-batch-characters" then common.MaxBatchCharacters else run.MaxBatchCharacters
         let maxTokens = if has "max-batch-tokens" then
-                            let value = Binding.get maxTokensBinding context.Config
+                            let value = common.MaxBatchTokens
                             if value <= 0 then Nullable<int>() else Nullable<int>(value)
                         else run.MaxBatchTokens
-        let interval = if has "request-interval" then Nullable<TimeSpan>(TimeSpan.FromSeconds(float (Binding.get requestIntervalBinding context.Config))) else run.RequestInterval
-        let timeout = if has "request-timeout" then Nullable<TimeSpan>(TimeSpan.FromSeconds(float (Binding.get requestTimeoutBinding context.Config))) else run.RequestTimeout
-        let retries = if has "max-retries" then Binding.get maxRetriesBinding context.Config else run.MaxRetries
+        let interval =
+            if has "request-interval" then Nullable<TimeSpan>(TimeSpan.FromSeconds(common.RequestInterval))
+            elif defaultIntervalSeconds.IsSome then Nullable<TimeSpan>(TimeSpan.FromSeconds(float defaultIntervalSeconds.Value))
+            else run.RequestInterval
+        let timeout = if has "request-timeout" then Nullable<TimeSpan>(TimeSpan.FromSeconds(common.RequestTimeout)) else run.RequestTimeout
+        let retries = if has "max-retries" then common.MaxRetries else run.MaxRetries
         let radius =
-            match context.Config.Values.TryGetValue("window-radius") with
+            match frozen.Values.TryGetValue("window-radius") with
             | true, value ->
                 match Int32.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture) with
                 | true, parsed -> Math.Clamp(parsed, 0, 5)
                 | _ -> run.WindowRadius
             | _ -> run.WindowRadius
         let backfill =
-            match context.Config.Values.TryGetValue("backfill") with
+            match frozen.Values.TryGetValue("backfill") with
             | true, value ->
                 match Boolean.TryParse(value) with
                 | true, parsed -> parsed
@@ -175,6 +192,8 @@ module Support =
             | _ -> run.BackfillPreviousWindowTranslation
         TranslationExtensionOptions(batchSize, maxCharacters, maxTokens, concurrency, interval, timeout, retries,
             radius, backfill, run.DocumentTitle, run.Glossary, run.PromptContext, run.ProviderId, run.Model)
+
+    let effectiveOptions (common: CommonSettings) (job: ITranslationJob) = effectiveEngineOptions common job None None
 
     type Segment =
         { Box: ExtensionBox
@@ -189,8 +208,13 @@ module Support =
 
     let captureCacheEpoch () = Interlocked.Read(&cacheEpoch)
 
-    let private translationCacheKey (context: TranslationExtensionContext) (phase: string) (epoch: int64) (segment: Segment) =
-        let options = effectiveOptions context
+    /// The cache key covers the whole translation request identity: phase, job languages, box content,
+    /// run options, the frozen configuration, page-level reference context, glossary and the page's boxes.
+    /// Reference context is part of the key so a prompt change (neighbors, backfill, radius) invalidates it.
+    let private translationCacheKey (common: CommonSettings) (job: ITranslationJob) (page: TranslationPageInput) (phase: string)
+                                    (epoch: int64) (references: string array) (segment: Segment) =
+        let options = effectiveOptions common job
+        let frozen = config job
         use stream = new System.IO.MemoryStream()
         use writer = new System.IO.BinaryWriter(stream, System.Text.Encoding.UTF8, true)
         let write (value: string | null) =
@@ -198,38 +222,36 @@ module Support =
         write phase
         writer.Write(epoch)
         let fields: (string | null) list =
-            [ sourceLanguage context; targetLanguage context; segment.Box.Type; segment.Text
+            [ sourceLanguage common job; targetLanguage common job; segment.Box.Type; segment.Text
               options.DocumentTitle; options.PromptContext; options.ProviderId; options.Model
               string options.MaxBatchTokens ]
         fields |> List.iter write
-        let configuration = context.Config.Values |> Seq.sortBy (fun pair -> pair.Key) |> Seq.toArray
+        let configuration = frozen.Values |> Seq.sortBy (fun pair -> pair.Key) |> Seq.toArray
         writer.Write(configuration.Length)
         for pair in configuration do
             write pair.Key
             write pair.Value
-        let references =
-            context.ReferenceContexts |> Option.ofObj |> Option.map Seq.toArray |> Option.defaultValue [||]
         writer.Write(references.Length)
         for reference in references do write reference
-        let terms = glossary context
+        let terms = glossary job
         writer.Write(terms.Length)
         for term in terms do write term
-        writer.Write(context.Boxes.Count)
-        for box in context.Boxes do
+        writer.Write(page.Boxes.Count)
+        for box in page.Boxes do
             write box.Type
             write box.Text
         writer.Flush()
         Convert.ToHexString(SHA256.HashData(stream.ToArray()))
 
-    let tryGetCachedTranslation (context: TranslationExtensionContext) phase epoch segment =
+    let tryGetCachedTranslation (common: CommonSettings) (job: ITranslationJob) (page: TranslationPageInput) phase epoch references segment =
         let mutable text = ""
-        if Binding.get cacheBinding context.Config && captureCacheEpoch () = epoch
-           && translationCache.TryGetValue(translationCacheKey context phase epoch segment, &text) then Some text
+        if common.CacheEnabled && captureCacheEpoch () = epoch
+           && translationCache.TryGetValue(translationCacheKey common job page phase epoch references segment, &text) then Some text
         else None
 
-    let cacheTranslation (context: TranslationExtensionContext) phase epoch segment text =
-        if Binding.get cacheBinding context.Config && captureCacheEpoch () = epoch then
-            cacheSuccess (translationCacheKey context phase epoch segment) text
+    let cacheTranslation (common: CommonSettings) (job: ITranslationJob) (page: TranslationPageInput) phase epoch references segment text =
+        if common.CacheEnabled && captureCacheEpoch () = epoch then
+            cacheSuccess (translationCacheKey common job page phase epoch references segment) text
 
     let private structureAtomPattern = Regex(
         "<eq\\b[^>]*>[\\s\\S]*?</eq>|<[^>]+>|```[\\s\\S]*?```|~~~[\\s\\S]*?~~~|`[^`\\r\\n]+`|\\{\\{[^}]+\\}\\}|\\{[^}]+\\}|%(?:[0-9]+\\$)?[a-zA-Z]|&(?:#[0-9]+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);|\\$\\$[\\s\\S]*?\\$\\$|\\$(?:\\\\.|[^$\\r\\n])+?\\$|\\\\\\[[\\s\\S]*?\\\\\\]|\\\\\\(.*?\\\\\\)|(?<![\\w])=[A-Za-z_][A-Za-z0-9_.]*\\([^()\\r\\n]*(?:\\([^()\\r\\n]*\\)[^()\\r\\n]*)*\\)|(?<![\\w])=\\$?[A-Z]{1,3}\\$?\\d+(?:\\s*(?:[+*/^<>-]|<=|>=|<>|=)\\s*(?:\\$?[A-Z]{1,3}\\$?\\d+|\\d+(?:\\.\\d+)?))*",
@@ -462,8 +484,8 @@ module Support =
                         ExtensionBoxOutcome.FromPayload(box.Id, AlgorithmBoxPayload(text, Annotations = source.Annotations))
                     | _ -> ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, text))
 
-    let configText key fallback (context: TranslationExtensionContext) =
-        match context.Config.Values.TryGetValue(key) with
+    let configText key fallback (job: ITranslationJob) =
+        match (config job).Values.TryGetValue(key) with
         | true, value when not (String.IsNullOrWhiteSpace value) -> value.Trim()
         | _ -> fallback
 
@@ -495,17 +517,22 @@ module Support =
             output <- Regex.Replace(output, Regex.Escape(pair.Key), MatchEvaluator(fun _ -> pair.Value), RegexOptions.IgnoreCase)
         output
 
-    let timeoutToken (options: TranslationExtensionOptions) (cancellationToken: CancellationToken) =
-        let source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-        if options.RequestTimeout.HasValue && options.RequestTimeout.Value > TimeSpan.Zero then
-            source.CancelAfter(options.RequestTimeout.Value)
-        source
-
-    let pace (capabilities: IExtensionCapabilities) (options: TranslationExtensionOptions) cancellationToken = task {
-        do! capabilities.WaitToProceedAsync(cancellationToken)
-    }
+    /// The SDK's ambient execution scope forwards this pause gate as a cross-worker progress step.
+    /// Host scheduler queue/cooldown is opaque here; do not claim a cooldown countdown from it.
+    let pace (resources: IExtensionResources) (_options: TranslationExtensionOptions) cancellationToken =
+        let step =
+            Step.async' (fun () token -> task { do! resources.WaitToProceedAsync(token) })
+            |> Step.named "request-wait"
+        Pipeline.run None "request-wait" step () cancellationToken
 
     exception TransientTranslationException of string
+
+    /// Raised when the provider definitively rejects the request (a non-retryable status like 400
+    /// or 403). Resending the same request cannot succeed, so it maps to a non-retryable code.
+    exception TranslationRequestRejectedException of string
+
+    /// Raised when the provider rate limits or exhausts quota (HTTP 429).
+    exception TranslationRateLimitedException of string * TimeSpan option
 
     let retryTransient (maxRetries: int) (initialDelay: TimeSpan) (maxDelay: TimeSpan)
                        (work: CancellationToken -> Task<string>) (cancellationToken: CancellationToken) = task {
@@ -523,6 +550,7 @@ module Support =
                     | _ -> error
                 let transient =
                     match retryError with
+                    | :? TranslationRateLimitedException -> false
                     | :? TransientTranslationException -> true
                     | :? System.Net.Http.HttpRequestException -> true
                     | :? TimeoutException -> true
@@ -538,74 +566,32 @@ module Support =
     }
 
     let ensureHttpSuccess (provider: string) (statusCode: int) =
-        if statusCode = 429 || statusCode >= 500 && statusCode <= 599 then
-            raise (TransientTranslationException(provider + " returned HTTP " + statusCode.ToString(CultureInfo.InvariantCulture) + "."))
-        if statusCode < 200 || statusCode >= 300 then
-            invalidOp (provider + " returned HTTP " + statusCode.ToString(CultureInfo.InvariantCulture) + ".")
+        let message = provider + " returned HTTP " + statusCode.ToString(CultureInfo.InvariantCulture) + "."
+        if statusCode = 429 then
+            raise (TranslationRateLimitedException(message, None))
+        elif statusCode = 408 || (statusCode >= 500 && statusCode <= 599) then
+            raise (TransientTranslationException(message))
+        elif statusCode < 200 || statusCode >= 300 then
+            raise (TranslationRequestRejectedException(message))
 
-    let report (context: TranslationExtensionContext) completed total phase =
-        match context.Progress with
-        | null -> ()
-        | progress -> progress.Report(ExtensionProgress(phase, completed, total))
+    let ensureHttpResponseSuccess (provider: string) (response: HttpResponseMessage) =
+        let statusCode = int response.StatusCode
+        let message = provider + " returned HTTP " + statusCode.ToString(CultureInfo.InvariantCulture) + "."
+        if statusCode = 429 then
+            let retryAfter =
+                match response.Headers.RetryAfter with
+                | null -> None
+                | retry when retry.Delta.HasValue -> Some retry.Delta.Value
+                | retry when retry.Date.HasValue -> Some(max TimeSpan.Zero (retry.Date.Value - DateTimeOffset.UtcNow))
+                | _ -> None
+            raise (TranslationRateLimitedException(message, retryAfter))
+        elif statusCode = 408 || (statusCode >= 500 && statusCode <= 599) then
+            raise (TransientTranslationException(message))
+        elif statusCode < 200 || statusCode >= 300 then
+            raise (TranslationRequestRejectedException(message))
 
-    let translateBySegmentsWithCharacterLimit (context: TranslationExtensionContext) phase characterLimit translateOne cancellationToken = task {
-        let options = effectiveOptions context
-        let maxCharacters = min options.MaxBatchCharacters characterLimit
-        let boxes = translatableBoxes context
-        let eligible = boxes |> filteredBoxes context
-        let segments = eligible |> Array.collect (segment maxCharacters)
-        let batches = buildSegmentBatches segments options.BatchSize maxCharacters options.MaxBatchTokens
-        let epoch = captureCacheEpoch ()
-        let cacheMisses = ConcurrentDictionary<string, Segment>(StringComparer.Ordinal)
-        let mutable completed = 0
-        let translateBatch (batch: Segment array) ct = task {
-            let outcomes = ResizeArray<SegmentOutcome>()
-            for segment in batch do
-                try
-                    let cachedText = tryGetCachedTranslation context phase epoch segment
-                    let! outcome =
-                        if segment.ErrorCode.IsSome then
-                            Task.FromResult(failure segment.Id segment.ErrorCode.Value
-                                (Option.defaultValue "The table is invalid." segment.ErrorMessage))
-                        elif segment.Text.Length > maxCharacters then
-                            Task.FromResult(failure segment.Id "translation_segment_exceeds_limit"
-                                "A protected code or formula unit exceeds the provider's request character limit.")
-                        elif cachedText.IsSome then
-                            Task.FromResult(translated segment.Id cachedText.Value)
-                        else
-                            if segment.ErrorCode.IsNone then cacheMisses[segment.Id] <- segment
-                            let pipeline = Step.sync id |>> Step.async (fun value token -> translateOne value token)
-                            Pipeline.run context.Progress phase pipeline segment ct
-                    let current = Interlocked.Increment(&completed)
-                    report context current segments.Length phase
-                    outcomes.Add(outcome)
-                with
-                | :? OperationCanceledException when ct.IsCancellationRequested -> raise (OperationCanceledException(ct))
-                | error ->
-                    let outcome = failure segment.Id "translation_request_failed" error.Message
-                    let current = Interlocked.Increment(&completed)
-                    report context current segments.Length phase
-                    outcomes.Add(outcome)
-            return outcomes.ToArray()
-        }
-        let! mapped = Parallel.map options.Concurrency translateBatch batches cancellationToken
-        let outcomes = mapped |> Array.collect id
-        let mergedOutcomes = mergeSegments boxes segments outcomes
-        let translatedBoxes =
-            HashSet<DocumentBoxId>(
-                mergedOutcomes
-                |> Seq.filter (fun outcome -> outcome.Kind = ExtensionBoxOutcomeKind.Translated)
-                |> Seq.map (fun outcome -> outcome.BoxId))
-        for outcome in outcomes do
-            match cacheMisses.TryGetValue(outcome.SegmentId), outcome.TranslatedText with
-            | (true, segment), Some text when translatedBoxes.Contains(segment.Box.Id) && outcome.Kind = ExtensionBoxOutcomeKind.Translated ->
-                cacheTranslation context phase epoch segment text
-            | _ -> ()
-        return TranslationExtensionResult(mergedOutcomes)
-    }
-
-    let translateBySegments context phase translateOne cancellationToken =
-        translateBySegmentsWithCharacterLimit context phase Int32.MaxValue translateOne cancellationToken
+    let report (job: ITranslationJob) completed total phase =
+        Job.progress job |> Option.iter (fun progress -> progress.Report(ExtensionProgress(phase, completed, total)))
 
     let private jsonOptions =
         let options = JsonSerializerOptions()
@@ -614,17 +600,27 @@ module Support =
 
     let jsonBody<'T> (value: 'T) = JsonSerializer.Serialize(value, jsonOptions)
 
-    let sendJson (capabilities: IExtensionCapabilities) (http: IHttpCapability) uri body options cancellationToken credentialReference extraHeaders = task {
-        do! pace capabilities options cancellationToken
-        use timeout = timeoutToken options cancellationToken
-        let headers = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        headers["Content-Type"] <- "application/json"
-        for key, value in extraHeaders do headers[key] <- value
-        let request = HttpRequest("POST", Uri(uri), headers, body,
-            (if String.IsNullOrWhiteSpace credentialReference then null else credentialReference))
-        let! response = http.SendAsync(request, timeout.Token)
-        ensureHttpSuccess "Translation service" response.StatusCode
-        return response.Body
+    let sendJson (resources: IExtensionResources) (uri: string) (body: string)
+                 (options: TranslationExtensionOptions) (cancellationToken: CancellationToken)
+                 (credentialReference: string | null) (extraHeaders: (string * string) seq) = task {
+        do! pace resources options cancellationToken
+        use request = new HttpRequestMessage(HttpMethod.Post, Uri(uri))
+        let content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+        request.Content <- content
+        for key, value in extraHeaders do
+            if not (String.Equals(key, "Content-Type", StringComparison.OrdinalIgnoreCase)) then
+                if not (request.Headers.TryAddWithoutValidation(key, value)) then
+                    content.Headers.TryAddWithoutValidation(key, value) |> ignore
+        match Option.ofObj credentialReference |> Option.filter (String.IsNullOrWhiteSpace >> not) with
+        | Some reference ->
+            let! credential = resources.GetCredentialAsync(reference, cancellationToken)
+            if not (String.IsNullOrWhiteSpace credential) then
+                request.Headers.Authorization <- System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential)
+            else invalidOp "The configured credential is unavailable."
+        | None -> ()
+        use! response = resources.Http.SendAsync(request, cancellationToken)
+        ensureHttpResponseSuccess "Translation service" response
+        return! response.Content.ReadAsStringAsync(cancellationToken)
     }
 
     let parseStringAt (element: JsonElement) (property: string) =
@@ -633,3 +629,227 @@ module Support =
             value.GetString() |> Option.ofObj
         else None
 
+    /// Pure LLM wire decoder: validates the complete identity set without touching job or resources.
+    let decodeLlmResponse (responseText: string) (expectedIds: string array) =
+        let mutable json = responseText.Trim()
+        if json.StartsWith("```", StringComparison.Ordinal) then
+            let newline = json.IndexOf('\n')
+            json <- if newline >= 0 then json.Substring(newline + 1).Trim() else json.Trim('`').Trim()
+            if json.EndsWith("```", StringComparison.Ordinal) then
+                json <- json.Substring(0, json.Length - 3).Trim()
+        use document = JsonDocument.Parse(json)
+        if document.RootElement.ValueKind <> JsonValueKind.Array then
+            invalidOp "The LLM response must be a JSON array."
+        let returned = Dictionary<string, string>(StringComparer.Ordinal)
+        for item in document.RootElement.EnumerateArray() do
+            let id = parseStringAt item "id"
+            let text = parseStringAt item "text"
+            match id, text with
+            | Some key, Some value when not (String.IsNullOrWhiteSpace key) && not (returned.ContainsKey(key)) ->
+                returned.Add(key, value)
+            | _ -> invalidOp "The LLM response contains a missing, duplicate, or invalid box id."
+        if returned.Count <> expectedIds.Length || (expectedIds |> Array.exists (fun id -> not (returned.ContainsKey(id)))) then
+            invalidOp "The LLM response does not contain exactly the requested box IDs."
+        expectedIds |> Array.map (fun id -> id, returned[id]) |> Map.ofArray
+
+    /// Pure provider response decoders used by the request adapters.
+    let parseGoogleResponse (responseText: string) =
+        use document = JsonDocument.Parse(responseText)
+        let mutable sentences = JsonElement()
+        if not (document.RootElement.TryGetProperty("sentences", &sentences)) || sentences.ValueKind <> JsonValueKind.Array then
+            invalidOp "Google Translate response has no sentences array."
+        let text = sentences.EnumerateArray() |> Seq.choose (fun sentence -> parseStringAt sentence "trans") |> String.concat ""
+        if String.IsNullOrWhiteSpace text then invalidOp "Google Translate returned empty text."
+        text
+
+    let parseDeepLResponse (responseText: string) =
+        use document = JsonDocument.Parse(responseText)
+        let mutable error = JsonElement()
+        if document.RootElement.TryGetProperty("error", &error) then invalidOp "DeepL returned a JSON-RPC error."
+        let mutable result = JsonElement()
+        let mutable texts = JsonElement()
+        if not (document.RootElement.TryGetProperty("result", &result)) || not (result.TryGetProperty("texts", &texts))
+           || texts.ValueKind <> JsonValueKind.Array || texts.GetArrayLength() <> 1 then
+            invalidOp "DeepL response does not map to the single requested box."
+        match parseStringAt texts[0] "text" with
+        | Some text when not (String.IsNullOrWhiteSpace text) -> text
+        | _ -> invalidOp "DeepL returned empty text."
+
+    let parseDeepLxResponse (responseText: string) =
+        use document = JsonDocument.Parse(responseText)
+        let mutable data = JsonElement()
+        if not (document.RootElement.TryGetProperty("data", &data)) || data.ValueKind <> JsonValueKind.String then
+            invalidOp "DeepLX response has no translated data field."
+        let text = data.GetString() |> Option.ofObj |> Option.defaultValue String.Empty
+        if String.IsNullOrWhiteSpace text then invalidOp "DeepLX returned empty text."
+        text
+
+    let parseMicrosoftResponse (target: string) (expectedCount: int) (responseText: string) =
+        use document = JsonDocument.Parse(responseText)
+        if document.RootElement.ValueKind <> JsonValueKind.Array || document.RootElement.GetArrayLength() <> expectedCount then
+            invalidOp "Microsoft Edge returned a response count different from the request."
+        [| for index in 0 .. expectedCount - 1 do
+               let item = document.RootElement[index]
+               let mutable translations = JsonElement()
+               if not (item.TryGetProperty("translations", &translations)) || translations.ValueKind <> JsonValueKind.Array
+                  || translations.GetArrayLength() = 0 then invalidOp "Microsoft Edge omitted a translation."
+               let requestedLanguage = target.ToLowerInvariant()
+               let candidates = translations.EnumerateArray() |> Seq.toArray
+               let hasExplicitLanguage = candidates |> Array.exists (fun candidate -> (parseStringAt candidate "to").IsSome)
+               let selected =
+                   if hasExplicitLanguage then
+                        candidates |> Array.tryFind (fun candidate ->
+                            match parseStringAt candidate "to" with
+                            | Some value -> String.Equals(value, requestedLanguage, StringComparison.OrdinalIgnoreCase)
+                            | None -> false)
+                   elif candidates.Length = 1 then Some candidates[0]
+                   else None
+               let candidate = selected |> Option.defaultWith (fun () -> invalidOp "Microsoft Edge translations did not include the requested target language.")
+               let value = parseStringAt candidate "text" |> Option.defaultValue ""
+               if String.IsNullOrWhiteSpace value then invalidOp "Microsoft Edge returned empty text."
+               yield value |]
+
+    let parseTencentResponse (expectedCount: int) (responseText: string) =
+        if responseText.TrimStart().StartsWith("<", StringComparison.Ordinal) then
+            invalidOp "Tencent Transmart returned HTML, possibly an interactive challenge; no challenge is bypassed."
+        use document = JsonDocument.Parse(responseText)
+        let root = document.RootElement
+        let mutable explicitError = JsonElement()
+        let hasExplicitError = root.TryGetProperty("error", &explicitError) && explicitError.ValueKind <> JsonValueKind.Null && explicitError.ToString() <> ""
+        let mutable returnCode = JsonElement()
+        let hasCode =
+            (root.TryGetProperty("ret_code", &returnCode) || root.TryGetProperty("code", &returnCode)) ||
+            (let mutable responseHeader = JsonElement() in root.TryGetProperty("header", &responseHeader) && responseHeader.TryGetProperty("ret_code", &returnCode))
+        let code = if hasCode then (if returnCode.ValueKind = JsonValueKind.String then returnCode.GetString() else returnCode.ToString()) else null
+        let failedCode = hasCode && not (String.IsNullOrWhiteSpace code) && code <> "0" && code <> "200"
+                         && not (String.Equals(code, "OK", StringComparison.OrdinalIgnoreCase))
+                         && not (String.Equals(code, "SUCCESS", StringComparison.OrdinalIgnoreCase))
+                         && not (String.Equals(code, "SUCC", StringComparison.OrdinalIgnoreCase))
+        if hasExplicitError || failedCode then invalidOp "Tencent Transmart returned an application-level error."
+        let mutable translatedArray = JsonElement()
+        if not (root.TryGetProperty("auto_translation", &translatedArray)) || translatedArray.ValueKind <> JsonValueKind.Array
+           || translatedArray.GetArrayLength() <> expectedCount then
+            invalidOp "Tencent Transmart returned an auto_translation count different from the request."
+        [| for item in translatedArray.EnumerateArray() do
+               let value = if item.ValueKind = JsonValueKind.String then item.GetString() |> Option.ofObj |> Option.defaultValue ""
+                           else parseStringAt item "dst" |> Option.orElseWith (fun () -> parseStringAt item "text") |> Option.defaultValue ""
+               if String.IsNullOrWhiteSpace value then invalidOp "Tencent Transmart returned an empty translation."
+               yield value |]
+
+    /// A segment paired with the page it came from, so the shared cache key stays page-scoped.
+    type WorkSegment =
+        { Page: TranslationPageInput
+          Segment: Segment
+          /// Engine-specific context for the page; kept out of the cache key.
+          Context: string array }
+
+    /// One page's prepared work: the boxes to merge back into and the page-scoped segments to translate.
+    type PageWork =
+        { Page: TranslationPageInput
+          Boxes: ExtensionBox array
+          Segments: Segment array }
+
+    let prepareWork (common: CommonSettings) (maxCharacters: int) (page: TranslationPageInput) =
+        let boxes = translatableBoxes page |> filteredBoxes common
+        { Page = page
+          Boxes = boxes
+          Segments = boxes |> Array.collect (segment maxCharacters) }
+
+    /// Builds one page's drive state plus its items, with segment-level caching left to `translateOne`.
+    let workPage (common: CommonSettings) (limit: int) (context: string array) (page: TranslationPageInput) =
+        let work = prepareWork common limit page
+        work, work.Segments |> Array.map (fun item -> { Page = page; Segment = item; Context = context })
+
+    /// Segment-level translator for the request-based providers. Each item is one segment, the cache is
+    /// consulted before `translateOne` runs, and every successful segment is cached for the next run.
+    /// These engines have no page-level reference context, so their cache key carries none.
+    let segmentTranslatorWithSequential (common: CommonSettings) (sequential: bool) (job: ITranslationJob) (phase: string) (limit: int)
+                                        (translateOne: Segment -> CancellationToken -> Task<SegmentOutcome>)
+                                        : JobTranslator<PageWork, WorkSegment, SegmentOutcome> =
+        let noReferences = Array.empty<string>
+        { Prepare = fun page token -> task {
+              token.ThrowIfCancellationRequested()
+              let work, items = workPage common limit noReferences page
+              return { Page = page
+                       State = work
+                       Items = items
+                       // Context grouping remains independent from page/batch sequence policy.
+                       ContextKey = ""
+                       Sequential = sequential } }
+          Measure = fun item -> item.Segment.Text.Length, None
+          Translate = fun items token -> task {
+              let outcomes = Array.zeroCreate items.Length
+              let mutable rateLimited = false
+              for index in 0 .. items.Length - 1 do
+                  token.ThrowIfCancellationRequested()
+                  let entry = items[index]
+                  let item = entry.Segment
+                  let! outcome =
+                      if rateLimited then
+                          Task.FromResult(failure item.Id "rate_limited" "Translation stopped after the provider rate limited a request.")
+                      elif item.ErrorCode.IsSome then
+                          Task.FromResult(failure item.Id item.ErrorCode.Value
+                              (Option.defaultValue "The table is invalid." item.ErrorMessage))
+                      elif item.Text.Length > limit then
+                          Task.FromResult(failure item.Id "translation_segment_exceeds_limit"
+                              "A protected code or formula unit exceeds the provider's request character limit.")
+                      else
+                          match tryGetCachedTranslation common job entry.Page phase (captureCacheEpoch ()) noReferences item with
+                          | Some text -> Task.FromResult(translated item.Id text)
+                          | None -> task {
+                              try
+                                  return! translateOne item token
+                              with
+                              | :? OperationCanceledException as error -> return raise error
+                              | :? TranslationRateLimitedException as error ->
+                                  rateLimited <- true
+                                  return failure item.Id "rate_limited" error.Message
+                          }
+                  match outcome.Kind, outcome.TranslatedText with
+                  | ExtensionBoxOutcomeKind.Translated, Some text ->
+                      cacheTranslation common job entry.Page phase (captureCacheEpoch ()) noReferences item text
+                  | _ -> ()
+                  outcomes[index] <- outcome
+              return outcomes }
+           // Classify the batch exception: provider rejections are final, transient request
+          // failures stay retryable, and anything unexpected is treated as a request failure.
+          Finish = fun work items results ->
+              mergeSegments work.Boxes work.Segments
+                  (Array.map2 (fun (entry: WorkSegment) (result: Result<SegmentOutcome, exn>) ->
+                       match result with
+                       | Ok outcome -> outcome
+                       | Error error ->
+                           let code =
+                               match error with
+                               | :? TranslationRateLimitedException -> "rate_limited"
+                               | :? TranslationRequestRejectedException -> "translation_request_rejected"
+                               | :? TimeoutException -> "translation_request_timeout"
+                               | :? TransientTranslationException
+                               | :? System.Net.Http.HttpRequestException -> "translation_request_failed"
+                               | _ -> "translation_request_failed"
+                           failure entry.Segment.Id code error.Message) items results) }
+
+    /// Compatibility default preserves the prior concurrent policy. Traditional web providers
+    /// must opt into the explicit stable strategy; self-hosted DeepLX remains unchanged.
+    let segmentTranslator (common: CommonSettings) (job: ITranslationJob) (phase: string) (limit: int)
+                          (translateOne: Segment -> CancellationToken -> Task<SegmentOutcome>) =
+        segmentTranslatorWithSequential common false job phase limit translateOne
+
+    let segmentTranslatorStable (common: CommonSettings) (job: ITranslationJob) (phase: string) (limit: int)
+                                (translateOne: Segment -> CancellationToken -> Task<SegmentOutcome>) =
+        segmentTranslatorWithSequential common true job phase limit translateOne
+
+    let rateLimitFailurePolicy : JobFailurePolicy<SegmentOutcome> =
+        { IsRateLimited = fun error -> error :? TranslationRateLimitedException
+          IsRateLimitedResult = fun outcome -> outcome.ErrorCode = Some "rate_limited"
+          RateLimitError = fun () -> TranslationRateLimitedException("Translation stopped after the provider rate limited a request.", None) }
+
+    let runSegmentPages job (options: TranslationExtensionOptions) budget translator cancellationToken =
+        ExecutionScope.run options.Concurrency (Job.progress job) cancellationToken (fun () -> task {
+            do! Job.runPagesWithFailurePolicy rateLimitFailurePolicy job options budget translator cancellationToken })
+
+    /// Opt-in policy for traditional web translators: serial pages and serial request batches.
+    /// Ordinary segment engines and LLM callers retain the SDK driver's prior concurrency behavior.
+    let runSegmentPagesStable job (options: TranslationExtensionOptions) budget translator cancellationToken =
+        ExecutionScope.run options.Concurrency (Job.progress job) cancellationToken (fun () -> task {
+            do! Job.runPagesSequentialWithFailurePolicy rateLimitFailurePolicy job options budget translator cancellationToken })

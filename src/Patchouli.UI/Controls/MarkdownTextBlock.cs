@@ -213,7 +213,7 @@ public sealed class MarkdownTextBlock : TextBlock
 
         if (style.Strikethrough)
         {
-            run.TextDecorations = Avalonia.Media.TextDecorations.Strikethrough;
+            run.TextDecorations = CreateDecorations(TextDecorationLocation.Strikethrough);
         }
 
         if (style.Code)
@@ -225,7 +225,7 @@ public sealed class MarkdownTextBlock : TextBlock
         if (style.Link)
         {
             run.Foreground = ResolveBrush("PrimaryBrush", FallbackLinkForeground);
-            run.TextDecorations = Avalonia.Media.TextDecorations.Underline;
+            run.TextDecorations = CreateDecorations(TextDecorationLocation.Underline);
         }
 
         Inlines?.Add(run);
@@ -245,6 +245,11 @@ public sealed class MarkdownTextBlock : TextBlock
     private IBrush ResolveBrush(string key, IBrush fallback)
     {
         return this.TryFindResource(key, out object? value) && value is IBrush brush ? brush : fallback;
+    }
+
+    private static TextDecorationCollection CreateDecorations(TextDecorationLocation location)
+    {
+        return [new TextDecoration { Location = location }];
     }
 
     private readonly record struct InlineStyle(bool Bold, bool Italic, bool Strikethrough, bool Code, bool Link)

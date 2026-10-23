@@ -135,8 +135,17 @@ public sealed class TaskQueueControlTests
     {
         return new TranslationRunService(new PageService(context.ConnectionFactory, context.Clock), context.Trees,
             context.Translations, () => LlmAppSettings.Default(),
-            TranslationTestExtensionHarness.CreateRunner((_, _, _) =>
-                Task.FromResult(new TranslationExtensionResult([]))),
+            TranslationTestExtensionHarness.CreateRunner(async (ITranslationJob job, IExtensionResources _,
+                CancellationToken cancellationToken) =>
+            {
+                // Pull pages through the Host job so unreadable-page failures are actually settled.
+                while (await job.NextPageAsync(cancellationToken) is { } page)
+                {
+                    ExtensionBoxOutcome[] outcomes = page.Boxes.Select(box =>
+                        new ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, "translated")).ToArray();
+                    await job.CommitPageAsync(new TranslationPageResult(page.Page, outcomes), cancellationToken);
+                }
+            }, true, null),
             _ => Task.CompletedTask);
     }
 

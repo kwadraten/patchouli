@@ -10,14 +10,14 @@ public sealed class ExtensionMetadataSource : IMetadataSource
 {
     private readonly IExtensionManager _manager;
     private readonly string _extensionId;
-    private readonly Func<IExtensionLease, ExtensionConfigSnapshot, IExtensionCapabilities> _capabilitiesFactory;
+    private readonly Func<IExtensionLease, ExtensionConfigSnapshot, IExtensionResources> _capabilitiesFactory;
     private readonly Func<CancellationToken, Task>? _initializeAsync;
 
     public ExtensionMetadataSource(
         IExtensionManager manager,
         string extensionId,
         MetadataSourceDefinition definition,
-        Func<IExtensionLease, ExtensionConfigSnapshot, IExtensionCapabilities> capabilitiesFactory,
+        Func<IExtensionLease, ExtensionConfigSnapshot, IExtensionResources> capabilitiesFactory,
         Func<CancellationToken, Task>? initializeAsync = null)
     {
         _manager = manager ?? throw new ArgumentNullException(nameof(manager));
@@ -64,7 +64,7 @@ public sealed class ExtensionMetadataSource : IMetadataSource
             }
 
             ExtensionConfigSnapshot config = ExtensionConfiguration.Resolve(lease.ConfigFields, lease.Config);
-            IExtensionCapabilities capabilities = _capabilitiesFactory(lease, config);
+            IExtensionResources capabilities = _capabilitiesFactory(lease, config);
             Result<MetadataCandidate> result = await extension.LookupAsync(identifier, config, capabilities,
                 cancellationToken).ConfigureAwait(false);
             if (result.IsFailure)

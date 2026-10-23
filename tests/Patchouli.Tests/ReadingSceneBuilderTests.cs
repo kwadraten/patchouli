@@ -562,6 +562,47 @@ public sealed class ReadingSceneBuilderTests
             "a link-less table keeps the view's synthesized cell model");
     }
 
+    [Fact]
+    public void Inline_html_table_without_a_box_mapping_renders_as_a_grid()
+    {
+        const string html = "<table><tr><td>Type</td><td>Example</td></tr><tr><td>A</td><td>B</td></tr></table>";
+        MarkdownDocumentModel model = new([Block("HtmlBlock", html)]);
+
+        ReadingBlock block = ReadingSceneBuilder.Build(model, [], [], "page", markdownSource: html).Blocks.Single();
+
+        block.Kind.Should().Be("table");
+        block.Table.Should().NotBeNull();
+        block.Table!.Rows.Should().HaveCount(2);
+        block.Table.Rows[0].Should().Equal("Type", "Example");
+        block.Table.Rows[1].Should().Equal("A", "B");
+    }
+
+    [Fact]
+    public void Html_block_that_is_not_a_table_keeps_its_text_kind()
+    {
+        const string html = "<div>note</div>";
+        MarkdownDocumentModel model = new([Block("HtmlBlock", html)]);
+
+        ReadingBlock block = ReadingSceneBuilder.Build(model, [], [], "page", markdownSource: html).Blocks.Single();
+
+        block.Kind.Should().Be("HtmlBlock");
+        block.Table.Should().BeNull();
+    }
+
+    [Fact]
+    public void Text_box_with_literal_table_markup_is_not_retyped_as_a_table()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html = "<table><tr><td>A</td></tr></table>";
+        MarkdownDocumentModel model = new([Block("HtmlBlock", html)]);
+
+        ReadingBlock block = ReadingSceneBuilder.Build(model, [SourceMap(boxId, 0, 1)],
+            [Box(boxId, DocumentBoxType.Text)], "page", markdownSource: html).Blocks.Single();
+
+        block.Kind.Should().Be("paragraph");
+        block.Table.Should().BeNull();
+    }
+
     private static ReadingScene BuildTable(string text)
     {
         DocumentBoxId boxId = DocumentBoxId.New();

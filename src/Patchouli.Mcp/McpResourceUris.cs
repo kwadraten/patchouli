@@ -25,6 +25,8 @@ public enum McpUriKind
     RunOcrStatus,
     RunsTranslationScope,
     RunTranslationStatus,
+    RunsMetadataScope,
+    RunMetadataStatus,
     RunEndpoint
 }
 
@@ -159,6 +161,18 @@ public static class McpResourceUris
         return $"{Prefix}runs/ocr/{RequirePathToken(taskId, nameof(taskId))}/";
     }
 
+    /// <summary>The volatile metadata enrich_batch tasks started through the metadata endpoint.</summary>
+    public static string RunsMetadataScopeUri()
+    {
+        return $"{Prefix}runs/metadata/";
+    }
+
+    /// <summary>The canonical status URI a metadata enrich_batch start returns and cancel/retry address.</summary>
+    public static string MetadataRunStatusUri(string taskId)
+    {
+        return $"{Prefix}runs/metadata/{RequirePathToken(taskId, nameof(taskId))}/status";
+    }
+
     /// <summary>
     /// Builds the canonical page-map URI. The filename is fixed: every document's chapter and
     /// pagination map lives at <c>texts/{document-id}/map.yml</c>.
@@ -270,6 +284,8 @@ public static class McpResourceUris
             McpUriKind.RunOcrStatus => OcrRunStatusUri(target.RunTaskId!),
             McpUriKind.RunsTranslationScope => RunsTranslationScopeUri(),
             McpUriKind.RunTranslationStatus => TranslationRunStatusUri(target.RunTaskId!),
+            McpUriKind.RunsMetadataScope => RunsMetadataScopeUri(),
+            McpUriKind.RunMetadataStatus => MetadataRunStatusUri(target.RunTaskId!),
             _ => throw new InvalidOperationException("Unknown VFS resource kind.")
         };
     }
@@ -329,7 +345,8 @@ public static class McpResourceUris
     {
         // patchouli://runs/ or
         // patchouli://runs/ocr/ or patchouli://runs/ocr/{task-id}/status or
-        // patchouli://runs/translation/ or patchouli://runs/translation/{run-id}/status.
+        // patchouli://runs/translation/ or patchouli://runs/translation/{run-id}/status or
+        // patchouli://runs/metadata/ or patchouli://runs/metadata/{task-id}/status.
         if (segments.Length == 2 && segments[0] == "runs" && segments[1].Length == 0)
         {
             return query is null
@@ -340,8 +357,9 @@ public static class McpResourceUris
         if (segments.Length < 2 || segments[1].Length == 0)
         {
             return Invalid(uri,
-                "Run URIs must be patchouli://runs/ocr/{task-id}/status or " +
-                "patchouli://runs/translation/{run-id}/status.");
+                "Run URIs must be patchouli://runs/ocr/{task-id}/status, " +
+                "patchouli://runs/translation/{run-id}/status, or " +
+                "patchouli://runs/metadata/{task-id}/status.");
         }
 
         if (segments.Length == 3 && segments[2] == "control" && query is null &&
@@ -355,8 +373,41 @@ public static class McpResourceUris
         {
             "ocr" => ParseRunsOcrUri(uri, segments, query),
             "translation" => ParseRunsTranslationUri(uri, segments, query),
-            _ => Invalid(uri, "The runs scope exposes only the 'ocr' and 'translation' subtrees.")
+            "metadata" => ParseRunsMetadataUri(uri, segments, query),
+            _ => Invalid(uri, "The runs scope exposes only the 'ocr', 'translation', and 'metadata' subtrees.")
         };
+    }
+
+    private static Result<McpUriParseResult> ParseRunsMetadataUri(string uri, string[] segments, string? query)
+    {
+        // runs/metadata/ (scope) or runs/metadata/{task-id}/status.
+        if (segments.Length == 3 && segments[2].Length == 0)
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunsMetadataScope))
+                : Invalid(uri, "The runs/metadata scope does not accept queries.");
+        }
+
+        if (((segments.Length == 3 && segments[2].Length > 0) ||
+             (segments.Length == 4 && segments[3].Length == 0)) && TryParseGuid(segments[2], out _))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.RunMetadataStatus,
+                    RunTaskId: segments[2]))
+                : Invalid(uri, "Metadata task URIs do not accept queries.");
+        }
+
+        if (segments.Length == 4 && segments[3] == "status" && TryParseGuid(segments[2], out _))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(
+                    new McpUriParseResult(McpUriKind.RunMetadataStatus, RunTaskId: segments[2]))
+                : Invalid(uri, "Metadata task status URIs do not accept query parameters.");
+        }
+
+        return Invalid(uri,
+            "Metadata run URIs must be patchouli://runs/metadata/ or " +
+            "patchouli://runs/metadata/{task-id}/status.");
     }
 
     private static Result<McpUriParseResult> ParseRunsTranslationUri(string uri, string[] segments, string? query)

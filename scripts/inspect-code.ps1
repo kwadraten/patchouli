@@ -1,6 +1,12 @@
 [CmdletBinding()]
 param(
     [string]$ArtifactsPath = '.tmp/build/inspection',
+    # The JetBrains CLI host has no F# source model (see Directory.Build.targets); exclude
+    # F# sources explicitly so the documented inspection scope is C# and Avalonia XAML.
+    # .fs sources are gated by the F# compiler (TreatWarningsAsErrors in each .fsproj) and
+    # F# unit tests; .fsx scripts are gated by the production real-FCS policy checks and
+    # script execution tests.
+    [string[]]$Exclude = @('src/**/*.fs', 'tests/**/*.fs', 'src/**/*.fsx', 'tests/**/*.fsx'),
     [switch]$UseExistingBuild,
     [string]$CachesPath = '.tmp/build/inspection-caches'
 )
@@ -10,7 +16,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $expectedVersion = '2026.1.4'
 $artifactDirectory = Join-Path $root '.tmp'
 $reportPath = Join-Path $artifactDirectory 'inspectcode.sarif'
-$resolvedArtifactsPath = [IO.Path]::GetFullPath($ArtifactsPath, $root)
+$resolvedArtifactsPath = [IO.Path]::GetFullPath((Join-Path $root $ArtifactsPath))
 if (-not $resolvedArtifactsPath.StartsWith($artifactDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Inspection build outputs must be inside the repository .tmp directory.'
 }
@@ -27,11 +33,16 @@ if ($actualVersion -ne $expectedVersion) {
 }
 
 New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-$resolvedCachesPath = [IO.Path]::GetFullPath($CachesPath, $root)
+$resolvedCachesPath = [IO.Path]::GetFullPath((Join-Path $root $CachesPath))
 if (-not $resolvedCachesPath.StartsWith($artifactDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Inspection caches must be inside the repository .tmp directory.'
 }
+$excludeItems = @($Exclude | ForEach-Object { $_ -split '[,;]' })
+$excludeValue = ($excludeItems | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim().Replace('/', [IO.Path]::DirectorySeparatorChar) }) -join ';'
 $additionalArguments = @("--caches-home=$resolvedCachesPath")
+if (-not [string]::IsNullOrWhiteSpace($excludeValue)) {
+    $additionalArguments += "--exclude=$excludeValue"
+}
 if ($UseExistingBuild) {
     # InspectCode cannot resolve F# project metadata reliably in SDK artifacts output. After a
     # normal build, use its resolved assemblies without triggering another solution build.

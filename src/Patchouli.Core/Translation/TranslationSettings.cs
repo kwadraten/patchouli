@@ -36,7 +36,7 @@ public sealed record TranslationSettings(
 {
     public const string DefaultTargetLanguage = "en";
     public const string DefaultSourceLanguage = "auto";
-    public const string DefaultEngineId = "translation.llm";
+    public const string DefaultEngineId = "translation.microsoft-free";
     public const int MinBatchSize = 1;
     public const int MaxBatchSize = 64;
     public const int DefaultBatchSize = 8;

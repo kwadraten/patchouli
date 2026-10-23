@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- F# compiler diagnostics are the static-analysis gate for .fs test sources
+         (the JetBrains CLI host has no F# source model); keep them warning-free. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="TestEnvironment.fs" />
+    <!-- Compile the production support modules once into this test assembly; tests invoke their public pure helpers directly. -->
+    <Compile Include="../../src/Patchouli.Infrastructure/Translation/Extensions/Support.fsx" Link="TranslationSupport.fsx" />
+    <Compile Include="../../src/Patchouli.Infrastructure/Bibliography/MetadataLookup/Extensions/Support.fsx" Link="MetadataSupport.fsx" />
+    <Compile Include="TranslationSupportTests.fs" />
+    <Compile Include="MetadataSupportTests.fs" />
+    <Compile Include="ConfigSettingsTests.fs" />
+    <Compile Include="ConfigTests.fs" />
+    <Compile Include="PipelineTests.fs" />
+    <Compile Include="RetryTests.fs" />
+    <Compile Include="ParallelTests.fs" />
+    <Compile Include="BatchTests.fs" />
+    <Compile Include="JobTests.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Patchouli.Testing.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

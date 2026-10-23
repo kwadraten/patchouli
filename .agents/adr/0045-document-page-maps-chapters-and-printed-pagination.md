@@ -108,7 +108,7 @@ box identity; the map references it but never rewrites it.
 
 The normative schema, empty-resource behavior, logical-page rules, invalidation
 handling, limits and error contract are maintained in
-[mcp-protocol.md](../mcp-protocol.md). Tests cover the pure resolver, validator,
+[mcp-protocol.md](../protocols/mcp-protocol.md). Tests cover the pure resolver, validator,
 invalidation, and the YAML round-trip.
 
 ## Consequences

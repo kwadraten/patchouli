@@ -8,13 +8,16 @@ using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class DesktopInstanceActivationTests
+// R13 shared session: every case still owns its windows, view models, settings file and
+// coordinators inside the dispatch; only the dedicated create/dispose stress theory keeps
+// independent sessions off the shared path.
+[Collection("RetainedTabUI")]
+public sealed class DesktopInstanceActivationTests(AvaloniaSharedSessionFixture headless)
 {
     [Fact]
     public async Task Closing_window_and_disposing_view_model_share_one_shutdown()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
@@ -26,6 +29,10 @@ public sealed class DesktopInstanceActivationTests
             main.ShutdownAsync().Should().BeSameAs(first);
             await first;
             await main.DisposeAsync();
+            // A returned value binds this delegate to the fully awaited
+            // Dispatch<T>(Func<Task<T>>) overload; a bare Func<Task> binds to
+            // Dispatch<Task>(Func<Task>), which never awaits the nested task.
+            return true;
         }, CancellationToken.None);
     }
 
@@ -53,7 +60,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Closing_tray_enabled_window_hides_it_without_closing()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel(), true);
@@ -75,7 +82,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Update_exit_action_runs_once_after_confirmation_and_closes_normally()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -98,13 +105,14 @@ public sealed class DesktopInstanceActivationTests
 
             closed.Should().BeTrue();
             launchCount.Should().Be(1);
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Failed_update_exit_action_keeps_window_open_and_allows_normal_exit()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -126,14 +134,15 @@ public sealed class DesktopInstanceActivationTests
 
             window.RequestExit();
             closed.Should().BeTrue();
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Cancelling_unsaved_settings_confirmation_never_starts_installer_or_closes_window()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
         {
             QueuedExitDialogs dialogs = new(ConfirmDialogResult.Cancel, ConfirmDialogResult.Discard);
             using TemporaryAppSettingsFile settings = new();
@@ -141,16 +150,27 @@ public sealed class DesktopInstanceActivationTests
             MainWindow window = new(main);
             int launchCount = 0;
             bool closed = false;
-            window.Closed += (_, _) => closed = true;
+            // OnClosed awaits the view-model shutdown before raising Closed, so the Closed
+            // event is the real completion signal for a confirmed exit instead of a delay.
+            TaskCompletionSource closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) =>
+            {
+                closed = true;
+                closedSignal.TrySetResult();
+            };
             window.Show();
             main.Settings.AppearanceSettings.ReadingFontSize++;
 
+            TaskCompletionSource cancelledConfirmation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            dialogs.ConfirmationShown += () => cancelledConfirmation.TrySetResult();
             window.RequestExitAfterAsync(() =>
             {
                 launchCount++;
                 return Task.FromResult(true);
             });
-            await Task.Delay(50);
+            // The fake dialog completes synchronously, so the cancellation has finished
+            // by the time RequestExitAfterAsync returns; wait on its signal, not a delay.
+            await cancelledConfirmation.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             closed.Should().BeFalse();
             window.IsVisible.Should().BeTrue();
@@ -158,16 +178,19 @@ public sealed class DesktopInstanceActivationTests
             dialogs.Confirmations.Should().Be(1);
 
             window.RequestExit();
+            await closedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
             closed.Should().BeTrue();
             launchCount.Should().Be(0);
             dialogs.Confirmations.Should().Be(2);
+            return true;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Activation_shows_hidden_window()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -193,7 +216,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Activation_restores_minimized_window()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             MainWindow window = new(new MainWindowViewModel());
@@ -229,7 +252,7 @@ public sealed class DesktopInstanceActivationTests
         DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         secondary.IsPrimary.Should().BeFalse();
 
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
@@ -278,7 +301,7 @@ public sealed class DesktopInstanceActivationTests
     [Fact]
     public async Task Pre_window_pending_activation_consumed_on_subscribe()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             App app = (App)Avalonia.Application.Current!;
@@ -381,6 +404,7 @@ public sealed class DesktopInstanceActivationTests
     private sealed class QueuedExitDialogs(params ConfirmDialogResult[] choices) : IDialogService
     {
         private readonly Queue<ConfirmDialogResult> _choices = new(choices);
+        public event Action? ConfirmationShown;
         public int Confirmations { get; private set; }
 
         public Task ShowDialogAsync(object viewModel)
@@ -392,8 +416,10 @@ public sealed class DesktopInstanceActivationTests
         {
             if (viewModel is ConfirmDialogViewModel)
             {
+                ConfirmDialogResult choice = _choices.Dequeue();
                 Confirmations++;
-                return Task.FromResult((TResult?)(object?)_choices.Dequeue());
+                ConfirmationShown?.Invoke();
+                return Task.FromResult((TResult?)(object?)choice);
             }
 
             return Task.FromResult(default(TResult?));

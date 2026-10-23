@@ -17,7 +17,6 @@ using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
-using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
@@ -86,7 +85,7 @@ public sealed class SnapshotTests
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
         Result<SnapshotPublishResult> r = await c.PublishAsync();
-        (await SnapshotPublisher.VerifyShardAsync(c.SyncRoot, r.Value.Shards.Single())).Should().BeTrue();
+        (await c.VerifyShardAsync(r.Value.Shards.Single())).Should().BeTrue();
     }
 
     [Fact]
@@ -97,7 +96,7 @@ public sealed class SnapshotTests
         r.Value.Shards.Should().HaveCountGreaterThan(1);
         foreach (SnapshotShard shard in r.Value.Shards)
         {
-            (await SnapshotPublisher.VerifyShardAsync(c.SyncRoot, shard)).Should().BeTrue();
+            (await c.VerifyShardAsync(shard)).Should().BeTrue();
         }
 
         Result<SnapshotImportResult> imported = await c.ImportAsync(r.Value.ManifestPath);
@@ -218,7 +217,7 @@ public sealed class SnapshotTests
         SnapshotShard updatedShard = originalShard with
         {
             SizeBytes = new FileInfo(shardPath).Length,
-            Blake3 = await SnapshotPublisher.Blake3FileAsync(shardPath)
+            Blake3 = await c.Blake3FileAsync(shardPath)
         };
         SnapshotManifest updatedManifest = manifest with
         {
@@ -1089,9 +1088,11 @@ public sealed class SnapshotTests
 
     private sealed class SnapshotTestContext : IAsyncDisposable
     {
+        private readonly PhaseLog _phases;
+
         private SnapshotTestContext(TemporarySqliteDatabase database, string syncRoot, string stagingRoot,
             LibraryId libraryId, SearchUnitId unitId, IBlockingOperationService blockingOperations,
-            DocumentInstanceId documentInstanceId, PageId pageId, FixedClock clock)
+            DocumentInstanceId documentInstanceId, PageId pageId, FixedClock clock, PhaseLog phases)
         {
             Database = database;
             SyncRoot = syncRoot;
@@ -1102,6 +1103,7 @@ public sealed class SnapshotTests
             DocumentInstanceId = documentInstanceId;
             PageId = pageId;
             Clock = clock;
+            _phases = phases;
             Publisher = new SnapshotPublisher(new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z")));
             Importer = new SnapshotImporter(blockingOperations);
         }
@@ -1120,9 +1122,16 @@ public sealed class SnapshotTests
 
         public static async Task<SnapshotTestContext> CreateAsync(string? externalPath = null)
         {
-            TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+            PhaseLog phases = new();
+            return await phases.RecordAsync("fixture", () => CreateCoreAsync(externalPath, phases));
+        }
+
+        private static async Task<SnapshotTestContext> CreateCoreAsync(string? externalPath, PhaseLog phases)
+        {
+            // Opt-in template pilot: the migrated schema comes from the shared template copy.
+            // Library/item/document/page/commit seeding and the search rebuild below stay per-case.
+            TemporarySqliteDatabase db = await TemporarySqliteDatabase.CreateMigratedAsync();
             FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
-            await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
             LibraryIdentityService library = new(db.ConnectionFactory, clock);
             Result<LibraryMetadata> lib = await library.CreateLibraryAsync("Snapshot Library");
             Result<ItemMetadata> item =
@@ -1191,7 +1200,7 @@ public sealed class SnapshotTests
                     (await cn2.ExecuteScalarAsync<string>("select unit_id from search_units limit 1;"))!);
             BlockingOperationService blockingOperations = new(db.ConnectionFactory, clock);
             return new SnapshotTestContext(db, TempDir(), TempDir(), lib.Value.LibraryId, unit, blockingOperations,
-                doc.Value.DocumentInstanceId, page.Value.PageId, clock);
+                doc.Value.DocumentInstanceId, page.Value.PageId, clock, phases);
         }
 
         public Task<Result<SnapshotPublishResult>> PublishAsync(string? parent = null,
@@ -1199,16 +1208,28 @@ public sealed class SnapshotTests
             IReadOnlyList<string>? enabledSettingKeys = null,
             string? syncRootId = null)
         {
-            return Publisher.PublishSnapshotAsync(new SnapshotPublishRequest(Database.Path, SyncRoot, "device-a",
-                parent, TargetShardSizeBytes: targetShardSizeBytes ?? 512L * 1024L * 1024L,
-                SyncRootId: syncRootId,
-                EnabledSettingKeys: enabledSettingKeys));
+            return _phases.RecordAsync("publish", () =>
+                Publisher.PublishSnapshotAsync(new SnapshotPublishRequest(Database.Path, SyncRoot, "device-a",
+                    parent, TargetShardSizeBytes: targetShardSizeBytes ?? 512L * 1024L * 1024L,
+                    SyncRootId: syncRootId,
+                    EnabledSettingKeys: enabledSettingKeys)));
         }
 
         public Task<Result<SnapshotImportResult>> ImportAsync(string manifest)
         {
-            return Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(manifest, StagingRoot, LibraryId,
-                Database.Path));
+            return _phases.RecordAsync("import", () =>
+                Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(manifest, StagingRoot, LibraryId,
+                    Database.Path)));
+        }
+
+        public Task<bool> VerifyShardAsync(SnapshotShard shard)
+        {
+            return _phases.RecordAsync("shard-verify", () => SnapshotPublisher.VerifyShardAsync(SyncRoot, shard));
+        }
+
+        public Task<string> Blake3FileAsync(string path)
+        {
+            return _phases.RecordAsync("shard-hash", () => SnapshotPublisher.Blake3FileAsync(path));
         }
 
         public SqliteConnection OpenRuntime()
@@ -1240,6 +1261,11 @@ public sealed class SnapshotTests
         }
 
         public async Task AddSearchUnitCopiesAsync(int count, string text)
+        {
+            await _phases.RecordAsync("seed-data", () => AddSearchUnitCopiesCoreAsync(count, text));
+        }
+
+        private async Task AddSearchUnitCopiesCoreAsync(int count, string text)
         {
             await using SqliteConnection cn = OpenRuntime();
             SearchUnitTemplate t = await cn.QuerySingleAsync<SearchUnitTemplate>(
@@ -1281,6 +1307,34 @@ public sealed class SnapshotTests
             if (Directory.Exists(StagingRoot))
             {
                 Directory.Delete(StagingRoot, true);
+            }
+        }
+
+        /// <summary>
+        /// R12 bounded diagnostic: writes one "PHASE {name} {ms} ms" line per measured
+        /// stage — fixture creation, seed data, publish, shard hash/verify and import —
+        /// so TRX output keeps the split between fixture setup, publishing and staging
+        /// import. Timing only; boundary data and target shard sizes are unchanged.
+        /// </summary>
+        private sealed class PhaseLog
+        {
+            public async Task RecordAsync(string name, Func<Task> operation)
+            {
+                await RecordAsync(name, async () =>
+                {
+                    await operation().ConfigureAwait(false);
+                    return true;
+                }).ConfigureAwait(false);
+            }
+
+            public async Task<T> RecordAsync<T>(string name, Func<Task<T>> operation)
+            {
+                System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+                T result = await operation().ConfigureAwait(false);
+                watch.Stop();
+                Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"PHASE {name} {watch.Elapsed.TotalMilliseconds:0.##} ms"));
+                return result;
             }
         }
 

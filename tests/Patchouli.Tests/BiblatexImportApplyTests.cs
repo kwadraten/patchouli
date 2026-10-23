@@ -14,10 +14,7 @@ public sealed class BiblatexImportApplyTests
     [Fact]
     public async Task Apply_single_creates_item_and_roundtrips_export()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-apply-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -32,8 +29,7 @@ public sealed class BiblatexImportApplyTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             });
             (await services.Library.CreateLibraryAsync("Bib apply")).IsSuccess.Should().BeTrue();
@@ -91,10 +87,7 @@ public sealed class BiblatexImportApplyTests
     [Fact]
     public async Task Apply_batch_without_candidates_creates_all()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-batch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -109,8 +102,7 @@ public sealed class BiblatexImportApplyTests
                     RuntimeDatabasePath = db,
                     DefaultSyncRoot = Path.Combine(root, "sync"),
                     DefaultStagingRoot = Path.Combine(root, "staging"),
-                    LogDirectory = Path.Combine(root, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(root, "logs")
                 }
             });
             (await services.Library.CreateLibraryAsync("Bib batch")).IsSuccess.Should().BeTrue();

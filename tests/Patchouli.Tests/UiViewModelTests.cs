@@ -50,8 +50,36 @@ using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class UiViewModelTests : IDisposable
+// R13 shared session registration: every Dispatch case still creates and closes its own windows,
+// view models, settings files and databases. Shared state touched by this class — the per-dispatch
+// Application (fresh instance each dispatch), Dispatcher.UIThread helpers and workspace event
+// subscriptions — is either scoped to one dispatch or cleaned up inside it; the session itself is
+// owned by the collection fixture and is never disposed here.
+//
+// R14 shared-state audit (collection-boundary evidence; no case moved):
+// - Synchronous (non-Dispatch) cases construct MainWindowViewModel on the xunit worker thread.
+//   The VM ctor calls ThemePaletteApplier.Apply unconditionally (MainWindowViewModel.cs), which
+//   writes the process-global CurrentPaletteId/CurrentThemeMode/_watchedApp statics and, whenever
+//   Application.Current is non-null (e.g. left installed by this collection's dispatches),
+//   attaches the variant watcher and mutates that app's Resources/RequestedThemeVariant from this
+//   thread. CreateMainWindow also probes Application.Current + Dispatcher.UIThread.CheckAccess to
+//   choose the UI scheduler.
+// - Dispatch cases pump Dispatcher.UIThread (RunJobs) on the shared session's UI thread; the
+//   session is owned by AvaloniaSharedSessionFixture and disposed asynchronously there.
+// - Dispose() runs SqliteConnection.ClearAllPools, a process-global pool purge, before releasing
+//   the per-test TemporaryAppSettingsFile; Dispatch cases additionally clear pools before deleting
+//   their ad-hoc sqlite files.
+// - MainWindowViewModel.DisposeAsync/ShutdownAsync does NOT detach ThemePaletteApplier's watcher;
+//   a VM built inside a dispatch leaves _watchedApp referencing that dispatch's Application until
+//   the next AttachWatcher. This is recorded as shared-state residue, not a defect to fix here.
+// - Pure XAML/source-contract cases (e.g. Library_status_cell..., Ocr_menus...,
+//   Toolbar_uri_parser...) never construct a VM; extracting them to a UiSourceContractTests-style
+//   class is a separately approved step and is deliberately NOT done in this audit.
+// Conclusion: the class stays in the DisableParallelization RetainedTabUI collection so its
+// off-dispatch writes to the theme statics can never interleave with this collection's dispatches
+// or with session-less VM constructions in the "Avalonia" collection.
+[Collection("RetainedTabUI")]
+public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
@@ -263,10 +291,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Single_biblatex_entry_skips_selection_and_opens_conflict_handling()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-single-{Guid.NewGuid():N}.sqlite");
         CapturingDialogService dialogs = new();
@@ -309,10 +334,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Invalid_biblatex_paste_keeps_the_import_error_instead_of_reloading_the_editor()
     {
-        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
-        {
-            return;
-        }
+        BiblatexHelperTestSupport.RequireStagedHelperPath();
 
         string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-invalid-{Guid.NewGuid():N}.sqlite");
         FakeClipboard clipboard = new();
@@ -348,7 +370,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Toolbar_patchouli_uri_opens_item_and_one_based_text_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");
@@ -872,10 +894,10 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void LucideIcon_renders_svg_resource_without_external_package()
+    public async Task LucideIcon_renders_svg_resource_without_external_package()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        session.Dispatch(() =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch(() =>
         {
             Lucide.Avalonia.Lucide icon = new()
             {
@@ -894,10 +916,10 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void MainWindow_constructs_with_local_lucide_icons()
+    public async Task MainWindow_constructs_with_local_lucide_icons()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        session.Dispatch(() =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch(() =>
         {
             MainWindow window = CreateMainWindowShell();
             window.Close();
@@ -907,7 +929,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_new_item_editor_renders_without_recursive_templates()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -941,7 +963,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_returns_to_rendered_library_after_switching_tabs()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(async () =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -975,60 +997,88 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void LibraryGrid_ctrl_and_shift_selection_survive_drag_handlers()
+    public async Task LibraryGrid_ctrl_and_shift_selection_survive_drag_handlers()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        session.Dispatch(() =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
         {
             MainWindow window = CreateMainWindowShell();
             window.Width = 1280;
             window.Height = 820;
             MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
-            LibraryItemViewModel[] items = Enumerable.Range(0, 6)
-                .Select(index => new LibraryItemViewModel(
-                    ItemId.New().ToString(), $"Item {index}", "book", "Author", "2026", "", null, null, null, "", "",
-                    0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask))
-                .ToArray();
-            foreach (LibraryItemViewModel item in items)
+            try
             {
-                vm.Shell.Items.Add(item);
+                // These cases drive the library grid directly and never run startup, so the
+                // startup overlay would otherwise stay visible and intercept the synthetic
+                // pointer input before it reaches the DataGrid.
+                vm.IsStartupLoadingVisible = false;
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+                await vm.Shell.CurrentRefreshCompletion.WaitAsync(TimeSpan.FromSeconds(10));
+                LibraryItemViewModel[] items = Enumerable.Range(0, 6)
+                    .Select(index => new LibraryItemViewModel(
+                        ItemId.New().ToString(), $"Item {index}", "book", "Author", "2026", "", null, null, null, "",
+                        "",
+                        0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask))
+                    .ToArray();
+                foreach (LibraryItemViewModel item in items)
+                {
+                    vm.Shell.Items.Add(item);
+                }
+
+                window.Measure(new Size(1280, 820));
+                window.Arrange(new Rect(0, 0, 1280, 820));
+                PumpInput();
+
+                UI.Views.LibraryPage page = window.GetVisualDescendants().OfType<UI.Views.LibraryPage>().Single();
+                Avalonia.Controls.DataGrid grid = page.LibraryGrid;
+                Avalonia.Controls.DataGridRow[] rows = grid.GetVisualDescendants()
+                    .OfType<Avalonia.Controls.DataGridRow>()
+                    .OrderBy(row => row.Bounds.Y)
+                    .ToArray();
+                rows.Should().HaveCountGreaterThanOrEqualTo(4);
+
+                Point Center(Avalonia.Controls.DataGridRow row)
+                {
+                    return row.TranslatePoint(new Point(row.Bounds.Width / 2, row.Bounds.Height / 2), window) ??
+                           default;
+                }
+
+                void PumpInput()
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                }
+
+                window.MouseDown(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
+                window.MouseUp(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
+                PumpInput();
+                vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[0]);
+
+                window.MouseDown(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
+                window.MouseUp(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
+                PumpInput();
+                vm.Shell.SelectedItems.Should().HaveCount(2);
+                vm.Shell.SelectedItems.Should().Contain(items[0]).And.Contain(items[2]);
+
+                window.MouseDown(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
+                window.MouseUp(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
+                PumpInput();
+                vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[1]);
+
+                window.MouseDown(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
+                window.MouseUp(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
+                PumpInput();
+                vm.Shell.SelectedItems.Select(item => item.ItemId)
+                    .Should().BeEquivalentTo(items.Skip(1).Take(3).Select(item => item.ItemId));
+
+                return true;
             }
-
-            window.Show();
-            window.Measure(new Size(1280, 820));
-            window.Arrange(new Rect(0, 0, 1280, 820));
-
-            UI.Views.LibraryPage page = window.GetVisualDescendants().OfType<UI.Views.LibraryPage>().Single();
-            Avalonia.Controls.DataGrid grid = page.LibraryGrid;
-            Avalonia.Controls.DataGridRow[] rows = grid.GetVisualDescendants().OfType<Avalonia.Controls.DataGridRow>()
-                .OrderBy(row => row.Bounds.Y)
-                .ToArray();
-            rows.Should().HaveCountGreaterThanOrEqualTo(4);
-
-            Point Center(Avalonia.Controls.DataGridRow row)
+            finally
             {
-                return row.TranslatePoint(new Point(row.Bounds.Width / 2, row.Bounds.Height / 2), window) ?? default;
+                window.Close();
+                await vm.ShutdownAsync();
             }
-
-            window.MouseDown(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
-            window.MouseUp(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
-            vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[0]);
-
-            window.MouseDown(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
-            window.MouseUp(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
-            vm.Shell.SelectedItems.Should().HaveCount(2);
-            vm.Shell.SelectedItems.Should().Contain(items[0]).And.Contain(items[2]);
-
-            window.MouseDown(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
-            window.MouseUp(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
-            vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[1]);
-
-            window.MouseDown(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
-            window.MouseUp(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
-            vm.Shell.SelectedItems.Select(item => item.ItemId)
-                .Should().BeEquivalentTo(items.Skip(1).Take(3).Select(item => item.ItemId));
-
-            window.Close();
         }, CancellationToken.None);
     }
 
@@ -1496,10 +1546,11 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string database = Path.Combine(root, "ui.sqlite");
         string pdf = Path.Combine(root, "source.pdf");
+        MainWindowViewModel? vm = null;
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             HostServices services = await vm.ServicesAsync();
@@ -1521,11 +1572,14 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            if (Directory.Exists(root))
+            // The view model owns the host services and their SQLite connections; shut it down
+            // before touching the database file so cleanup is ordered and failures stay visible.
+            if (vm is not null)
             {
-                SqliteConnection.ClearAllPools();
-                Directory.Delete(root, true);
+                await vm.DisposeAsync();
             }
+
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2084,54 +2138,57 @@ public sealed class UiViewModelTests : IDisposable
         string path = Path.Combine(root, "failure.sqlite");
         string pdf = Path.Combine(root, "failure.pdf");
         MainWindowViewModel? vm = null;
-        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
             {
-                File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-                await vm.OpenDatabaseCommand.ExecuteAsync();
-                await vm.Library.CreateCommand.ExecuteAsync();
-                HostServices services = await vm.ServicesAsync();
-                PdfImportResult import =
-                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Failed queue item", null, 1));
-                await vm.Shell.RefreshItemsAsync();
-                LibraryItemViewModel item = vm.Shell.Items.Single();
-                LibraryMetadata library = (await services.Library.GetCurrentLibraryAsync()).Value;
-                OcrQueueTask task = new(
-                    OcrQueueTaskId.New(), library.LibraryId, DocumentInstanceId.Parse(item.DocumentInstanceId!),
-                    OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, OcrEngineIds.MinerU,
-                    OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
-                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Failed, 1, 1, null,
-                    "upload_url_failed", "MinerU rejected model_version", null, null, null);
+                try
+                {
+                    File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    HostServices services = await vm.ServicesAsync();
+                    PdfImportResult import =
+                        await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Failed queue item", null,
+                            1));
+                    await vm.Shell.RefreshItemsAsync();
+                    LibraryItemViewModel item = vm.Shell.Items.Single();
+                    LibraryMetadata library = (await services.Library.GetCurrentLibraryAsync()).Value;
+                    OcrQueueTask task = new(
+                        OcrQueueTaskId.New(), library.LibraryId, DocumentInstanceId.Parse(item.DocumentInstanceId!),
+                        OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, OcrEngineIds.MinerU,
+                        OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
+                        DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Failed, 1, 1, null,
+                        "upload_url_failed", "MinerU rejected model_version", null, null, null);
 
-                typeof(OcrQueueViewModel).GetMethod("OnQueueChanged",
-                        BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(vm.OcrQueue, [null, new OcrQueueChangedEventArgs(task, OcrQueueChangeKind.Updated)]);
+                    typeof(OcrQueueViewModel).GetMethod("OnQueueChanged",
+                            BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(vm.OcrQueue, [null, new OcrQueueChangedEventArgs(task, OcrQueueChangeKind.Updated)]);
 
-                vm.StatusIsError.Should().BeTrue();
-                vm.Status.Should().Contain("MinerU rejected model_version");
-                await vm.Shell.ApplyDocumentChangeSetAsync([task.DocumentInstanceId]);
-                item.OcrIndexState.Should().Be("no_ocr");
-                item.OcrStatus.Should().Be(item.OcrIndexStateDetail);
-                return true;
+                    vm.StatusIsError.Should().BeTrue();
+                    vm.Status.Should().Contain("MinerU rejected model_version");
+                    await vm.Shell.ApplyDocumentChangeSetAsync([task.DocumentInstanceId]);
+                    item.OcrIndexState.Should().Be("no_ocr");
+                    item.OcrStatus.Should().Be(item.OcrIndexStateDetail);
+                    return true;
+                }
+                finally
+                {
+                    // Each Dispatch rebuilds the headless application/dispatcher. Drain this
+                    // VM before leaving its own dispatch, not in a second, reset application.
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
             }, CancellationToken.None);
         }
         finally
         {
-            if (vm is not null)
-            {
-                await session.Dispatch(async () =>
-                {
-                    await vm.ShutdownAsync();
-                    return true;
-                }, CancellationToken.None);
-            }
-
-            // The dispatch continuation can resume inline on the session thread; Dispose must not
-            // run there or it deadlocks waiting for the session loop that is executing this code.
-            await Task.Run(() => session.Dispose());
+            // The session is owned by the collection fixture: per-case cleanup ends after the
+            // view model's shutdown dispatch and the temp directory removal.
             TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
@@ -2155,7 +2212,7 @@ public sealed class UiViewModelTests : IDisposable
     {
         string path = _settings.CreateDatabasePath("ui-queue-success");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-success-{Guid.NewGuid():N}.pdf");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
@@ -2223,15 +2280,19 @@ public sealed class UiViewModelTests : IDisposable
     public async Task Query_rewrite_menu_toggle_loads_and_persists_through_the_service()
     {
         string path = _settings.CreateDatabasePath("ui-rewrite-toggle");
+        MainWindowViewModel? first = null;
+        MainWindowViewModel? reloaded = null;
         try
         {
-            MainWindowViewModel first = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            first = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await first.OpenDatabaseCommand.ExecuteAsync();
             await first.Library.CreateCommand.ExecuteAsync();
             Result rewriteOff = await (await first.ServicesAsync()).SearchProfiles.SetRewriteEnabledAsync(false);
             rewriteOff.IsSuccess.Should().BeTrue(rewriteOff.ErrorMessage);
 
-            MainWindowViewModel reloaded = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            // Both view models stay alive against the same database file: the persisted value
+            // must be visible to a second owner while the first still exists.
+            reloaded = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await reloaded.OpenDatabaseCommand.ExecuteAsync();
             reloaded.QueryRewriteEnabled.Should().BeFalse();
 
@@ -2247,11 +2308,19 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            if (File.Exists(path))
+            // Both owners hold services and pooled connections on this database; shut them down
+            // in reverse order before deleting the file.
+            if (reloaded is not null)
             {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
+                await reloaded.DisposeAsync();
             }
+
+            if (first is not null)
+            {
+                await first.DisposeAsync();
+            }
+
+            TestTempFileCleanup.DeleteFileWithRetry(path);
         }
     }
 
@@ -2721,49 +2790,54 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task FirstRun_scan_imports_all_pdfs_as_items_without_manual_metadata()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
-        string scanRoot = Directory
-            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
-        MainWindowViewModel? vm = null;
-        try
+        await headless.Session.Dispatch<bool>(async () =>
         {
-            TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
-            string betaPath = TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
-            await File.AppendAllTextAsync(betaPath, "\n% Distinct beta PDF content.\n");
-            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.ShowInlineFirstRunAsync();
-            await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
-            await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
-            vm.FirstRun.ScanRoot = scanRoot;
-            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test",
-                FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
-
-            await vm.FirstRun.ScanCommand.ExecuteAsync();
-
-            vm.FirstRun.CurrentStep.Should().Be("mineru_config");
-            vm.FirstRun.ImportedPdfCount.Should().Be(2);
-            await vm.Shell.RefreshItemsAsync();
-            vm.Shell.Items.Should().HaveCount(2);
-            vm.Shell.Items.Select(item => item.Title).Should().BeEquivalentTo("alpha", "beta");
-        }
-        finally
-        {
-            if (vm is not null)
+            string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
+            string scanRoot = Directory
+                .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
+            MainWindowViewModel? vm = null;
+            try
             {
-                await vm.DisposeAsync();
+                TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
+                string betaPath = TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
+                await File.AppendAllTextAsync(betaPath, "\n% Distinct beta PDF content.\n");
+                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                await vm.ShowInlineFirstRunAsync();
+                await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
+                await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
+                vm.FirstRun.ScanRoot = scanRoot;
+                vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test",
+                    FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
+
+                await vm.FirstRun.ScanCommand.ExecuteAsync();
+
+                vm.FirstRun.CurrentStep.Should().Be("mineru_config");
+                vm.FirstRun.ImportedPdfCount.Should().Be(2);
+                await vm.Shell.RefreshItemsAsync();
+                vm.Shell.Items.Should().HaveCount(2);
+                vm.Shell.Items.Select(item => item.Title).Should().BeEquivalentTo("alpha", "beta");
+            }
+            finally
+            {
+                if (vm is not null)
+                {
+                    await vm.DisposeAsync();
+                }
+
+                if (Directory.Exists(scanRoot))
+                {
+                    Directory.Delete(scanRoot, true);
+                }
+
+                if (File.Exists(path))
+                {
+                    SqliteConnection.ClearAllPools();
+                    File.Delete(path);
+                }
             }
 
-            if (Directory.Exists(scanRoot))
-            {
-                Directory.Delete(scanRoot, true);
-            }
-
-            if (File.Exists(path))
-            {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
-            }
-        }
+            return true;
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -2889,9 +2963,7 @@ public sealed class UiViewModelTests : IDisposable
                 services.ConnectionFactory,
                 services.Clock,
                 services.Credentials.GetActiveSecretForProviderAsync,
-                services.StartupSettings.Runtime.UseMockOcrOnly
-                    ? (IOcrEngine)new MockOcrEngine()
-                    : new UnavailableOcrEngine(),
+                new MockOcrEngine(),
                 new SearchUnitBuilder(services.ConnectionFactory, services.Clock, services.Markdown),
                 new OcrDocumentTreeImporter(services.DocumentTrees),
                 services.OcrAdapters,
@@ -3040,7 +3112,7 @@ public sealed class UiViewModelTests : IDisposable
         string pdf = Path.Combine(root, "general.pdf");
         string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
         string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
@@ -3104,7 +3176,7 @@ public sealed class UiViewModelTests : IDisposable
         string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
         string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
         string path = _settings.CreateDatabasePath("ui-isolation");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
@@ -3216,7 +3288,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Item_workspace_tabs_use_page_name_item_title_and_truncate_long_titles()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         bool completed = await session.Dispatch<bool>(async () =>
         {
             string path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
@@ -3296,7 +3368,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_close_pdf_tab_keeps_library_selection()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         bool completed = await session.Dispatch<bool>(async () =>
         {
             string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
@@ -3355,7 +3427,7 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task MainWindow_tabs_persist_across_switches_until_closed()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         bool completed = await session.Dispatch<bool>(async () =>
         {
             string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
@@ -3434,54 +3506,48 @@ public sealed class UiViewModelTests : IDisposable
         MainWindowViewModel? vm = null;
         HostServices? services = null;
         PdfImportResult? import = null;
-        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
             await session.Dispatch(async () =>
             {
-                File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-                await vm.OpenDatabaseCommand.ExecuteAsync();
-                await vm.Library.CreateCommand.ExecuteAsync();
-                services = await vm.ServicesAsync();
-                import =
-                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
-                import.Success.Should().BeTrue(import.ErrorMessage);
-                await vm.Shell.RefreshItemsAsync();
+                try
+                {
+                    File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    services = await vm.ServicesAsync();
+                    import =
+                        await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
+                    import.Success.Should().BeTrue(import.ErrorMessage);
+                    await vm.Shell.RefreshItemsAsync();
 
-                await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
+                    await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
 
-                vm.Shell.ShowPdfWorkspace.Should().BeTrue();
-                vm.ShowSidebar.Should().BeFalse();
-                vm.IsInspectorVisible.Should().BeFalse();
-                vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
-                vm.PdfWorkspace.Status.Should().Contain($"pdfium-{PdfiumDocumentEngine.Version}-dpi120");
-                Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
-                await services.PageRenders.ReleaseDocumentSessionAsync(
-                    DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
-                return true;
+                    vm.Shell.ShowPdfWorkspace.Should().BeTrue();
+                    vm.ShowSidebar.Should().BeFalse();
+                    vm.IsInspectorVisible.Should().BeFalse();
+                    vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
+                    vm.PdfWorkspace.Status.Should().Contain($"pdfium-{PdfiumDocumentEngine.Version}-dpi120");
+                    Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
+                    await services.PageRenders.ReleaseDocumentSessionAsync(
+                        DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
             }, CancellationToken.None);
         }
         finally
         {
-            if (vm is not null)
-            {
-                await session.Dispatch(async () =>
-                {
-                    await vm.ShutdownAsync();
-                    if (services is not null && import?.CreatedDocumentInstanceId is not null)
-                    {
-                        await services.PageRenders.ReleaseDocumentSessionAsync(
-                            DocumentInstanceId.Parse(import.CreatedDocumentInstanceId));
-                    }
-
-                    return true;
-                }, CancellationToken.None);
-            }
-
-            // The dispatch continuation can resume inline on the session thread; Dispose must not
-            // run there or it deadlocks waiting for the session loop that is executing this code.
-            await Task.Run(() => session.Dispose());
+            // The session is owned by the collection fixture: per-case cleanup ends after the
+            // view model's shutdown dispatch and the temp directory removal.
             TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
@@ -3972,8 +4038,7 @@ public sealed class UiViewModelTests : IDisposable
                                       "DefaultSyncRoot": "{{Path.Combine(Path.GetTempPath(), $"sync-{Guid.NewGuid():N}").Replace("\\", "/")}}",
                                       "DefaultStagingRoot": "{{Path.Combine(Path.GetTempPath(), $"staging-{Guid.NewGuid():N}").Replace("\\", "/")}}",
                                       "LogDirectory": "{{Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}").Replace("\\", "/")}}",
-                                      "RememberLastDatabase": {{rememberLastDatabase.ToString().ToLowerInvariant()}},
-                                      "UseMockOcrOnly": true
+                                      "RememberLastDatabase": {{rememberLastDatabase.ToString().ToLowerInvariant()}}
                                     },
                                     "MinerU": {
                                       "BaseUrl": "https://mineru.example.test",

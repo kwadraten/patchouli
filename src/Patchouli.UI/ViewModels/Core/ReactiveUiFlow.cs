@@ -13,7 +13,8 @@ internal static class ReactiveUiFlow
         IScheduler timingScheduler,
         IScheduler uiScheduler,
         Func<CancellationToken, Task> operation,
-        Action<Exception> reportError)
+        Action<Exception> reportError,
+        AsyncOperationLifetime? lifetime = null)
     {
         // Throttle(TimeSpan.Zero) still schedules a timer callback. Skip it entirely for
         // immediate flows so their loading feedback and work begin in the same UI turn.
@@ -24,7 +25,7 @@ internal static class ReactiveUiFlow
         return pacedSource
             .ObserveOn(uiScheduler)
             .Select(_ => Observable.FromAsync(cancellationToken =>
-                RunSafelyAsync(operation, reportError, cancellationToken)))
+                RunSafelyAsync(operation, reportError, cancellationToken, lifetime)))
             .Switch()
             .Subscribe();
     }
@@ -35,7 +36,8 @@ internal static class ReactiveUiFlow
         IScheduler timingScheduler,
         IScheduler uiScheduler,
         Func<IReadOnlyList<T>, CancellationToken, Task> operation,
-        Action<Exception> reportError)
+        Action<Exception> reportError,
+        AsyncOperationLifetime? lifetime = null)
     {
         return source
             .Buffer(bufferWindow, timingScheduler)
@@ -45,7 +47,7 @@ internal static class ReactiveUiFlow
                 RunSafelyAsync(
                     token => operation(batch.ToArray(), token),
                     reportError,
-                    cancellationToken)))
+                    cancellationToken, lifetime)))
             .Concat()
             .Subscribe();
     }
@@ -53,11 +55,19 @@ internal static class ReactiveUiFlow
     private static async Task RunSafelyAsync(
         Func<CancellationToken, Task> operation,
         Action<Exception> reportError,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AsyncOperationLifetime? lifetime)
     {
         try
         {
-            await operation(cancellationToken);
+            if (lifetime is null)
+            {
+                await operation(cancellationToken);
+            }
+            else
+            {
+                await lifetime.RunAsync(() => operation(cancellationToken));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

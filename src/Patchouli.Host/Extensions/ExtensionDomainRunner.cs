@@ -7,11 +7,11 @@ namespace Patchouli.Host.Extensions;
 public sealed class ExtensionDomainRun : IAsyncDisposable
 {
     private readonly IExtensionLease _lease;
-    private readonly IExtensionCapabilities _capabilities;
+    private readonly IExtensionResources _capabilities;
     private readonly ExtensionConfigSnapshot _config;
     private int _disposed;
 
-    internal ExtensionDomainRun(IExtensionLease lease, IExtensionCapabilities capabilities,
+    internal ExtensionDomainRun(IExtensionLease lease, IExtensionResources capabilities,
         ExtensionConfigSnapshot config)
     {
         _lease = lease;

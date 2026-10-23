@@ -2,6 +2,7 @@ using FluentAssertions;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.UI;
@@ -74,6 +75,33 @@ public sealed class CredentialStoreTests
     }
 
     [Fact]
+    public async Task Reading_a_secret_waits_for_the_settings_file_writer()
+    {
+        await using Context context = new();
+        (await context.Store.SaveAsync("mineru", "MinerU", "token")).IsSuccess.Should().BeTrue();
+
+        // Startup restores the MinerU secret while the AppSettingsStore debounce may replace settings.json.
+        Result<string> secret = await ReadWhileSettingsFileIsOpenAsync(
+            context,
+            () => context.Store.GetActiveSecretForProviderAsync("mineru"));
+
+        secret.Value.Should().Be("token");
+    }
+
+    [Fact]
+    public async Task Listing_credentials_waits_for_the_settings_file_writer()
+    {
+        await using Context context = new();
+        (await context.Store.SaveAsync("mineru", "MinerU", "token")).IsSuccess.Should().BeTrue();
+
+        Result<IReadOnlyList<ProviderCredentialMetadata>> credentials = await ReadWhileSettingsFileIsOpenAsync(
+            context,
+            () => context.Store.ListAsync());
+
+        credentials.Value.Should().ContainSingle(provider => provider.ProviderId == "mineru");
+    }
+
+    [Fact]
     public async Task Ordinary_settings_save_preserves_credentials_owned_by_the_credential_store()
     {
         await using Context context = new();
@@ -102,6 +130,43 @@ public sealed class CredentialStoreTests
         }).Save(context.Path).IsSuccess.Should().BeTrue();
 
         (await context.Store.GetActiveSecretForProviderAsync("mineru")).ErrorCode.Should().Be(AppErrorCodes.NotFound);
+    }
+
+    /// <summary>
+    /// Holds the settings-file coordinator gate and an exclusive file handle (the window an atomic
+    /// settings replacement occupies), then starts a credential read. A read that does not enter the
+    /// coordinator fails its file open instead of waiting.
+    /// </summary>
+    private static async Task<Result<T>> ReadWhileSettingsFileIsOpenAsync<T>(Context context,
+        Func<Task<Result<T>>> read)
+    {
+        SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(context.Path);
+        await gate.WaitAsync();
+        Task<Result<T>> pending;
+        bool completedWithoutWaiting;
+        try
+        {
+            await using FileStream writer = new(context.Path, FileMode.Open, FileAccess.Write, FileShare.None);
+            pending = read();
+            completedWithoutWaiting = pending.IsCompleted;
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        try
+        {
+            completedWithoutWaiting.Should().BeFalse(
+                "credential reads must wait for the settings-file writer instead of opening settings.json concurrently");
+        }
+        finally
+        {
+            // Observe a premature fault so the regression fails here instead of as an unobserved task.
+            _ = pending.Exception;
+        }
+
+        return await pending;
     }
 
     private sealed class Context : IAsyncDisposable

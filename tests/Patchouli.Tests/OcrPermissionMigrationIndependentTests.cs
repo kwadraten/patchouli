@@ -83,7 +83,10 @@ public sealed class OcrPermissionMigrationIndependentTests
         };
         McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
         migrated.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
-        migrated.DomainPermissions.Should().HaveCount(2);
-        migrated.DomainPermissions.Should().OnlyContain(value => value.Enabled);
+        migrated.DomainPermissions.Should().HaveCount(3);
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/ocr", "send", true));
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/translation", "send", true));
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/metadata", "send", false));
+        migrated.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
     }
 }

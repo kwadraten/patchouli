@@ -140,6 +140,7 @@ public sealed class FileSearchRootWatcherServiceTests
         string original = TestFixtures.CopyRealThreePagePdfTo(root, "original.pdf");
         await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
         (await watcher.RescanFileSearchRootsAsync()).IsSuccess.Should().BeTrue();
+        await ActivateWatchersAsync(watcher, [added.Value]);
         TaskCompletionSource completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         watcher.RescanCompleted += (_, args) =>
         {
@@ -148,7 +149,6 @@ public sealed class FileSearchRootWatcherServiceTests
                 completed.TrySetResult();
             }
         };
-        watcher.RefreshWatchers([added.Value]);
         string renamed = Path.Combine(root, "renamed.pdf");
         File.Move(original, renamed);
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -170,6 +170,7 @@ public sealed class FileSearchRootWatcherServiceTests
         await File.AppendAllTextAsync(path, "\n% A");
         await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
         (await watcher.RescanFileSearchRootsAsync()).IsSuccess.Should().BeTrue();
+        await ActivateWatchersAsync(watcher, [added.Value]);
         TaskCompletionSource completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         watcher.RescanCompleted += (_, args) =>
         {
@@ -178,7 +179,6 @@ public sealed class FileSearchRootWatcherServiceTests
                 completed.TrySetResult();
             }
         };
-        watcher.RefreshWatchers([added.Value]);
         DateTime modified = File.GetLastWriteTimeUtc(path);
         await using (FileStream stream = File.OpenWrite(path))
         {
@@ -213,6 +213,20 @@ public sealed class FileSearchRootWatcherServiceTests
                 lock (sync)
                 {
                     completedTriggers.Add(eventArgs.Trigger);
+                }
+            };
+            // R12 bounded diagnostic: surface the watch loop's scheduling phases (signal
+            // wait, debounce quiet period, full rescan, incremental pass) with elapsed
+            // timestamps so the real debounce duration is visible in TRX output.
+            // Observation only — production debounce behavior and the negative-observation
+            // window below are unchanged.
+            System.Diagnostics.Stopwatch watchLoopClock = System.Diagnostics.Stopwatch.StartNew();
+            watcher.WatchLoopPhaseChanged += (_, phase) =>
+            {
+                lock (sync)
+                {
+                    Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                        $"PHASE watcher.{phase} +{watchLoopClock.Elapsed.TotalMilliseconds:0.##} ms"));
                 }
             };
             watcher.RefreshWatchers([added.Value]);
@@ -314,6 +328,33 @@ public sealed class FileSearchRootWatcherServiceTests
         }
     }
 
+    private static async Task ActivateWatchersAsync(FileSearchRootWatcherService watcher,
+        IReadOnlyList<FileSearchRoot> roots)
+    {
+        TaskCompletionSource activated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void Completed(object? sender, FileSearchRootRescanCompleted args)
+        {
+            if (args.Trigger == FileSearchRootWatcherService.FileWatcherTrigger)
+            {
+                activated.TrySetResult();
+            }
+        }
+
+        // Activation starts its own reconciliation pass. Do not mistake that pass for the
+        // later file-change event whose result each test actually verifies.
+        watcher.RescanCompleted += Completed;
+        try
+        {
+            watcher.RefreshWatchers(roots);
+            await activated.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            watcher.RescanCompleted -= Completed;
+        }
+    }
+
     private static SelectedFileSearchRoot SelectedRoot(string path)
     {
         return new SelectedFileSearchRoot(
@@ -382,8 +423,7 @@ public sealed class FileSearchRootWatcherServiceTests
                     RuntimeDatabasePath = databasePath,
                     DefaultSyncRoot = Path.Combine(tempRoot, "sync"),
                     DefaultStagingRoot = Path.Combine(tempRoot, "staging"),
-                    LogDirectory = Path.Combine(tempRoot, "logs"),
-                    UseMockOcrOnly = true
+                    LogDirectory = Path.Combine(tempRoot, "logs")
                 },
                 Sync = defaults.Sync with { DeviceId = "watcher-test-device" }
             };

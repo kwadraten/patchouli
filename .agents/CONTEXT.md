@@ -5,14 +5,16 @@ Patchouli is a personal literature manager that treats user-owned source files a
 The **AI集成 → 模型连接** settings hold shared provider connections and the global default model.
 **文献加工 → 文献翻译** selects a complete FSX translation engine; its extension configuration
 declares language, batching, limits and engine-specific options through static typed bindings.
+An absent or blank translation engine selection defaults to Microsoft Edge
+(`translation.microsoft-free`); explicitly saved engines, including LLM, remain unchanged.
 The LLM capability resolves an empty selection through the translation default and then the
 global default. A run freezes its engine generation, resolved configuration and capabilities.
 Translation uses complete responses without streaming or provisional content previews.
-Runs do not use an Agent or chat session. FSX execution uses one
-host-managed worker process per FSX package generation, with static checking and
-credential-bearing capabilities retained by the host; acceptance status is recorded
-in [Extension validation](extension-validation.md). Trusted FSX extensions are described by
-[ADR 0049](adr/0049-fsx-extension-pipelines.md), superseding ADR 0046's fixed orchestration.
+Runs do not use an Agent or chat session. The in-progress target compiles trusted FSX extensions
+to cached DLLs and executes them in a per-generation collectible host `AssemblyLoadContext`; this
+is not yet an acceptance claim. The host retains authorization, HTTP resources and credential
+resolution. See [ADR 0053](adr/0053-trusted-compiled-fsx-extensions.md) and
+[extension contracts](protocols/extension-contracts.md).
 OCR has its own provider, model and reasoning selection.
 
 Provider cards use masked password inputs to load saved API keys from `ICredentialStore`. A saved baseline distinguishes loading from replacement edits, so reopening does not rewrite credentials and in-flight saves preserve newer input. Secret values stay out of the `Llm` configuration, translation run state and diagnostics. Provider authentication and subscription-model selectors use guarded selection properties; null selections during control creation, detachment or list refresh cannot overwrite stored configuration. Async headless UI tests must explicitly use `Dispatch<T>(Func<Task<T>>, ...)` (or unwrap the returned nested task) so assertions after awaited operations actually execute.
@@ -54,7 +56,7 @@ The document model is provider-neutral: only canonical box types and meaningful 
 Equations carry LaTeX and/or `HasImage`, which denotes the box's existing page region. Empty LaTeX is valid only with an image. Sidebar and whole-book reading crop the existing page bitmap. Agent XML includes an immutable `<image kind="page-region" page_id="…" x="…" y="…" width="…" height="…"/>` descriptor alongside the LaTeX payload; annotations are immutable siblings. XML carries no binary pixels, local paths or producer information. Migration 048 removes the old fallback column and normalizes historical type/payload representations while retaining revision IDs, box IDs, geometry and sibling links. Missing historical LaTeX cannot be reconstructed; reimport is needed. See ADR 0045.
 
 OCR text and list Markdown may contain literal HTML-looking placeholders such as `<option>` in research prompts. The shared document-tree importer escapes forbidden raw HTML tags in these payloads before validation, preserving code spans, code blocks and typed code/LaTeX. Markdown validation distinguishes actual HTML nodes from escaped literals and code; raw complex-table HTML retains its validation boundary. Native preview and reading models decode Markdown entity nodes once into plain text, so escaped placeholders display as `<option>` without a WebView or a second HTML interpretation.
-MinerU v4's shared Middle JSON 2.0 model defines OCR content semantics; other engines normalize to the same model. Its JSON is an import representation rather than the database schema. The shared mapper produces a short-lived `OcrDocumentTreeCandidate`; the importer validates and creates working page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. Valid HTML table content can use the explicit HTML/version-1 payload with no parallel editable Markdown. Legacy `[Table]` diagnostic payloads remain readable; unsupported new HTML is retained in the candidate with a blocking diagnostic rather than flattened into GFM. Historical reads do not migrate stored rows. Verified OCR mode and style boundaries are in [OCR normalization](ocr-normalization.md); the table decision is ADR 0050. A physical page on which the engine succeeded but returned no text is likewise not a failure: the importer creates a `DocumentBoxType.LogicalPage` placeholder (payload `Blank page (OCR returned no content).`, diagnostic `blank_page_placeholder`), the page result counts as `Succeeded`, and the run can complete and commit normally.
+MinerU v4's shared Middle JSON 2.0 model defines OCR content semantics; other engines normalize to the same model. Its JSON is an import representation rather than the database schema. The shared mapper produces a short-lived `OcrDocumentTreeCandidate`; the importer validates and creates working page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. Valid HTML table content can use the explicit HTML/version-1 payload with no parallel editable Markdown. Legacy `[Table]` diagnostic payloads remain readable; unsupported new HTML is retained in the candidate with a blocking diagnostic rather than flattened into GFM. Historical reads do not migrate stored rows. Verified OCR mode and style boundaries are in [OCR normalization](protocols/ocr-normalization.md); the table decision is ADR 0050. A physical page on which the engine succeeded but returned no text is likewise not a failure: the importer creates a `DocumentBoxType.LogicalPage` placeholder (payload `Blank page (OCR returned no content).`, diagnostic `blank_page_placeholder`), the page result counts as `Succeeded`, and the run can complete and commit normally.
 
 **PDF import fault tolerance**:
 A PDF import is atomic: FileAsset registration, Item creation, DocumentInstance attachment, every `pages` row, and the placeholder page revisions are built in memory and committed together under one write lease in a single transaction (pages inserted with batched multi-row `INSERT ... VALUES`), so a failed import leaves no partial rows. A physical page whose import-time page-info extraction (width/height/rotation) fails is likewise not a failure: the page still receives its `pages` row so page order stays complete, and a committed `DocumentBoxType.LogicalPage` placeholder (payload `Import failed for this page: <reason>`, diagnostic `import_page_placeholder`) records the failure on the page itself — the same product principle as `blank_page_placeholder`. Only when `failedPages / pageCount` exceeds `MaxFailedPageRatio` does the whole import fail and write nothing; at or below the threshold the book imports normally. The threshold defaults to 0.2 with range [0, 0.9], stored as `ImportAppSettings.MaxFailedPageRatio` in the settings JSON `"Import"` section and edited as a percentage in the settings 导入 section. Startup maintenance additionally runs `ImportResidueGcService` to remove pre-atomic half-imported residue (zero-page DocumentInstances, orphaned Item/FileAsset pairs) under a conservative all-rows-older-than-one-hour rule, delegating remaining unreferenced FileAssets to `FileAssetGcService`.
@@ -201,7 +203,11 @@ _Avoid_: Library root, source folder, synced workspace
 
 **Run**:
 The volatile runtime projection of an OCR task or a direct translation run, observed through `patchouli://runs/`. `runs/ocr/` and `runs/translation/` report their own status and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is not part of snapshots and cannot be `put`. The built-in Agent session projection was removed in 0.3.13.
-The desktop 任务队列 is a presentation over independent OCR and translation services; it does not unify their lifecycle or persist translation runs.
+The desktop 任务队列 is a presentation over independent OCR, translation and metadata batch services;
+it does not unify their lifecycle or persist their volatile runs. Desktop batch metadata lookup uses
+the same Host `MetadataRunService` registry as MCP, with cancellation and failed-item retry, but
+no metadata pause/resume operation. Metadata extensions still receive individual identifier lookups;
+this Host task projection does not establish a whole-job metadata extension contract.
 _Avoid_: Job, unified run state, agent session
 
 **Working Revision**:
@@ -265,7 +271,7 @@ Switching modes keeps input and filter rows. Enter and the search button use the
 
 External agents run as separate user-installed CLI processes in the embedded terminal; Patchouli
 does not host an agent model loop, session store or persistent workflow engine (ADR `0047`).
-ADR `0049` restores FSI only for trusted extension implementations. Translation engines and
+ADR `0053` defines trusted compiled extensions as the in-progress target. Translation engines and
 the volatile run service are owned as described in [domain](domain.md).
 
 - **Library / 书库**: the ProDataGrid Item list, tag and collection sidebars and selected-Item inspector. The collection section lists one-level playlists sorted by name, filters the grid to a selected collection, and accepts Item drag/drop, rename, and dissolve actions. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
@@ -290,4 +296,4 @@ URI. `put` accepts either complete `content` or 1–100 complete `<box>` XML ele
 Canonical XML writes use source revision checks and translation version checks; source writes
 create committed page history and a document commit. Root-relative VFS paths normalize before
 permission checks.
-See [MCP protocol](mcp-protocol.md) and ADR 0044 for the normative current contract.
+See [MCP protocol](protocols/mcp-protocol.md) and ADR 0044 for the normative current contract.

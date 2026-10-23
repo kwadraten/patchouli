@@ -7,7 +7,6 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Styling;
 using FluentAssertions;
-using Patchouli.Performance;
 using Patchouli.UI;
 using Patchouli.UI.Themes;
 using Patchouli.UI.ViewModels;
@@ -16,8 +15,13 @@ using Xunit;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class ThemePaletteApplierTests : IDisposable
+// R13 shared session registration: this class mutates the process-wide ThemePaletteApplier
+// statics (CurrentPaletteId/CurrentThemeMode/_watchedApp) also touched by
+// ExtensionConfigurationDialogTests, so it must share that session's UI thread. Dispose detaches
+// the watcher; TriggerSystemTheme pumps Dispatcher.UIThread, which is the session's thread while
+// this collection runs.
+[Collection("RetainedTabUI")]
+public sealed class ThemePaletteApplierTests(AvaloniaSharedSessionFixture headless) : IDisposable
 {
     public void Dispose()
     {
@@ -27,7 +31,7 @@ public sealed class ThemePaletteApplierTests : IDisposable
     [Fact]
     public async Task Watcher_lifecycle_attaches_and_detaches_cleanly()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             Application app = Application.Current!;
@@ -51,7 +55,7 @@ public sealed class ThemePaletteApplierTests : IDisposable
     [Fact]
     public async Task ThemePaletteApplier_applies_explicit_modes_and_synchronizes_all_brushes()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             Application app = Application.Current!;
@@ -94,7 +98,7 @@ public sealed class ThemePaletteApplierTests : IDisposable
     [Fact]
     public async Task Explicit_mode_is_not_overridden_by_system_theme_variant_change()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             Application app = Application.Current!;
@@ -139,7 +143,7 @@ public sealed class ThemePaletteApplierTests : IDisposable
     [Fact]
     public async Task System_mode_responds_to_system_variant()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
             Application app = Application.Current!;
@@ -180,7 +184,7 @@ public sealed class ThemePaletteApplierTests : IDisposable
     [Fact]
     public async Task FirstRunPage_visual_hierarchy_and_contrast_in_light_and_dark_modes()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<bool>(async () =>
         {
             Application app = Application.Current!;

@@ -37,6 +37,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly object _fileSearchRootWatchSync = new();
+
     // Platform path-case semantics come from the claim coordinator's shared comparer:
     // on Linux, A.pdf and a.pdf are different files and must stay separate dirty entries.
     private readonly Dictionary<string, long> _changedPaths = new(FileOperationCoordinator.PathComparer);
@@ -64,6 +65,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+
     private CancellationTokenSource? _watchLoopStop;
     private Task? _watchLoopTask;
     private long _lastFileEventTimestamp;
@@ -86,6 +88,32 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
     /// <summary>Raised on the rescan task's thread whenever a root's availability is updated.</summary>
     public event EventHandler<SearchRootAvailabilityChanged>? SearchRootAvailabilityChanged;
+
+    /// <summary>
+    /// Diagnostic-only seam (test observable): raised on the watch-loop thread each time the
+    /// loop enters a scheduling phase. Raising phases never changes debounce behavior —
+    /// subscribers observe only and must not mutate service state.
+    /// </summary>
+    internal event EventHandler<WatchLoopPhase>? WatchLoopPhaseChanged;
+
+    /// <summary>
+    /// Scheduling phases reported by <see cref="WatchLoopPhaseChanged"/> — the values describe
+    /// where the watch loop currently spends wall-clock time.
+    /// </summary>
+    internal enum WatchLoopPhase
+    {
+        /// <summary>Idle; blocked on the coalescing signal channel or the reconciliation interval.</summary>
+        WaitingForSignal,
+
+        /// <summary>Debounce quiet-period wait after a reservation was observed.</summary>
+        Debouncing,
+
+        /// <summary>Running a full reconciliation rescan (activation, watcher error or periodic).</summary>
+        FullRescan,
+
+        /// <summary>Running an incremental import pass over the swapped-out dirty batch.</summary>
+        IncrementalImport
+    }
 
     /// <summary>
     /// Reconciles the watcher fleet with the given available roots: drops watchers for removed or
@@ -439,13 +467,15 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     try
                     {
                         importedPdf =
-                            await _services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
+                            await _services.PdfImport.ImportPdfAsync(
+                                new PdfImportRequest(normalizedPath, null, null, null),
                                 cancellationToken);
                     }
                     finally
                     {
                         await claim.DisposeAsync();
                     }
+
                     if (importedPdf.Success)
                     {
                         if (importedPdf.IsDuplicate)
@@ -794,10 +824,12 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             DateTimeOffset.UtcNow - _lastFullRescanUtc >= ReconciliationInterval;
         if (!fullRequested && !reconciliationDue && !HasDirtyPaths)
         {
+            ReportWatchLoopPhase(WatchLoopPhase.WaitingForSignal);
             await WaitForSignalAsync(stopToken);
             return;
         }
 
+        ReportWatchLoopPhase(WatchLoopPhase.Debouncing);
         await WaitQuietPeriodAsync(stopToken);
         if (stopToken.IsCancellationRequested)
         {
@@ -807,6 +839,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         if (fullRequested || reconciliationDue)
         {
             _lastFullRescanUtc = DateTimeOffset.UtcNow;
+            ReportWatchLoopPhase(WatchLoopPhase.FullRescan);
             await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", stopToken,
                 trigger: FileWatcherTrigger);
             return;
@@ -818,6 +851,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             return;
         }
 
+        ReportWatchLoopPhase(WatchLoopPhase.IncrementalImport);
         int deferred = await RunIncrementalImportPassAsync(batch, stopToken);
         if (deferred > 0 && !stopToken.IsCancellationRequested)
         {
@@ -889,6 +923,22 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Raises <see cref="WatchLoopPhaseChanged"/>. A misbehaving subscriber must not kill
+    /// the single-consumer watch loop, so handler failures are reported and swallowed.
+    /// </summary>
+    private void ReportWatchLoopPhase(WatchLoopPhase phase)
+    {
+        try
+        {
+            WatchLoopPhaseChanged?.Invoke(this, phase);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "watch-loop-phase");
+        }
+    }
+
     private enum IncrementalImportOutcome
     {
         Imported,
@@ -913,8 +963,6 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 "扫描文件搜索根",
                 HostActivityKind.Scanning,
                 "文件变化触发");
-            HashSet<string> knownPaths = await LoadKnownFilePathsAsync(stopToken);
-            object knownSync = new();
             int imported = 0;
             int skipped = 0;
             int failed = 0;
@@ -928,7 +976,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     IncrementalImportOutcome outcome;
                     try
                     {
-                        outcome = await ImportDirtyPathAsync(path, knownPaths, knownSync, stopToken);
+                        outcome = await ImportDirtyPathAsync(path, stopToken);
                     }
                     catch (OperationCanceledException) when (stopToken.IsCancellationRequested)
                     {
@@ -966,13 +1014,12 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             await LogOperationAsync("file-scan",
                 $"Incremental pass finished (trigger={FileWatcherTrigger}): candidates={batch.Count}, " +
                 $"imported={imported}, skipped={skipped}, failed={failed}, deferred={deferred}.");
-            if (imported > 0 || failed > 0)
-            {
-                FileSearchRootRescanSummary summary = new(batch.Count, imported, skipped, failed, 0, 0, 0, 0);
-                ApplyFileSearchRootRescanResult(
-                    Result<FileSearchRootRescanSummary>.Success(summary),
-                    "文件变化后自动重新扫描完成。", FileWatcherTrigger);
-            }
+            // A deduplicated import can still update a renamed file's known location. Every
+            // completed pass must publish its result, not only passes creating a new asset.
+            FileSearchRootRescanSummary summary = new(batch.Count, imported, skipped, failed, 0, 0, 0, 0);
+            ApplyFileSearchRootRescanResult(
+                Result<FileSearchRootRescanSummary>.Success(summary),
+                "文件变化后自动重新扫描完成。", FileWatcherTrigger);
 
             return deferred;
         }
@@ -984,8 +1031,6 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
     private async Task<IncrementalImportOutcome> ImportDirtyPathAsync(
         string path,
-        HashSet<string> knownPaths,
-        object knownSync,
         CancellationToken stopToken)
     {
         string normalizedPath = Path.GetFullPath(path);
@@ -997,16 +1042,9 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             return IncrementalImportOutcome.Skipped;
         }
 
-        lock (knownSync)
-        {
-            if (knownPaths.Contains(normalizedPath))
-            {
-                // (path, size, mtime) still match the database record: skip before any
-                // hashing or metadata work.
-                return IncrementalImportOutcome.Skipped;
-            }
-        }
-
+        // A reserved dirty path is evidence of a change even when size and mtime match.
+        // Re-fingerprint this bounded dirty batch; only reconciliation scans may use the
+        // unchanged-path shortcut. The import pipeline still deduplicates identical content.
         FileLocalityAssessment locality = _services.FileSearchRootAccess.Assess(normalizedPath);
         if (locality.Readiness != FileLocalityReadiness.CloudUnready && !CanOpenForRead(normalizedPath))
         {
@@ -1053,11 +1091,6 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 await LogOperationAsync("file-scan",
                     $"Import failed (trigger={FileWatcherTrigger}): {normalizedPath} - {importedPdf.ErrorMessage}");
                 return IncrementalImportOutcome.Failed;
-            }
-
-            lock (knownSync)
-            {
-                knownPaths.Add(normalizedPath);
             }
 
             if (importedPdf.FailedPageCount > 0)

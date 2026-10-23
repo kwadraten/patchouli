@@ -21,7 +21,7 @@ public sealed record TranslationAppSettings(
     bool BackfillPreviousWindowTranslation = TranslationAppSettings.DefaultBackfillPreviousWindowTranslation,
     string? ProviderId = null,
     string? Model = null,
-    string EngineId = "translation.llm",
+    string EngineId = TranslationSettings.DefaultEngineId,
     string SourceLanguage = "auto")
 {
     /// <summary>Delay between batch requests; zero disables throttling, matching the runtime default.</summary>
@@ -61,7 +61,7 @@ public sealed record TranslationAppSettings(
                 TranslationSettings.MaxWindowRadius),
             ProviderId = string.IsNullOrWhiteSpace(ProviderId) ? null : ProviderId.Trim(),
             Model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim(),
-            EngineId = string.IsNullOrWhiteSpace(EngineId) ? "translation.llm" : EngineId.Trim(),
+            EngineId = string.IsNullOrWhiteSpace(EngineId) ? TranslationSettings.DefaultEngineId : EngineId.Trim(),
             SourceLanguage = string.IsNullOrWhiteSpace(SourceLanguage) ? "auto" : SourceLanguage.Trim()
         };
     }

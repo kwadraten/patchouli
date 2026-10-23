@@ -69,6 +69,15 @@ public static class ReadingSceneBuilder
             string kind = box?.Payload?.Annotations is { Count: > 0 } && !annotatedBodiesBuilt.Add(box.BoxId)
                 ? block.Kind
                 : KindFor(box, block.Kind);
+            if (kind != "table" && IsInlineHtmlTable(block, box, markdownSource))
+            {
+                // Whole-book reading compiles a complex table as inline HTML, and Markdig reports
+                // that block as HtmlBlock without a source-map entry in some paths. The content is
+                // authoritative: a table box (or an unmapped block) whose markdown slice is a
+                // <table> must read as a grid, not as the raw markup.
+                kind = "table";
+            }
+
             bool isTable = kind == "table";
             bool hasImage = kind is "media" or "equation";
             ReadingTable? table = isTable
@@ -200,6 +209,21 @@ public static class ReadingSceneBuilder
         return box?.Payload is TableBoxPayload payload && TableContentAdapter.TryGetHtml(payload, out string html)
             ? ParseHtmlTable(html)
             : null;
+    }
+
+    // A complex table is compiled as raw <table> HTML. When the block's box is known and is not a
+    // table, the box typing wins (a text box keeps its literal content); an unmapped block — the
+    // whole-book path when the source map has no entry for the HTML node — is classified by its
+    // own markdown slice, so the table renders as a grid instead of showing its markup.
+    private static bool IsInlineHtmlTable(MarkdownBlock block, DocumentBox? box, string? markdownSource)
+    {
+        if (box is not null && box.BoxType != DocumentBoxType.Table)
+        {
+            return false;
+        }
+
+        string slice = TableMarkdown(block, markdownSource);
+        return LooksLikeHtmlTableMarkup(slice) && slice.Contains("<tr", StringComparison.OrdinalIgnoreCase);
     }
 
     // The compiled HTML fallback of a complex table is the only table block that starts with a

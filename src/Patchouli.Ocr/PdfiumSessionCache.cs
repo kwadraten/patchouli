@@ -34,6 +34,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
     private readonly LinkedList<string> _lru = new();
     private readonly Dictionary<string, PendingOpen> _pendingOpens = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IPdfPageSession> _sessionsToDispose = [];
+    private Task? _drainTask;
     private long _cachedBytes;
     private bool _disposed;
 
@@ -129,7 +130,9 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
         if (startOpen)
         {
-            _ = OpenSessionCoreAsync(key, pending);
+            // The running task is tracked on the pending entry so DisposeAsync can wait for
+            // in-flight opens to converge (each self-disposes the session it produced).
+            pending.Running = OpenSessionCoreAsync(key, pending);
         }
 
         try
@@ -180,7 +183,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
                 }
             }
 
-            await DrainDisposedAsync();
+            await DrainLoopAsync();
             return result;
         }
         finally
@@ -242,7 +245,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
 
         if (mustDrain)
         {
-            _ = DrainDisposedAsync();
+            ScheduleDrain();
         }
     }
 
@@ -284,6 +287,8 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         IPdfPageSession[] sessions;
+        PendingOpen[] pendings;
+        Task? drain;
         lock (_sync)
         {
             _disposed = true;
@@ -291,9 +296,37 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
             _entries.Clear();
             _lru.Clear();
             _cachedBytes = 0;
+            pendings = _pendingOpens.Values.ToArray();
+            foreach (PendingOpen pending in pendings)
+            {
+                // OpenSessionCoreAsync self-disposes the session it produced once it sees the
+                // cache disposed or the open evicted; marking it here converges every in-flight
+                // open onto that path instead of letting one claim a slot after disposal.
+                pending.Evicted = true;
+            }
+
             _pendingOpens.Clear();
             sessions = sessions.Concat(_sessionsToDispose).Distinct().ToArray();
             _sessionsToDispose.Clear();
+            drain = _drainTask;
+        }
+
+        // Wait out in-flight opens first: each running open self-disposes the session it
+        // produced, so awaiting the task leaves no unclosed native handle behind.
+        foreach (PendingOpen pending in pendings)
+        {
+            if (pending.Running is { } running)
+            {
+                try
+                {
+                    await running;
+                }
+                catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                    exception, "ocr.pdfium-session-cache",
+                                                    "dispose-pending-open"))
+                {
+                }
+            }
         }
 
         foreach (IPdfPageSession session in sessions)
@@ -310,6 +343,22 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
                     "dispose-session");
             }
         }
+
+        // Sessions popped into an in-flight drain are invisible to the snapshot above; wait
+        // for the drain itself, then drain whatever arrived in the meantime.
+        if (drain is not null)
+        {
+            try
+            {
+                await drain;
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                exception, "ocr.pdfium-session-cache", "dispose-drain"))
+            {
+            }
+        }
+
+        await DrainLoopAsync();
     }
 
     private async Task OpenSessionCoreAsync(string key, PendingOpen pending)
@@ -425,23 +474,43 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         }
     }
 
-    private async Task DrainDisposedAsync()
+    private void ScheduleDrain()
     {
-        IPdfPageSession[] sessions;
         lock (_sync)
         {
-            if (_sessionsToDispose.Count == 0)
+            // IsCompleted covers a loop that finished synchronously inside this call; a bare
+            // ??= would leave that completed task in the field and never schedule again.
+            if (_drainTask is null || _drainTask.IsCompleted)
             {
-                return;
+                _drainTask = DrainLoopAsync();
+            }
+        }
+    }
+
+    // Drains the dispose queue until it stays empty. The last-started loop task stays
+    // recorded on _drainTask so a racing DisposeAsync can wait for sessions already popped
+    // by an earlier drain instead of observing an empty queue while their native handles
+    // are still closing.
+    private async Task DrainLoopAsync()
+    {
+        while (true)
+        {
+            IPdfPageSession[] sessions;
+            lock (_sync)
+            {
+                if (_sessionsToDispose.Count == 0)
+                {
+                    return;
+                }
+
+                sessions = _sessionsToDispose.ToArray();
+                _sessionsToDispose.Clear();
             }
 
-            sessions = _sessionsToDispose.ToArray();
-            _sessionsToDispose.Clear();
-        }
-
-        foreach (IPdfPageSession session in sessions)
-        {
-            await DisposeSessionConvergedAsync(session, "drain-disposed-session");
+            foreach (IPdfPageSession session in sessions)
+            {
+                await DisposeSessionConvergedAsync(session, "drain-disposed-session");
+            }
         }
     }
 
@@ -493,5 +562,6 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         public int Waiters { get; set; }
         public IPdfPageSession? Session { get; set; }
         public bool Claimed { get; set; }
+        public Task? Running { get; set; }
     }
 }

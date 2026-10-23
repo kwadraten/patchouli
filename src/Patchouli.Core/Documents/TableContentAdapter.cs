@@ -197,6 +197,78 @@ public static class TableContentAdapter
         return ParseHtml(normalizedHtml).IsSuccess;
     }
 
+    /// <summary>
+    /// Normalizes edited table HTML for saving. Editor-generated wrappers are removed, presentation-only
+    /// attribute changes are dropped rather than blocking the save, structural edits (added or removed
+    /// rows and columns, merged or split cells) are kept, and protected formula/code cells are restored
+    /// by content match or rejected with a specific error when they were modified. The returned fragment
+    /// always satisfies <see cref="ValidateHtml"/>.
+    /// </summary>
+    public static Result<string> TryCreateEditorSaveHtml(TableBoxPayload original, string editorHtml)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        const string code = AppErrorCodes.ValidationFailed;
+        if (!TryGetHtml(original, out string originalHtml) ||
+            !TryParseDocument(originalHtml, out XDocument? originalDocument) ||
+            !TryParseDocument(editorHtml, out XDocument? editorDocument))
+        {
+            return Result<string>.Failure(code, "表格内容无法解析，未保存。");
+        }
+
+        XElement originalTable = originalDocument!.Root!.Elements().Single();
+        XElement editorRoot = editorDocument!.Root!;
+        foreach (XNode node in editorRoot.Nodes().ToArray())
+        {
+            if (node is XText text && string.IsNullOrWhiteSpace(text.Value))
+            {
+                continue;
+            }
+
+            if (node is XElement element && IsGeneratedEmptyParagraph(element))
+            {
+                element.Remove();
+                continue;
+            }
+
+            if (node is XElement tableElement && IsElement(tableElement, "table"))
+            {
+                continue;
+            }
+
+            return Result<string>.Failure(code, "编辑结果包含表格以外的内容，未保存。");
+        }
+
+        XElement[] editorTables = editorRoot.Elements().Where(static element => IsElement(element, "table"))
+            .ToArray();
+        if (editorTables.Length != 1)
+        {
+            return Result<string>.Failure(code, "编辑结果必须恰好包含一个表格，未保存。");
+        }
+
+        XElement editorTable = editorTables[0];
+        RemoveGeneratedTableDefaults(originalTable, editorTable);
+        RemoveGeneratedColumnGroup(originalTable, editorTable);
+
+        XElement[] originalCells = originalTable.Descendants().Where(IsCellElement).ToArray();
+        XElement[] editorCells = editorTable.Descendants().Where(IsCellElement).ToArray();
+        bool sameShape = originalCells.Length == editorCells.Length;
+        NormalizeEditorCellParagraphs(editorCells);
+
+        RestoreEditorRowSections(originalTable, editorTable);
+
+        Result protectedRestore = RestoreProtectedCells(originalTable, editorTable);
+        if (protectedRestore.IsFailure)
+        {
+            return Result<string>.Failure(protectedRestore.ErrorCode!, protectedRestore.ErrorMessage!);
+        }
+
+        RestoreHeaderCellKinds(originalCells, editorCells, sameShape);
+        SanitizeAttributes(editorTable);
+
+        string normalized = editorTable.ToString(SaveOptions.DisableFormatting);
+        return ValidateHtml(normalized);
+    }
+
     /// <summary>Validates a translation while requiring the source table's structure and protected content.</summary>
     public static Result<TableBoxPayload> ValidateTranslation(TableBoxPayload source, TableBoxPayload candidate)
     {
@@ -599,6 +671,168 @@ public static class TableContentAdapter
                                                             attribute.Name.LocalName is "data-are-empty" or "style") &&
                element.Elements().Count() == 1 && IsElement(element.Elements().Single(), "br") &&
                !element.Nodes().OfType<XText>().Any(static text => !string.IsNullOrWhiteSpace(text.Value));
+    }
+
+    private static bool IsCellElement(XElement element)
+    {
+        return IsElement(element, "td") || IsElement(element, "th");
+    }
+
+    private static bool ContainsProtectedContent(XElement cell)
+    {
+        return cell.DescendantsAndSelf().Any(static element =>
+            IsElement(element, "eq") || IsElement(element, "code") || IsElement(element, "pre") ||
+            element.Name.NamespaceName == MathMlNamespace);
+    }
+
+    /// <summary>Removes the generated empty paragraphs and unwraps the generated style-only wrappers
+    /// RichEditor puts around cell content. Paragraphs the user actually formatted (alignment, multiple
+    /// paragraphs after Enter) stay as block content, which the payload contract allows.</summary>
+    private static void NormalizeEditorCellParagraphs(XElement[] editorCells)
+    {
+        foreach (XElement cell in editorCells)
+        {
+            XElement[] paragraphs = cell.Elements().Where(static element => IsElement(element, "p")).ToArray();
+            XElement[] contentParagraphs = paragraphs.Where(static paragraph => !IsGeneratedEmptyParagraph(paragraph))
+                .ToArray();
+            foreach (XElement empty in paragraphs.Except(contentParagraphs))
+            {
+                empty.Remove();
+            }
+
+            if (contentParagraphs.Length == 1 && IsGeneratedEditorParagraph(contentParagraphs[0]))
+            {
+                XElement wrapper = contentParagraphs[0];
+                wrapper.ReplaceWith(wrapper.Nodes().ToArray());
+            }
+        }
+    }
+
+    /// <summary>Restores every protected source cell (formula, code, or MathML content) into the edited
+    /// table by matching its normalized text. Fails when a protected cell was edited, deleted, or can no
+    /// longer be matched uniquely — silently dropping a formula marker is worse than refusing the save.</summary>
+    private static Result RestoreProtectedCells(XElement originalTable, XElement editorTable)
+    {
+        XElement[] protectedSources = originalTable.Descendants().Where(IsCellElement)
+            .Where(ContainsProtectedContent).ToArray();
+        if (protectedSources.Length == 0)
+        {
+            return Result.Success();
+        }
+
+        List<XElement> candidates = editorTable.Descendants().Where(IsCellElement).ToList();
+        foreach (IGrouping<string, XElement> group in protectedSources
+                     .GroupBy(source => NormalizeText(source.Value)))
+        {
+            XElement[] matches = candidates
+                .Where(candidate => string.Equals(NormalizeText(candidate.Value), group.Key,
+                    StringComparison.Ordinal))
+                .ToArray();
+            if (matches.Length != group.Count())
+            {
+                return Result.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    "公式或代码单元格的内容被修改或无法唯一对应，无法安全保存；请撤销对这些单元格的更改。");
+            }
+
+            for (int index = 0; index < matches.Length; index++)
+            {
+                candidates.Remove(matches[index]);
+                XElement source = group.ElementAt(index);
+                XNode[] restored = source.Nodes().Select(static node => node is XElement element
+                    ? (XNode)new XElement(element)
+                    : new XText(((XText)node).Value)).ToArray();
+                matches[index].ReplaceNodes(restored);
+            }
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>Restores header-cell (th) tags. When the grid shape is unchanged this is a positional
+    /// copy; after structural edits it matches unique cell text so untouched header rows keep their kind
+    /// even though the editor serializes every cell it created as a data cell.</summary>
+    private static void RestoreHeaderCellKinds(XElement[] originalCells, XElement[] editorCells, bool sameShape)
+    {
+        if (sameShape)
+        {
+            for (int index = 0; index < originalCells.Length; index++)
+            {
+                if (IsElement(originalCells[index], "th") != IsElement(editorCells[index], "th"))
+                {
+                    editorCells[index].Name = originalCells[index].Name;
+                }
+            }
+
+            return;
+        }
+
+        foreach (XElement editorCell in editorCells.Where(static cell => IsElement(cell, "td")))
+        {
+            string text = NormalizeText(editorCell.Value);
+            XElement[] matches = originalCells.Where(originalCell =>
+                    IsElement(originalCell, "th") &&
+                    string.Equals(NormalizeText(originalCell.Value), text, StringComparison.Ordinal))
+                .ToArray();
+            if (matches.Length == 1)
+            {
+                editorCell.Name = matches[0].Name;
+            }
+        }
+    }
+
+    /// <summary>Drops attributes the data model does not support instead of rejecting the save: unknown
+    /// attributes are removed, and style attributes keep only declarations the whitelist allows.</summary>
+    private static void SanitizeAttributes(XElement editorTable)
+    {
+        foreach (XElement element in editorTable.DescendantsAndSelf())
+        {
+            foreach (XAttribute attribute in element.Attributes().ToArray())
+            {
+                if (IsAllowedAttribute(element, attribute))
+                {
+                    continue;
+                }
+
+                if (attribute.Name.NamespaceName.Length == 0 &&
+                    attribute.Name.LocalName.Equals("style", StringComparison.OrdinalIgnoreCase) &&
+                    TryFilterStyle(attribute.Value, out string filtered))
+                {
+                    if (filtered.Length > 0)
+                    {
+                        attribute.Value = filtered;
+                    }
+                    else
+                    {
+                        attribute.Remove();
+                    }
+
+                    continue;
+                }
+
+                if (!attribute.IsNamespaceDeclaration)
+                {
+                    attribute.Remove();
+                }
+            }
+        }
+    }
+
+    private static bool TryFilterStyle(string style, out string filtered)
+    {
+        List<string> declarations = new();
+        foreach (string declaration in style.Split(';',
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = declaration.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && IsSafeStyle($"{parts[0]}:{parts[1]}"))
+            {
+                declarations.Add($"{parts[0]}:{parts[1]}");
+            }
+        }
+
+        filtered = string.Join(';', declarations);
+        return declarations.Count > 0;
     }
 
     private static bool IsAllowedElement(XElement element)

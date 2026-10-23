@@ -10,7 +10,7 @@ single editable representation; Markdown and search text are projections.
 
 All OCR engines normalize to MinerU v4's shared data model. Supported input semantics
 and regression fixtures follow the verified upstream contract and producer paths in
-[OCR normalization](../ocr-normalization.md), rather than assumed generic HTML features.
+[OCR normalization](../protocols/ocr-normalization.md), rather than assumed generic HTML features.
 
 The stored markers are `contentFormat: "html"` and `contentFormatVersion: 1`;
 `html` contains the fragment and `markdown` is empty. Missing markers mean legacy
@@ -60,4 +60,4 @@ Implementation evidence must distinguish unit/contract tests, headless UI intera
 and real desktop acceptance. Compilation alone does not establish the complete editing
 workflow.
 Current verification evidence is recorded in
-[Extension validation](../extension-validation.md).
+[Extension validation](../protocols/extension-validation.md).

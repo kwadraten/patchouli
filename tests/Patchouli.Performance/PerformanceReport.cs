@@ -44,10 +44,29 @@ public sealed record ReportCache(
 }
 
 /// <summary>
+/// The explicitly versioned split of the library first-rows timing. It records the two measurement
+/// points approved under the R1 metric decision, both elapsed from the start of the cold-open pass:
+/// <c>FirstBatchReady*</c> ends when the shell's current paging generation has published its first
+/// page, and <c>AllPagesDrained*</c> ends when every page of the requested fixture scale has been
+/// published. <see cref="MeasurementVersion"/> identifies the definition; values are only
+/// comparable against baselines recorded under the same version — the regression evaluator marks
+/// mismatched or absent versions non-comparable (a new baseline is required) instead of computing
+/// a ratio. Reports written before this section existed deserialize it as <c>null</c>.
+/// </summary>
+public sealed record ReportUiPagingMeasurements(
+    int MeasurementVersion,
+    double? FirstBatchReadyColdMs,
+    double? FirstBatchReadyHotMs,
+    double? AllPagesDrainedColdMs,
+    double? AllPagesDrainedHotMs);
+
+/// <summary>
 /// Real-UI (headless Avalonia) performance probes. All timings are measured on the actual UI
 /// dispatcher against a real <see cref="Patchouli.UI.MainWindow"/>, real view models, and the real
 /// host services; they are never synthesized in the console. <c>null</c> fields mean the probe was
-/// not run for this profile.
+/// not run for this profile. <c>FirstLibraryRows*Ms</c> keeps its original definition (construction
+/// through startup/first-run completion); the newer split paging timings live under
+/// <see cref="PagingMeasurements"/> and never reuse the legacy field names.
 /// </summary>
 public sealed record ReportUi(
     bool Measured,
@@ -59,7 +78,8 @@ public sealed record ReportUi(
     double? HeartbeatTargetMs,
     int? HeartbeatSamples,
     long? UiThreadDatabaseCommands,
-    int? FirstLibraryRowCount);
+    int? FirstLibraryRowCount,
+    ReportUiPagingMeasurements? PagingMeasurements = null);
 
 public sealed record OperationReport(
     string Name,

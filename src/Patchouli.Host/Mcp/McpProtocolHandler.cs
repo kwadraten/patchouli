@@ -34,7 +34,8 @@ public sealed class McpProtocolHandler
         CancellationToken hostLifetime = default,
         IMcpOcrRunsApi? ocrRuns = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
-        IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null)
+        IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
+        IMcpMetadataRunsApi? metadataRuns = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
@@ -54,7 +55,8 @@ public sealed class McpProtocolHandler
             !IsSwitchOff(effectiveSettings, "patchouli.add"),
             !IsSwitchOff(effectiveSettings, "patchouli.view"),
             ocrCommands,
-            translationRuns);
+            translationRuns,
+            metadataRuns);
         _ = db;
         _settings = effectiveSettings with
         {
@@ -460,18 +462,19 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.send",
-                "Send a typed message to runs/<domain>/control. Fetch the endpoint for message schemas; start accepts a document target, cancel/retry accept a same-domain task target.",
+                "Send a typed message to runs/<domain>/control. Fetch the endpoint for message schemas; start accepts a document target, cancel/retry accept a same-domain task target, metadata lookup/apply/enrich accept an item target.",
                 ["endpoint", "action", "target", "args"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["endpoint"] =
                         ToolSchemaProperty.String(
-                            "Domain control endpoint URI, e.g. runs/ocr/control or runs/translation/control."),
+                            "Domain control endpoint URI, e.g. runs/ocr/control, runs/translation/control, or runs/metadata/control."),
                     ["action"] =
-                        ToolSchemaProperty.String("Endpoint message action: start, cancel, or retry when supported."),
+                        ToolSchemaProperty.String(
+                            "Endpoint message action: start, cancel, retry, lookup, apply, enrich, or enrich_batch when supported by the endpoint schema."),
                     ["target"] =
                         ToolSchemaProperty.String(
-                            "Operation target URI: texts/<document-id>/ or runs/<domain>/<task-id>/."),
+                            "Operation target URI: texts/<document-id>/, items/<item-id>.yml, items/, or runs/<domain>/<task-id>/."),
                     ["args"] = ToolSchemaProperty.Object(
                         "Domain arguments matching the endpoint message schema; use {} when empty."),
                     ["request_id"] =
