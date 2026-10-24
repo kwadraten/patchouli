@@ -41,3 +41,14 @@ type MetadataSupportTests() =
         Assert.True(candidate.IsSome)
         Assert.Equal("HTML title", (Option.get candidate).Title)
         Assert.True((parseNlcHtml html (NormalizedIdentifier("isbn", "9784000000002"))).IsNone)
+
+    [<Fact>]
+    member _.``mapType maps unhyphenated JournalArticle to article-journal`` () =
+        // Semantic Scholar returns "JournalArticle" (no hyphen) in publicationTypes; the shared
+        // mapType lowercases its input, so this arm must exist or the type suggestion is lost.
+        Assert.Equal(Some "article-journal", mapType "JournalArticle")
+        Assert.Equal(Some "article-journal", mapType "journalarticle")
+        Assert.Equal(Some "article-journal", mapType "journal-article")
+        Assert.Equal(Some "article-journal", mapType "ARTICLE")
+        Assert.Equal(Some "book", mapType "Monograph")
+        Assert.Equal(None, mapType "unknown-type")
