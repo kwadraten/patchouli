@@ -180,6 +180,71 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void All_package_publish_commands_disable_shared_output_concurrency()
+    {
+        string[] scripts =
+        [
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-linux.sh"))
+        ];
+        List<string> commands = [];
+
+        foreach (string script in scripts)
+        {
+            string[] lines = script.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].TrimStart().StartsWith("dotnet publish ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                List<string> command = [lines[i]];
+                while (command[^1].TrimEnd().EndsWith('`') || command[^1].TrimEnd().EndsWith('\\'))
+                {
+                    command.Add(lines[++i]);
+                }
+
+                commands.Add(string.Join(" ", command));
+            }
+        }
+
+        commands.Should().HaveCount(6);
+        commands.Count(command => command.Contains("Patchouli.UI.csproj", StringComparison.Ordinal))
+            .Should().Be(3);
+        commands.Count(command => command.Contains("Patchouli.Cli.csproj", StringComparison.Ordinal))
+            .Should().Be(3);
+        foreach (string command in commands)
+        {
+            command.Should().Contain("-m:1").And.Contain("-p:BuildInParallel=false")
+                .And.Contain("-p:UseSharedCompilation=false");
+        }
+    }
+
+    [Fact]
+    public void Package_smoke_workflow_is_read_only_and_runs_production_packagers()
+    {
+        string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "package-smoke.yml"));
+
+        workflow.Should().Contain("pull_request:").And.Contain("contents: read")
+            .And.Contain("scripts/package-windows.ps1").And.Contain("-Smoke")
+            .And.Contain("runs-on: macos-14")
+            .And.Contain("VERSION=\"$PACKAGE_VERSION\" bash scripts/package-macos.sh osx-arm64")
+            .And.Contain(
+                "bash scripts/verify-macos-dmg.sh \".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg\"")
+            .And.Contain(".github/workflows/release.yml")
+            .And.Contain("scripts/verify-macos-dmg.sh")
+            .And.Contain("scripts/Patchouli.ExtensionSchemas/**")
+            .And.Contain("sidecar/Patchouli.Extensions.Compiler/**")
+            .And.Contain("src/Patchouli.Extensions*/**")
+            .And.Contain("codesign --verify --deep --strict")
+            .And.Contain("actions/checkout@v7").And.Contain("actions/setup-dotnet@v6")
+            .And.Contain("actions/upload-artifact@v7").And.NotContain("gh release")
+            .And.NotContain("tags:").And.NotContain("contents: write");
+    }
+
+    [Fact]
     public void Release_workflow_packages_windows_and_macos_from_tags()
     {
         string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "release.yml"));

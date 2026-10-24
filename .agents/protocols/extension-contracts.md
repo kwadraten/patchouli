@@ -45,6 +45,11 @@ manifest and cannot replace code or artifact validation. Missing or incompatible
 descriptions produce an explicit unchecked/source-only configuration view, not a runtime check
 or compiler launch hidden behind opening a settings dialog.
 
+Release publishes are explicitly single-node with `BuildInParallel=false` and
+`UseSharedCompilation=false`: RID/self-contained property variants can otherwise reach these
+neutral SDK output paths concurrently. Do not evade those locks by disabling artifact generation
+or changing SDK/cache identity; keep the schema and compiler artifacts produced and validated.
+
 `|>>` composes cold typed steps. `Parallel.map` preserves input order while item execution
 identities describe completion order. The shared host request gate bounds nested transport
 concurrency. `Batch.packWithBudget` rejects oversized inputs so the engine must segment them

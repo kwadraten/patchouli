@@ -1,0 +1,79 @@
+name: Package smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/package-smoke.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/package-windows.ps1'
+      - 'scripts/package-macos.sh'
+      - 'scripts/package-linux.sh'
+      - 'scripts/verify-macos-dmg.sh'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - '**/*.csproj'
+      - '**/*.fsproj'
+      - 'scripts/Patchouli.ExtensionSchemas/**'
+      - 'sidecar/Patchouli.Extensions.Compiler/**'
+      - 'src/Patchouli.Extensions*/**'
+      - 'packaging/windows/**'
+      - 'packaging/macos/**'
+      - 'sidecar/biblatex-helper/**'
+      - 'sidecar/patchouli-macos-fs/**'
+      - 'tests/Patchouli.Tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Read package version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props
+          "PACKAGE_VERSION=$($props.Project.PropertyGroup.Version)" >> $env:GITHUB_ENV
+      - name: Build Windows package from a clean publish directory
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Runtime win-x64 -Configuration Release -Version $env:PACKAGE_VERSION -Smoke
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-package-smoke
+          path: .tmp/installer/**
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  macos-package:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Read package version
+        shell: bash
+        run: |
+          version="$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -n 1)"
+          test -n "$version"
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build and validate macOS DMG
+        shell: bash
+        run: |
+          VERSION="$PACKAGE_VERSION" bash scripts/package-macos.sh osx-arm64
+          codesign --verify --deep --strict --verbose=4 .tmp/macos/Patchouli.NET.app
+          bash scripts/verify-macos-dmg.sh ".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-package-smoke
+          path: .tmp/installer/**
+          include-hidden-files: true
+          if-no-files-found: warn

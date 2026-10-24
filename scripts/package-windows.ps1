@@ -36,6 +36,7 @@ if (Test-Path -LiteralPath $publishDir) {
 }
 New-Item -ItemType Directory -Force -Path $publishDir, $installerDir | Out-Null
 dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
+    -m:1 `
     -c $Configuration `
     -r $Runtime `
     --self-contained true `
@@ -43,6 +44,8 @@ dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
     -p:PublishSingleFile=false `
     -p:DebugType=None `
     -p:DebugSymbols=false `
+    -p:BuildInParallel=false `
+    -p:UseSharedCompilation=false `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
@@ -71,12 +74,15 @@ if ($legacyPresent) {
 
 $cliDir = Join-Path $publishDir "cli"
 dotnet publish (Join-Path $root "src\Patchouli.Cli\Patchouli.Cli.csproj") `
+    -m:1 `
     -c $Configuration `
     -r $Runtime `
     --self-contained true `
     -p:Version=$Version `
     -p:DebugType=None `
     -p:DebugSymbols=false `
+    -p:BuildInParallel=false `
+    -p:UseSharedCompilation=false `
     -o $cliDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish (CLI) failed with exit code $LASTEXITCODE." }
 $cliExe = Join-Path $cliDir "patchouli-cli.exe"
