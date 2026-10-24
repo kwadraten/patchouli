@@ -1,5 +1,7 @@
 namespace Patchouli.Core.Translation;
 
+using Bibliography;
+
 /// <summary>Error codes reported by the translation extension contracts.</summary>
 public static class TranslationErrorCodes
 {
@@ -65,15 +67,19 @@ public sealed record TranslationSettings(
     /// <summary>Per-request timeout; the default bounds one batch translation call.</summary>
     public TimeSpan RequestTimeoutValue => RequestTimeout ?? DefaultRequestTimeout;
 
-    /// <summary>Clamps every ranged value back into its legal band and trims the language code.</summary>
+    /// <summary>
+    /// Clamps every ranged value back into its legal band and canonicalizes the language codes
+    /// through <see cref="ItemLanguage.Canonicalize"/>, so a run's languages are host canonical
+    /// tags (zh-Hans style) before any job is created from them.
+    /// </summary>
     public TranslationSettings Normalize()
     {
         string language = string.IsNullOrWhiteSpace(TargetLanguage)
             ? DefaultTargetLanguage
-            : TargetLanguage.Trim();
+            : ItemLanguage.Canonicalize(TargetLanguage) ?? DefaultTargetLanguage;
         string sourceLanguage = string.IsNullOrWhiteSpace(SourceLanguage)
             ? DefaultSourceLanguage
-            : SourceLanguage.Trim();
+            : ItemLanguage.Canonicalize(SourceLanguage) ?? DefaultSourceLanguage;
         return this with
         {
             TargetLanguage = language,

@@ -127,7 +127,7 @@ public sealed class BuiltInTranslationExtensionProtocolTests
             {
                 body.RootElement.GetProperty("text").GetString().Should().Be("Hello");
                 body.RootElement.GetProperty("source_lang").GetString().Should().Be("auto");
-                body.RootElement.GetProperty("target_lang").GetString().Should().Be("fr");
+                body.RootElement.GetProperty("target_lang").GetString().Should().Be("FR");
             }
         }
     }
@@ -607,7 +607,7 @@ public sealed class BuiltInTranslationExtensionProtocolTests
             new ExtensionPageIdentity(DocumentInstanceId.Parse("00000000-0000-0000-0000-000000000001"),
                 PageId.Parse("00000000-0000-0000-0000-000000000002"),
                 DocumentTreeRevisionId.Parse("00000000-0000-0000-0000-000000000003"), 1),
-            "translated-" + StableBoxId("first-page"), "fr", 1);
+            "translated-" + StableBoxId("first-page"), LanguageTag.Create("fr"), 1);
 
         await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
 
@@ -622,6 +622,203 @@ public sealed class BuiltInTranslationExtensionProtocolTests
         job.Committed.Should().HaveCount(2);
         job.Committed.SelectMany(page => page.Outcomes)
             .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+    }
+
+    [Theory]
+    // Google codes are region-style: the canonical script tags (and any raw region spelling a
+    // stored job still carries) map back to zh-CN/zh-TW on the wire.
+    [InlineData("zh-Hans", "zh-CN")]
+    [InlineData("zh-CN", "zh-CN")]
+    [InlineData("zh-Hant", "zh-TW")]
+    [InlineData("zh-TW", "zh-TW")]
+    public async Task Google_maps_canonical_script_tags_to_region_codes(string targetInput, string expectedCode)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"Bonjour"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), "auto",
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        capabilities.HttpRequests.Should().ContainSingle();
+        capabilities.HttpRequests[0].Uri.Query.Should().Contain("tl=" + expectedCode).And.Contain("sl=auto");
+    }
+
+    [Fact]
+    public async Task Google_maps_a_canonical_chinese_source_to_its_region_code()
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"Bonjour"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), "zh-Hans",
+                "fr"),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        capabilities.HttpRequests.Should().ContainSingle();
+        capabilities.HttpRequests[0].Uri.Query.Should().Contain("sl=zh-CN").And.Contain("tl=fr");
+    }
+
+    [Theory]
+    // DeepL web has a single Chinese code: both canonical script tags collapse to "ZH", and the
+    // auto sentinel stays lowercase instead of being uppercased with the other codes.
+    [InlineData("auto", "zh-Hans", "auto", "ZH")]
+    [InlineData("auto", "zh-Hant", "auto", "ZH")]
+    [InlineData("zh-Hans", "fr", "ZH", "FR")]
+    public async Task DeepL_free_collapses_chinese_to_ZH_and_keeps_auto_lowercase(
+        string sourceInput, string targetInput, string expectedSource, string expectedTarget)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"result":{"texts":[{"text":"Bonjour"}]}}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/deepl"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), sourceInput,
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.deepl-free", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.HttpRequests.Should().ContainSingle().Subject.Body!);
+        JsonElement lang = body.RootElement.GetProperty("params").GetProperty("lang");
+        lang.GetProperty("source_lang_user_selected").GetString().Should().Be(expectedSource);
+        lang.GetProperty("target_lang").GetString().Should().Be(expectedTarget);
+    }
+
+    [Theory]
+    // DeepLX forwards script-specific uppercase DeepL codes; only the auto sentinel stays lowercase.
+    [InlineData("auto", "zh-Hans", "auto", "ZH-HANS")]
+    [InlineData("auto", "zh-Hant", "auto", "ZH-HANT")]
+    [InlineData("zh-Hans", "zh-Hant", "ZH-HANS", "ZH-HANT")]
+    public async Task DeepLX_maps_canonical_script_tags_to_uppercase_script_codes(
+        string sourceInput, string targetInput, string expectedSource, string expectedTarget)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"data":"Bonjour"}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "http://unit.test/translate"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), sourceInput,
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.deeplx", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.HttpRequests.Should().ContainSingle().Subject.Body!);
+        body.RootElement.GetProperty("source_lang").GetString().Should().Be(expectedSource);
+        body.RootElement.GetProperty("target_lang").GetString().Should().Be(expectedTarget);
+    }
+
+    [Fact]
+    public async Task Llm_backfill_matches_a_committed_snapshot_across_raw_language_spellings()
+    {
+        // The job was requested with the raw region spelling "zh-CN" while the committed page was
+        // stored under the canonical "zh-Hans": tag-on-tag comparison must still recognize them as
+        // the same language and backfill. A raw string comparison would silently skip the backfill.
+        List<string> prompts = BackfillPrompts(out FakeCapabilities capabilities);
+        ExtensionConfigSnapshot config = BackfillConfig();
+        TranslationExtensionOptions options = BackfillOptions();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options),
+                targetLanguage: "zh-CN"),
+            [
+                Page(1, Box("first-page", "The first paragraph")),
+                Page(2, Box("second-page", "The second paragraph"))
+            ]);
+        job.CommittedTranslations[1] = CommittedSnapshot("zh-Hans", "first-page");
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        prompts.Should().HaveCount(2);
+        prompts[1].Should().Contain("Previous page translation")
+            .And.Contain("translated-" + StableBoxId("first-page"));
+        job.Committed.SelectMany(page => page.Outcomes)
+            .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+    }
+
+    [Fact]
+    public async Task Llm_backfill_skips_a_committed_snapshot_in_a_different_language()
+    {
+        List<string> prompts = BackfillPrompts(out FakeCapabilities capabilities);
+        ExtensionConfigSnapshot config = BackfillConfig();
+        TranslationExtensionOptions options = BackfillOptions();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options),
+                targetLanguage: "zh-CN"),
+            [
+                Page(1, Box("first-page", "The first paragraph")),
+                Page(2, Box("second-page", "The second paragraph"))
+            ]);
+        job.CommittedTranslations[1] = CommittedSnapshot("fr", "first-page");
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        prompts.Should().HaveCount(2);
+        prompts[1].Should().NotContain("Previous page translation");
+    }
+
+    private static List<string> BackfillPrompts(out FakeCapabilities capabilities)
+    {
+        List<string> prompts = [];
+        capabilities = new FakeCapabilities(llm: request =>
+        {
+            string user = request.Messages.Single(message => message.Role == "user").Content;
+            lock (prompts)
+            {
+                prompts.Add(string.Join(Environment.NewLine,
+                    request.Messages.Select(message => message.Content)));
+            }
+
+            using JsonDocument input = JsonDocument.Parse(user);
+            string[] ids = input.RootElement.EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            return new LlmResponse(JsonSerializer.Serialize(ids.Select(id => new { id, text = "translated-" + id })));
+        });
+        return prompts;
+    }
+
+    private static ExtensionConfigSnapshot BackfillConfig()
+    {
+        return new ExtensionConfigSnapshot(new Dictionary<string, string>
+        {
+            ["backfill"] = "true",
+            ["window-radius"] = "0",
+            ["max-retries"] = "0"
+        }, 1);
+    }
+
+    private static TranslationExtensionOptions BackfillOptions()
+    {
+        return Options() with
+        {
+            BackfillPreviousWindowTranslation = true,
+            WindowRadius = 0
+        };
+    }
+
+    private static TranslationContextTranslationSnapshot CommittedSnapshot(string targetLanguage, string boxId)
+    {
+        return new TranslationContextTranslationSnapshot(
+            new ExtensionPageIdentity(DocumentInstanceId.Parse("00000000-0000-0000-0000-000000000001"),
+                PageId.Parse("00000000-0000-0000-0000-000000000002"),
+                DocumentTreeRevisionId.Parse("00000000-0000-0000-0000-000000000003"), 1),
+            "translated-" + StableBoxId(boxId), LanguageTag.Create(targetLanguage), 1);
     }
 
     private static TestTranslationJob CreateJob(ExtensionConfigSnapshot config, TranslationExtensionOptions options,

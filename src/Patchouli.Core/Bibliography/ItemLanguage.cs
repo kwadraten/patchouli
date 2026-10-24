@@ -121,6 +121,33 @@ public static class ItemLanguage
         return trailing.Length == 0 ? primary : $"{primary}-{string.Join('-', trailing)}";
     }
 
+    /// <summary>
+    /// Returns the host canonical form of a language tag for language-typed boundaries: the
+    /// <see cref="Normalize"/> result with the auto-detection sentinel lowercased and Chinese region
+    /// tags unified onto script tags (zh-CN becomes zh-Hans; zh-TW, zh-HK and zh-MO become zh-Hant),
+    /// so equivalent Chinese tags compare equal everywhere downstream.
+    /// </summary>
+    public static string? Canonicalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (string.Equals(value.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return "auto";
+        }
+
+        string? normalized = Normalize(value);
+        return normalized switch
+        {
+            "zh-CN" => "zh-Hans",
+            "zh-TW" or "zh-HK" or "zh-MO" => "zh-Hant",
+            _ => normalized
+        };
+    }
+
     /// <summary>Returns the normalized primary language subtag used to select a local rendering rule.</summary>
     public static string? GetPrimaryLanguage(string? value)
     {

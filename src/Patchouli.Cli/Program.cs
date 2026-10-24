@@ -319,7 +319,7 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "      send runs/ocr/control start texts/<document-id>/ --pages 1,3-5 --engine default --request-id r1");
     Console.Error.WriteLine(
-        "      send runs/translation/control start texts/<document-id>/ --target-language zh-CN --force false");
+        "      send runs/translation/control start texts/<document-id>/ --target-language zh-Hans --force false");
     Console.Error.WriteLine("      send runs/ocr/control cancel runs/ocr/<task-id>/");
     Console.Error.WriteLine(
         "      send runs/metadata/control lookup items/<item-id>.yml --scheme doi --value 10.xxxx/xxxxx");

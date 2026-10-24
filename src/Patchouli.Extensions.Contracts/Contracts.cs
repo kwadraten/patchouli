@@ -2,6 +2,7 @@ namespace Patchouli.Extensions.Contracts;
 
 using Core.Ids;
 using Core.Layout;
+using Core.Bibliography;
 using Core.Bibliography.MetadataLookup;
 using Core.Results;
 using Core.Documents;
@@ -340,14 +341,59 @@ public sealed record TranslationExtensionOptions(
     string? Model = null);
 
 /// <summary>
+/// A canonical host language tag (for example <c>zh-Hans</c>). The dedicated type is how the
+/// compiler and the extension surface recognize a language field: construction goes through
+/// <see cref="Create"/> (or the <see cref="Auto"/>/<see cref="Unspecified"/> sentinels), whose
+/// constructor path runs the host normalization (<see cref="ItemLanguage.Canonicalize"/>)
+/// exactly once at the boundary, so every downstream consumer compares and maps canonical
+/// values and no raw user text can reach an engine unnormalized. As with any struct,
+/// <c>default(LanguageTag)</c> runs no constructor and reads as unspecified. Each extension
+/// then maps the canonical tag to its provider's codes itself; there is deliberately no
+/// shared provider mapping.
+/// </summary>
+public readonly record struct LanguageTag
+{
+    private LanguageTag(string? value)
+    {
+        Value = ItemLanguage.Canonicalize(value) ?? string.Empty;
+    }
+
+    /// <summary>The canonical tag text; empty when the tag is unspecified.</summary>
+    public string Value { get; }
+
+    /// <summary>The auto-detection sentinel; valid for source languages.</summary>
+    public static LanguageTag Auto => new("auto");
+
+    /// <summary>The absence of a language; job-level fallbacks decide what replaces it.</summary>
+    public static LanguageTag Unspecified => new(null as string);
+
+    /// <summary>True when no language was supplied.</summary>
+    public bool IsUnspecified => string.IsNullOrEmpty(Value);
+
+    /// <summary>True for the auto-detection sentinel.</summary>
+    public bool IsAuto => string.Equals(Value, "auto", StringComparison.Ordinal);
+
+    /// <summary>Canonicalizes arbitrary host or user text into a <see cref="LanguageTag"/>.</summary>
+    public static LanguageTag Create(string? value)
+    {
+        return new LanguageTag(value);
+    }
+
+    public override string ToString()
+    {
+        return Value ?? string.Empty;
+    }
+}
+
+/// <summary>
 /// Immutable facts about one translation job. The config snapshot is the run-pinned view; the host
 /// never changes these values while the job lives.
 /// </summary>
 public sealed record TranslationJobInfo(
     string JobId,
     DocumentInstanceId DocumentId,
-    string SourceLanguage,
-    string TargetLanguage,
+    LanguageTag SourceLanguage,
+    LanguageTag TargetLanguage,
     TranslationExtensionOptions Options,
     ExtensionConfigSnapshot Config);
 
@@ -436,7 +482,7 @@ public sealed record TranslationContextPageSnapshot(ExtensionPageIdentity Page, 
 public sealed record TranslationContextTranslationSnapshot(
     ExtensionPageIdentity Page,
     string Markdown,
-    string? TargetLanguage,
+    LanguageTag TargetLanguage,
     int Version);
 
 /// <summary>Controlled, read-only context supplied by the host; extensions choose how to use it.</summary>
