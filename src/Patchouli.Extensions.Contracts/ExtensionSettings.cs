@@ -411,6 +411,13 @@ public static class ConfigSettings
         }
 
         string? defaultText = defaultValue is null ? null : FormatDefault(defaultValue, property.PropertyType, kind);
+        if (defaultText is not null && kind == ConfigValueKind.Language)
+        {
+            // The declared default of a language field is published canonically, matching what
+            // resolution and materialization will hand to the extension at run time.
+            defaultText = LanguageTag.Create(defaultText).Value;
+        }
+
         bool followsDefault = model is not null && GetNamedString(model, "FollowDefault") is { Length: > 0 };
         string? defaultDomain = model is null ? null : GetNamedString(model, "FollowDefault");
         if (defaultDomain is not null && defaultDomain is not ("translation" or "metadata"))
@@ -466,6 +473,14 @@ public static class ConfigSettings
                     : field.DefaultValue is not null
                         ? FormatDefault(field.DefaultValue, property.PropertyType, field.Descriptor.Kind)
                         : "";
+                if (field.Descriptor.Kind == ConfigValueKind.Language)
+                {
+                    // Language fields materialize canonically even when the snapshot bypassed
+                    // ExtensionConfiguration.Resolve, so a settings record never carries raw text
+                    // for a field the extension declared as a language.
+                    raw = LanguageTag.Create(raw).Value;
+                }
+
                 ValidateValue(key, field.Descriptor.Kind, raw, field.Descriptor.Required,
                     field.Descriptor.Minimum, field.Descriptor.Maximum, field.Descriptor.Choices);
                 if (!configured && field.DefaultValue is null && field.Descriptor.Required)

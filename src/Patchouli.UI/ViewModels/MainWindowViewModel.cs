@@ -35,6 +35,7 @@ using Patchouli.Ocr;
 using Patchouli.Core.Search;
 using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Agents;
 using Patchouli.Host.Settings;
 using Patchouli.Host.Caching;
 using Patchouli.Host.CitationInterop;
@@ -195,6 +196,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     }
 
     public IClipboardService Clipboard { get; }
+
+    /// <summary>Device-level Agent Skill service shared with settings and desktop startup maintenance.</summary>
+    public AgentSkillService AgentSkills { get; } = new();
+
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
     public IModalOperationRunner ModalOperations { get; }

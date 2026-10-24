@@ -16,12 +16,15 @@ public sealed class AgentLaunchServiceTests : IDisposable
     private readonly FakeAgentPlatformEnvironment _environment = new();
     private readonly ScriptedProcessRunner _runner = new();
     private readonly FakeAgentWorkspaceLocator _workspace = new();
+    private AgentSkillLocations _skillLocations = null!;
 
     public AgentLaunchServiceTests()
     {
         _environment.Platform = AgentPlatform.Windows;
         _environment.HomeDirectory = _directory.Combine("home");
         Directory.CreateDirectory(_environment.HomeDirectory);
+        _skillLocations = new AgentSkillLocations(_environment.HomeDirectory, _directory.Combine("state"),
+            new Dictionary<string, string>());
         _workspace.Directory = _directory.Combine("library", "agent-workspace");
     }
 
@@ -43,6 +46,10 @@ public sealed class AgentLaunchServiceTests : IDisposable
         result.ErrorMessage.Should().Contain("暂不启用");
         _runner.Requests.Should().BeEmpty();
         _workspace.EnsureCalls.Should().Be(0);
+        _workspace.GetCalls.Should().Be(0);
+        Directory.GetFileSystemEntries(_environment.HomeDirectory).Should().BeEmpty();
+        Directory.Exists(_directory.Combine("state")).Should().BeFalse();
+        Directory.Exists(_workspace.Directory).Should().BeFalse();
     }
 
     [Fact]
@@ -90,6 +97,10 @@ public sealed class AgentLaunchServiceTests : IDisposable
         result.ErrorCode.Should().Be(AgentIntegrationErrorCodes.NotInstalled);
         result.ErrorMessage.Should().NotBeNullOrWhiteSpace();
         _workspace.EnsureCalls.Should().Be(0);
+        _workspace.GetCalls.Should().Be(0);
+        Directory.GetFileSystemEntries(_environment.HomeDirectory).Should().BeEmpty();
+        Directory.Exists(_directory.Combine("state")).Should().BeFalse();
+        Directory.Exists(_workspace.Directory).Should().BeFalse();
     }
 
     [Fact]
@@ -258,10 +269,79 @@ public sealed class AgentLaunchServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Launch_automatically_prepares_a_managed_skill_without_writing_to_home()
+    {
+        string executable = AddExistingFile("tools/opencode.exe");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.0.0");
+        AgentIntegrationAppSettings settings = AgentIntegrationAppSettings.Default()
+            .WithCustomPath("opencode", executable);
+        AgentLaunchService service = CreateService();
+
+        Result<AgentLaunchSpec> result = await service.PrepareLaunchAsync(settings);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        string managedDirectory = _skillLocations.GetManagedDirectory("opencode", _workspace.Directory);
+        File.Exists(Path.Combine(managedDirectory, "SKILL.md")).Should().BeTrue();
+        Directory.Exists(_skillLocations.GetUserDirectory("opencode")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Existing_user_skill_is_used_as_is_and_managed_copy_is_removed_then_clear_restores_managed_copy()
+    {
+        string executable = AddExistingFile("tools/opencode.exe");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.0.0");
+        AgentIntegrationAppSettings settings = AgentIntegrationAppSettings.Default()
+            .WithCustomPath("opencode", executable);
+        AgentSkillService skills = new(_skillLocations);
+        string managed = _skillLocations.GetManagedDirectory("opencode", _workspace.Directory);
+        (await skills.PrepareWorkspaceAsync("opencode", _workspace)).IsSuccess.Should().BeTrue();
+        Directory.Exists(managed).Should().BeTrue();
+
+        string user = _skillLocations.GetUserDirectory("opencode");
+        Directory.CreateDirectory(user);
+        await File.WriteAllTextAsync(Path.Combine(user, "custom.txt"), "leave untouched");
+        AgentLaunchService service = new(new AgentDetectionService(_runner, _environment), _workspace, skills);
+
+        Result<AgentLaunchSpec> userPreferred = await service.PrepareLaunchAsync(settings);
+
+        userPreferred.IsSuccess.Should().BeTrue(userPreferred.ErrorMessage);
+        string userContent = await File.ReadAllTextAsync(Path.Combine(user, "custom.txt"));
+        userContent.Should().Be("leave untouched", "the existence of a user directory takes precedence without repair");
+        Directory.Exists(managed).Should().BeFalse();
+
+        (await skills.ClearAsync("opencode")).IsSuccess.Should().BeTrue();
+        Result<AgentLaunchSpec> managedFallback = await service.PrepareLaunchAsync(settings);
+        managedFallback.IsSuccess.Should().BeTrue(managedFallback.ErrorMessage);
+        File.Exists(Path.Combine(managed, "SKILL.md")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_managed_skill_preparation_failure_blocks_launch_with_a_retryable_diagnostic()
+    {
+        string executable = AddExistingFile("tools/opencode.exe");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.0.0");
+        AgentIntegrationAppSettings settings = AgentIntegrationAppSettings.Default()
+            .WithCustomPath("opencode", executable);
+        AgentSkillService old = new(_skillLocations, "old");
+        (await old.PrepareWorkspaceAsync("opencode", _workspace)).IsSuccess.Should().BeTrue();
+        AgentSkillService failing = new(_skillLocations, "new",
+            (_, _) => throw new UnauthorizedAccessException("read only"));
+        AgentDetectionService detection = new(_runner, _environment);
+        AgentLaunchService service = new(detection, _workspace, failing);
+
+        Result<AgentLaunchSpec> result = await service.PrepareLaunchAsync(settings);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be("agent_skill_prepare_failed");
+        result.ErrorMessage.Should().Contain("重试").And.Contain("read only");
+        Directory.Exists(_skillLocations.GetManagedDirectory("opencode", _workspace.Directory)).Should().BeTrue();
+    }
+
     private AgentLaunchService CreateService()
     {
         AgentDetectionService detection = new(_runner, _environment);
-        return new AgentLaunchService(detection, _workspace);
+        return new AgentLaunchService(detection, _workspace, new AgentSkillService(_skillLocations));
     }
 
     private string AddExistingFile(string relativePath)

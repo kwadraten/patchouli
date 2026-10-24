@@ -238,8 +238,14 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            Core.Results.Result skillMaintenance =
+                await _viewModel.AgentSkills.UpdateUserInstallationsAsync();
             await _viewModel.RunStartupAsync(false);
             _viewModel.StartMcpServerInBackground();
+            if (skillMaintenance.IsFailure)
+            {
+                _viewModel.ReportError($"升级维护 Agent 用户级 Patchouli Skill 失败：{skillMaintenance.ErrorMessage}");
+            }
         }
         catch (Exception exception)
         {

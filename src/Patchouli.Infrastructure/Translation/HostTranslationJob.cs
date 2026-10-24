@@ -1,3 +1,4 @@
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
@@ -97,8 +98,8 @@ internal sealed class HostTranslationJob : ITranslationJob
         Info = new TranslationJobInfo(
             Guid.NewGuid().ToString("N"),
             request.DocumentInstanceId,
-            settings.SourceLanguage,
-            settings.TargetLanguage,
+            LanguageTag.Create(settings.SourceLanguage),
+            LanguageTag.Create(settings.TargetLanguage),
             CreateOptions(request, settings),
             config);
     }
@@ -573,15 +574,16 @@ internal sealed class HostTranslationJob : ITranslationJob
                 page.Revision.DocumentInstanceId, page.Target.PageId, cancellationToken).ConfigureAwait(false);
             if (translation is null || !translation.Status.IsCurrent ||
                 translation.Status.SourceTreeRevisionId != page.Revision.TreeRevisionId ||
-                !string.Equals(translation.Status.TargetLanguage, _settings.TargetLanguage,
-                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(ItemLanguage.Canonicalize(translation.Status.TargetLanguage),
+                    ItemLanguage.Canonicalize(_settings.TargetLanguage), StringComparison.Ordinal) ||
                 string.IsNullOrWhiteSpace(translation.Markdown))
             {
                 return;
             }
 
             _committedTranslations[page.Target.PageIndex] = new TranslationContextTranslationSnapshot(
-                page.Identity, translation.Markdown, translation.Status.TargetLanguage, translation.Status.Version);
+                page.Identity, translation.Markdown, LanguageTag.Create(translation.Status.TargetLanguage),
+                translation.Status.Version);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -618,8 +620,8 @@ internal sealed class HostTranslationJob : ITranslationJob
                 _request.DocumentInstanceId, target.PageId, cancellationToken).ConfigureAwait(false);
             if (translation is null || !translation.Status.IsCurrent ||
                 translation.Status.SourceTreeRevisionId != revisionId ||
-                !string.Equals(translation.Status.TargetLanguage, _settings.TargetLanguage,
-                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(ItemLanguage.Canonicalize(translation.Status.TargetLanguage),
+                    ItemLanguage.Canonicalize(_settings.TargetLanguage), StringComparison.Ordinal) ||
                 string.IsNullOrWhiteSpace(translation.Markdown))
             {
                 return null;
@@ -628,7 +630,7 @@ internal sealed class HostTranslationJob : ITranslationJob
             return new TranslationContextTranslationSnapshot(
                 new ExtensionPageIdentity(_request.DocumentInstanceId, target.PageId, revisionId, pageIndex),
                 translation.Markdown,
-                translation.Status.TargetLanguage,
+                LanguageTag.Create(translation.Status.TargetLanguage),
                 translation.Status.Version);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

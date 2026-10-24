@@ -12,13 +12,16 @@ public sealed class AgentLaunchService
 {
     private readonly AgentDetectionService _detection;
     private readonly IAgentWorkspaceLocator _workspace;
+    private readonly AgentSkillService _skills;
 
-    public AgentLaunchService(AgentDetectionService detection, IAgentWorkspaceLocator workspace)
+    public AgentLaunchService(AgentDetectionService detection, IAgentWorkspaceLocator workspace,
+        AgentSkillService? skills = null)
     {
         ArgumentNullException.ThrowIfNull(detection);
         ArgumentNullException.ThrowIfNull(workspace);
         _detection = detection;
         _workspace = workspace;
+        _skills = skills ?? new AgentSkillService();
     }
 
     public Task<Result<AgentLaunchSpec>> PrepareLaunchAsync(
@@ -98,6 +101,14 @@ public sealed class AgentLaunchService
         {
             return Result<AgentLaunchSpec>.Failure(AgentIntegrationErrorCodes.WorkspaceFailed,
                 $"无法创建 Agent 工作目录：{exception.Message}");
+        }
+
+        Result skillPreparation = await _skills.PrepareWorkspaceAsync(entry.Id, _workspace, cancellationToken)
+            .ConfigureAwait(false);
+        if (skillPreparation.IsFailure)
+        {
+            return Result<AgentLaunchSpec>.Failure("agent_skill_prepare_failed",
+                $"无法准备 Agent 工作区中的 Patchouli Skill：{skillPreparation.ErrorMessage}。请检查工作区/目录权限后重试；用户级 Skill 目录存在时不会自动修复，可清除后再注入重置。");
         }
 
         Dictionary<string, string> environment = new(StringComparer.Ordinal)

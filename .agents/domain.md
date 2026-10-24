@@ -104,9 +104,20 @@ terminal host. `Patchouli.Host/Agents` owns workspace location, launch preparati
 restricted MCP configuration generation; `Patchouli.Infrastructure/Agents` owns the OpenCode
 archive installer. The UI's Agent workspace page is a terminal client, preset composer and
 item-reference picker; it owns no agent runtime, session store or workflow engine. External
-agents own their conversations, credentials and history, and keep their native configuration;
-Patchouli supplies detection, a per-library workspace, a terminal and a revocable MCP
-connection.
+agents own their conversations, credentials and history, and keep their native configuration
+except for the explicitly managed user-level `patchouli` Skill directory; Patchouli supplies
+detection, a per-library workspace, a terminal and a revocable MCP connection.
+
+`Patchouli.Host/Agents/AgentSkillService` embeds the single skill from
+`.agents/skills/patchouli/` and manages device-level user installations plus coordinated
+per-Library workspace copies. Launch preparation prefers an Agent-readable user directory,
+cleans readable managed duplicates, and otherwise prepares the managed copy. Settings actions
+only install/clear the external Agent's user-level directory. Desktop startup can replace a
+registered, existing user installation marked with an older app version; it does not recreate
+removed targets, repair same-version or unmarked content, or modify unregistered directories.
+The on-launch precedence check does not inspect user-level content or its version. Upgrade file
+replacement does not stop/restart a running Agent, though its on-disk files may change. See
+[Agent Skill distribution](protocols/agent-skills.md) for adapters and safety boundaries.
 
 Direct translation uses a pinned FSX engine from `Patchouli.Extensions` and its typed
 contracts in `Patchouli.Extensions.Contracts`. The bundled LLM, Google, DeepL and DeepLX

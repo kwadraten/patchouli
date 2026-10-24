@@ -10,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Patchouli.Core.Agents;
 using Patchouli.Core.Results;
+using Patchouli.Host.Agents;
 using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Agents;
 using Patchouli.UI.Diagnostics;
@@ -26,6 +27,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private readonly AgentSkillService _skills;
     private readonly HttpClient _httpClient;
     private readonly AgentInstaller _installer;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
@@ -39,10 +41,11 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
     private bool _isConfirmingInstall;
     private long _editRevision;
 
-    public AgentIntegrationSettingsViewModel(MainWindowViewModel main)
+    public AgentIntegrationSettingsViewModel(MainWindowViewModel main, AgentSkillService? skills = null)
     {
         _isConstructing = true;
         _main = main;
+        _skills = skills ?? main.AgentSkills;
         _draft = main.AppOptions.Agents.Normalize();
         _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         Register(_httpClient);
@@ -76,6 +79,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         }
 
         _draft = _draft with { Enabled = value };
+        NotifyRowsOperationStateChanged();
         MarkDirty();
         Status = value ? "Agent 集成已启用，保存后生效。" : "Agent 集成暂不启用，保存后生效。";
     }
@@ -105,6 +109,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
 
     public override Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        RefreshSkills();
         if (_isDirty)
         {
             Status = "Agent 设置有未保存的更改，已保留当前草稿。";
@@ -218,6 +223,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         try
         {
             HostServices services = await _main.ServicesAsync();
+            RefreshSkills();
             AgentDetectionResult result = await services.AgentDetection.DetectAsync(row.Entry, _draft, true, token);
             row.ApplyDetection(result);
             Status = $"「{row.DisplayName}」检测完成。";
@@ -351,6 +357,89 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         }
     }
 
+    internal async Task ToggleSkillAsync(AgentIntegrationRowViewModel row, CancellationToken commandToken)
+    {
+        if (!TryBeginOperation(commandToken, out CancellationTokenSource operation, out CancellationToken token))
+        {
+            return;
+        }
+
+        try
+        {
+            Result<AgentSkillStatus> status = _skills.GetStatus(row.Entry.Id);
+            row.ApplySkillStatus(status);
+            if (status.IsFailure)
+            {
+                Status = status.ErrorMessage ?? "无法读取 Skill 状态。";
+                return;
+            }
+
+            bool clear = status.Value.IsInstalled;
+            ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+                new ConfirmDialogViewModel(
+                    clear ? "清除已有 Patchouli Skill" : "注入 Patchouli Skill",
+                    $"外部 Agent 用户级目录（作用于所有项目）：{status.Value.Directory}\n\n{status.Value.DiscoveryNote}\n\n" +
+                    (clear
+                        ? "将删除此用户级 patchouli 文件夹及其中的自定义修改。清除后再次注入可恢复原版。"
+                        : "将写入同名 patchouli 文件夹；若已存在，将替换其中内容且自定义修改会丢失。" +
+                          "应用版本升级时会更新这份已登记安装，也可能覆盖自定义修改；清除后不会自动重装到用户级目录。") +
+                    "\n\n此操作不改变 MCP 配置、token 或权限。运行中的会话可能需重启后读取变更；不会自动重启。",
+                    clear ? "清除已有" : "注入", confirmDanger: clear));
+            if (choice != ConfirmDialogResult.Confirm)
+            {
+                return;
+            }
+
+            token.ThrowIfCancellationRequested();
+            Result result = clear
+                ? await _skills.ClearAsync(row.Entry.Id, token)
+                : await _skills.InstallAsync(row.Entry.Id, token);
+            RefreshSkills();
+            LastError = result.ErrorMessage;
+            row.SkillErrorText = result.ErrorMessage;
+            Status = result.IsSuccess
+                ? $"已{(clear ? "清除" : "注入")}「{row.DisplayName}」用户级 Patchouli Skill；运行中的会话可能需重启，MCP 配置与权限不变。"
+                : $"Skill 操作失败：{result.ErrorMessage}";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            Status = "Skill 操作已取消。";
+        }
+        catch (Exception exception)
+        {
+            LastError = exception.Message;
+            row.SkillErrorText = exception.Message;
+            Status = $"Skill 操作失败：{exception.Message}";
+            try
+            {
+                RefreshSkills();
+            }
+            catch (Exception refreshException)
+            {
+                UnexpectedExceptions.Sink.Report(refreshException, nameof(AgentIntegrationSettingsViewModel),
+                    nameof(RefreshSkills));
+            }
+        }
+        finally
+        {
+            EndOperation(operation);
+        }
+    }
+
+    internal Task RefreshSkillsAsync()
+    {
+        RefreshSkills();
+        return Task.CompletedTask;
+    }
+
+    private void RefreshSkills()
+    {
+        foreach (AgentIntegrationRowViewModel row in Agents)
+        {
+            row.ApplySkillStatus(_skills.GetStatus(row.Entry.Id));
+        }
+    }
+
     private Task DetectAllFromCommandAsync(CancellationToken cancellationToken)
     {
         return DetectAllAsync(true, cancellationToken);
@@ -373,6 +462,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         try
         {
             HostServices services = await _main.ServicesAsync();
+            RefreshSkills();
             IReadOnlyList<AgentDetectionResult> results =
                 await services.AgentDetection.DetectAllAsync(_draft, forceRefresh, token);
             foreach (AgentDetectionResult result in results)
@@ -472,6 +562,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
             {
                 row.SetCustomPathFromSettings(_draft.FindCustomPath(row.Entry.Id));
                 row.RaiseSelectionChanged();
+                row.RaiseOperationStateChanged();
             }
         }
         finally
@@ -524,6 +615,7 @@ public sealed partial class AgentIntegrationRowViewModel : ViewModelBase
         Entry = entry;
         RedetectCommand = new AsyncCommand(ct => _parent.RedetectRowAsync(this, ct));
         InstallCommand = new AsyncCommand(ct => _parent.InstallAsync(this, ct));
+        ToggleSkillCommand = new AsyncCommand(ct => _parent.ToggleSkillAsync(this, ct));
         TogglePathEditorCommand = new RelayCommand(_ => IsPathEditorOpen = !IsPathEditorOpen);
         ClearCustomPathCommand = new RelayCommand(_ => CustomPath = null);
         OpenRepositoryCommand = new RelayCommand(_ => OpenRepository());
@@ -581,6 +673,20 @@ public sealed partial class AgentIntegrationRowViewModel : ViewModelBase
 
     [ObservableProperty] public partial bool IsPathEditorOpen { get; set; }
 
+    [ObservableProperty] public partial bool HasSkill { get; private set; }
+
+    [ObservableProperty] public partial string? SkillErrorText { get; internal set; }
+
+    [ObservableProperty] public partial string SkillToolTip { get; private set; } = "外部 Agent 用户级目录；作用于所有项目。";
+
+    [ExcludeFromDerivedGeneration] public bool HasSkillStatus { get; private set; }
+
+    [ExcludeFromDerivedGeneration] public bool CanManageSkill => CanOperate && HasSkillStatus;
+
+    [ExcludeFromDerivedGeneration] public string SkillActionText => HasSkill ? "清除已有" : "注入";
+
+    [ExcludeFromDerivedGeneration] public string SkillActionIcon => HasSkill ? "Trash2" : "Download";
+
     [ExcludeFromDerivedGeneration] public bool HasCustomPath => !string.IsNullOrWhiteSpace(CustomPath);
 
     [ExcludeFromDerivedGeneration] public bool HasRepository => !string.IsNullOrWhiteSpace(RepositoryUrl);
@@ -588,6 +694,8 @@ public sealed partial class AgentIntegrationRowViewModel : ViewModelBase
     [ExcludeFromDerivedGeneration] public bool ShowInstallHelp => HasDetection && !IsInstalled;
 
     [ExcludeFromDerivedGeneration] public bool CanOperate => !_parent.HasActiveOperation;
+
+    [ExcludeFromDerivedGeneration] public bool CanManageAgent => CanOperate && _parent.Enabled;
 
     [ExcludeFromDerivedGeneration]
     public string InstallHelpText => IsOpenCode
@@ -607,6 +715,8 @@ public sealed partial class AgentIntegrationRowViewModel : ViewModelBase
     public AsyncCommand RedetectCommand { get; }
 
     public AsyncCommand InstallCommand { get; }
+
+    public AsyncCommand ToggleSkillCommand { get; }
 
     public RelayCommand TogglePathEditorCommand { get; }
 
@@ -638,6 +748,31 @@ public sealed partial class AgentIntegrationRowViewModel : ViewModelBase
     internal void RaiseOperationStateChanged()
     {
         Raise(nameof(CanOperate));
+        Raise(nameof(CanManageSkill));
+        Raise(nameof(CanManageAgent));
+    }
+
+    internal void ApplySkillStatus(Result<AgentSkillStatus> status)
+    {
+        HasSkillStatus = status.IsSuccess;
+        SkillErrorText = status.ErrorMessage;
+        if (status.IsSuccess)
+        {
+            HasSkill = status.Value.IsInstalled;
+            SkillToolTip = $"外部 Agent 用户级目录（作用于所有项目）：{status.Value.Directory}\n" +
+                           $"{status.Value.DiscoveryNote}\n" +
+                           "若同名 patchouli 文件夹存在，将按现状显示清除已有；清除会丢失自定义修改，需清除后再注入重置。" +
+                           "MCP 配置、token 与权限不变；运行中的会话可能需重启。";
+        }
+        else
+        {
+            SkillToolTip = status.ErrorMessage ?? "无法读取 Skill 状态，请重新检测。";
+        }
+
+        Raise(nameof(HasSkillStatus));
+        Raise(nameof(CanManageSkill));
+        Raise(nameof(SkillActionText));
+        Raise(nameof(SkillActionIcon));
     }
 
     internal void SetCustomPathFromSettings(string? value)

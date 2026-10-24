@@ -20,8 +20,16 @@ type Settings = {
 
 let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (credentialReference: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = sourceLanguage common job
-    let body = jsonBody {| text = text; source_lang = source; target_lang = targetLanguage common job |}
+    // DeepLX forwards DeepL codes: script-specific uppercase Chinese codes and a lowercase
+    // auto sentinel; every other canonical tag uppercases to its DeepL code.
+    let toDeepL (language: string) =
+        match language with
+        | "zh-Hans" -> "ZH-HANS"
+        | "zh-Hant" -> "ZH-HANT"
+        | "auto" -> "auto"
+        | other -> other.ToUpperInvariant()
+    let source = toDeepL (sourceLanguage common job)
+    let body = jsonBody {| text = text; source_lang = source; target_lang = toDeepL (targetLanguage common job) |}
     let options = effectiveEngineOptions common job (Some 2) (Some 0.25M)
     let send (token: CancellationToken) = task {
         do! resources.WaitToProceedAsync(token)

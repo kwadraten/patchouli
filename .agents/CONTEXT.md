@@ -198,8 +198,21 @@ The workspace page that hosts the selected agent in an embedded PTY terminal. It
 _Avoid_: Chat page, workflow editor, built-in agent UI
 
 **Agent Workspace**:
-The per-Library directory `<runtime database directory>/agent-workspace/` used as the external agent's current directory. It is created on first launch, is owner-only on Unix, is not snapshot content, and never contains a user source folder or Library database path. Generated MCP configuration lives here.
+The per-Library directory `<runtime database directory>/agent-workspace/` used as the external agent's current directory. It is created on first launch, is owner-only on Unix, is not snapshot content, and never contains a user source folder or Library database path. Generated MCP configuration and any managed Skill copy live here.
 _Avoid_: Library root, source folder, synced workspace
+
+**Patchouli Agent Skill**:
+The single bundled `patchouli` skill with five on-demand reference documents. Settings →
+AI集成 → Agent 集成 shows one button per Agent for its external user-level directory. That
+button installs or clears only the user-level target. Before each eligible Agent launch,
+Patchouli prepares the per-Library workspace copy unless an Agent-readable user-level copy exists;
+in that case launch selection leaves the user copy untouched and removes readable managed copies;
+it does not inspect its contents/version or repair it. Application startup may replace a still-
+existing, explicitly registered user-level install when its version marker is older. Same-version
+and unmarked installs are not repaired, and unregistered directories are untouched. Clear then
+explicitly inject to reset. Upgrade maintenance does not stop/restart a running Agent, though it
+may replace files on disk; Skill changes do not revoke MCP authorization or unload already-loaded
+context. See [distribution contract](protocols/agent-skills.md).
 
 **Run**:
 The volatile runtime projection of an OCR task or a direct translation run, observed through `patchouli://runs/`. `runs/ocr/` and `runs/translation/` report their own status and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is not part of snapshots and cannot be `put`. The built-in Agent session projection was removed in 0.3.13.

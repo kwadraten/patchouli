@@ -1,6 +1,8 @@
 namespace Patchouli.Extensions.Tests
 
 open System
+open System.Threading
+open System.Threading.Tasks
 open Patchouli.Core.Ids
 open Patchouli.Extensions.Contracts
 open BuiltInTranslation.Support
@@ -34,12 +36,14 @@ type TranslationSupportTests() =
         Assert.All(batches, fun batch -> Assert.True(batch |> Array.sumBy (fun item -> item.Text.Length) <= 8))
 
     [<Fact>]
-    member _.``production merge joins successful segments and fails when a segment is missing`` () =
+    member _.``production merge joins successful segments and fails when a segment is missing`` () = task {
         let source = box "abcdefgh"
         let segments = segment 4 source
         let complete = segments |> Array.map (fun item -> translated item.Id item.Text)
-        let merged = mergeSegments [| source |] segments complete
+        let noRetranslate (_: Segment array) (_: CancellationToken) =
+            Task.FromResult([||]: SegmentOutcome array)
+        let! merged = mergeSegments noRetranslate [| source |] segments complete CancellationToken.None
         Assert.Equal(ExtensionBoxOutcomeKind.Translated, merged[0].Kind)
         Assert.Equal("abcdefgh", merged[0].GetTranslatedText())
-        let incomplete = mergeSegments [| source |] segments complete[0..0]
-        Assert.Equal(ExtensionBoxOutcomeKind.Failed, incomplete[0].Kind)
+        let! incomplete = mergeSegments noRetranslate [| source |] segments complete[0..0] CancellationToken.None
+        Assert.Equal(ExtensionBoxOutcomeKind.Failed, incomplete[0].Kind) }
