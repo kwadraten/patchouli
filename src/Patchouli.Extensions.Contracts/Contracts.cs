@@ -62,8 +62,7 @@ public enum ExtensionKind
 {
     Translation,
     Metadata,
-    Ocr,
-    Retrieval
+    Ocr
 }
 
 public sealed record ExtensionDescriptor(
@@ -559,7 +558,6 @@ public interface IExtensionLease : IAsyncDisposable
     ITranslationExtension Translation { get; }
     IMetadataExtension? Metadata { get; }
     IOcrExtension? Ocr { get; }
-    IRetrievalExtension? Retrieval { get; }
 }
 
 public interface IMetadataExtension : IExtensionDefinition
@@ -625,22 +623,6 @@ public sealed record OcrExtensionCandidate(
 public interface IOcrExtension : IExtensionDefinition
 {
     Task<OcrExtensionCandidate> RecognizeAsync(OcrExtensionContext context,
-        IExtensionResources resources, CancellationToken cancellationToken = default);
-}
-
-public sealed record RetrievalExtensionContext(
-    string Query,
-    ExtensionConfigSnapshot Config,
-    IReadOnlyList<SearchMatchedUnit> Candidates,
-    int ResultLimit);
-
-public sealed record RetrievalExtensionMatch(SearchUnitId UnitId, double Score, string? Explanation = null);
-
-public sealed record RetrievalExtensionResult(IReadOnlyList<RetrievalExtensionMatch> Matches);
-
-public interface IRetrievalExtension : IExtensionDefinition
-{
-    Task<RetrievalExtensionResult> RankAsync(RetrievalExtensionContext context,
         IExtensionResources resources, CancellationToken cancellationToken = default);
 }
 
@@ -714,50 +696,6 @@ public static class ExtensionCandidateValidation
                 (!double.IsFinite(confidence) || confidence < 0 || confidence > 1))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR confidence must be within 0..1.");
-            }
-        }
-
-        return Result.Success();
-    }
-
-    public static Result ValidateRetrieval(RetrievalExtensionContext context, RetrievalExtensionResult result)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(result);
-        if (context.Candidates is null || result.Matches is null)
-        {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "Retrieval candidates and result matches are required.");
-        }
-
-        if (context.ResultLimit < 0 || result.Matches.Count > context.ResultLimit)
-        {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "Retrieval result exceeds the host supplied result limit.");
-        }
-
-        HashSet<SearchUnitId> allowed = [];
-        foreach (SearchMatchedUnit candidate in context.Candidates)
-        {
-            if (!allowed.Add(candidate.UnitId))
-            {
-                return Result.Failure(AppErrorCodes.ValidationFailed,
-                    "Host supplied retrieval candidate identities must be unique.");
-            }
-        }
-
-        HashSet<SearchUnitId> returned = [];
-        foreach (RetrievalExtensionMatch match in result.Matches)
-        {
-            if (!allowed.Contains(match.UnitId) || !returned.Add(match.UnitId))
-            {
-                return Result.Failure(AppErrorCodes.ValidationFailed,
-                    "Retrieval results must reference unique units supplied by the host.");
-            }
-
-            if (!double.IsFinite(match.Score))
-            {
-                return Result.Failure(AppErrorCodes.ValidationFailed, "Retrieval score must be finite.");
             }
         }
 

@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 移除尚未实现的 retrieval 扩展种类（向量/混合搜索重排管线）：契约、运行时、宿主重排入口与文档同步删除；声明 `kind="retrieval"` 的扩展包将按未知种类被拒绝。文库内置搜索不受影响。
 - MCP `view` 新增 `boxes` 参数（CLI 为 `--boxes`）：返回整页图时可叠加带序号的边界框，序号与页面 XML 中 `<box>` 的文档顺序一致，文本元数据同时给出序号与 box id 的对照，agent 可据此定位布局框并纠正文本方向与顺序问题。
 - MCP `view` 不再要求页面已有边界框树：没有已提交 revision 的页面也可返回整页源图（与 PDF 工作台直接显示页面图一致）；box 目标与显式指定的历史 revision 仍严格校验，缺失时明确失败而不静默替换。
 - MCP `runs/ocr|translation|metadata/control` 端点描述新增 `implementations`：实时枚举各域可用的内部实现——OCR 引擎（含 `default` 别名与当前配置默认引擎标记）、翻译扩展、元数据来源及其支持的标识符 scheme，供 agent 选择传入 control 的 id，不再靠猜测或失败信息发现。

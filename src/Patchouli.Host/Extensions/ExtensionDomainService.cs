@@ -3,7 +3,6 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
-using Patchouli.Core.Search;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Ocr;
 
@@ -17,22 +16,9 @@ public sealed record ExtensionOcrStage(
     OcrDocumentTreeCandidate TreeCandidate,
     OcrDocumentTreeImportResult Working);
 
-public sealed record ExtensionRankedSearchMatch(
-    SearchMatchedUnit Evidence,
-    double Score,
-    string? Explanation);
-
-public sealed record ExtensionRetrievalResult(
-    string ExtensionId,
-    string ExtensionFingerprint,
-    SearchResultPage Search,
-    IReadOnlyList<ExtensionRankedSearchMatch> Matches);
-
-/// <summary>Explicit host entrypoints for OCR review staging and search reranking.</summary>
+/// <summary>Explicit host entrypoint for OCR review staging.</summary>
 public sealed class ExtensionDomainService
 {
-    private const int MaximumCandidateLimit = 500;
-    private const int MaximumResultLimit = 100;
     private static readonly NormalizedBBox FullPage = new(0, 0, 1, 1);
 
     private readonly TranslationExtensionCatalog _extensions;
@@ -40,18 +26,15 @@ public sealed class ExtensionDomainService
     private readonly IPageRenderService _renders;
     private readonly IDocumentTreeService _trees;
     private readonly IOcrDocumentTreeImporter _ocrImporter;
-    private readonly ISearchService _search;
 
     public ExtensionDomainService(TranslationExtensionCatalog extensions, IPageService pages,
-        IPageRenderService renders, IDocumentTreeService trees, IOcrDocumentTreeImporter ocrImporter,
-        ISearchService search)
+        IPageRenderService renders, IDocumentTreeService trees, IOcrDocumentTreeImporter ocrImporter)
     {
         _extensions = extensions;
         _pages = pages;
         _renders = renders;
         _trees = trees;
         _ocrImporter = ocrImporter;
-        _search = search;
     }
 
     public async Task<Result<ExtensionOcrStage>> RecognizeAndStageAsync(string extensionId,
@@ -155,60 +138,6 @@ public sealed class ExtensionDomainService
         {
             return Failure<ExtensionOcrStage>(AppErrorCodes.InvalidState,
                 $"OCR extension staging failed: {exception.Message}");
-        }
-    }
-
-    public async Task<Result<ExtensionRetrievalResult>> RankSearchAsync(string extensionId, SearchRequest request,
-        int candidateLimit = 100, int resultLimit = 20, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        if (candidateLimit is < 1 or > MaximumCandidateLimit || resultLimit is < 1 or > MaximumResultLimit ||
-            resultLimit > candidateLimit)
-        {
-            return Failure<ExtensionRetrievalResult>(AppErrorCodes.ValidationFailed,
-                $"Candidate limit must be 1..{MaximumCandidateLimit}; result limit must be 1..{MaximumResultLimit} and no greater than the candidate limit.");
-        }
-
-        try
-        {
-            await using ExtensionDomainRun run = await AcquireAsync(extensionId, ExtensionKind.Retrieval,
-                cancellationToken).ConfigureAwait(false);
-            Result<SearchResultPage> searched = await _search.SearchLibraryAsync(request, cancellationToken)
-                .ConfigureAwait(false);
-            if (searched.IsFailure)
-            {
-                return Failure<ExtensionRetrievalResult>(searched.ErrorCode!, searched.ErrorMessage!);
-            }
-
-            SearchMatchedUnit[] pool = searched.Value.Results.SelectMany(page => page.MatchedUnits)
-                .DistinctBy(unit => unit.UnitId).Take(candidateLimit).ToArray();
-            Result<RetrievalExtensionResult> ranked = await run.RankAsync(new RetrievalExtensionContext(
-                    request.Query, run.Config, Array.AsReadOnly(pool), resultLimit), cancellationToken)
-                .ConfigureAwait(false);
-            if (ranked.IsFailure)
-            {
-                return Failure<ExtensionRetrievalResult>(ranked.ErrorCode!, ranked.ErrorMessage!);
-            }
-
-            Dictionary<SearchUnitId, SearchMatchedUnit> evidenceById = pool.ToDictionary(unit => unit.UnitId);
-            ExtensionRankedSearchMatch[] matches = ranked.Value.Matches.Select(match =>
-                new ExtensionRankedSearchMatch(evidenceById[match.UnitId], match.Score, match.Explanation)).ToArray();
-            return Result<ExtensionRetrievalResult>.Success(new ExtensionRetrievalResult(extensionId,
-                run.Fingerprint, searched.Value, Array.AsReadOnly(matches)));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (ExtensionDomainUnavailableException exception)
-        {
-            return Failure<ExtensionRetrievalResult>(exception.Code, exception.Message);
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
-                                              "host.extensions.retrieval-rank"))
-        {
-            return Failure<ExtensionRetrievalResult>(AppErrorCodes.InvalidState,
-                $"Retrieval extension ranking failed: {exception.Message}");
         }
     }
 

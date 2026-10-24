@@ -129,9 +129,9 @@
 
 不支持的 scheme 返回 `UnsupportedIdentifier`；响应中没有可用元数据时返回 `InvalidResponse`；标准网络访问使用 `resources.Http`。候选只是提议，由 Core 校验并原子应用（见 [CITATIONS](CITATIONS.md)）。随包来源（`metadata.crossref`、`metadata.datacite`、`metadata.openalex` 等）可以作为模板复制。
 
-## OCR 与检索扩展
+## OCR 扩展
 
-`IOcrExtension` 与 `IRetrievalExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列和检索排序仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
+`IOcrExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
 
 ## 证据边界
 

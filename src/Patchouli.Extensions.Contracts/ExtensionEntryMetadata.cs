@@ -136,8 +136,8 @@ public sealed record ExtensionEntryMetadata(
             ExtensionKind kind = RequiredAttribute("kind") switch
             {
                 "translation" => ExtensionKind.Translation, "metadata" => ExtensionKind.Metadata,
-                "ocr" => ExtensionKind.Ocr, "retrieval" => ExtensionKind.Retrieval,
-                _ => throw At("kind must be translation, metadata, ocr, or retrieval.", root.Attribute("kind")!)
+                "ocr" => ExtensionKind.Ocr,
+                _ => throw At("kind must be translation, metadata, or ocr.", root.Attribute("kind")!)
             };
             string version = RequiredAttribute("version");
             if (!System.Text.RegularExpressions.Regex.IsMatch(version,

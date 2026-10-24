@@ -293,7 +293,7 @@ public sealed class HostServices
             Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
             () => LlmSettings, ExtensionResources);
         ExtensionDomains = new ExtensionDomainService(TranslationExtensions, Pages, PageRenders, DocumentTrees,
-            ocrTreeImporter, Search);
+            ocrTreeImporter);
         MetadataSources = new ExtensionMetadataRegistry(MetadataSources, () => TranslationExtensions.MetadataSources);
         MetadataLookup =
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);

@@ -186,7 +186,6 @@ internal static class TranslationTestExtensionHarness
         public ITranslationExtension Translation => extension;
         public IMetadataExtension? Metadata => null;
         public IOcrExtension? Ocr => null;
-        public IRetrievalExtension? Retrieval => null;
 
         public ValueTask DisposeAsync()
         {

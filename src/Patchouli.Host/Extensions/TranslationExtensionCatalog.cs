@@ -212,9 +212,9 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
                                 ?? throw new InvalidOperationException("The selected extension is not active.");
         try
         {
-            if (lease.Descriptor.Kind is not (ExtensionKind.Ocr or ExtensionKind.Retrieval))
+            if (lease.Descriptor.Kind is not ExtensionKind.Ocr)
             {
-                throw new InvalidOperationException("Select an OCR or retrieval extension.");
+                throw new InvalidOperationException("Select an OCR extension.");
             }
 
             ExtensionConfigSnapshot config = ExtensionConfiguration.Resolve(lease.ConfigFields, lease.Config);
