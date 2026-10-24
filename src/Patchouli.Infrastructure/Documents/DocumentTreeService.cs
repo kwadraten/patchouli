@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Text;
+using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
@@ -346,7 +347,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         CancellationToken cancellationToken = default)
     {
         return await CommitWorkingRevisionGuardedAsync(
-            connection, transaction, workingRevisionId, commitId, null, null, null, cancellationToken);
+            connection, transaction, workingRevisionId, commitId, null, null, cancellationToken);
     }
 
     // replacedCurrentRevisionIds 是批量提交时「本批将被取代的各页当前修订」的
@@ -358,7 +359,6 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentCommitId? commitId,
         IReadOnlyCollection<string>? replacedCurrentRevisionIds,
         IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>>? batchFutureSnapshot,
-        IReadOnlyCollection<string>? batchReplacedPageIds,
         CancellationToken cancellationToken)
     {
         DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, workingRevisionId);
@@ -378,18 +378,22 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
         }
 
-        IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>> futureSnapshot = batchFutureSnapshot ??
-            new Dictionary<string, IReadOnlyList<DocumentBox>>
-            {
-                [working.PageId.ToString()] = boxes
-            };
-        Result continuationValidation = await ValidateChangedPageContinuationsAsync(
-            connection, transaction, working.DocumentInstanceId, futureSnapshot,
-            batchReplacedPageIds ?? [working.PageId.ToString()]);
-        if (continuationValidation.IsFailure)
+        // A non-null batch snapshot is passed only by CommitWorkingRevisionsInTransactionAsync,
+        // after that entry point has validated the complete future snapshot once. Keep this
+        // per-revision gate for standalone commits without rescanning the full batch per page.
+        if (batchFutureSnapshot is null)
         {
-            return Result<DocumentTreeRevision>.Failure(continuationValidation.ErrorCode!,
-                continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
+            Result continuationValidation = await ValidateChangedPageContinuationsAsync(
+                connection, transaction, working.DocumentInstanceId,
+                new Dictionary<string, IReadOnlyList<DocumentBox>>
+                {
+                    [working.PageId.ToString()] = boxes
+                }, [working.PageId.ToString()]);
+            if (continuationValidation.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(continuationValidation.ErrorCode!,
+                    continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
+            }
         }
 
         // 整页替换的跨页接续防护（N1，与 F1 删/拆/合防护同一不变量）：提交工作
@@ -518,7 +522,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             Result<DocumentTreeRevision> result = await CommitWorkingRevisionGuardedAsync(
                     connection, transaction, revisionId, commitId, replacedCurrentRevisionIds,
-                    futureSnapshotByPage, replacedPageIds, cancellationToken)
+                    futureSnapshotByPage, cancellationToken)
                 .ConfigureAwait(false);
             if (result.IsFailure)
             {
@@ -1619,18 +1623,19 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         IReadOnlyCollection<string> changedPageIds)
     {
         HashSet<string> changed = changedPageIds.ToHashSet(StringComparer.Ordinal);
-        string[] changedPageArray = changed.ToArray();
+        string changedPageIdsJson = JsonSerializer.Serialize(changed);
         IEnumerable<DocumentTreeRevisionRow> currentRows = await connection.QueryAsync<DocumentTreeRevisionRow>(
             SelectRevisionSql +
-            " where document_instance_id = @DocumentInstanceId and page_id in @PageIds and status = 'committed' and is_current = 1;",
-            new { DocumentInstanceId = documentInstanceId.ToString(), PageIds = changedPageArray }, transaction);
+            " where document_instance_id = @DocumentInstanceId and page_id in (select value from json_each(@PageIdsJson)) and status = 'committed' and is_current = 1;",
+            new { DocumentInstanceId = documentInstanceId.ToString(), PageIdsJson = changedPageIdsJson }, transaction);
         DocumentTreeRevisionRow[] changedCurrentRows = currentRows.ToArray();
         string[] changedRevisionIds = changedCurrentRows.Select(row => row.TreeRevisionId).ToArray();
         DocumentBox[] changedCurrentBoxes = changedRevisionIds.Length == 0
             ? []
             : (await connection.QueryAsync<DocumentBoxRow>(
-                SelectBoxesSql + " where tree_revision_id in @RevisionIds;",
-                new { RevisionIds = changedRevisionIds }, transaction)).Select(row => row.ToBox()).ToArray();
+                SelectBoxesSql + " where tree_revision_id in (select value from json_each(@RevisionIdsJson));",
+                new { RevisionIdsJson = JsonSerializer.Serialize(changedRevisionIds) }, transaction))
+            .Select(row => row.ToBox()).ToArray();
 
         DocumentBox[] overrideBoxes = overrides.Values.SelectMany(boxes => boxes).ToArray();
         HashSet<DocumentBoxId> knownBoxIds = changedCurrentBoxes.Select(box => box.BoxId)
@@ -1652,12 +1657,13 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                                           select 1 from document_tree_revisions r
                                           where r.tree_revision_id = document_boxes.tree_revision_id
                                             and r.status = 'committed' and r.is_current = 1)
-                                      and (document_boxes.box_id in @BoxIds or document_boxes.continues_from_box_id in @BoxIds);
+                                    and (document_boxes.box_id in (select value from json_each(@BoxIdsJson))
+                                    or document_boxes.continues_from_box_id in (select value from json_each(@BoxIdsJson)));
                                     """,
             new
             {
                 DocumentInstanceId = documentInstanceId.ToString(),
-                BoxIds = relevantIds.Select(id => id.ToString()).ToArray()
+                BoxIdsJson = JsonSerializer.Serialize(relevantIds.Select(id => id.ToString()).ToArray())
             },
             transaction)).Select(row => row.ToBox()).ToArray();
 
@@ -2112,8 +2118,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             """
             select count(1) from document_boxes b
             where b.document_instance_id = @DocumentInstanceId
-              and b.continues_from_box_id in @TargetBoxIds
-              and b.tree_revision_id not in @ExcludedRevisionIds
+              and b.continues_from_box_id in (select value from json_each(@TargetBoxIdsJson))
+              and b.tree_revision_id not in (select value from json_each(@ExcludedRevisionIdsJson))
               and exists (
                   select 1 from document_tree_revisions r
                   where r.tree_revision_id = b.tree_revision_id
@@ -2122,8 +2128,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             new
             {
                 DocumentInstanceId = documentInstanceId.ToString(),
-                TargetBoxIds = targetBoxIds.ToArray(),
-                ExcludedRevisionIds = excludedRevisionIds.ToArray()
+                TargetBoxIdsJson = JsonSerializer.Serialize(targetBoxIds),
+                ExcludedRevisionIdsJson = JsonSerializer.Serialize(excludedRevisionIds)
             },
             transaction);
     }

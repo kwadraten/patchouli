@@ -115,6 +115,108 @@ public sealed class ContinuationMutationInvariantTests
     }
 
     [Fact]
+    public async Task Large_two_page_future_snapshot_uses_bounded_sqlite_parameters_and_checks_cross_page_types()
+    {
+        const int boxCount = 100;
+        const int linkedFollowerIndex = boxCount - 1;
+        const int linkedSourceIndex = 73;
+        await using Context context = await Context.CreateAsync();
+        DocumentBoxId[] sourceIds = Enumerable.Range(0, boxCount).Select(_ => DocumentBoxId.New()).ToArray();
+        DocumentBoxId[] followerIds = Enumerable.Range(0, boxCount).Select(_ => DocumentBoxId.New()).ToArray();
+
+        DocumentBoxSeed[] sourceText = Enumerable.Range(0, boxCount)
+            .Select(index => Text(sourceIds[index], $"Source {index}", order: index)).ToArray();
+        DocumentBoxSeed[] followerText = Enumerable.Range(0, boxCount)
+            .Select(index => Text(followerIds[index], $"Follower {index}",
+                index == linkedFollowerIndex ? sourceIds[linkedSourceIndex] : null, order: index)).ToArray();
+        await CommitAsync(context, context.Pages[0], sourceText);
+        await CommitAsync(context, context.Pages[1], followerText);
+
+        DocumentBoxSeed[] sourceLists = Enumerable.Range(0, boxCount)
+            .Select(index => Text(sourceIds[index], $"- Source {index}", type: DocumentBoxType.List, order: index))
+            .ToArray();
+        DocumentBoxSeed[] followerLists = Enumerable.Range(0, boxCount)
+            .Select(index => Text(followerIds[index], $"- Follower {index}",
+                index == linkedFollowerIndex ? sourceIds[linkedSourceIndex] : null,
+                DocumentBoxType.List, order: index)).ToArray();
+        Result<DocumentTreeRevision> legalSource = await context.Trees.BeginWorkingRevisionAsync(
+            context.DocumentId, context.Pages[0], sourceLists, DocumentTreeRevisionSource.Import);
+        Result<DocumentTreeRevision> legalFollower = await context.Trees.BeginWorkingRevisionAsync(
+            context.DocumentId, context.Pages[1], followerLists, DocumentTreeRevisionSource.Import);
+        legalSource.IsSuccess.Should().BeTrue(legalSource.ErrorMessage);
+        legalFollower.IsSuccess.Should().BeTrue(legalFollower.ErrorMessage);
+
+        await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        int previousVariableLimit = SQLitePCL.raw.sqlite3_limit(
+            connection.Handle, SQLitePCL.raw.SQLITE_LIMIT_VARIABLE_NUMBER, 64);
+        previousVariableLimit.Should().BeGreaterThan(64);
+        await using (DbTransaction transaction = await connection.BeginTransactionAsync())
+        {
+            Result<IReadOnlyList<DocumentTreeRevision>> legalBatch = await context.Trees
+                .CommitWorkingRevisionsInTransactionAsync(connection, transaction,
+                    [legalSource.Value.TreeRevisionId, legalFollower.Value.TreeRevisionId]);
+            legalBatch.IsSuccess.Should().BeTrue(legalBatch.ErrorMessage);
+            await transaction.CommitAsync();
+        }
+
+        DocumentTreeRevision committedFollower = (await context.Trees.GetCurrentRevisionAsync(
+            context.DocumentId, context.Pages[1])).Value;
+        IReadOnlyList<DocumentBox> committedFollowerBoxes =
+            (await context.Trees.ListBoxesAsync(committedFollower.TreeRevisionId)).Value;
+        committedFollowerBoxes.Should().HaveCount(boxCount);
+        DocumentBox committedLinkedFollower = committedFollowerBoxes
+            .Single(box => box.BoxId == followerIds[linkedFollowerIndex]);
+        committedLinkedFollower.BoxType.Should().Be(DocumentBoxType.List);
+        committedLinkedFollower.ContinuesFromBoxId.Should().Be(sourceIds[linkedSourceIndex]);
+        DocumentTreeRevision committedSource = (await context.Trees.GetCurrentRevisionAsync(
+            context.DocumentId, context.Pages[0])).Value;
+        (await context.Trees.ListBoxesAsync(committedSource.TreeRevisionId)).Value
+            .Single(box => box.BoxId == sourceIds[linkedSourceIndex]).BoxType.Should().Be(DocumentBoxType.List);
+
+        DocumentBoxSeed[] invalidFollowers = Enumerable.Range(0, boxCount)
+            .Select(index => Text(followerIds[index], $"Follower {index}",
+                index == linkedFollowerIndex ? sourceIds[linkedSourceIndex] : null, order: index)).ToArray();
+        Result<DocumentTreeRevision> invalidSource = await context.Trees.BeginWorkingRevisionAsync(
+            context.DocumentId, context.Pages[0], sourceLists, DocumentTreeRevisionSource.Import);
+        Result<DocumentTreeRevision> invalidFollower = await context.Trees.BeginWorkingRevisionAsync(
+            context.DocumentId, context.Pages[1], invalidFollowers, DocumentTreeRevisionSource.Import);
+        invalidSource.IsSuccess.Should().BeTrue(invalidSource.ErrorMessage);
+        invalidFollower.IsSuccess.Should().BeTrue(invalidFollower.ErrorMessage);
+        DocumentTreeRevision previousSource = (await context.Trees.GetCurrentRevisionAsync(
+            context.DocumentId, context.Pages[0])).Value;
+        DocumentTreeRevision previousFollower = (await context.Trees.GetCurrentRevisionAsync(
+            context.DocumentId, context.Pages[1])).Value;
+
+        await using (DbTransaction transaction = await connection.BeginTransactionAsync())
+        {
+            Result<IReadOnlyList<DocumentTreeRevision>> invalidBatch = await context.Trees
+                .CommitWorkingRevisionsInTransactionAsync(connection, transaction,
+                    [invalidSource.Value.TreeRevisionId, invalidFollower.Value.TreeRevisionId]);
+            invalidBatch.IsFailure.Should().BeTrue();
+            invalidBatch.ErrorMessage.Should().Contain("continuation");
+            await transaction.RollbackAsync();
+        }
+
+        (await context.Trees.GetCurrentRevisionAsync(context.DocumentId, context.Pages[0])).Value.TreeRevisionId
+            .Should().Be(previousSource.TreeRevisionId);
+        (await context.Trees.GetCurrentRevisionAsync(context.DocumentId, context.Pages[1])).Value.TreeRevisionId
+            .Should().Be(previousFollower.TreeRevisionId);
+        (await context.Trees.ListBoxesAsync(previousSource.TreeRevisionId)).Value
+            .Single(box => box.BoxId == sourceIds[linkedSourceIndex]).BoxType.Should().Be(DocumentBoxType.List);
+        IReadOnlyList<DocumentBox> previousFollowerBoxes =
+            (await context.Trees.ListBoxesAsync(previousFollower.TreeRevisionId)).Value;
+        previousFollowerBoxes.Single(box => box.BoxId == followerIds[linkedFollowerIndex]).BoxType
+            .Should().Be(DocumentBoxType.List);
+        previousFollowerBoxes.Single(box => box.BoxId == followerIds[linkedFollowerIndex]).ContinuesFromBoxId
+            .Should().Be(sourceIds[linkedSourceIndex]);
+        (await context.Trees.ListBoxesAsync(invalidSource.Value.TreeRevisionId)).Value.Should().HaveCount(boxCount);
+        (await context.Trees.ListBoxesAsync(invalidFollower.Value.TreeRevisionId)).Value
+            .Single(box => box.BoxId == followerIds[linkedFollowerIndex])
+            .ContinuesFromBoxId.Should().Be(sourceIds[linkedSourceIndex]);
+    }
+
+    [Fact]
     public async Task Unrelated_boxes_on_a_page_with_cross_page_links_remain_editable()
     {
         await using Context context = await Context.CreateAsync();

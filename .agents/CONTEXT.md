@@ -102,6 +102,8 @@ chapter-map ADR `0045` for ownership and consistency rules.
 
 消费边界：页内 Markdown 组合保留每个物理框的来源映射，结构不兼容时保留原片段并给出 `continuation_structure_preserved` 诊断，不猜拆或压平复杂表格。整书阅读仅组合已加载的正文链，保留分段页码和框定位；原译对比保持物理行对齐。原文导出可组合跨页链；跨页译文导出暂按页保留并明确提示，不宣称已完成译文逻辑合并。搜索和证据仍按物理框消费自有文字。改接续来源或幂等重设关系不会恢复旧空框的文字，只有实际写入本框内容才清除未恢复状态。
 
+提交边界：批量页面提交先对完整未来快照校验一次接续关系，不在逐页提交时重复扫描整批；单页提交仍执行同一关系校验。ID 集合通过有界参数查询，不能因文档规模增大而超过 SQLite 变量上限。逐页结构校验、删除源框防护及整批事务回滚仍须保留。
+
 **Library**:
 The durable boundary for metadata, document instances, OCR/layout/search artifacts, versioned evidence URIs, snapshots, credentials, and MCP resolution. A library keeps the same identity when renamed or moved.
 
