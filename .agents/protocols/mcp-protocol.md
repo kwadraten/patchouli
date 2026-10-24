@@ -48,6 +48,23 @@ structure; payloads wrap existing Markdown, LaTeX, code, or descriptions. Suppre
 including page footnotes, are included. Only image-formula page-region geometry is exposed; local paths, media asset locations,
 and secrets are not exposed. XML processing disables DTDs and external entities.
 
+Continuation (MinerU v4 `continues_prev`) is expressed as independent box metadata, never
+mixed into payload text. A box that continues an earlier box carries
+`continues_from="<source box id>"` — the stable box identity, valid for same-page,
+cross-page, and chained continuations; element adjacency is never the relation. When the
+source box's page can be resolved within the read revision's document commit, the box also
+carries `continues_from_page="<one-based page index>"` so a cross-page target can be
+located even when the read range excludes the source page. Each box's payload always holds
+only its own text. A legacy continuation whose per-box text was never recovered (old
+empty-box inference, migrated by schema migration 054) additionally carries
+`continuation_state="legacy_unrecovered"`; its payload stays empty and the source box's
+full text is not duplicated into it. Continuation metadata is read-only through page XML:
+`put` payloads must repeat `continues_from` and `continuation_state` exactly as read —
+omitting or altering them is rejected rather than silently dropping or rewriting the
+relation. Relations are created, corrected, and removed only in the PDF workbench
+(`IDocumentTreeEditor.SetContinuationAsync`), which validates self-reference, cycles,
+cross-document targets, and eligible box-type combinations.
+
 Versioned HTML tables use `<payload format="html-table-v1">` containing XML-escaped
 restricted HTML text, not nested XML payload elements. Their stored payload identifies
 `contentFormat: "html"` and `contentFormatVersion: 1`; `html` holds the only editable

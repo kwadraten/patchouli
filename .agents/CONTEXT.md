@@ -98,7 +98,7 @@ chapter-map ADR `0045` for ownership and consistency rules.
 ## Language
 
 **接续 (`continues_prev`)**:
-“接续”是 `continues_prev` 的标准中文译名，后续代码注释、产品文案和文档统一使用该术语；“续接”等旧称仅在历史材料或兼容说明中保留。接续表示阅读顺序中的后框延续前框内容，允许跨栏或跨页；每个物理框分别保存自己的文字和几何信息，前后框通过显式关系关联，不能以搬空后框或后框为空来表达或推断标准接续关系。所有 OCR 引擎的新结果均应采用 MinerU v4 的这一语义；完整段落由消费或渲染环节按关系组合。旧版 MinerU（v3 及更早）“首框保存合并文字、后框为空”的方式仅作为明确标记弃用的兼容导入路径保留。PDF 工作台须支持建立和解除接续关系；旧数据库的空框接续数据须迁移为可有效编辑的兼容表示。该段定义目标契约，不表示迁移和编辑功能已经交付；实施范围见 [#29](https://github.com/kwadraten/patchouli/issues/29)，MCP XML 展示另见 [#28](https://github.com/kwadraten/patchouli/issues/28)。
+“接续”是 `continues_prev` 的标准中文译名，后续代码注释、产品文案和文档统一使用该术语；“续接”等旧称仅在历史材料或兼容说明中保留。接续表示阅读顺序中的后框延续前框内容，允许跨栏或跨页；每个物理框分别保存自己的文字和几何信息，前后框通过显式关系关联，不能以搬空后框或后框为空来表达或推断标准接续关系。所有 OCR 引擎的新结果均应采用 MinerU v4 的这一语义；完整段落由消费或渲染环节按关系组合。旧版 MinerU（v3 及更早）“首框保存合并文字、后框为空”的方式仅作为明确标记弃用的兼容导入路径保留：其推断入口以编译器 `[Obsolete]` 属性标记，标准路径不得引用。PDF 工作台支持建立、纠正和解除接续关系（`IDocumentTreeEditor.SetContinuationAsync`）；旧数据库的空框接续数据已由迁移 054 分类：本框无自有文字的接续显式标记 `continuation_state = 'legacy_unrecovered'`，全文保留在源框，等待人工在工作台重新分配文字，不得按字符数或几何比例猜拆。页面 XML 以 `continues_from`（源框稳定 ID）、`continues_from_page`（跨页定位）与 `continuation_state` 三个只读属性表达接续，put 往返必须原样保留。以上契约已由 [#29](https://github.com/kwadraten/patchouli/issues/29) 交付，MCP XML 展示见 [#28](https://github.com/kwadraten/patchouli/issues/28) 与 `.agents/protocols/mcp-protocol.md`。
 
 **Library**:
 The durable boundary for metadata, document instances, OCR/layout/search artifacts, versioned evidence URIs, snapshots, credentials, and MCP resolution. A library keeps the same identity when renamed or moved.
