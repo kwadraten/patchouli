@@ -736,9 +736,18 @@ public sealed class ContinuationIssue29Tests
             PageId pageId = context.PageIds[0];
             await SeedLegacyLinkedBoxesAsync(context, pageId, true);
 
-            Func<Task> run = async () => await new MigrationRunner(
-                context.Database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-            await run.Should().ThrowAsync<MigrationFailedException>();
+            MigrationFailedException? failure = null;
+            try
+            {
+                await new MigrationRunner(
+                    context.Database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+            }
+            catch (MigrationFailedException exception)
+            {
+                failure = exception;
+            }
+
+            failure.Should().NotBeNull("the corrupt follower payload must fail migration 054");
 
             await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();

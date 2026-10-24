@@ -69,13 +69,11 @@ public sealed class ContinuationIssue29IndependentTests
             new("list", [100, 50, 900, 150], "- one\n- two", null, null),
             new("list", [100, 200, 900, 300], "- three", null, null, ContinuesPrev: true),
             new("table", [100, 350, 900, 500], null, null, null,
-                TableCells:
-                [
-                    new MinerUTableCell(0, 0, 1, 1, null, "H1", null),
-                    new MinerUTableCell(1, 0, 1, 1, null, "V1", null)
-                ]),
+            [
+                new MinerUTableCell(0, 0, 1, 1, null, "H1", null),
+                new MinerUTableCell(1, 0, 1, 1, null, "V1", null)
+            ]),
             new("table", [100, 550, 900, 700], null, null, null,
-                TableCells:
                 [
                     new MinerUTableCell(0, 0, 1, 1, null, "H2", null),
                     new MinerUTableCell(1, 0, 1, 1, null, "V2", null)
@@ -284,16 +282,25 @@ public sealed class ContinuationIssue29IndependentTests
             await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
             (await connection.ExecuteScalarAsync<int>(
-                "select count(*) from continuation_migration_diagnostics where migration_id = '054' and action = 'marked_legacy_unrecovered';"))
+                    "select count(*) from continuation_migration_diagnostics where migration_id = '054' and action = 'marked_legacy_unrecovered';"))
                 .Should().Be(2);
             // 已提交框的不可变守卫在迁移后已恢复：直接 UPDATE 必须被触发器拒绝。
             (await connection.ExecuteScalarAsync<int>(
-                "select count(*) from sqlite_master where type = 'trigger' and name = 'document_boxes_committed_update_guard';"))
+                    "select count(*) from sqlite_master where type = 'trigger' and name = 'document_boxes_committed_update_guard';"))
                 .Should().Be(1);
-            Func<Task> update = async () => await connection.ExecuteAsync(
-                "update document_boxes set suppressed = 1 where box_id = @Id;",
-                new { Id = currentFollower.ToString() });
-            await update.Should().ThrowAsync<SqliteException>();
+            SqliteException? guardFailure = null;
+            try
+            {
+                await connection.ExecuteAsync(
+                    "update document_boxes set suppressed = 1 where box_id = @Id;",
+                    new { Id = currentFollower.ToString() });
+            }
+            catch (SqliteException exception)
+            {
+                guardFailure = exception;
+            }
+
+            guardFailure.Should().NotBeNull("the committed-update guard trigger must reject direct updates");
         }
         finally
         {
@@ -412,8 +419,8 @@ public sealed class ContinuationIssue29IndependentTests
         await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
         await using DbTransaction transaction = await connection.BeginTransactionAsync();
-        await InsertRevisionAsync(connection, transaction, context, pageId, historyRevision, isCurrent: 0);
-        await InsertRevisionAsync(connection, transaction, context, pageId, currentRevision, isCurrent: 1);
+        await InsertRevisionAsync(connection, transaction, context, pageId, historyRevision, 0);
+        await InsertRevisionAsync(connection, transaction, context, pageId, currentRevision, 1);
         await InsertBoxAsync(connection, transaction, historyRevision, context, pageId, historyHead,
             historyFollower, """{"markdown":"History full text."}""", null);
         await InsertBoxAsync(connection, transaction, historyRevision, context, pageId, historyFollower, null,
