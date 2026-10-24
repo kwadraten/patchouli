@@ -187,7 +187,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     seed.CodeLanguage,
                     seed.Confidence,
                     seed.Suppressed,
-                    seed.ContinuesFromBoxId);
+                    seed.ContinuesFromBoxId,
+                    seed.ContinuationState);
             }).ToArray();
             // Overlaps no longer block creation or commit; they surface as workspace warnings.
             Result validation = _validator.Validate(revision, working);
@@ -252,11 +253,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
                         next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed, continues_from_box_id)
+                        confidence, suppressed, continues_from_box_id, continuation_state)
                     select @WorkingRevisionId, box_id, document_instance_id, page_id, parent_box_id,
                         next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed, continues_from_box_id
+                        confidence, suppressed, continues_from_box_id, continuation_state
                     from document_boxes where tree_revision_id = @CurrentRevisionId;
                     """,
                     new
@@ -344,6 +345,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentCommitId? commitId = null,
         CancellationToken cancellationToken = default)
     {
+        return await CommitWorkingRevisionGuardedAsync(
+            connection, transaction, workingRevisionId, commitId, null, cancellationToken);
+    }
+
+    // replacedCurrentRevisionIds 是批量提交时「本批将被取代的各页当前修订」的
+    // 排除集；单条提交传 null，排除集退化为本页当前修订自身。
+    private async Task<Result<DocumentTreeRevision>> CommitWorkingRevisionGuardedAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevisionId workingRevisionId,
+        DocumentCommitId? commitId,
+        IReadOnlyCollection<string>? replacedCurrentRevisionIds,
+        CancellationToken cancellationToken)
+    {
         DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, workingRevisionId);
         if (row is null || row.Status != DocumentTreeRevisionStatus.Working)
         {
@@ -359,6 +374,33 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             return Result<DocumentTreeRevision>.Failure(
                 validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+        }
+
+        // 整页替换的跨页接续防护（N1，与 F1 删/拆/合防护同一不变量）：提交工作
+        // 修订会整页替换该页当前修订，相对当前修订被移除的框 ID 若仍被本文档其他
+        // 活动修订（别页当前修订、任何工作草稿、本工作修订自身）中的框接续，提交
+        // 后这些关系必然悬空。此处以 Conflict 拒绝，调用方回滚整个事务（批量提交
+        // 时整批回滚），要求先解除接续关系。被取代的当前修订不计入扫描：它提交
+        // 后即成历史，不参与关系解析；批量提交时同批各页的当前修订一并排除，
+        // 因为跟随页的旧关系随本批一同消失、由其新修订重新建立。
+        DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+            connection, transaction, working.DocumentInstanceId, working.PageId);
+        if (current is not null)
+        {
+            DocumentTreeRevisionId currentRevisionId = DocumentTreeRevisionId.Parse(current.TreeRevisionId);
+            DocumentBox[] currentBoxes = await GetBoxesAsync(connection, transaction, currentRevisionId);
+            HashSet<DocumentBoxId> workingIds = boxes.Select(box => box.BoxId).ToHashSet();
+            string[] removedIds = currentBoxes.Select(box => box.BoxId)
+                .Where(id => !workingIds.Contains(id)).Select(id => id.ToString()).ToArray();
+            int followers = await CountContinuationFollowersAsync(
+                connection, transaction, working.DocumentInstanceId, removedIds,
+                replacedCurrentRevisionIds ?? [current.TreeRevisionId]);
+            if (followers > 0)
+            {
+                return Result<DocumentTreeRevision>.Failure(AppErrorCodes.Conflict,
+                    $"提交会使 {followers} 个接续关系悬空（其源框所在页面将被整页替换）。" +
+                    "请先在对应页面解除接续关系，再重试。");
+            }
         }
 
         if (commitId is not null)
@@ -399,11 +441,34 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentCommitId? commitId = null,
         CancellationToken cancellationToken = default)
     {
+        // 批量接续防护的排除集须在逐页提交前算好：本批各页将被取代的当前修订。
+        // 若等某页提交后再算，它已翻转为新当前修订，排除集会错位。批内工作修订
+        // 本身不排除（口径同页编辑提交期防护），批内新修订若仍指向被移除的旧框
+        // ID，同样按悬空拦下、整批回滚。
+        HashSet<string> replacedCurrentRevisionIds = [];
+        foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
+        {
+            DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, revisionId);
+            if (row is null)
+            {
+                continue;
+            }
+
+            DocumentTreeRevision candidate = row.ToRevision();
+            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+                connection, transaction, candidate.DocumentInstanceId, candidate.PageId);
+            if (current is not null)
+            {
+                replacedCurrentRevisionIds.Add(current.TreeRevisionId);
+            }
+        }
+
         List<DocumentTreeRevision> committed = new(workingRevisionIds.Count);
         foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
         {
-            Result<DocumentTreeRevision> result = await CommitWorkingRevisionInTransactionAsync(
-                connection, transaction, revisionId, commitId, cancellationToken).ConfigureAwait(false);
+            Result<DocumentTreeRevision> result = await CommitWorkingRevisionGuardedAsync(
+                    connection, transaction, revisionId, commitId, replacedCurrentRevisionIds, cancellationToken)
+                .ConfigureAwait(false);
             if (result.IsFailure)
             {
                 return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
@@ -733,7 +798,16 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         BoxContentDetails(boxId, payloadValidation.ErrorMessage!));
                 }
 
-                boxesById[boxId] = box with { Payload = replacement with { Annotations = box.Payload?.Annotations } };
+                boxesById[boxId] = box with
+                {
+                    Payload = replacement with { Annotations = box.Payload?.Annotations },
+                    // 与 UpdateLeaf 相同：旧版接续框被写入自己的文字后解除兼容状态。
+                    ContinuationState =
+                    box.ContinuationState == DocumentContinuationState.LegacyUnrecovered &&
+                    HasPayloadContent(replacement)
+                        ? null
+                        : box.ContinuationState
+                };
             }
 
             DocumentTreeRevision working = NewRevision(
@@ -866,6 +940,30 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             {
                 return Result<DocumentTreeRevision>.Failure(
                     validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+            }
+
+            // 提交期跨页防护（与变更期 CheckCrossPageContinuationGuardAsync 同一
+            // 不变量的兜底）：草稿相对父本当前修订移除的框 ID（删/拆/合的结果）
+            // 若仍被本文档任一活动修订引用——别页当前修订、任何工作草稿，乃至
+            // 本草稿自身经「先删后链」建立的关系——提交会使那些接续关系悬空。
+            // 拒绝提交并保留草稿，要求先解除接续关系。被取代的父本当前修订
+            // 不计入扫描：它提交后即成历史，不参与关系解析。
+            if (current is not null)
+            {
+                DocumentTreeRevisionId currentRevisionId = DocumentTreeRevisionId.Parse(current.TreeRevisionId);
+                DocumentBox[] currentBoxes = await GetBoxesAsync(connection, transaction, currentRevisionId);
+                HashSet<DocumentBoxId> draftIds = boxes.Select(box => box.BoxId).ToHashSet();
+                string[] removedIds = currentBoxes.Select(box => box.BoxId)
+                    .Where(id => !draftIds.Contains(id)).Select(id => id.ToString()).ToArray();
+                int followers = await CountContinuationFollowersAsync(
+                    connection, transaction, working.DocumentInstanceId, removedIds,
+                    [current.TreeRevisionId]);
+                if (followers > 0)
+                {
+                    return Result<DocumentTreeRevision>.Failure(AppErrorCodes.Conflict,
+                        $"提交会使 {followers} 个接续关系悬空（其源框已被删除、拆分或合并）。" +
+                        "请先在对应页面解除接续关系，再重新提交。");
+                }
             }
 
             Result<DocumentCommit> commit = await CreateDocumentCommitInTransactionAsync(
@@ -1042,7 +1140,13 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     ? NullIfWhiteSpace(command.CodeLanguage)
                     : null,
                 SubType = NullIfWhiteSpace(command.SubType) ??
-                          (boxType == boxes[index].BoxType ? boxes[index].SubType : null)
+                          (boxType == boxes[index].BoxType ? boxes[index].SubType : null),
+                // 旧版接续框一旦被写入自己的文字，兼容状态即解除：该框从此按
+                // v4 显式接续（各框自持文字）参与组合，不再是未恢复状态。
+                ContinuationState = boxes[index].ContinuationState == DocumentContinuationState.LegacyUnrecovered &&
+                                    HasPayloadContent(command.Payload)
+                    ? null
+                    : boxes[index].ContinuationState
             };
             boxes[index] = updated;
             return Mutation<DocumentBox>.Success(updated);
@@ -1111,45 +1215,51 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         CancellationToken cancellationToken = default)
     {
         return MutateWorkingAsync(sessionId, (_, boxes) =>
-        {
-            int index = boxes.FindIndex(box => box.BoxId == command.BoxId);
-            if (index < 0 || boxes.Any(box => box.ParentBoxId == command.BoxId))
             {
-                return Mutation<IReadOnlyList<DocumentBox>>.Failure("Only an existing leaf box can be split.");
-            }
+                int index = boxes.FindIndex(box => box.BoxId == command.BoxId);
+                if (index < 0 || boxes.Any(box => box.ParentBoxId == command.BoxId))
+                {
+                    return Mutation<IReadOnlyList<DocumentBox>>.Failure("Only an existing leaf box can be split.");
+                }
 
-            if (!HasPayloadContent(command.FirstPayload) || !HasPayloadContent(command.SecondPayload))
-            {
-                return Mutation<IReadOnlyList<DocumentBox>>.Failure(
-                    "Both split leaves must provide non-empty content.");
-            }
+                if (!HasPayloadContent(command.FirstPayload) || !HasPayloadContent(command.SecondPayload))
+                {
+                    return Mutation<IReadOnlyList<DocumentBox>>.Failure(
+                        "Both split leaves must provide non-empty content.");
+                }
 
-            DocumentBox original = boxes[index];
-            DocumentBox first = original with
-            {
-                BoxId = DocumentBoxId.New(),
-                BBox = command.FirstBBox,
-                Payload = command.FirstPayload,
-                NextSiblingBoxId = null
-            };
-            DocumentBox second = original with
-            {
-                BoxId = DocumentBoxId.New(),
-                BBox = command.SecondBBox,
-                Payload = command.SecondPayload,
-                NextSiblingBoxId = original.NextSiblingBoxId,
-                // The tail fragment carries its own text, so it is no longer a visual continuation.
-                ContinuesFromBoxId = null
-            };
-            first = first with { NextSiblingBoxId = second.BoxId };
-            ReplacePredecessor(boxes, original, first.BoxId);
-            // Continuation regions that pointed at the original now follow the tail fragment.
-            RepointContinuation(boxes, [original.BoxId], second.BoxId);
-            boxes.RemoveAt(index);
-            boxes.Add(first);
-            boxes.Add(second);
-            return Mutation<IReadOnlyList<DocumentBox>>.Success([first, second]);
-        }, cancellationToken);
+                DocumentBox original = boxes[index];
+                DocumentBox first = original with
+                {
+                    BoxId = DocumentBoxId.New(),
+                    BBox = command.FirstBBox,
+                    Payload = command.FirstPayload,
+                    NextSiblingBoxId = null,
+                    // Both fragments receive explicit payloads, so a legacy unrecovered
+                    // marker on the original no longer applies to either fragment.
+                    ContinuationState = null
+                };
+                DocumentBox second = original with
+                {
+                    BoxId = DocumentBoxId.New(),
+                    BBox = command.SecondBBox,
+                    Payload = command.SecondPayload,
+                    NextSiblingBoxId = original.NextSiblingBoxId,
+                    // The tail fragment carries its own text, so it is no longer a visual continuation.
+                    ContinuesFromBoxId = null,
+                    ContinuationState = null
+                };
+                first = first with { NextSiblingBoxId = second.BoxId };
+                ReplacePredecessor(boxes, original, first.BoxId);
+                // Continuation regions that pointed at the original now follow the tail fragment.
+                RepointContinuation(boxes, [original.BoxId], second.BoxId);
+                boxes.RemoveAt(index);
+                boxes.Add(first);
+                boxes.Add(second);
+                return Mutation<IReadOnlyList<DocumentBox>>.Success([first, second]);
+            }, cancellationToken,
+            (connection, transaction, revision, _) => CheckCrossPageContinuationGuardAsync(
+                connection, transaction, revision, [command.BoxId], "拆分"));
     }
 
     public Task<Result<DocumentBox>> MergeLeavesAsync(
@@ -1158,65 +1268,68 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         CancellationToken cancellationToken = default)
     {
         return MutateWorkingAsync(sessionId, (_, boxes) =>
-        {
-            if (command.BoxIds.Count < 2 || command.BoxIds.Distinct().Count() != command.BoxIds.Count)
             {
-                return Mutation<DocumentBox>.Failure("Merge requires at least two distinct leaf boxes.");
-            }
-
-            if (!HasPayloadContent(command.Payload))
-            {
-                return Mutation<DocumentBox>.Failure("A merged leaf must provide non-empty content.");
-            }
-
-            DocumentBox[] selected = command.BoxIds
-                .Select(id => boxes.SingleOrDefault(box => box.BoxId == id))
-                .Where(box => box is not null)
-                .Cast<DocumentBox>()
-                .ToArray();
-            if (selected.Length != command.BoxIds.Count ||
-                selected.Any(box => boxes.Any(b => b.ParentBoxId == box.BoxId)))
-            {
-                return Mutation<DocumentBox>.Failure("Every merged document box must be an existing leaf.");
-            }
-
-            DocumentBox first = selected[0];
-            if (selected.Any(box => box.ParentBoxId != first.ParentBoxId || box.BoxType != first.BoxType ||
-                                    box.HeadingLevel != first.HeadingLevel))
-            {
-                return Mutation<DocumentBox>.Failure(
-                    "Merged leaves must have the same parent, type, and heading level.");
-            }
-
-            DocumentBoxId[] ordered = OrderSiblings(boxes, first.ParentBoxId).ToArray();
-            int start = Array.IndexOf(ordered, command.BoxIds[0]);
-            if (start < 0 || !ordered.Skip(start).Take(command.BoxIds.Count).SequenceEqual(command.BoxIds))
-            {
-                return Mutation<DocumentBox>.Failure("Merged leaves must be consecutive in reading order.");
-            }
-
-            DocumentBox last = selected[^1];
-            DocumentBox merged = first with
-            {
-                BoxId = DocumentBoxId.New(),
-                BBox = Union(selected.Select(box => box.BBox)),
-                Payload = command.Payload with
+                if (command.BoxIds.Count < 2 || command.BoxIds.Distinct().Count() != command.BoxIds.Count)
                 {
-                    Annotations = selected.SelectMany(box => box.Payload?.Annotations ?? []).ToArray()
-                },
-                NextSiblingBoxId = last.NextSiblingBoxId,
-                Confidence = selected.All(box => box.Confidence is not null)
-                    ? selected.Average(box => box.Confidence!.Value)
-                    : null,
-                // The merged leaf holds real text, so it is no longer a visual continuation.
-                ContinuesFromBoxId = null
-            };
-            ReplacePredecessor(boxes, first, merged.BoxId);
-            RepointContinuation(boxes, command.BoxIds, merged.BoxId);
-            boxes.RemoveAll(box => command.BoxIds.Contains(box.BoxId));
-            boxes.Add(merged);
-            return Mutation<DocumentBox>.Success(merged);
-        }, cancellationToken);
+                    return Mutation<DocumentBox>.Failure("Merge requires at least two distinct leaf boxes.");
+                }
+
+                if (!HasPayloadContent(command.Payload))
+                {
+                    return Mutation<DocumentBox>.Failure("A merged leaf must provide non-empty content.");
+                }
+
+                DocumentBox[] selected = command.BoxIds
+                    .Select(id => boxes.SingleOrDefault(box => box.BoxId == id))
+                    .Where(box => box is not null)
+                    .Cast<DocumentBox>()
+                    .ToArray();
+                if (selected.Length != command.BoxIds.Count ||
+                    selected.Any(box => boxes.Any(b => b.ParentBoxId == box.BoxId)))
+                {
+                    return Mutation<DocumentBox>.Failure("Every merged document box must be an existing leaf.");
+                }
+
+                DocumentBox first = selected[0];
+                if (selected.Any(box => box.ParentBoxId != first.ParentBoxId || box.BoxType != first.BoxType ||
+                                        box.HeadingLevel != first.HeadingLevel))
+                {
+                    return Mutation<DocumentBox>.Failure(
+                        "Merged leaves must have the same parent, type, and heading level.");
+                }
+
+                DocumentBoxId[] ordered = OrderSiblings(boxes, first.ParentBoxId).ToArray();
+                int start = Array.IndexOf(ordered, command.BoxIds[0]);
+                if (start < 0 || !ordered.Skip(start).Take(command.BoxIds.Count).SequenceEqual(command.BoxIds))
+                {
+                    return Mutation<DocumentBox>.Failure("Merged leaves must be consecutive in reading order.");
+                }
+
+                DocumentBox last = selected[^1];
+                DocumentBox merged = first with
+                {
+                    BoxId = DocumentBoxId.New(),
+                    BBox = Union(selected.Select(box => box.BBox)),
+                    Payload = command.Payload with
+                    {
+                        Annotations = selected.SelectMany(box => box.Payload?.Annotations ?? []).ToArray()
+                    },
+                    NextSiblingBoxId = last.NextSiblingBoxId,
+                    Confidence = selected.All(box => box.Confidence is not null)
+                        ? selected.Average(box => box.Confidence!.Value)
+                        : null,
+                    // The merged leaf holds real text, so it is no longer a visual continuation.
+                    ContinuesFromBoxId = null,
+                    ContinuationState = null
+                };
+                ReplacePredecessor(boxes, first, merged.BoxId);
+                RepointContinuation(boxes, command.BoxIds, merged.BoxId);
+                boxes.RemoveAll(box => command.BoxIds.Contains(box.BoxId));
+                boxes.Add(merged);
+                return Mutation<DocumentBox>.Success(merged);
+            }, cancellationToken,
+            (connection, transaction, revision, _) => CheckCrossPageContinuationGuardAsync(
+                connection, transaction, revision, command.BoxIds, "合并"));
     }
 
     private static bool HasPayloadContent(DocumentBoxPayload payload)
@@ -1257,29 +1370,244 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return ToResult(result);
     }
 
+    /// <summary>
+    /// 建立、纠正或解除接续关系。只改关系本身：不搬移、不清空、不复制任何框的文字；
+    /// 人工建立的关系是 v4 显式接续，兼容状态一并清除。跨页源框从本文档各页的当前
+    /// 已提交修订中解析（同页源框优先取草稿中的最新状态），并沿源框的接续链校验成环。
+    /// </summary>
+    public async Task<Result> SetContinuationAsync(
+        PageEditSessionId sessionId,
+        DocumentBoxId boxId,
+        DocumentBoxId? sourceBoxId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<DocumentBox> result = await InTransactionAsync(async (connection, transaction) =>
+        {
+            DocumentTreeRevisionRow? row = await GetSessionRevisionRowAsync(connection, transaction, sessionId);
+            if (row is null)
+            {
+                return Result<DocumentBox>.Failure(AppErrorCodes.NotFound, "Page edit session was not found.");
+            }
+
+            DocumentTreeRevision revision = row.ToRevision();
+            List<DocumentBox> boxes = (await GetBoxesAsync(connection, transaction, revision.TreeRevisionId))
+                .ToList();
+            int index = boxes.FindIndex(box => box.BoxId == boxId);
+            if (index < 0)
+            {
+                return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                    "Document box was not found in the page draft.");
+            }
+
+            DocumentBox follower = boxes[index];
+            if (sourceBoxId is null)
+            {
+                boxes[index] = follower with { ContinuesFromBoxId = null, ContinuationState = null };
+            }
+            else
+            {
+                if (sourceBoxId.Value == boxId)
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "A box cannot continue from itself.");
+                }
+
+                if (follower.Suppressed)
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "A suppressed box cannot take part in a continuation.");
+                }
+
+                DocumentBox? source = await ResolveContinuationBoxAsync(
+                    connection, transaction, revision.DocumentInstanceId, boxes, sourceBoxId.Value);
+                if (source is null)
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "The continuation source box does not belong to this document's current tree.");
+                }
+
+                if (source.Suppressed)
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "A suppressed box cannot be a continuation source.");
+                }
+
+                if (!DocumentContinuationRules.CanContinue(follower.BoxType, source.BoxType))
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "Continuation requires two boxes of the same eligible type (text, ref_text, list, or table).");
+                }
+
+                // 接续方向沿阅读顺序：源框必须位于 follower 之前（更早的页，
+                // 或同页阅读序中更早），方向反了的关系从建立时即拒绝。
+                Result order = await ValidateContinuationOrderAsync(
+                    connection, transaction, revision, boxes, follower, source);
+                if (order.IsFailure)
+                {
+                    return Result<DocumentBox>.Failure(order.ErrorCode!, order.ErrorMessage!);
+                }
+
+                // 沿源框的接续链向上走：若能回到 follower 本人则成环；链上出现重复
+                // 节点说明既有数据已成环，同样拒绝在此基础上继续挂接。
+                HashSet<DocumentBoxId> visited = [boxId];
+                DocumentBox? current = source;
+                while (current?.ContinuesFromBoxId is { } nextId)
+                {
+                    if (nextId == boxId || !visited.Add(nextId))
+                    {
+                        return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                            "The continuation would create a cycle.");
+                    }
+
+                    current = await ResolveContinuationBoxAsync(
+                        connection, transaction, revision.DocumentInstanceId, boxes, nextId);
+                }
+
+                boxes[index] = follower with
+                {
+                    ContinuesFromBoxId = sourceBoxId.Value,
+                    ContinuationState = null
+                };
+            }
+
+            Result validation = _validator.Validate(revision, boxes);
+            if (validation.IsFailure)
+            {
+                return Result<DocumentBox>.Failure(validation.ErrorCode!, validation.ErrorMessage!,
+                    validation.Conflicts);
+            }
+
+            await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, boxes);
+            _compiledMarkdownCache?.Invalidate(revision.TreeRevisionId);
+            return Result<DocumentBox>.Success(boxes[index]);
+        }, cancellationToken);
+        return ToResult(result);
+    }
+
+    // 接续的阅读顺序约束：跨页时源框页序必须早于 follower 页序；同页时源框
+    // 必须在草稿的阅读序（兄弟链先序）中更早。同页源框若不在草稿中（已在
+    // 本次编辑中被删），其位置无从判定，同样拒绝——那种关系提交后必然悬空。
+    private static async Task<Result> ValidateContinuationOrderAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevision revision,
+        IReadOnlyList<DocumentBox> draftBoxes,
+        DocumentBox follower,
+        DocumentBox source)
+    {
+        if (source.PageId == revision.PageId)
+        {
+            Dictionary<DocumentBoxId, int> positions = ReadingOrderPositions(draftBoxes);
+            if (!positions.TryGetValue(source.BoxId, out int sourcePosition) ||
+                !positions.TryGetValue(follower.BoxId, out int followerPosition))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "The continuation source box is not part of the page draft.");
+            }
+
+            return sourcePosition < followerPosition
+                ? Result.Success()
+                : Result.Failure(AppErrorCodes.ValidationFailed,
+                    "A continuation source must come before the box in the page reading order.");
+        }
+
+        int? sourcePageIndex = await GetPageIndexAsync(connection, transaction, source.PageId);
+        int? followerPageIndex = await GetPageIndexAsync(connection, transaction, follower.PageId);
+        return sourcePageIndex is not null && followerPageIndex is not null &&
+               sourcePageIndex.Value < followerPageIndex.Value
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.ValidationFailed,
+                "A continuation source must be on an earlier page than the box.");
+    }
+
+    private static Dictionary<DocumentBoxId, int> ReadingOrderPositions(IReadOnlyList<DocumentBox> boxes)
+    {
+        Dictionary<DocumentBoxId, int> positions = [];
+        int next = 0;
+
+        void Visit(DocumentBox box)
+        {
+            positions[box.BoxId] = next++;
+            foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
+            {
+                Visit(child);
+            }
+        }
+
+        foreach (DocumentBox root in DocumentBoxProjection.Siblings(boxes, null))
+        {
+            Visit(root);
+        }
+
+        return positions;
+    }
+
+    private static async Task<int?> GetPageIndexAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        PageId pageId)
+    {
+        return await connection.ExecuteScalarAsync<int?>(
+            "select page_index from pages where page_id = @PageId;",
+            new { PageId = pageId.ToString() }, transaction);
+    }
+
+    // 接续关系的目标解析：先查当前页草稿（同页编辑的最新状态），再查本文档其他页的
+    // 当前已提交修订。框 ID 在文档内唯一，因此解析范围天然排除了越文档关联。
+    private static async Task<DocumentBox?> ResolveContinuationBoxAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentInstanceId documentInstanceId,
+        IReadOnlyList<DocumentBox> draftBoxes,
+        DocumentBoxId boxId)
+    {
+        DocumentBox? draft = draftBoxes.FirstOrDefault(box => box.BoxId == boxId);
+        if (draft is not null)
+        {
+            return draft;
+        }
+
+        DocumentBoxRow? row = await connection.QuerySingleOrDefaultAsync<DocumentBoxRow>(
+            SelectBoxesSql + "\n" + """
+                                    where document_instance_id = @DocumentInstanceId and box_id = @BoxId
+                                      and exists (
+                                          select 1 from document_tree_revisions r
+                                          where r.tree_revision_id = document_boxes.tree_revision_id
+                                            and r.status = 'committed' and r.is_current = 1)
+                                    """,
+            new { DocumentInstanceId = documentInstanceId.ToString(), BoxId = boxId.ToString() },
+            transaction);
+        return row?.ToBox();
+    }
+
     public async Task<Result> DeleteBoxAsync(
         PageEditSessionId sessionId,
         DocumentBoxId boxId,
         CancellationToken cancellationToken = default)
     {
         Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
-        {
-            int index = boxes.FindIndex(box => box.BoxId == boxId);
-            if (index < 0)
             {
-                return Mutation<DocumentBox>.Failure("Only an existing box can be deleted.");
-            }
+                int index = boxes.FindIndex(box => box.BoxId == boxId);
+                if (index < 0)
+                {
+                    return Mutation<DocumentBox>.Failure("Only an existing box can be deleted.");
+                }
 
-            DocumentBox deleted = boxes[index];
-            Unlink(boxes, deleted);
-            // Only logical pages can own children; remove their entire subtree in this mutation.
-            HashSet<DocumentBoxId> deletedIds = boxes
-                .Where(box => box.BoxId == boxId || box.ParentBoxId == boxId)
-                .Select(box => box.BoxId).ToHashSet();
-            RepointContinuation(boxes, deletedIds, null);
-            boxes.RemoveAll(box => deletedIds.Contains(box.BoxId));
-            return Mutation<DocumentBox>.Success(deleted);
-        }, cancellationToken);
+                DocumentBox deleted = boxes[index];
+                Unlink(boxes, deleted);
+                // Only logical pages can own children; remove their entire subtree in this mutation.
+                HashSet<DocumentBoxId> deletedIds = boxes
+                    .Where(box => box.BoxId == boxId || box.ParentBoxId == boxId)
+                    .Select(box => box.BoxId).ToHashSet();
+                RepointContinuation(boxes, deletedIds, null);
+                boxes.RemoveAll(box => deletedIds.Contains(box.BoxId));
+                return Mutation<DocumentBox>.Success(deleted);
+            }, cancellationToken,
+            (connection, transaction, revision, boxes) => CheckCrossPageContinuationGuardAsync(
+                connection, transaction, revision,
+                boxes.Where(box => box.BoxId == boxId || box.ParentBoxId == boxId)
+                    .Select(box => box.BoxId).ToArray(),
+                "删除"));
         return ToResult(result);
     }
 
@@ -1305,7 +1633,13 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 HeadingLevel = candidate.HeadingLevel,
                 CodeLanguage = candidate.BoxType is DocumentBoxType.Code or DocumentBoxType.Algorithm
                     ? original.CodeLanguage
-                    : null
+                    : null,
+                // 与 UpdateLeafAsync 同一规则：旧版接续框经本地 OCR 写入自己的
+                // 文字后，兼容（未恢复）状态即解除，按 v4 显式接续参与组合。
+                ContinuationState = original.ContinuationState == DocumentContinuationState.LegacyUnrecovered &&
+                                    HasPayloadContent(candidate.Payload)
+                    ? null
+                    : original.ContinuationState
             };
             boxes[index] = updated;
             return Mutation<DocumentBox>.Success(updated);
@@ -1343,7 +1677,9 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     private async Task<Result<T>> MutateWorkingAsync<T>(
         PageEditSessionId sessionId,
         Func<DocumentTreeRevision, List<DocumentBox>, Mutation<T>> mutate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<SqliteConnection, DbTransaction, DocumentTreeRevision, IReadOnlyList<DocumentBox>, Task<string?>>?
+            guard = null)
     {
         return await InTransactionAsync(async (connection, transaction) =>
         {
@@ -1355,6 +1691,15 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             DocumentTreeRevision revision = row.ToRevision();
             List<DocumentBox> boxes = (await GetBoxesAsync(connection, transaction, revision.TreeRevisionId)).ToList();
+            if (guard is not null)
+            {
+                string? guardError = await guard(connection, transaction, revision, boxes);
+                if (guardError is not null)
+                {
+                    return Result<T>.Failure(AppErrorCodes.ValidationFailed, guardError);
+                }
+            }
+
             Mutation<T> mutation = mutate(revision, boxes);
             if (!mutation.IsSuccess)
             {
@@ -1455,9 +1800,81 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             if (boxes[i].ContinuesFromBoxId is { } link && replacedIds.Contains(link))
             {
-                boxes[i] = boxes[i] with { ContinuesFromBoxId = targetId };
+                boxes[i] = boxes[i] with
+                {
+                    ContinuesFromBoxId = targetId,
+                    // Clearing a link also clears its legacy marker; repointing keeps
+                    // the marker because the follower still holds no text of its own.
+                    ContinuationState = targetId is null ? null : boxes[i].ContinuationState
+                };
             }
         }
+    }
+
+    // 删/拆/合的跨页防护（变更期）：本页草稿内的跟随者由 RepointContinuation 就地
+    // 维护，但跨页跟随者位于别页的当前修订或其他活动草稿中，页级校验器与本页
+    // 修订机器都看不见——若放行，本页一提交对方必然悬空。因此在存在跨页跟随者
+    // 时直接拒绝这三类操作，要求先在对应页面解除接续关系。提交期另有同一口径
+    // 的兜底防护（CommitPageEditAsync），封住「先删后链」的提交顺序竞态。
+    private async Task<string?> CheckCrossPageContinuationGuardAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevision revision,
+        IReadOnlyCollection<DocumentBoxId> targetIds,
+        string operation)
+    {
+        List<string> excludedRevisionIds = [revision.TreeRevisionId.ToString()];
+        DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+            connection, transaction, revision.DocumentInstanceId, revision.PageId);
+        if (current is not null)
+        {
+            // 本页当前修订是草稿的父本：其中每个跟随者在草稿中都有对应框，
+            // 由草稿内的 RepointContinuation 维护，不计入跨页防护。
+            excludedRevisionIds.Add(current.TreeRevisionId);
+        }
+
+        int followers = await CountContinuationFollowersAsync(
+            connection, transaction, revision.DocumentInstanceId,
+            targetIds.Select(id => id.ToString()).ToArray(), excludedRevisionIds);
+        return followers == 0
+            ? null
+            : $"无法{operation}：本文档其他页面或活动草稿中仍有 {followers} 个框接续自将被{operation}的框。" +
+              "请先在对应页面解除接续关系，再重试。";
+    }
+
+    // 接续引用扫描：在本文档的活动修订（当前已提交修订与全部工作修订）中统计
+    // 以 targetBoxIds 为接续源的框数，排除 excludedRevisionIds 指定的修订。
+    // 历史（非当前）已提交修订不在扫描内：历史内容不改写，其旧关系不参与解析。
+    private static async Task<int> CountContinuationFollowersAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentInstanceId documentInstanceId,
+        IReadOnlyCollection<string> targetBoxIds,
+        IReadOnlyCollection<string> excludedRevisionIds)
+    {
+        if (targetBoxIds.Count == 0)
+        {
+            return 0;
+        }
+
+        return await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1) from document_boxes b
+            where b.document_instance_id = @DocumentInstanceId
+              and b.continues_from_box_id in @TargetBoxIds
+              and b.tree_revision_id not in @ExcludedRevisionIds
+              and exists (
+                  select 1 from document_tree_revisions r
+                  where r.tree_revision_id = b.tree_revision_id
+                    and ((r.status = 'committed' and r.is_current = 1) or r.status = 'working'));
+            """,
+            new
+            {
+                DocumentInstanceId = documentInstanceId.ToString(),
+                TargetBoxIds = targetBoxIds.ToArray(),
+                ExcludedRevisionIds = excludedRevisionIds.ToArray()
+            },
+            transaction);
     }
 
     private static IEnumerable<DocumentBoxId> OrderSiblings(
@@ -1794,7 +2211,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 .Append("_BBoxY,@p").Append(i).Append("_BBoxWidth,@p").Append(i).Append("_BBoxHeight,@p").Append(i)
                 .Append("_PayloadJson,@p").Append(i).Append("_HeadingLevel,@p").Append(i).Append("_CodeLanguage,@p")
                 .Append(i).Append("_Confidence,@p").Append(i).Append("_Suppressed,@p").Append(i)
-                .Append("_ContinuesFromBoxId)");
+                .Append("_ContinuesFromBoxId,@p").Append(i).Append("_ContinuationState)");
             string prefix = "p" + i + "_";
             parameters[prefix + "TreeRevisionId"] = box.TreeRevisionId.ToString();
             parameters[prefix + "BoxId"] = box.BoxId.ToString();
@@ -1814,13 +2231,15 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             parameters[prefix + "Confidence"] = box.Confidence;
             parameters[prefix + "Suppressed"] = box.Suppressed ? 1 : 0;
             parameters[prefix + "ContinuesFromBoxId"] = box.ContinuesFromBoxId?.ToString();
+            parameters[prefix + "ContinuationState"] = box.ContinuationState;
         }
 
         return connection.ExecuteAsync(
             "insert into document_boxes (" +
             "tree_revision_id, box_id, document_instance_id, page_id, parent_box_id, next_sibling_box_id, " +
             "box_type, sub_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json, " +
-            "heading_level, code_language, confidence, suppressed, continues_from_box_id) values " + values,
+            "heading_level, code_language, confidence, suppressed, continues_from_box_id, continuation_state) values " +
+            values,
             parameters,
             transaction);
     }
@@ -1837,11 +2256,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
                 next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
-                confidence, suppressed, continues_from_box_id)
+                confidence, suppressed, continues_from_box_id, continuation_state)
             select @TargetRevisionId, box_id, document_instance_id, page_id, parent_box_id,
                 next_sibling_box_id, box_type, sub_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
-                confidence, suppressed, continues_from_box_id
+                confidence, suppressed, continues_from_box_id, continuation_state
             from document_boxes where tree_revision_id = @SourceRevisionId;
             """,
             new
@@ -1984,7 +2403,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             code_language as CodeLanguage,
             confidence as Confidence,
             suppressed as Suppressed,
-            continues_from_box_id as ContinuesFromBoxId
+            continues_from_box_id as ContinuesFromBoxId,
+            continuation_state as ContinuationState
         from document_boxes
         """;
 
@@ -2173,6 +2593,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         public double? Confidence { get; set; }
         public int Suppressed { get; set; }
         public string? ContinuesFromBoxId { get; set; }
+        public string? ContinuationState { get; set; }
 
         public DocumentBox ToBox()
         {
@@ -2191,7 +2612,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 CodeLanguage,
                 Confidence,
                 Suppressed == 1,
-                ContinuesFromBoxId is null ? null : DocumentBoxId.Parse(ContinuesFromBoxId));
+                ContinuesFromBoxId is null ? null : DocumentBoxId.Parse(ContinuesFromBoxId),
+                ContinuationState);
         }
     }
 }

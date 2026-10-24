@@ -56,6 +56,19 @@ internal sealed class DocumentTreeValidator
             {
                 return Invalid("Document box next sibling must exist in the same revision.");
             }
+
+            // 接续目标就在本页时，页级校验器能完整核对关系不变量（与
+            // DocumentTreeService.SetContinuationAsync 建立关系时的规则一致）：
+            // 两端同为接续适用类型且同类型、两端都未被抑制。这样改类型、改抑制
+            // 等一切变更路径只要会破坏既有关系就会被拒绝，而不是提交后才悬空。
+            // 跨页目标不在本页框集合中，此处不查（由建立关系时与提交期跨页防护把关）。
+            if (box.ContinuesFromBoxId is { } targetId && byId.TryGetValue(targetId, out DocumentBox? target) &&
+                (box.Suppressed || target.Suppressed ||
+                 !DocumentContinuationRules.CanContinue(box.BoxType, target.BoxType)))
+            {
+                return Invalid(
+                    "A continuation link within a page requires two unsuppressed boxes of the same eligible type.");
+            }
         }
 
         Result shape = ValidateShape(boxes);
@@ -102,6 +115,13 @@ internal sealed class DocumentTreeValidator
              box.SubType == DocumentBoxType.Algorithm != box.Payload is AlgorithmBoxPayload))
         {
             return Invalid("Document box subtype and payload do not agree.");
+        }
+
+        if (!DocumentContinuationState.IsKnown(box.ContinuationState) ||
+            (box.ContinuationState is not null && box.ContinuesFromBoxId is null))
+        {
+            return Invalid(
+                "Continuation state must be a known value and requires a continuation link.");
         }
 
         foreach (DocumentAnnotation annotation in box.Payload?.Annotations ?? [])

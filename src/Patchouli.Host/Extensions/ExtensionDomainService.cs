@@ -106,7 +106,8 @@ public sealed class ExtensionDomainService
                         DocumentBoxSeed seed = box.Candidate;
                         return new OcrBoxCandidate(seed.BoxType, seed.SubType, seed.SourceOrder,
                             seed.Payload!, seed.BBox, seed.HeadingLevel, seed.Confidence, seed.Suppressed,
-                            seed.ParentBoxId, seed.BoxId, seed.ContinuesFromBoxId, seed.CodeLanguage);
+                            seed.ParentBoxId, seed.BoxId, seed.ContinuesFromBoxId, seed.CodeLanguage,
+                            ContinuationState: seed.ContinuationState);
                     }).ToArray())
             ], []);
             Result treeValidation = treeCandidate.Validate();
