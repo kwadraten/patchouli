@@ -15,7 +15,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.13");
+        BuildInfo.Version.Should().Be("0.3.14");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -119,7 +119,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.13").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.14").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -133,7 +133,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.13");
+        BuildInfo.Version.Should().Be("0.3.14");
     }
 
     [Fact]
@@ -151,8 +151,23 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.13").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.14").And.NotContain("0.3.5");
         }
+    }
+
+    [Fact]
+    public void Release_readme_and_changelog_describe_the_current_delivered_version()
+    {
+        string readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
+        string changelog = File.ReadAllText(TestPaths.FromRepositoryRoot("Changelog.md"));
+
+        readme.Should().Contain($"当前版本：**{BuildInfo.Version}**")
+            .And.Contain("./scripts/run-tests.ps1 -Suite Full")
+            .And.NotContain("“设置 → 更新设置”可控制启动时自动检查更新")
+            .And.NotContain("下一版：[MCP / CLI 显式 OCR 任务入口]");
+        changelog.Should().Contain($"## {BuildInfo.Version}")
+            .And.Contain("patchouli.extensions/3")
+            .And.NotContain("向外部 Agent 自动安装、更新与清理将在后续版本提供");
     }
 
     [Fact]
@@ -255,7 +270,7 @@ public sealed class AlphaPackagingTests
 
         readme.Should().Contain("sidecar/biblatex-helper")
             .And.Contain("typst/biblatex 0.12.0")
-            .And.Contain("cargo build --release --manifest-path sidecar/biblatex-helper/Cargo.toml")
+            .And.Contain("cargo build --release --locked --manifest-path sidecar/biblatex-helper/Cargo.toml")
             .And.NotContain("sidecar/patchouli-shell-sidecar")
             .And.NotContain("Bashkit 0.14.4");
     }
@@ -357,7 +372,24 @@ public sealed class AlphaPackagingTests
             ("SkiaSharp", "MIT", "https://github.com/mono/SkiaSharp"),
             ("Microsoft.ML.OnnxRuntime", "MIT", "https://github.com/microsoft/onnxruntime"),
             ("OpenccNetLib", "MIT", "https://github.com/laisuk/OpenccNet"),
-            ("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid")
+            ("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid"),
+            ("AvaloniaRichEditor", "MIT", "https://github.com/centwon/AvaloniaRichEditor"),
+            ("LiveMarkdown.Avalonia", "Apache-2.0", "https://github.com/DearVa/LiveMarkdown.Avalonia"),
+            ("LiveMarkdown.Avalonia.Mermaid", "Apache-2.0", "https://github.com/DearVa/LiveMarkdown.Avalonia"),
+            ("Iciclecreek.Avalonia.Terminal", "MIT", "https://github.com/tomlm/Iciclecreek.Avalonia.Terminal"),
+            ("Porta.Pty", "MIT", "https://github.com/tomlm/Porta.Pty"),
+            ("FSharp.Core", "MIT", "https://github.com/dotnet/fsharp"),
+            ("FSharp.Compiler.Service", "MIT", "https://github.com/dotnet/fsharp"),
+            ("System.Reflection.MetadataLoadContext", "MIT", "https://github.com/dotnet/runtime"),
+            ("LLMTornado", "MIT", "https://github.com/lofcz/LlmTornado"),
+            ("Blake3.NET", "BSD-2-Clause", "https://github.com/xoofx/Blake3.NET"),
+            ("BLAKE3", "CC0 / Apache-2.0", "https://github.com/BLAKE3-team/BLAKE3"),
+            ("SourceGear.sqlite3", "Public Domain", "https://github.com/sourcegear/sqlite-builds"),
+            ("Skia", "BSD-3-Clause", "https://github.com/google/skia"),
+            ("HtmlAgilityPack", "MIT", "https://github.com/zzzprojects/html-agility-pack"),
+            ("YamlDotNet", "MIT", "https://github.com/aaubry/YamlDotNet"),
+            ("PaddleOCR / PP-DocLayoutV3", "Apache-2.0", "https://github.com/PaddlePaddle/PaddleOCR"),
+            ("DocLayout-YOLO", "AGPL-3.0", "https://github.com/opendatalab/DocLayout-YOLO")
         ];
 
         foreach ((string name, string license, string url) in expected)
@@ -365,6 +397,10 @@ public sealed class AlphaPackagingTests
             about.ThirdPartyLibraries.Should().Contain(library =>
                 library.Name == name && library.License == license && library.Url == url);
         }
+
+        about.ThirdPartyLibraries.Select(library => library.Name).Should().OnlyHaveUniqueItems();
+        about.ThirdPartyLibraries.Should()
+            .OnlyContain(library => library.Url.StartsWith("https://", StringComparison.Ordinal));
     }
 
     [Fact]

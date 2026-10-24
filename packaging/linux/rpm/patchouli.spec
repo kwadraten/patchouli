@@ -50,6 +50,10 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Sat Oct 24 2026 kwadraten <schild0van0man@duck.com> - 0.3.14-1
+- Add compiled FSX extensions, managed Agent Skills and live MCP implementation catalogs
+- Preserve explicit OCR continuations and fix translation, metadata parsing and table editing
+
 * Tue Oct 20 2026 kwadraten <schild0van0man@duck.com> - 0.3.13-1
 - Add guarded application updates, a unified processing task queue, and UI fixes
 - Replace the built-in agent with external CLI agents in an embedded terminal, and add direct batched full-text translation

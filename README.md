@@ -13,11 +13,9 @@
 
 ## 下载与更新日志
 
-当前版本：**0.3.13**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon 和 Linux 安装包。
+当前版本：**0.3.14**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon，以及 Linux deb、rpm、AppImage 和 Flatpak 安装包。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
-
-“设置 → 更新设置”可控制启动时自动检查更新，菜单栏“设置 → 检查更新”可随时手动检查。确认的 Windows Inno Setup 安装支持下载校验后启动安装；AppImage、DMG、外部管理及未知安装方式会提示前往 Release 页面手动下载更新。
 
 ## 特性
 
@@ -36,18 +34,22 @@
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`add`、`view`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML，支持本地文件导入、原件图像读取、box 级局部写入、版本冲突检查，以及按资源域与动作配置权限。
+- [x] MCP / CLI支持：基于虚拟文件系统的 `find`、`fetch`、`add`、`view`、`cite`、`put` 和 `send`；题录与书库使用 YAML，页面使用 XML。支持本地文件导入、无框树页面原图、带序号的边界框叠加、box 级局部写入、接续元数据、版本冲突检查，以及按资源域与动作配置权限。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
 - [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
 - [x] PDF 导入容错：整本原子提交、坏页诊断占位、可配置失败阈值，以及历史导入残留清理
 - [x] 较为完备的题录组织系统：具备集合和标签功能，提供回收站、重复题录检测、题录合并与永久清除
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL古典籍OCR-Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
-- [x] 外部 Agent 集成：编译态 Agent 目录、分层可执行文件检测与自定义路径、嵌入式终端、四个可编辑预置提示词、Zed 式可搜索题录引用面板，以及受限、可撤销的 MCP 连接配置。
-- [x] 直接全文翻译：不依赖 Agent，按 Box 分段批量调用模型，支持目标语言、并发、请求间隔、超时与重试；逐页原子提交，冲突自动重读重试，取消时保留已提交页面。
+- [x] 外部 Agent 集成：编译态 Agent 目录、分层可执行文件检测与自定义路径、嵌入式终端、四个可编辑预置提示词、Zed 式可搜索题录引用面板，以及受限、可撤销的 MCP 连接配置；统一 `patchouli` Skill 自动准备托管工作区，设置页可按 Agent 注入或清除用户级 Skill。
+- [x] 直接全文翻译：不依赖 Agent，使用随包翻译扩展，支持规范语言标签、跨页合批、参考上下文、并发、超时与重试；逐页原子提交，冲突自动重读重试，取消时保留已提交页面。
+- [x] FSX 扩展：翻译引擎和元数据来源以可信编译包提供，可检查、应用、配置和回滚，任务固定使用启动时的运行版本。扩展在宿主进程内执行，不是沙箱，使用第三方源码前应先审阅。
+- [x] 接续校正：导入 MinerU v4 显式接续，前后物理框各自保留文字；工作台可建立、纠正或解除同页和跨页关系。旧版无法恢复的局部正文保留明确兼容标记，不猜拆或复制全文。
+- [x] 显式处理端点：通过 `send` 控制 OCR、翻译及元数据补全，`runs/*/control` 实时列出可选实现，并提供任务状态查询；`add` 仅负责入库，不自动启动 OCR。
 - [x] 文献加工与任务队列：统一展示 OCR 和全文翻译任务，支持类型筛选与任务控制，两类任务可并行执行。
 - [x] 应用更新：自动或手动检查 GitHub Releases，支持下载校验、安装前确认及不支持内置安装时的手动更新提示。
-- [ ] 下一版：[MCP / CLI 显式 OCR 任务入口](https://github.com/kwadraten/patchouli/issues/16)，复用现有 OCR 队列并支持任务状态查询；当前 `add` 仅负责入库，不自动启动 OCR。
+
+接续消费仍有保守边界：复杂或不兼容的 Markdown/表格保留原结构并报告诊断，跨页译文导出暂按页保留并明确提示；后续验收见 [#29](https://github.com/kwadraten/patchouli/issues/29)。
 
 ## 开发指南
 
@@ -69,16 +71,24 @@ CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一�
 可构建：
 
 ```pwsh
-cargo build --release --manifest-path sidecar/biblatex-helper/Cargo.toml
+cargo build --release --locked --manifest-path sidecar/biblatex-helper/Cargo.toml
 ```
 
-Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`add`、`view`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
+Windows、macOS 和 Linux 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`add`、`view`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
+
+内置翻译和元数据 FSX 包由真实 F# 编译器构建。第三方包使用 NuGet 引用且需要冷还原时，本机也必须安装 .NET SDK；仅安装 .NET runtime 不能替代 SDK。
 
 ### 运行单元测试
 
 ```pwsh
-dotnet test Patchouli.sln
+dotnet build tests/Patchouli.Tests/Patchouli.Tests.csproj
+$helperName = if ($IsWindows) { 'biblatex-helper.exe' } else { 'biblatex-helper' }
+Copy-Item "sidecar/biblatex-helper/target/release/$helperName" "tests/Patchouli.Tests/bin/Debug/net10.0/$helperName"
+./scripts/run-tests.ps1 -Suite Full -NoBuild -SkipRestore
+./scripts/run-tests.ps1 -Project tests/Patchouli.Extensions.Tests/Patchouli.Extensions.Tests.fsproj -Suite All
 ```
+
+先按上述步骤构建应用和真实 Rust helper，并将 helper 暂存到测试输出目录；相关回归不能用缺失 sidecar 的跳过结果代替。`Full` 顺序执行普通、UI 和编译扩展测试，F# SDK 项目单独运行；高计数性能/耐久探测不属于普通正确性门禁。
 
 ### 运行性能回归
 
@@ -101,7 +111,7 @@ dotnet test Patchouli.sln
 
 清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `.tmp/inspectcode.sarif`。
 
-临时文件统一放在仓库根目录的 `.tmp/` 下：测试临时文件为 `.tmp/tests/`，测试结果为 `.tmp/test-results/`，性能报告为 `.tmp/perf/`，界面截图为 `.tmp/previews/`，安装包为 `.tmp/installer/`。请勿重新创建已弃用的 `artifacts/` 或 `scratch/` 临时目录。
+临时文件统一放在仓库根目录的 `.tmp/` 下：测试临时文件为 `.tmp/tests/`，记录式测试结果为 `.tmp/test-runs/`，性能报告为 `.tmp/perf/`，界面截图为 `.tmp/previews/`，安装包为 `.tmp/installer/`。请勿重新创建已弃用的 `artifacts/` 或 `scratch/` 临时目录。
 
 ## 反馈问题
 
