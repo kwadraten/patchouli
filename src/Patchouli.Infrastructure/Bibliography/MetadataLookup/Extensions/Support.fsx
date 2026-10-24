@@ -290,10 +290,20 @@ module Support =
         |> Seq.distinctBy (fun value -> value.ToLowerInvariant())
         |> Seq.toArray
 
+    /// NDL BibIDs appear in responses in short form (000000280987) while stored identifiers may
+    /// carry the portal form (R100000002-I000000280987); both denote the same record.
+    let private bibIdCore (value: string) =
+        let segment = value.Trim().TrimEnd('/') |> fun text -> text.Split('/') |> Array.last
+        let marker = segment.LastIndexOf("-I", StringComparison.Ordinal)
+        if marker >= 0 then segment.Substring(marker + 2) else segment
+
     let private identifierMatches (rawValue: string) (requested: NormalizedIdentifier) =
         let normalized = IdentifierNormalizer.Normalize(requested.Scheme, rawValue)
         normalized.IsSuccess &&
-        String.Equals(normalized.Value.Value, requested.Value, StringComparison.OrdinalIgnoreCase)
+        (String.Equals(normalized.Value.Value, requested.Value, StringComparison.OrdinalIgnoreCase) ||
+         (requested.Scheme = "ndlbibid" &&
+          String.Equals(bibIdCore normalized.Value.Value, bibIdCore requested.Value,
+              StringComparison.OrdinalIgnoreCase)))
 
     /// Parses NDL Search OpenSearch RSS/Atom (Dublin Core) responses.
     let parseDublinCore (document: XDocument) (requested: NormalizedIdentifier) =
@@ -351,13 +361,23 @@ module Support =
                 |> Seq.append (Seq.singleton (MetadataIdentifier(requested.Scheme, requested.Value)))
                 |> Seq.distinctBy (fun identifier -> (identifier.Scheme + "\u0000" + identifier.Value).ToLowerInvariant())
                 |> Seq.toArray
+            // The RSS channel-level <description> is an HTML summary blob; the record's own
+            // abstract lives in dc:description, so prefer the Dublin Core element when present.
+            let description =
+                element.Descendants()
+                |> Seq.filter (fun item ->
+                    item.Name.LocalName = "description" &&
+                    item.Name.NamespaceName = "http://purl.org/dc/elements/1.1/")
+                |> Seq.choose (fun item -> clean item.Value)
+                |> Seq.tryHead
+                |> Option.orElse (xFirst element "description")
             Some (MetadataCandidate("",
                 Option.toObj (xFirst element "title"),
                 Creators = (xAll element "creator" |> Array.map (fun name -> MetadataCreator(authorRole, Literal = name))),
                 Dates = (match xFirst element "date" with Some date -> [| MetadataDate(issuedRole, Literal = date) |] | None -> Array.empty),
                 Publisher = Option.toObj (xFirst element "publisher"),
                 Language = Option.toObj (xFirst element "language"),
-                Abstract = Option.toObj (xFirst element "description"),
+                Abstract = Option.toObj description,
                 Tags = xAll element "subject",
                 Identifiers = identifiers,
                 SuggestedItemType = "book",
@@ -449,8 +469,14 @@ module Support =
                 SuggestedItemType = "manuscript",
                 TypeConfidence = 0.95))
 
-    /// Parses MARC XML (MARC21 or INTERMARC exchange) SRU responses for DnB and BnF.
-    let parseMarc (document: XDocument) =
+    /// MARC dialects differ in the 260 publication statement: MARC21 puts the date in $c and the
+    /// publisher in $b, while INTERMARC (BnF) puts the publisher in $c and the date in $d.
+    type MarcDialect =
+        | Marc21
+        | Intermarc
+
+    /// Parses MARC XML SRU responses; the dialect selects the field semantics (DnB vs BnF).
+    let parseMarcDialect (dialect: MarcDialect) (document: XDocument) =
         let record =
             document.Descendants()
             |> Seq.tryFind (fun item ->
@@ -479,29 +505,63 @@ module Support =
                     (match item.Attribute(XName.Get "tag") with null -> None | attribute -> Some attribute.Value)
                     |> Option.exists (fun tag -> List.contains tag [ "100"; "110"; "700"; "701"; "800" ]))
                 |> Seq.choose (fun field ->
-                    field.Elements()
-                    |> Seq.tryFind (fun child ->
-                        child.Name.LocalName = "subfield" &&
-                        (match child.Attribute(XName.Get "code") with null -> None | attribute -> Some attribute.Value) = Some "a")
-                    |> Option.bind (fun child -> clean child.Value))
+                    let firstSubfield (code: string) =
+                        field.Elements()
+                        |> Seq.tryFind (fun child ->
+                            child.Name.LocalName = "subfield" &&
+                            (match child.Attribute(XName.Get "code") with null -> None | attribute -> Some attribute.Value) = Some code)
+                        |> Option.bind (fun child -> clean child.Value)
+                    match firstSubfield "a" with
+                    | None -> None
+                    | Some name ->
+                        // INTERMARC splits a creator's given name into $m; MARC21 keeps it in $a.
+                        match dialect with
+                        | Intermarc ->
+                            match firstSubfield "m" with
+                            | Some given -> Some (name + ", " + given)
+                            | None -> Some name
+                        | Marc21 -> Some name)
                 |> Seq.map (fun name -> MetadataCreator(authorRole, Literal = name))
                 |> Seq.toArray
             let title = sub "245" [ "a" ] |> Option.orElse (sub "200" [ "a" ]) |> Option.orElse (sub "331" [ "a" ])
-            let subtitle = sub "245" [ "b" ] |> Option.orElse (sub "200" [ "e" ]) |> Option.orElse (sub "335" [ "a" ])
-            let date = sub "264" [ "c" ] |> Option.orElse (sub "260" [ "c" ]) |> Option.orElse (sub "210" [ "d" ]) |> Option.orElse (sub "419" [ "c" ])
+            let subtitle = sub "245" [ "b" ] |> Option.orElse (sub "200" [ "e" ]) |> Option.orElse (sub "335" [ "a" ]) |> Option.orElse (sub "245" [ "e" ])
+            let date =
+                match dialect with
+                | Marc21 ->
+                    sub "264" [ "c" ] |> Option.orElse (sub "260" [ "c" ]) |> Option.orElse (sub "210" [ "d" ]) |> Option.orElse (sub "419" [ "c" ])
+                | Intermarc ->
+                    sub "260" [ "d" ] |> Option.orElse (sub "210" [ "d" ])
+            let publisher =
+                match dialect with
+                | Marc21 ->
+                    sub "264" [ "b" ] |> Option.orElse (sub "260" [ "b" ]) |> Option.orElse (sub "210" [ "c" ]) |> Option.orElse (sub "419" [ "b" ])
+                | Intermarc ->
+                    sub "260" [ "c" ] |> Option.orElse (sub "210" [ "c" ])
+            let place =
+                match dialect with
+                | Marc21 ->
+                    sub "264" [ "a" ] |> Option.orElse (sub "260" [ "a" ]) |> Option.orElse (sub "210" [ "a" ])
+                | Intermarc ->
+                    sub "260" [ "a" ] |> Option.orElse (sub "210" [ "a" ])
             let isbn = sub "020" [ "a" ] |> Option.orElse (sub "010" [ "a" ]) |> Option.orElse (sub "540" [ "a" ])
             Some (MetadataCandidate("",
                 Option.toObj title,
                 Option.toObj subtitle,
                 Creators = authors,
                 Dates = (match date with Some value -> [| MetadataDate(issuedRole, Literal = value) |] | None -> Array.empty),
-                Publisher = (sub "264" [ "b" ] |> Option.orElse (sub "260" [ "b" ]) |> Option.orElse (sub "210" [ "c" ]) |> Option.orElse (sub "419" [ "b" ]) |> Option.toObj),
-                Place = (sub "264" [ "a" ] |> Option.orElse (sub "260" [ "a" ]) |> Option.orElse (sub "210" [ "a" ]) |> Option.toObj),
+                Publisher = (publisher |> Option.toObj),
+                Place = (place |> Option.toObj),
                 Edition = (sub "250" [ "a" ] |> Option.orElse (sub "205" [ "a" ]) |> Option.orElse (sub "403" [ "a" ]) |> Option.toObj),
                 Language = (sub "041" [ "a" ] |> Option.orElse (sub "101" [ "a" ]) |> Option.toObj),
                 Identifiers = (match isbn with Some value -> [| MetadataIdentifier("isbn", value) |] | None -> Array.empty),
                 SuggestedItemType = "book",
                 TypeConfidence = 0.9))
+
+    /// Parses a MARC21-xml SRU response (DnB bibliographic records).
+    let parseMarc (document: XDocument) = parseMarcDialect Marc21 document
+
+    /// Parses an INTERMARC exchange SRU response (BnF records).
+    let parseIntermarc (document: XDocument) = parseMarcDialect Intermarc document
 
     // ----- CALIS MARC (JSON) ----------------------------------------------------
 
@@ -602,11 +662,13 @@ module Support =
     // ----- NLC OPAC (HTML) ------------------------------------------------------
 
     let nlcHasMetadataTable (html: string) =
-        Regex.IsMatch(html, "<table[^>]+id\\s*=\\s*['\"]td['\"]", RegexOptions.IgnoreCase)
+        // Aleph emits attribute values without quotes (<td class=td1>), so the attribute
+        // patterns in this section accept double-quoted, single-quoted and unquoted values.
+        Regex.IsMatch(html, "<table[^>]+id\\s*=\\s*['\"]?td['\"]?[\\s>]", RegexOptions.IgnoreCase)
 
     let nlcFirstDetailUrl (html: string) =
         let matchResult = Regex.Match(html,
-            "<div[^>]+class\\s*=\\s*['\"][^'\"]*itemtitle[^'\"]*['\"][^>]*>.*?<a[^>]+href\\s*=\\s*['\"](?<url>[^'\"]+)",
+            "<div[^>]+class\\s*=\\s*(?:\"[^\"]*itemtitle[^\"]*\"|'[^']*itemtitle[^']*'|[^\\s>]*itemtitle[^\\s>]*)[^>]*>.*?<a[^>]+href\\s*=\\s*(?:\"(?<url>[^\"]+)\"|'(?<url>[^']+)'|(?<url>[^\\s>]+))",
             RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
         if not matchResult.Success then None
         else
@@ -636,7 +698,7 @@ module Support =
                 let fields = Dictionary<string, ResizeArray<string>>(StringComparer.OrdinalIgnoreCase)
                 for row in Regex.Matches(html, "<tr[^>]*>(?<row>.*?)</tr>", RegexOptions.IgnoreCase ||| RegexOptions.Singleline) do
                     let cells = Regex.Matches(row.Groups["row"].Value,
-                        "<td[^>]*class\\s*=\\s*['\"][^'\"]*td1[^'\"]*['\"][^>]*>(?<value>.*?)</td>",
+                        "<td[^>]*class\\s*=\\s*(?:\"[^\"]*td1[^\"]*\"|'[^']*td1[^']*'|[^\\s>]*td1[^\\s>]*)[^>]*>(?<value>.*?)</td>",
                         RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
                     if cells.Count = 2 then
                         let label = nlcText cells[0].Groups["value"].Value

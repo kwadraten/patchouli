@@ -131,6 +131,25 @@ public sealed class MetadataLookupTests
     }
 
     [Fact]
+    public async Task Lookup_distinguishes_a_titleless_candidate_from_not_found()
+    {
+        // The source answered successfully but its record has no title, so it cannot become the
+        // candidate. The failure must say so instead of collapsing into the generic not-found.
+        FakeSource source = new("catalog", Result<MetadataCandidate>.Success(new MetadataCandidate(
+            "catalog", null,
+            Identifiers: [new MetadataIdentifier(BuiltInIdentifierSchemes.Pmid, "12345")])));
+        FakeItemService items = new(CreateItem("Old"));
+        MetadataLookupService service = new(items, new MetadataSourceRegistry([source]));
+
+        Result<MetadataLookupOutcome> result = await service.LookupAndMergeAsync(
+            items.Item.ItemId, BuiltInIdentifierSchemes.DOI, "10.1000/example");
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(MetadataLookupErrorCodes.InvalidResponse);
+        result.ErrorMessage.Should().Contain("without a title");
+    }
+
+    [Fact]
     public void High_confidence_source_type_overwrites_item_type()
     {
         ItemMetadata item = CreateItem("Old");

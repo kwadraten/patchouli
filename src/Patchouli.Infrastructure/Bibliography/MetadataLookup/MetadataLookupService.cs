@@ -78,6 +78,7 @@ public sealed class MetadataLookupService : IMetadataLookupService
         }
 
         List<MetadataLookupAttempt> attempts = new();
+        string? titlelessSource = null;
         Queue<NormalizedIdentifier> pendingIdentifiers = new();
         HashSet<string> seenLookupIdentifiers = new(StringComparer.OrdinalIgnoreCase);
         List<MetadataIdentifier> discoveredIdentifiers = new();
@@ -141,6 +142,10 @@ public sealed class MetadataLookupService : IMetadataLookupService
                     };
                     break;
                 }
+
+                // A provider answered but its record has no title: it cannot become the candidate,
+                // yet reporting it as a plain "not found" would hide a broken provider response.
+                titlelessSource ??= providers[providerIndex].Definition.DisplayName;
             }
         }
 
@@ -149,6 +154,13 @@ public sealed class MetadataLookupService : IMetadataLookupService
             MetadataLookupAttempt significant =
                 attempts.LastOrDefault(attempt => attempt.ErrorCode is not MetadataLookupErrorCodes.NotFound)
                 ?? attempts[^1];
+            if (significant.ErrorCode is null && titlelessSource is not null)
+            {
+                return Result<MetadataCandidateProposal>.Failure(
+                    MetadataLookupErrorCodes.InvalidResponse,
+                    $"{titlelessSource} returned a record without a title, so it could not be used.");
+            }
+
             return Result<MetadataCandidateProposal>.Failure(
                 significant.ErrorCode ?? MetadataLookupErrorCodes.NotFound,
                 significant.ErrorMessage ?? "No metadata source found a matching record.");

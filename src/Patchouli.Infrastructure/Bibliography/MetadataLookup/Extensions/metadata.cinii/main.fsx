@@ -18,29 +18,153 @@ type Settings = {
 }
 
 let sourceDefinition = MetadataSourceDefinition("cinii", "CiNii Research", HashSet<string>([| "ncid"; "naid"; "crid" |], StringComparer.OrdinalIgnoreCase), 5, true)
-let parseJsonLd (root: JsonElement) =
-    let mutable current = root
-    if current.ValueKind = JsonValueKind.Array then
-        current <-
-            current.EnumerateArray()
-            |> Seq.tryFind (fun entry ->
-                entry.ValueKind = JsonValueKind.Object &&
-                ((jsonString entry "name").IsSome || (jsonString entry "headline").IsSome))
-            |> Option.defaultValue (JsonElement())
-    let mutable author = JsonElement()
-    let authors =
-        if current.TryGetProperty("author", &author) then jsonLdPeople author else Array.empty
+
+/// CiNii serves Dublin Core JSON-LD, not schema.org: titles live in dc:title as language-tagged
+/// {"@value": ...} entries (the untagged entry is the original; tagged ones are readings),
+/// creators in dc:creator/creator, and identifiers in productIdentifier / dc:identifier.
+/// Verified against cir.nii.ac.jp CRID 1910302385685827200 and ci.nii.ac.jp NCID BN0368958X.
+let langValues (element: JsonElement) (property: string) =
+    let mutable value = JsonElement()
+    if element.ValueKind = JsonValueKind.Object && element.TryGetProperty(property, &value) then
+        let entries =
+            match value.ValueKind with
+            | JsonValueKind.Array -> value.EnumerateArray() |> Seq.toList
+            | _ -> [ value ]
+        entries
+        |> List.choose (fun entry ->
+            match entry.ValueKind with
+            | JsonValueKind.String -> clean (entry.GetString()) |> Option.map (fun text -> text, None)
+            | JsonValueKind.Object ->
+                match jsonString entry "@value" with
+                | Some text -> Some (text, jsonString entry "@language")
+                | None -> None
+            | _ -> None)
+    else []
+
+let preferredText (values: (string * string option) list) =
+    values
+    |> List.tryFind (fun (_, language) -> language.IsNone)
+    |> Option.orElse (List.tryHead values)
+    |> Option.map fst
+
+let dcText (element: JsonElement) (property: string) =
+    match preferredText (langValues element property) with
+    | Some value -> Some value
+    | None -> jsonString element property
+
+let dcPeople (element: JsonElement) (property: string) =
+    let mutable value = JsonElement()
+    if element.ValueKind = JsonValueKind.Object && element.TryGetProperty(property, &value) then
+        let entries =
+            match value.ValueKind with
+            | JsonValueKind.Array -> value.EnumerateArray() |> Seq.toList
+            | _ -> [ value ]
+        entries
+        |> List.choose (fun entry ->
+            match entry.ValueKind with
+            | JsonValueKind.String -> clean (entry.GetString())
+            | JsonValueKind.Object ->
+                match preferredText (langValues entry "foaf:name") with
+                | Some name -> Some name
+                | None -> dcText entry "name"
+            | _ -> None)
+        |> List.map (fun name -> MetadataCreator(authorRole, Literal = name))
+    else []
+
+let parseJsonLd (root: JsonElement) (requested: NormalizedIdentifier) =
+    // CRID documents are a single object; legacy NCID documents wrap the entity in @graph.
+    let nodes =
+        let mutable graph = JsonElement()
+        if root.ValueKind = JsonValueKind.Array then root.EnumerateArray() |> Seq.toList
+        elif root.ValueKind = JsonValueKind.Object && root.TryGetProperty("@graph", &graph) &&
+             graph.ValueKind = JsonValueKind.Array then graph.EnumerateArray() |> Seq.toList
+        else [ root ]
+    let current =
+        nodes
+        |> List.tryFind (fun node -> (dcText node "dc:title").IsSome)
+        |> Option.orElse (nodes |> List.tryFind (fun node -> node.ValueKind = JsonValueKind.Object))
+        |> Option.defaultValue (JsonElement())
+    let typedIdentifier (rawType: string) (value: string) =
+        let kind = rawType.Substring(rawType.LastIndexOf(':') + 1).ToUpperInvariant()
+        match kind with
+        | "DOI" -> Some (MetadataIdentifier("doi", value))
+        | "NAID" -> Some (MetadataIdentifier("naid", value))
+        | "NCID" -> Some (MetadataIdentifier("ncid", value))
+        | "NDL_BIB_ID" | "NDLBIBID" -> Some (MetadataIdentifier("ndlbibid", value))
+        | _ -> None
+    let identifiers =
+        let found = ResizeArray<MetadataIdentifier>()
+        let mutable products = JsonElement()
+        if current.TryGetProperty("productIdentifier", &products) && products.ValueKind = JsonValueKind.Array then
+            for entry in products.EnumerateArray() do
+                let mutable identifier = JsonElement()
+                if entry.TryGetProperty("identifier", &identifier) then
+                    match jsonString identifier "@type", jsonString identifier "@value" with
+                    | Some kind, Some value ->
+                        match typedIdentifier kind value with
+                        | Some result -> found.Add(result)
+                        | None -> ()
+                    | _ -> ()
+        let mutable declared = JsonElement()
+        if current.TryGetProperty("dc:identifier", &declared) then
+            let entries =
+                match declared.ValueKind with
+                | JsonValueKind.Array -> declared.EnumerateArray() |> Seq.toList
+                | _ -> [ declared ]
+            for entry in entries do
+                if entry.ValueKind = JsonValueKind.Object then
+                    match jsonString entry "@type", jsonString entry "@value" with
+                    | Some kind, Some value ->
+                        match typedIdentifier kind value with
+                        | Some result -> found.Add(result)
+                        | None -> ()
+                    | _ -> ()
+        match jsonString current "cinii:ncid" with
+        | Some value -> found.Add(MetadataIdentifier("ncid", value))
+        | None -> ()
+        found.Add(MetadataIdentifier(requested.Scheme, requested.Value))
+        found
+        |> Seq.distinctBy (fun identifier -> (identifier.Scheme + "\u0000" + identifier.Value).ToLowerInvariant())
+        |> Seq.toArray
+    let creators =
+        Array.append (Array.append (dcPeople current "creator" |> List.toArray)
+                          (dcPeople current "dc:creator" |> List.toArray))
+            (dcPeople current "foaf:maker" |> List.toArray)
+        |> Seq.distinctBy (fun creator -> match creator.Literal with null -> String.Empty | literal -> literal.ToUpperInvariant())
+        |> Seq.toArray
+    let dateText =
+        [ "prism:publicationDate"; "dc:date"; "dcterms:issued"; "ndl:dateGranted" ]
+        |> List.tryPick (fun property -> dcText current property)
+    // CiNii Research "description" entries carrying "notation" are classification notes, not
+    // abstracts; only plain-text descriptions are mapped.
+    let abstractText =
+        let mutable value = JsonElement()
+        if current.TryGetProperty("description", &value) then
+            match value.ValueKind with
+            | JsonValueKind.String -> clean (value.GetString())
+            | JsonValueKind.Array ->
+                value.EnumerateArray()
+                |> Seq.tryPick (fun entry ->
+                    match entry.ValueKind with
+                    | JsonValueKind.String -> clean (entry.GetString())
+                    | JsonValueKind.Object ->
+                        let mutable ignored = JsonElement()
+                        if entry.TryGetProperty("notation", &ignored) then None
+                        else jsonString entry "@value"
+                    | _ -> None)
+            | JsonValueKind.Object -> jsonString value "@value"
+            | _ -> None
+        else None
     MetadataCandidate("cinii",
-        (match jsonString current "name" with
-         | Some value -> Some value
-         | None -> jsonString current "headline") |> Option.toObj,
-        Creators = authors,
-        Dates = (match jsonString current "datePublished" with Some value -> literalDate value | None -> Array.empty),
-        PublicationTitle = (jsonChildString current "isPartOf" "name" |> Option.toObj),
-        Publisher = (jsonChildString current "publisher" "name" |> Option.toObj),
-        Language = (jsonString current "inLanguage" |> Option.toObj),
-        Abstract = (jsonString current "description" |> Option.toObj),
-        Tags = jsonStrings current "keywords")
+        dcText current "dc:title" |> Option.toObj,
+        Creators = creators,
+        Dates = (match dateText with Some value -> literalDate value | None -> Array.empty),
+        PublicationTitle = (dcText current "prism:publicationTitle" |> Option.toObj),
+        Publisher = (dcText current "dc:publisher" |> Option.toObj),
+        Language = (dcText current "dc:language" |> Option.toObj),
+        Abstract = (abstractText |> Option.toObj),
+        Tags = (langValues current "dc:subject" |> List.map fst |> List.toArray),
+        Identifiers = identifiers)
 
 let lookup (identifier: NormalizedIdentifier) (settings: Settings)
            (resources: IExtensionResources) (cancellationToken: CancellationToken) = task {
@@ -69,7 +193,11 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
         else
             try
                 use document = JsonDocument.Parse(fetched.Value)
-                return Result<MetadataCandidate>.Success(parseJsonLd document.RootElement)
+                // No isEmptyCandidate gate here: parseJsonLd always attaches the requested
+                // identifier, so "no title AND no identifiers" can never occur for this source.
+                // A title-less candidate is returned as-is; MetadataLookupService discards it and
+                // presents the missing title distinctly instead of a generic not-found.
+                return Result<MetadataCandidate>.Success(parseJsonLd document.RootElement identifier)
             with
             | ex when (ex :? JsonException || ex :? InvalidOperationException || ex :? KeyNotFoundException || ex :? FormatException) ->
                 return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.InvalidResponse,

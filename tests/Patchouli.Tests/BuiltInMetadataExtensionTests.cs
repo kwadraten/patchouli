@@ -72,7 +72,7 @@ public sealed class BuiltInMetadataExtensionTests
         [
             "doi", "isbn", "pmid", "pmcid", "mid", "arxiv", "openalex", "mag", "semantic_scholar", "oclc", "lccn",
             "olid", "google_books", "jpno", "ndlbibid", "ndljp", "ncid", "naid", "crid", "dnb", "gnd",
-            "urn_nbn_de", "ark", "frbnf"
+            "ark", "frbnf"
         ];
 
         string[] declared = BuiltInMetadataExtensions.SourceDefinitions

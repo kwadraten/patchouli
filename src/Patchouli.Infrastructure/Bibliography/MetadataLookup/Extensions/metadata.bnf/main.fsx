@@ -25,14 +25,23 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
     let baseUri = Uri(endpoint)
     if baseUri.Scheme <> Uri.UriSchemeHttp && baseUri.Scheme <> Uri.UriSchemeHttps then invalidArg "endpoint" "Bibliotheque nationale de France endpoint must use HTTP or HTTPS."
     let http = resources.Http
-    let query = if String.Equals(identifier.Scheme, "frbnf", StringComparison.OrdinalIgnoreCase) then "bib.fRBNF" else "bib.ark"
-    let url = sprintf "%s?version=1.2&operation=searchRetrieve&recordSchema=intermarcXchange&query=%s%%20all%%20%%22%s%%22" endpoint query (Uri.EscapeDataString identifier.Value)
+    // The bib.fRBNF index is rejected by the server ("Index non supporté"); FRBNF numbers are
+    // record numbers and are searchable through bib.recordid (per the SRU explain response).
+    let query = if String.Equals(identifier.Scheme, "frbnf", StringComparison.OrdinalIgnoreCase) then "bib.recordid" else "bib.ark"
+    // The shared identifier normalizer strips the ark:/ prefix for storage, but the bib.ark
+    // index only matches the full form, so restore it for the query.
+    let queryValue =
+        if String.Equals(identifier.Scheme, "ark", StringComparison.OrdinalIgnoreCase) &&
+           not (identifier.Value.StartsWith("ark:/", StringComparison.OrdinalIgnoreCase)) then
+            "ark:/" + identifier.Value
+        else identifier.Value
+    let url = sprintf "%s?version=1.2&operation=searchRetrieve&recordSchema=intermarcXchange&query=%s%%20all%%20%%22%s%%22" endpoint query (Uri.EscapeDataString queryValue)
     let! fetched = fetchSource resources http "Bibliotheque nationale de France" "application/xml" (Uri(url)) cancellationToken
     if fetched.IsFailure then
         return Result<MetadataCandidate>.Failure(failureCode fetched, failureMessage fetched)
     else
         let document = XDocument.Parse(fetched.Value)
-        match parseMarc document with
+        match parseIntermarc document with
         | None ->
             return Result<MetadataCandidate>.Failure(MetadataLookupErrorCodes.NotFound, "Bibliotheque nationale de France did not find a matching record.")
         | Some candidate ->
