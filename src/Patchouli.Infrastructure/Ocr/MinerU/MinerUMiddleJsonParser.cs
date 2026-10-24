@@ -47,8 +47,11 @@ internal static class MinerUMiddleJsonParser
                 { ["page_num"] = pageIndex + 1, ["width"] = 1000, ["height"] = 1000, ["blocks"] = blocks });
         }
 
-        return new MinerUContentListParser().Parse(new JsonObject { ["pages"] = result }.ToJsonString())
-               ?? throw new InvalidOperationException("Middle JSON contains no readable pages.");
+        MinerUContentListDocument parsed =
+            new MinerUContentListParser().Parse(new JsonObject { ["pages"] = result }.ToJsonString())
+            ?? throw new InvalidOperationException("Middle JSON contains no readable pages.");
+        // Middle JSON 2.0 是 v4 产物：continues_prev 显式标记是唯一接续来源，绝不走旧版空框推断。
+        return parsed with { ContinuationSemantics = MinerUContinuationSemantics.Explicit };
     }
 
     private static JsonObject ConvertBlock(JsonElement block)
@@ -70,6 +73,13 @@ internal static class MinerUMiddleJsonParser
             ["bbox"] = BBox(block),
             ["level"] = block.TryGetProperty("level", out JsonElement level) ? level.GetInt32() : null
         };
+        // v4 接续标记：后框以 continues_prev=true 声明自己延续阅读顺序中的前一个同类框；
+        // 它不是前框 ID 指针，也不能按数组相邻位置猜测，由 mapper 按阅读顺序与类型约束解析。
+        if (block.TryGetProperty("continues_prev", out JsonElement continuesPrev) &&
+            continuesPrev.ValueKind == JsonValueKind.True)
+        {
+            item["continues_prev"] = true;
+        }
         switch (type)
         {
             case "equation":

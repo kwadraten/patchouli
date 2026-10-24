@@ -112,7 +112,8 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 box.CodeLanguage,
                 box.Confidence,
                 box.Suppressed,
-                box.ContinuesFromBoxId)));
+                box.ContinuesFromBoxId,
+                box.ContinuationState)));
             Result<DocumentTreeRevision> working = await _trees.BeginWorkingRevisionAsync(
                 request.DocumentInstanceId,
                 page.PageId,

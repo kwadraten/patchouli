@@ -35,7 +35,8 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             mappedPages.Add(new OcrPageCandidate(page.PageId, page.PageIndex, boxes));
         }
 
-        return new OcrDocumentTreeCandidate(LinkContinuations(mappedPages, diagnostics), diagnostics);
+        return new OcrDocumentTreeCandidate(
+            LinkContinuationsForProduct(mappedPages, diagnostics, document.ContinuationSemantics), diagnostics);
     }
 
     public OcrDocumentTreeCandidate MapTextBoxes(Page page, IReadOnlyList<OcrEngineTextBox> textBoxes)
@@ -62,19 +63,106 @@ internal sealed class MinerUDocumentTreeCandidateMapper
     public (OcrPageCandidate Page, IReadOnlyList<OcrDiagnostic> Diagnostics) MapImagePage(
         MinerUContentListPage contentPage,
         Page page,
-        NormalizedBBox? region)
+        NormalizedBBox? region,
+        MinerUContinuationSemantics semantics = MinerUContinuationSemantics.Explicit)
     {
         List<OcrDiagnostic> diagnostics = [];
         List<OcrBoxCandidate> boxes = MapPageBoxes(contentPage, page, region, true, diagnostics);
-        OcrPageCandidate candidate = LinkContinuations(
-            [new OcrPageCandidate(page.PageId, page.PageIndex, boxes)], diagnostics)[0];
+        OcrPageCandidate candidate = LinkContinuationsForProduct(
+            [new OcrPageCandidate(page.PageId, page.PageIndex, boxes)], diagnostics, semantics)[0];
         return (candidate, diagnostics);
     }
 
-    // MinerU keeps the full text of a paragraph split across pages or columns in the first
-    // box and emits the remaining regions as paragraph blocks with empty content. Link each
-    // empty region back to the box that holds the text so the workspace can draw the dashed
-    // connection instead of showing a mysterious empty box.
+    // 按产物协议选择接续路径：只有旧版 content_list 产物（v3 及更早）才允许进入弃用的
+    // 空框推断兼容路径；v4 与其他引擎的候选一律按显式 continues_prev 标记解析。
+    private static IReadOnlyList<OcrPageCandidate> LinkContinuationsForProduct(
+        IReadOnlyList<OcrPageCandidate> pages,
+        List<OcrDiagnostic> diagnostics,
+        MinerUContinuationSemantics semantics)
+    {
+        if (semantics != MinerUContinuationSemantics.LegacyInferred)
+        {
+            return LinkContinuationsExplicit(pages, diagnostics);
+        }
+
+#pragma warning disable CS0618 // 兼容适配入口：产物协议已确认是旧版 content_list，此处调用弃用推断是唯一合法用途。
+        return LinkContinuations(pages, diagnostics);
+#pragma warning restore CS0618
+    }
+
+    // MinerU v4 接续语义：后框以 continues_prev 标记声明接续，源框是阅读顺序中最近的
+    // 同类型合格框（text/ref_text/list/table 各自同类型相接），可以同页跨栏、跨页或
+    // 组成多框链；标记不等于数组前一个元素——中间的页眉、页脚、标题等不合格框会被
+    // 跳过。两框各自保留自己的文字，接续关系显式写入 ContinuesFromBoxId。
+    private static IReadOnlyList<OcrPageCandidate> LinkContinuationsExplicit(
+        IReadOnlyList<OcrPageCandidate> pages,
+        List<OcrDiagnostic> diagnostics)
+    {
+        List<OcrBoxCandidate>[] boxesByPage = pages.Select(page => page.Boxes.ToList()).ToArray();
+        Dictionary<string, (int Page, int Index)> lastEligibleByType = new(StringComparer.Ordinal);
+
+        for (int pageIndex = 0; pageIndex < boxesByPage.Length; pageIndex++)
+        {
+            List<OcrBoxCandidate> boxes = boxesByPage[pageIndex];
+            for (int boxIndex = 0; boxIndex < boxes.Count; boxIndex++)
+            {
+                OcrBoxCandidate box = boxes[boxIndex];
+                if (box.Suppressed)
+                {
+                    continue;
+                }
+
+                if (box.ContinuesPrev)
+                {
+                    if (!DocumentContinuationRules.IsEligibleBoxType(box.BoxType))
+                    {
+                        diagnostics.Add(new OcrDiagnostic(
+                            "continuation_marker_ignored",
+                            "continues_prev 标记出现在不适用接续的框类型上，已忽略该标记。",
+                            pages[pageIndex].PageId,
+                            box.SourceOrder));
+                    }
+                    else if (lastEligibleByType.TryGetValue(box.BoxType, out (int Page, int Index) headPosition))
+                    {
+                        OcrBoxCandidate head = boxesByPage[headPosition.Page][headPosition.Index];
+                        if (head.PreassignedBoxId is null)
+                        {
+                            head = head with { PreassignedBoxId = Core.Ids.DocumentBoxId.New() };
+                            boxesByPage[headPosition.Page][headPosition.Index] = head;
+                        }
+
+                        boxes[boxIndex] = box with { ContinuesFromBoxId = head.PreassignedBoxId };
+                        box = boxes[boxIndex];
+                        diagnostics.Add(new OcrDiagnostic(
+                            "continuation_linked",
+                            "接续关系已按 continues_prev 显式标记建立；两框各自保留自己的文字。",
+                            pages[pageIndex].PageId,
+                            box.SourceOrder));
+                    }
+                    else
+                    {
+                        diagnostics.Add(new OcrDiagnostic(
+                            "continuation_without_predecessor",
+                            "continues_prev 标记之前没有同类型的可接续框，接续关系未建立。",
+                            pages[pageIndex].PageId,
+                            box.SourceOrder));
+                    }
+                }
+
+                if (DocumentContinuationRules.IsEligibleBoxType(box.BoxType))
+                {
+                    lastEligibleByType[box.BoxType] = (pageIndex, boxIndex);
+                }
+            }
+        }
+
+        return pages.Select((page, index) => page with { Boxes = boxesByPage[index] }).ToArray();
+    }
+
+    // 旧版 MinerU 把跨页/跨栏段落的全文留在首框、其余区域发为空框。此推断仅供
+    // content_list（v3 及更早）兼容导入使用，推断出的接续框会被标记为
+    // legacy_unrecovered（本框文字未恢复），与 v4 显式接续严格区分。
+    [Obsolete("旧版 MinerU（v3 及更早）空框推断兼容路径，仅可由 LinkContinuationsForProduct 在产物协议确认为 content_list 时调用；新代码必须使用 v4 continues_prev 显式接续（LinkContinuationsExplicit）。", error: false)]
     private static IReadOnlyList<OcrPageCandidate> LinkContinuations(
         IReadOnlyList<OcrPageCandidate> pages,
         List<OcrDiagnostic> diagnostics)
@@ -102,7 +190,11 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                         boxesByPage[headPosition.Value.Page][headPosition.Value.Index] = head;
                     }
 
-                    boxes[boxIndex] = box with { ContinuesFromBoxId = head.PreassignedBoxId };
+                    boxes[boxIndex] = box with
+                    {
+                        ContinuesFromBoxId = head.PreassignedBoxId,
+                        ContinuationState = DocumentContinuationState.LegacyUnrecovered
+                    };
                     diagnostics.Add(new OcrDiagnostic(
                         "paragraph_continuation_linked",
                         "MinerU paragraph continuation region was linked to the box holding its text.",
@@ -340,7 +432,8 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             bbox.Value,
             headingLevel,
             block.Confidence,
-            discarded || auxiliary, CodeLanguage: block.CodeLanguage);
+            discarded || auxiliary, CodeLanguage: block.CodeLanguage,
+            ContinuesPrev: block.ContinuesPrev ?? false);
     }
 
     private static (string BoxType, string? SubType, DocumentBoxPayload? Payload,
