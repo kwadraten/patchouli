@@ -2620,7 +2620,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         List<PdfBBoxViewModel> unresolved = [];
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
-            box.ContinuationHeadText = null;
             box.ContinuationSourceLabel = null;
             if (box.ContinuesFromBoxId is not { } headId)
             {
@@ -2629,7 +2628,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             if (byId.TryGetValue(headId, out PdfBBoxViewModel? head))
             {
-                box.ContinuationHeadText = head.Text;
+                box.ContinuationSourceLabel = ContinuationHint(box, "接续自本页源框");
                 ContinuationLinks.Add(new PdfContinuationLinkViewModel(head, box));
             }
             else
@@ -2668,8 +2667,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                         continue;
                     }
 
-                    box.ContinuationHeadText = PdfBBoxViewModel.PayloadText(head.Payload);
-                    box.ContinuationSourceLabel = $"续接自第 {pageIndex + 1} 页";
+                    box.ContinuationSourceLabel =
+                        ContinuationHint(box, $"接续自第 {pageIndex + 1} 页");
                     _crossPageContinuationSources[box.BoxId] = (pageIndex, head.BoxId);
                     CrossPageContinuationMarkers.Add(
                         new PdfCrossPageContinuationViewModel(box, pageIndex + 1));
@@ -2693,20 +2692,20 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         if (local is not null)
         {
             SelectedBox = local;
-            Status = "已选中同页的续接源框。";
+            Status = "已选中同页的接续源框。";
             return;
         }
 
         if (IsEditMode)
         {
-            Status = "请先提交或放弃当前页面草稿，再跳转到续接源框。";
+            Status = "请先提交或放弃当前页面草稿，再跳转到接续源框。";
             return;
         }
 
         if (!_crossPageContinuationSources.TryGetValue(
                 box.BoxId, out (int PageIndex, DocumentBoxId HeadBoxId) target))
         {
-            Status = "未能定位续接源框。";
+            Status = "未能定位接续源框。";
             return;
         }
 
@@ -2797,15 +2796,169 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    internal void RefreshContinuationDependents(DocumentBoxId headBoxId, string? headText)
+    // 接续关系提示：来源说明之外，旧版未恢复接续必须如实标注文字仍在源框，
+    // 不能让空框看起来像已有局部文字。
+    private static string ContinuationHint(PdfBBoxViewModel box, string sourceDescription)
     {
-        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        return box.IsLegacyContinuation
+            ? $"{sourceDescription}；旧版接续，文字尚未分配（全文在源框）"
+            : sourceDescription;
+    }
+
+    /// <summary>正在为其挑选接续源框的框；为空表示未处于挑选状态。</summary>
+    [ObservableProperty]
+    public partial PdfBBoxViewModel? ContinuationPickFollower { get; private set; }
+
+    partial void OnContinuationPickFollowerChanged(PdfBBoxViewModel? value)
+    {
+        Raise(nameof(IsPickingContinuationSource));
+    }
+
+    public bool IsPickingContinuationSource => ContinuationPickFollower is not null;
+
+    /// <summary>挑选期间可作为接续源框的候选（全书合法同类型框，含页码与文字预览）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<ContinuationSourceCandidate>
+        ContinuationSourceCandidates { get; } = new();
+
+    /// <summary>
+    /// 进入接续源框挑选：候选范围与服务端阅读顺序约束一致——只有排在目标框
+    /// 之前的同类型适用框（text/ref_text/list/table 且同类型、未抑制）。
+    /// 更早的页以各页当前已提交修订为准；当前页改以已加载的草稿框为准
+    /// （草稿中新建的框可选、已删除的框不出现、类型按草稿编辑后的值过滤），
+    /// 且只保留阅读序中更早的框；更晚的页整体不列。
+    /// 其余合法性（循环等）由 DocumentTreeEditor.SetContinuationAsync 统一校验。
+    /// </summary>
+    internal async Task BeginContinuationPickAsync(PdfBBoxViewModel follower)
+    {
+        if (ContinuationPickFollower == follower)
         {
-            if (box.ContinuesFromBoxId == headBoxId)
+            CancelContinuationPick();
+            return;
+        }
+
+        ContinuationPickFollower = follower;
+        ContinuationSourceCandidates.Clear();
+        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            Status = "当前文档缺少实例标识，无法建立接续。";
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        for (int pageIndex = 0; pageIndex < PageIndex && pageIndex < _pages.Count; pageIndex++)
+        {
+            Result<DocumentTreeRevision> revision = await services.DocumentTrees
+                .GetCurrentRevisionAsync(documentInstanceId, _pages[pageIndex].PageId);
+            if (revision.IsFailure)
             {
-                box.ContinuationHeadText = headText;
+                continue;
+            }
+
+            IReadOnlyList<DocumentBox> boxes = await LoadBoxesAsync(revision.Value.TreeRevisionId);
+            foreach (DocumentBox candidate in boxes)
+            {
+                if (candidate.BoxId == follower.BoxId || candidate.Suppressed ||
+                    !DocumentContinuationRules.CanContinue(follower.BoxType, candidate.BoxType))
+                {
+                    continue;
+                }
+
+                AddContinuationCandidate(pageIndex + 1, candidate.BoxId,
+                    PdfBBoxViewModel.PayloadText(candidate.Payload), false);
             }
         }
+
+        // 当前页口径与别页不同：直接取已加载的草稿框（BoundingBoxes 反映草稿的
+        // 增删与类型编辑），不再回读已提交修订，避免草稿新框不可选、已删框可选
+        // 后被服务端拒绝、按旧类型过滤三类不一致。
+        foreach (PdfBBoxViewModel candidate in BoundingBoxes)
+        {
+            if (candidate.BoxId == follower.BoxId || candidate.IsSuppressed ||
+                candidate.ReadingOrder >= follower.ReadingOrder ||
+                !DocumentContinuationRules.CanContinue(follower.BoxType, candidate.BoxType))
+            {
+                continue;
+            }
+
+            AddContinuationCandidate(PageIndex + 1, candidate.BoxId, candidate.Text, true);
+        }
+
+        Status = ContinuationSourceCandidates.Count == 0
+            ? "没有可作为接续源框的同类型框。"
+            : "请选择接续源框（接续只记录关系，不会搬移任何框的文字）。";
+    }
+
+    private void AddContinuationCandidate(
+        int pageNumber, DocumentBoxId boxId, string? previewText, bool isCurrentPage)
+    {
+        string preview = previewText?.Trim() ?? string.Empty;
+        if (preview.Length > 40)
+        {
+            preview = preview[..40] + "…";
+        }
+
+        ContinuationSourceCandidate entry = new(pageNumber, boxId, preview, isCurrentPage);
+        entry.ChooseCommand = new AsyncCommand(() => ChooseContinuationSourceAsync(entry));
+        ContinuationSourceCandidates.Add(entry);
+    }
+
+    internal void CancelContinuationPick()
+    {
+        ContinuationPickFollower = null;
+        ContinuationSourceCandidates.Clear();
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public AsyncCommand CancelContinuationPickCommand => _cancelContinuationPickCommand ??=
+        new AsyncCommand(() =>
+        {
+            CancelContinuationPick();
+            return Task.CompletedTask;
+        });
+
+    private AsyncCommand? _cancelContinuationPickCommand;
+
+    internal async Task ChooseContinuationSourceAsync(ContinuationSourceCandidate candidate)
+    {
+        PdfBBoxViewModel? follower = ContinuationPickFollower;
+        PageEditSessionId? sessionId = EditSessionId;
+        if (follower is null || sessionId is null)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, follower.BoxId, candidate.BoxId);
+        CancelContinuationPick();
+        if (result.IsFailure)
+        {
+            Status = $"建立接续失败: {result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "接续已写入页面草稿；提交后才会生成新版本。";
+    }
+
+    internal async Task ClearContinuationAsync(PdfBBoxViewModel box)
+    {
+        PageEditSessionId? sessionId = EditSessionId;
+        if (sessionId is null)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, box.BoxId, null);
+        if (result.IsFailure)
+        {
+            Status = $"解除接续失败: {result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "接续已解除（未改动任何框的文字）；提交后才会生成新版本。";
     }
 
     internal async Task RefreshBoxesAsync()
@@ -4044,4 +4197,16 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return Task.FromResult<IImage?>(currentImage());
         }
     }
+}
+
+/// <summary>接续源框候选：页码（一基）、框 ID、本框文字预览与选择命令。</summary>
+public sealed record ContinuationSourceCandidate(
+    int PageNumber,
+    DocumentBoxId BoxId,
+    string Preview,
+    bool IsCurrentPage)
+{
+    public AsyncCommand ChooseCommand { get; set; } = null!;
+
+    public string Display => $"第 {PageNumber} 页{(IsCurrentPage ? "（本页）" : string.Empty)} · {Preview}";
 }

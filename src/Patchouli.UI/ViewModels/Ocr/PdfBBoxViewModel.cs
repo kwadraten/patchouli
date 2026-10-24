@@ -35,6 +35,7 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         ParentBoxId = box.ParentBoxId;
         NextSiblingBoxId = box.NextSiblingBoxId;
         ContinuesFromBoxId = box.ContinuesFromBoxId;
+        ContinuationState = box.ContinuationState;
         BoxType = box.BoxType;
         Payload = box.Payload;
         HeadingLevel = box.HeadingLevel;
@@ -56,6 +57,9 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         DeleteCommand = new AsyncCommand(DeleteAsync, () => Workspace.IsEditMode);
         SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync, () => Workspace.IsEditMode);
         JumpToContinuationSourceCommand = new AsyncCommand(JumpToContinuationSourceAsync, () => IsContinuation);
+        BeginSetContinuationCommand = new AsyncCommand(BeginSetContinuationAsync, () => Workspace.IsEditMode);
+        ClearContinuationCommand = new AsyncCommand(ClearContinuationAsync,
+            () => Workspace.IsEditMode && IsContinuation);
 
         _isConstructing = false;
     }
@@ -66,16 +70,25 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     public DocumentBoxId? ParentBoxId { get; }
     public DocumentBoxId? NextSiblingBoxId { get; }
     public DocumentBoxId? ContinuesFromBoxId { get; }
+
+    /// <summary>接续兼容状态；非空仅见于迁移标记的旧版未恢复接续（<c>legacy_unrecovered</c>）。</summary>
+    public string? ContinuationState { get; }
+
+    /// <summary>本框是否为旧版推断产生、文字尚未恢复分配的接续框。</summary>
+    public bool IsLegacyContinuation => ContinuationState == DocumentContinuationState.LegacyUnrecovered;
+
     public bool IsContinuation => ContinuesFromBoxId is not null;
 
-    [ObservableProperty] public partial string? ContinuationHeadText { get; internal set; }
+    [ObservableProperty] public partial string? ContinuationSourceLabel { get; internal set; }
 
-    partial void OnContinuationHeadTextChanged(string? value)
+    partial void OnContinuationSourceLabelChanged(string? value)
     {
-        Raise(nameof(Summary));
+        Raise(nameof(HasContinuationHint));
     }
 
-    [ObservableProperty] public partial string? ContinuationSourceLabel { get; internal set; }
+    /// <summary>接续关系提示是否可见（<see cref="ContinuationSourceLabel" /> 非空）。</summary>
+    [ExcludeFromDerivedGeneration]
+    public bool HasContinuationHint => !string.IsNullOrWhiteSpace(ContinuationSourceLabel);
 
     public double Left => NormalizedX * ImageWidth;
 
@@ -123,11 +136,13 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     public int Depth { get; }
     public Thickness TreeMargin => new(Depth * 20, 0, 0, 4);
 
+    // 摘要永远显示本框自己的文字：接续是独立关系（见 ContinuationSourceLabel 的
+    // 关系提示），不借源框文字冒充本框内容；本框无文字时如实显示为空。
     [ExcludeFromDerivedGeneration]
     public string Summary => IsContinuation
-        ? "↳ " + (string.IsNullOrWhiteSpace(ContinuationHeadText)
-            ? "（续接区域，文字在源框）"
-            : ContinuationHeadText!.ReplaceLineEndings(" ").Trim())
+        ? "↳ " + (string.IsNullOrWhiteSpace(Text)
+            ? "（无文本内容）"
+            : Text.ReplaceLineEndings(" ").Trim())
         : string.IsNullOrWhiteSpace(Text)
             ? "（无文本内容）"
             : Text.ReplaceLineEndings(" ").Trim();
@@ -169,6 +184,12 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     public AsyncCommand SaveBBoxCommand { get; }
     public AsyncCommand JumpToContinuationSourceCommand { get; }
 
+    /// <summary>进入接续源框挑选（建立新接续或纠正现有接续的目标）。</summary>
+    public AsyncCommand BeginSetContinuationCommand { get; }
+
+    /// <summary>解除本框的接续关系；不改动任何框的文字。</summary>
+    public AsyncCommand ClearContinuationCommand { get; }
+
     [ObservableProperty] public partial double NormalizedX { get; set; }
     [ObservableProperty] public partial double NormalizedY { get; set; }
     [ObservableProperty] public partial double NormalizedWidth { get; set; }
@@ -198,7 +219,6 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         else
         {
             Workspace.Status = "文本已写入页面草稿。";
-            Workspace.RefreshContinuationDependents(BoxId, Text);
             await Workspace.RefreshPreviewAsync();
         }
     }
@@ -354,12 +374,24 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         await Workspace.JumpToContinuationSourceAsync(this);
     }
 
+    private async Task BeginSetContinuationAsync()
+    {
+        await Workspace.BeginContinuationPickAsync(this);
+    }
+
+    private async Task ClearContinuationAsync()
+    {
+        await Workspace.ClearContinuationAsync(this);
+    }
+
     internal void NotifyEditModeChanged()
     {
         Raise(nameof(ShowHandles));
         SaveTextCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
         SaveBBoxCommand.NotifyCanExecuteChanged();
+        BeginSetContinuationCommand.NotifyCanExecuteChanged();
+        ClearContinuationCommand.NotifyCanExecuteChanged();
     }
 
     internal void SetCanvasBBox(double left, double top, double width, double height)
