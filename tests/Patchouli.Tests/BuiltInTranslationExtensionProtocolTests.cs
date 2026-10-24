@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Extensions;
 using Patchouli.Extensions.Contracts;
@@ -771,6 +772,167 @@ public sealed class BuiltInTranslationExtensionProtocolTests
 
         prompts.Should().HaveCount(2);
         prompts[1].Should().NotContain("Previous page translation");
+    }
+
+    [Fact]
+    public async Task Microsoft_bisects_a_poisoned_batch_so_only_the_bad_segment_fails()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(request =>
+        {
+            Interlocked.Increment(ref calls);
+            using JsonDocument body = JsonDocument.Parse(request.Body!);
+            if (body.RootElement.EnumerateArray().Any(item => item.GetString()!.Contains("poison")))
+            {
+                return new TestHttpResponse(400, new Dictionary<string, string>(), "rejected");
+            }
+
+            int count = body.RootElement.GetArrayLength();
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                JsonSerializer.Serialize(Enumerable.Repeat(
+                    new { translations = new[] { new { text = "Bonjour" } } }, count).ToArray()));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/microsoft"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            Box("good", "Hello"),
+            Box("bad", "poison")
+        ]);
+
+        await RunBuiltInAsync("translation.microsoft-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome[] outcomes = job.Committed.Should().ContainSingle().Subject.Outcomes.ToArray();
+        outcomes[0].Kind.Should().Be(ExtensionBoxOutcomeKind.Translated,
+            $"the clean segment survives once the batch is bisected (code={outcomes[0].ErrorCode} msg={outcomes[0].ErrorMessage})");
+        outcomes[1].Kind.Should().Be(ExtensionBoxOutcomeKind.Failed);
+        calls.Should().Be(3, "one rejected batch plus one request per bisected single segment");
+    }
+
+    [Fact]
+    public async Task Html_table_retranslates_only_the_cells_that_break_the_structure()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(_ =>
+        {
+            string text = Interlocked.Increment(ref calls) <= 2 ? "</td><td>" : "Bonjour";
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                JsonSerializer.Serialize(new { sentences = new[] { new { trans = text } } }));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        const string html = "<table><tbody><tr><td>Alpha</td><td>Beta</td></tr></tbody></table>";
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("html-table"), null, "table", null, html,
+                """{"markdown":"","html":"<table><tbody><tr><td>Alpha</td><td>Beta</td></tr></tbody></table>","contentFormat":"html","contentFormatVersion":1}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        TableBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<TableBoxPayload>().Subject;
+        payload.Html.Should().Contain("<td>Bonjour</td><td>Bonjour</td>");
+        calls.Should().Be(4, "two poisoned cells are retranslated one request each after merge validation fails");
+    }
+
+    [Fact]
+    public async Task Gfm_table_cells_escape_pipes_and_line_breaks_in_translations()
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"a|b\nc"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("gfm-table"), null, "table", null, "| A | B |\n|---|---|\n| x | y |",
+                """{"markdown":"| A | B |\n|---|---|\n| x | y |"}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        TableBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<TableBoxPayload>().Subject;
+        payload.Markdown.Should().Contain("|---|---|", "the separator row survives the splice");
+        payload.Markdown.Should().Contain("a\\|b<br>c",
+            "provider cell text cannot corrupt the grid: pipes are escaped and breaks become <br>");
+    }
+
+    [Fact]
+    public async Task List_items_translate_individually_and_keep_their_markers()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(_ =>
+        {
+            Interlocked.Increment(ref calls);
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                """{"sentences":[{"trans":"UNO"}]}""");
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("list"), null, "list", null, "- first\n- second\n- third",
+                """{"markdown":"- first\n- second\n- third"}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        ListBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<ListBoxPayload>().Subject;
+        payload.Markdown.Should().Be("- UNO\n- UNO\n- UNO",
+            "item bodies are replaced while the list markers stay structural");
+        calls.Should().Be(3, "each top-level item is its own segment");
+    }
+
+    [Fact]
+    public async Task Llm_bisects_a_batch_when_the_response_omits_an_id()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(llm: request =>
+        {
+            Interlocked.Increment(ref calls);
+            string user = request.Messages.Single(message => message.Role == "user").Content;
+            using JsonDocument input = JsonDocument.Parse(user);
+            string[] ids = input.RootElement.EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            // Multi-item requests drop the last id; single-item replies are complete.
+            IEnumerable<string> returned = ids.Length > 1 ? ids.Take(ids.Length - 1) : ids;
+            return new LlmResponse(JsonSerializer.Serialize(
+                returned.Select(id => new { id, text = "T" })));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>(), 1);
+        TranslationExtensionOptions options = Options(8);
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            Box("one", "first"),
+            Box("two", "second"),
+            Box("three", "third")
+        ]);
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        job.Committed.Should().ContainSingle().Subject.Outcomes
+            .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+        calls.Should().Be(5, "3-id batch fails, then [1] succeeds and [2,3] bisects into two singles");
     }
 
     private static List<string> BackfillPrompts(out FakeCapabilities capabilities)

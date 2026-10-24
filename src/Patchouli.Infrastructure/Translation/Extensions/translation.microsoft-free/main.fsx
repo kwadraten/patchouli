@@ -53,10 +53,45 @@ let extension =
                 let work = { initial with Segments = segments }
                 return { Page = page; State = work; Items = segments |> Array.map (fun segment -> { Page = page; Segment = segment; Context = [||] }); ContextKey = "microsoft-edge"; Sequential = true }
             }
+            /// One HTTP request for a group of pending items; batch-level failures propagate so
+            /// the bisecting sender can isolate a poisoned segment to itself.
+            let sendPending (batch: (int * TranslationPageInput * Segment * string * Dictionary<string,string>) array) (token: CancellationToken) = task {
+                token.ThrowIfCancellationRequested()
+                do! resources.WaitToProceedAsync(token)
+                // Microsoft codes are the canonical script tags themselves, so canonical
+                // input passes straight through; the zh-CN/zh-TW branches only tolerate
+                // pre-canonicalization values and never rewrite a canonical tag.
+                let toMicrosoft (value: string) = if value = "zh-CN" then "zh-Hans" elif value = "zh-TW" then "zh-Hant" else value
+                let source = sourceLanguage common job |> fun value -> if value = "auto" then "" else toMicrosoft value
+                let target = targetLanguage common job |> toMicrosoft
+                let uri = endpoint + "?from=" + Uri.EscapeDataString(source) + "&to=" + Uri.EscapeDataString(target) + "&isEnterpriseClient=false"
+                let body = jsonBody (batch |> Array.map (fun (_, _, _, text, _) -> text))
+                use request = new HttpRequestMessage(HttpMethod.Post, Uri(uri))
+                request.Content <- new StringContent(body, Text.Encoding.UTF8, "application/json")
+                request.Headers.Accept.Add(MediaTypeWithQualityHeaderValue("application/json"))
+                if not (String.IsNullOrWhiteSpace userAgent) then request.Headers.TryAddWithoutValidation("User-Agent", userAgent) |> ignore
+                let! response = http.SendAsync(request, token)
+                use response = response
+                if not response.IsSuccessStatusCode then
+                    let message = "Microsoft Edge returned HTTP " + string (int response.StatusCode) + "."
+                    if int response.StatusCode = 429 then raise (TranslationRateLimitedException(message, None))
+                    elif int response.StatusCode = 408 || int response.StatusCode >= 500 then raise (TransientTranslationException(message))
+                    else raise (TranslationRequestRejectedException(message))
+                let! responseBody = response.Content.ReadAsStringAsync(token)
+                let parsed = parseMicrosoftResponse target batch.Length responseBody
+                return parsed |> Array.mapi (fun j value ->
+                    let _, page, segment, _, protectedTokens = batch[j]
+                    try
+                        let restored = restore value protectedTokens
+                        cacheTranslation common job page "microsoft-edge" (captureCacheEpoch ()) [||] segment restored
+                        translated segment.Id restored
+                    with
+                    | :? OperationCanceledException as error -> raise error
+                    | error -> failureFor segment.Id error) }
             let translate (items: WorkSegment array) (token: CancellationToken) = task {
                 if userAgent |> Seq.exists Char.IsControl then invalidArg "user-agent" "The User-Agent cannot contain control characters."
                 let results = Array.zeroCreate<SegmentOutcome> items.Length
-                let pending = ResizeArray<int * string * Dictionary<string,string>>()
+                let pending = ResizeArray<int * TranslationPageInput * Segment * string * Dictionary<string,string>>()
                 for i in 0 .. items.Length - 1 do
                     token.ThrowIfCancellationRequested()
                     let segment = items[i].Segment
@@ -67,48 +102,13 @@ let extension =
                         | None ->
                             let text, protectedTokens = protect segment.Id segment.Text
                             if text.Length > maxChars then results[i] <- failure segment.Id "translation_segment_exceeds_limit" "The protected structure token exceeds the provider batch character budget."
-                            else pending.Add(i, text, protectedTokens)
+                            else pending.Add(i, items[i].Page, segment, text, protectedTokens)
                 if pending.Count > 0 then
                     let batch = pending.ToArray()
-                    try
-                        token.ThrowIfCancellationRequested()
-                        do! resources.WaitToProceedAsync(token)
-                        // Microsoft codes are the canonical script tags themselves, so canonical
-                        // input passes straight through; the zh-CN/zh-TW branches only tolerate
-                        // pre-canonicalization values and never rewrite a canonical tag.
-                        let toMicrosoft (value: string) = if value = "zh-CN" then "zh-Hans" elif value = "zh-TW" then "zh-Hant" else value
-                        let source = sourceLanguage common job |> fun value -> if value = "auto" then "" else toMicrosoft value
-                        let target = targetLanguage common job |> toMicrosoft
-                        let uri = endpoint + "?from=" + Uri.EscapeDataString(source) + "&to=" + Uri.EscapeDataString(target) + "&isEnterpriseClient=false"
-                        let body = jsonBody (batch |> Array.map (fun (_, text, _) -> text))
-                        use request = new HttpRequestMessage(HttpMethod.Post, Uri(uri))
-                        request.Content <- new StringContent(body, Text.Encoding.UTF8, "application/json")
-                        request.Headers.Accept.Add(MediaTypeWithQualityHeaderValue("application/json"))
-                        if not (String.IsNullOrWhiteSpace userAgent) then request.Headers.TryAddWithoutValidation("User-Agent", userAgent) |> ignore
-                        let! response = http.SendAsync(request, token)
-                        use response = response
-                        if not response.IsSuccessStatusCode then
-                            let message = "Microsoft Edge returned HTTP " + string (int response.StatusCode) + "."
-                            if int response.StatusCode = 429 then raise (TranslationRateLimitedException(message, None))
-                            elif int response.StatusCode = 408 || int response.StatusCode >= 500 then raise (TransientTranslationException(message))
-                            else raise (TranslationRequestRejectedException(message))
-                        let! responseBody = response.Content.ReadAsStringAsync(token)
-                        let parsed = parseMicrosoftResponse target batch.Length responseBody
-                        for j in 0 .. batch.Length - 1 do
-                            let index, _, protectedTokens = batch[j]
-                            let segment = items[index].Segment
-                            try
-                                let restored = restore parsed[j] protectedTokens
-                                results[index] <- translated segment.Id restored
-                                cacheTranslation common job items[index].Page "microsoft-edge" (captureCacheEpoch ()) [||] segment restored
-                            with
-                            | :? OperationCanceledException as error -> raise error
-                            | error -> results[index] <- failureFor segment.Id error
-                    with
-                    | :? OperationCanceledException as error when token.IsCancellationRequested -> raise error
-                    | error ->
-                        for index, _, _ in batch do
-                            if isNull (box results[index]) || results[index].Kind <> ExtensionBoxOutcomeKind.Translated then results[index] <- failureFor items[index].Segment.Id error
+                    let! outcomes =
+                        sendInBatches (fun group -> sendPending group token)
+                            (fun (_, _, segment, _, _) error -> failureFor segment.Id error) batch token
+                    for (index, _, _, _, _), outcome in Array.zip batch outcomes do results[index] <- outcome
                 for i in 0 .. results.Length - 1 do
                     token.ThrowIfCancellationRequested()
                 return results
@@ -117,7 +117,13 @@ let extension =
                 { Prepare = prepare
                   Measure = fun item -> if item.Segment.ErrorCode.IsSome then 0, None else let text, _ = protect item.Segment.Id item.Segment.Text in text.Length, None
                   Translate = translate
-                  Finish = fun work items results -> mergeSegments work.Boxes work.Segments (Array.map2 (fun item result -> match result with | Ok value -> value | Error error -> failureFor item.Segment.Id error) items results) }
+                  Finish = fun work items results token -> task {
+                      let retranslate (segments: Segment array) (retryToken: CancellationToken) =
+                          sendPending (segments |> Array.map (fun segment ->
+                              let text, tokens = protect segment.Id segment.Text
+                              -1, work.Page, segment, text, tokens)) retryToken
+                      return! mergeSegments retranslate work.Boxes work.Segments
+                          (Array.map2 (fun item result -> match result with | Ok value -> value | Error error -> failureFor item.Segment.Id error) items results) token } }
             let budget = { MaxItems = maxItems; MaxCharacters = maxChars; MaxTokens = None }
             do! runSegmentPagesStable job options budget translator cancellationToken
     })
