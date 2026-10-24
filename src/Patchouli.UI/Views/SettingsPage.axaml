@@ -980,12 +980,12 @@
                             IsVisible="{Binding CanCancelOperation}" />
                   </Grid>
 
-                  <ItemsControl ItemsSource="{Binding Agents}" IsEnabled="{Binding Enabled}">
+                  <ItemsControl ItemsSource="{Binding Agents}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:AgentIntegrationRowViewModel">
                         <Border Classes="CardTile" Margin="0,0,0,10" Padding="14">
                           <StackPanel Spacing="10">
-                            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="10">
+                            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="10">
                               <controls:AgentIcon AgentId="{Binding Entry.Id}" Width="22" Height="22" Margin="0,2,0,0"
                                                   Foreground="{DynamicResource OnSurfaceBrush}" />
                               <StackPanel Grid.Column="1" Spacing="3">
@@ -1014,17 +1014,29 @@
                                            IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                               </StackPanel>
                               <RadioButton Grid.Column="2" GroupName="AgentSelection" VerticalAlignment="Center"
-                                           IsChecked="{Binding IsSelected}" IsEnabled="{Binding CanOperate}"
+                                           IsChecked="{Binding IsSelected}" IsEnabled="{Binding CanManageAgent}"
                                            ToolTip.Tip="设为默认 Agent" />
                               <Button Grid.Column="3" Padding="8,4" Command="{Binding RedetectCommand}"
-                                      IsEnabled="{Binding CanOperate}" ToolTip.Tip="重新检测">
+                                      IsEnabled="{Binding CanManageAgent}" ToolTip.Tip="重新检测">
                                 <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
                               </Button>
                               <Button Grid.Column="4" Padding="8,4" Command="{Binding TogglePathEditorCommand}"
+                                      IsEnabled="{Binding CanManageAgent}"
                                       ToolTip.Tip="自定义路径">
                                 <lucide:Lucide Icon="FolderOpen" Width="14" Height="14" />
                               </Button>
+                              <Button Grid.Column="5" Padding="8,4" Command="{Binding ToggleSkillCommand}"
+                                      IsEnabled="{Binding CanManageSkill}" ToolTip.Tip="{Binding SkillToolTip}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                  <lucide:Lucide Icon="{Binding SkillActionIcon}" Width="14" Height="14" />
+                                  <TextBlock Text="{Binding SkillActionText}" />
+                                </StackPanel>
+                              </Button>
                             </Grid>
+
+                            <TextBlock Text="{Binding SkillErrorText}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource ErrorBrush}"
+                                       IsVisible="{Binding SkillErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
                             <StackPanel Spacing="6" IsVisible="{Binding IsInstalling}">
                               <ProgressBar Value="{Binding InstallProgress}" Minimum="0" Maximum="1" Height="6" />
@@ -1040,7 +1052,7 @@
 
                             <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding CanInstall}">
                               <Button Padding="12,4" Command="{Binding InstallCommand}"
-                                      IsEnabled="{Binding CanOperate}">
+                                      IsEnabled="{Binding CanManageAgent}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <lucide:Lucide Icon="Download" Width="14" Height="14" />
                                   <TextBlock Text="一键安装" />
@@ -1061,13 +1073,15 @@
                                        IsVisible="{Binding ShowInstallHelp}" />
 
                             <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding ShowInstallHelp}">
-                              <Button Padding="12,4" Command="{Binding TogglePathEditorCommand}">
+                              <Button Padding="12,4" Command="{Binding TogglePathEditorCommand}"
+                                      IsEnabled="{Binding CanManageAgent}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <lucide:Lucide Icon="FolderOpen" Width="14" Height="14" />
                                   <TextBlock Text="自定义路径" />
                                 </StackPanel>
                               </Button>
                               <Button Padding="12,4" Command="{Binding OpenRepositoryCommand}"
+                                      IsEnabled="{Binding CanManageAgent}"
                                       IsVisible="{Binding HasRepository}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <lucide:Lucide Icon="ArrowUpRight" Width="13" Height="13" />
@@ -1076,7 +1090,8 @@
                               </Button>
                             </StackPanel>
 
-                            <StackPanel Spacing="6" IsVisible="{Binding IsPathEditorOpen}">
+                            <StackPanel Spacing="6" IsVisible="{Binding IsPathEditorOpen}"
+                                        IsEnabled="{Binding CanManageAgent}">
                               <TextBlock Text="自定义可执行文件路径（留空则恢复自动检测）" FontSize="11"
                                          Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                               <controls:PathPickerTextBox Path="{Binding CustomPath}"
@@ -1089,7 +1104,7 @@
                                         IsEnabled="{Binding HasCustomPath}" />
                                 <Button Content="重新检测" Padding="12,4"
                                         Command="{Binding RedetectCommand}"
-                                        IsEnabled="{Binding CanOperate}" />
+                                        IsEnabled="{Binding CanManageAgent}" />
                               </StackPanel>
                             </StackPanel>
                           </StackPanel>

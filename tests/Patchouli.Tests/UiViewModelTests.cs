@@ -1000,6 +1000,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task LibraryGrid_ctrl_and_shift_selection_survive_drag_handlers()
     {
         HeadlessUnitTestSession session = headless.Session;
+        string databasePath = Path.Combine(Path.GetTempPath(), $"ui-grid-selection-{Guid.NewGuid():N}.sqlite");
         await session.Dispatch<bool>(async () =>
         {
             MainWindow window = CreateMainWindowShell();
@@ -1008,11 +1009,20 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
             try
             {
-                // These cases drive the library grid directly and never run startup, so the
-                // startup overlay would otherwise stay visible and intercept the synthetic
-                // pointer input before it reaches the DataGrid.
+                // Selecting a row feeds the inspector-load pipeline, which resolves host services
+                // through ServicesAsync. With no database open that lazy path runs the full
+                // RunStartupAsync: the startup overlay (StartupLoadingPage, ZIndex 20) re-covers
+                // the window after the first click and swallows every later synthetic click.
+                // Opening a real library up front keeps ServicesAsync on the fast path.
+                vm.RuntimeDatabasePath = databasePath;
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
                 vm.IsStartupLoadingVisible = false;
                 window.Show();
+                Dispatcher.UIThread.RunJobs();
+                // Settle past the revision buffer window and sidebar throttles so no queued
+                // pipeline work can still swap the Items collection after the rows below are added.
+                await Task.Delay(150);
                 Dispatcher.UIThread.RunJobs();
                 await vm.Shell.CurrentRefreshCompletion.WaitAsync(TimeSpan.FromSeconds(10));
                 LibraryItemViewModel[] items = Enumerable.Range(0, 6)
@@ -1078,6 +1088,11 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             {
                 window.Close();
                 await vm.ShutdownAsync();
+                SqliteConnection.ClearAllPools();
+                if (File.Exists(databasePath))
+                {
+                    File.Delete(databasePath);
+                }
             }
         }, CancellationToken.None);
     }
