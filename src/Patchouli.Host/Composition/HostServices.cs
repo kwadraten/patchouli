@@ -129,7 +129,8 @@ public sealed class HostServices
             AgentPlatformEnvironment);
         AgentDetection = new AgentDetectionService(AgentProcessRunner, AgentPlatformEnvironment, AgentInstallOffers);
         AgentWorkspace = AgentWorkspaceLocator.FromRuntimeDatabase(runtimeDatabasePath);
-        AgentLauncher = new AgentLaunchService(AgentDetection, AgentWorkspace);
+        AgentSkills = new AgentSkillService();
+        AgentLauncher = new AgentLaunchService(AgentDetection, AgentWorkspace, AgentSkills);
         AgentMcpConfig = new AgentMcpConfigService();
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
@@ -426,6 +427,7 @@ public sealed class HostServices
     public IAgentInstallOfferProvider AgentInstallOffers { get; }
     public AgentDetectionService AgentDetection { get; }
     public AgentWorkspaceLocator AgentWorkspace { get; }
+    public AgentSkillService AgentSkills { get; }
     public AgentLaunchService AgentLauncher { get; }
     public AgentMcpConfigService AgentMcpConfig { get; }
 

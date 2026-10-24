@@ -59,6 +59,22 @@ public sealed class PlatformAppPaths : IAppPaths
         _environment = environment ?? (_ => null);
     }
 
+    /// <summary>Only directory hints understood by native Agent discovery; never runtime options or credentials.</summary>
+    public IReadOnlyDictionary<string, string> GetAgentSkillDirectoryOverrides()
+    {
+        Dictionary<string, string> directories = new(StringComparer.Ordinal);
+        foreach (string name in new[] { "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR" })
+        {
+            string? value = _environment(name);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                directories[name] = value;
+            }
+        }
+
+        return directories;
+    }
+
     public AppStorageLocations Resolve()
     {
         string config;

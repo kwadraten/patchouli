@@ -26,12 +26,15 @@ type Settings = {
 }
 /// The page's merged box outcomes plus the exact segments they came from. A batch-level error is
 /// reported per segment with the same code the translateBatch catch uses.
-let finish (state: PageWork) (items: WorkSegment array) (results: Result<SegmentOutcome, exn> array) =
-    mergeSegments state.Boxes state.Segments
+let finish (retranslate: Segment array -> CancellationToken -> Task<SegmentOutcome array>)
+           (state: PageWork) (items: WorkSegment array) (results: Result<SegmentOutcome, exn> array)
+           (token: CancellationToken) =
+    mergeSegments retranslate state.Boxes state.Segments
         (Array.map2 (fun (entry: WorkSegment) (result: Result<SegmentOutcome, exn>) ->
              match result with
              | Ok outcome -> outcome
              | Error error -> failure entry.Segment.Id "llm_translation_failed" error.Message) items results)
+        token
 
 /// A stable, order-sensitive fingerprint of the page-level reference context. Pages with the same
 /// references share a batch group because they share a prompt; no references means an empty key.
@@ -96,9 +99,9 @@ let translateBatch (resources: IExtensionResources) (llm: ILlmCapability)
         let returned = decodeLlmResponse response.Text (batch |> Array.map (fun item -> item.Id))
         return batch |> Array.map (fun item -> translated item.Id (restore returned[item.Id] protections[item.Id]))
     with
-    // A caller-owned cancellation ends the run; a capability-side timeout is just a failed batch.
+    // A caller-owned cancellation ends the run; every other batch failure propagates so the
+    // bisecting caller can isolate a poisoned segment to itself.
     | :? OperationCanceledException when ct.IsCancellationRequested -> return raise (OperationCanceledException(ct))
-    | error -> return batch |> Array.map (fun item -> failure item.Id "llm_translation_failed" error.Message)
 }
 
 /// <summary>Llm translation extension.</summary>
@@ -189,8 +192,13 @@ let extension =
                       if pending.Length = 0 then
                           Task.FromResult(Array.empty<SegmentOutcome>)
                       else
-                           translateBatch resources llm options modelOverride extraPrompt (targetLanguage common job)
-                               (sourceLanguage common job) (glossary job) references pending token
+                          sendInBatches
+                              (fun batch ->
+                                  translateBatch resources llm options modelOverride extraPrompt
+                                      (targetLanguage common job) (sourceLanguage common job) (glossary job)
+                                      references batch token)
+                              (fun (segment: Segment) error -> failure segment.Id "llm_translation_failed" error.Message)
+                              pending token
                   let requestedById = Dictionary<string, SegmentOutcome>(StringComparer.Ordinal)
                   for outcome in requested do
                       requestedById[outcome.SegmentId] <- outcome
@@ -214,7 +222,12 @@ let extension =
                           match requestedById.TryGetValue(entry.Segment.Id) with
                           | true, outcome -> outcome
                           | _ -> failure entry.Segment.Id "llm_translation_failed" "The model response omitted this segment.") }
-              Finish = finish }
+              Finish = fun work items results token -> task {
+                  let references = items[0].Context
+                  let retranslate (segments: Segment array) (retryToken: CancellationToken) =
+                      translateBatch resources llm options modelOverride extraPrompt (targetLanguage common job)
+                          (sourceLanguage common job) (glossary job) references segments retryToken
+                  return! finish retranslate work items results token } }
 
         let maxTokens = if options.MaxBatchTokens.HasValue then Some options.MaxBatchTokens.Value else None
         let budget = { MaxItems = max 1 options.BatchSize; MaxCharacters = limit; MaxTokens = maxTokens }

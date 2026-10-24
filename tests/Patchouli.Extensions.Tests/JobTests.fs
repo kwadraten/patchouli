@@ -107,16 +107,17 @@ type JobTests() =
           Measure = fun (box: ExtensionBox) ->
               (match box.Text with null -> 0 | text -> text.Length), None
           Translate = translate
-          Finish = fun _ (items: ExtensionBox array) (results: Result<string, exn> array) ->
-              Array.map2 (fun (box: ExtensionBox) (result: Result<string, exn>) ->
-                  match result with
-                  | Ok text ->
-                      ExtensionBoxOutcome(
-                          box.Id, ExtensionBoxOutcomeKind.Translated, TranslatedText = text)
-                  | Error error ->
-                      ExtensionBoxOutcome(
-                          box.Id, ExtensionBoxOutcomeKind.Failed,
-                          ErrorCode = errorCode error, ErrorMessage = error.Message)) items results }
+          Finish = fun _ (items: ExtensionBox array) (results: Result<string, exn> array) (_: CancellationToken) ->
+              Task.FromResult(
+                  Array.map2 (fun (box: ExtensionBox) (result: Result<string, exn>) ->
+                      match result with
+                      | Ok text ->
+                          ExtensionBoxOutcome(
+                              box.Id, ExtensionBoxOutcomeKind.Translated, TranslatedText = text)
+                      | Error error ->
+                          ExtensionBoxOutcome(
+                              box.Id, ExtensionBoxOutcomeKind.Failed,
+                              ErrorCode = errorCode error, ErrorMessage = error.Message)) items results) }
 
     let translateOk (items: ExtensionBox array) (_: CancellationToken) =
         Task.FromResult(items |> Array.map (fun box -> "T:" + string box.Text))

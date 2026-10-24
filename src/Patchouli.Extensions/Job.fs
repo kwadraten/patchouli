@@ -22,8 +22,10 @@ type JobTranslator<'TState, 'TItem, 'TResult> =
       Measure: 'TItem -> int * int option
       Translate: 'TItem array -> CancellationToken -> Task<'TResult array>
       /// Every input slot holds an explicit result: `Ok` values come from the batch reply, `Error`
-      /// carries the batch's failure so the engine can classify it into an outcome code.
-      Finish: 'TState -> 'TItem array -> Result<'TResult, exn> array -> ExtensionBoxOutcome array }
+      /// carries the batch's failure so the engine can classify it into an outcome code. The task
+      /// result lets engines re-request failed structural units before producing the outcomes.
+      Finish: 'TState -> 'TItem array -> Result<'TResult, exn> array -> CancellationToken ->
+          Task<ExtensionBoxOutcome array> }
 
 /// Optional failure handling for engines that must stop dispatching after a provider quota response.
 /// Kept outside JobTranslator so existing record literals remain source-compatible.
@@ -182,7 +184,7 @@ module Job =
                 page.Results |> Array.map (function
                     | Some result -> result
                     | None -> invalidOp "A translated item reached settlement without a result.")
-            let outcomes = translator.Finish prepared.State prepared.Items results
+            let! outcomes = translator.Finish prepared.State prepared.Items results cancellationToken
             let allFailed =
                 outcomes.Length > 0 &&
                 outcomes |> Array.forall (fun outcome -> outcome.Kind = ExtensionBoxOutcomeKind.Failed)
