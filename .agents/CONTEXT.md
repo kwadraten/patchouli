@@ -98,7 +98,9 @@ chapter-map ADR `0045` for ownership and consistency rules.
 ## Language
 
 **接续 (`continues_prev`)**:
-“接续”是 `continues_prev` 的标准中文译名，后续代码注释、产品文案和文档统一使用该术语；“续接”等旧称仅在历史材料或兼容说明中保留。接续表示阅读顺序中的后框延续前框内容，允许跨栏或跨页；每个物理框分别保存自己的文字和几何信息，前后框通过显式关系关联，不能以搬空后框或后框为空来表达或推断标准接续关系。所有 OCR 引擎的新结果均应采用 MinerU v4 的这一语义；完整段落由消费或渲染环节按关系组合。旧版 MinerU（v3 及更早）“首框保存合并文字、后框为空”的方式仅作为明确标记弃用的兼容导入路径保留：其推断入口以编译器 `[Obsolete]` 属性标记，标准路径不得引用。PDF 工作台支持建立、纠正和解除接续关系（`IDocumentTreeEditor.SetContinuationAsync`）；旧数据库的空框接续数据已由迁移 054 分类：本框无自有文字的接续显式标记 `continuation_state = 'legacy_unrecovered'`，全文保留在源框，等待人工在工作台重新分配文字，不得按字符数或几何比例猜拆。页面 XML 以 `continues_from`（源框稳定 ID）、`continues_from_page`（跨页定位）与 `continuation_state` 三个只读属性表达接续，put 往返必须原样保留。以上契约已由 [#29](https://github.com/kwadraten/patchouli/issues/29) 交付，MCP XML 展示见 [#28](https://github.com/kwadraten/patchouli/issues/28) 与 `.agents/protocols/mcp-protocol.md`。
+“接续”是 `continues_prev` 的标准中文译名，后续代码注释、产品文案和文档统一使用该术语；“续接”等旧称仅在历史材料或兼容说明中保留。接续表示阅读顺序中的后框延续前框内容，允许跨栏或跨页；每个物理框分别保存自己的文字和几何信息，前后框通过显式关系关联，不能以搬空后框或后框为空来表达或推断标准接续关系。所有 OCR 引擎的新结果均应采用 MinerU v4 的这一语义；完整段落由消费或渲染环节按关系组合。旧版 MinerU（v3 及更早）“首框保存合并文字、后框为空”的方式仅作为明确标记弃用的兼容导入路径保留：其推断入口以编译器 `[Obsolete]` 属性标记，标准路径不得引用。PDF 工作台支持建立、纠正和解除接续关系（`IDocumentTreeEditor.SetContinuationAsync`）；旧数据库的空框接续数据已由迁移 054 分类：本框无自有文字的接续显式标记 `continuation_state = 'legacy_unrecovered'`，全文保留在源框，等待人工在工作台重新分配文字，不得按字符数或几何比例猜拆。页面 XML 以 `continues_from`（源框稳定 ID）、`continues_from_page`（跨页定位）与 `continuation_state` 三个只读属性表达接续，put 往返必须原样保留。实现与剩余验收范围跟踪 [#29](https://github.com/kwadraten/patchouli/issues/29)，MCP XML 展示见 [#28](https://github.com/kwadraten/patchouli/issues/28) 与 `.agents/protocols/mcp-protocol.md`。
+
+消费边界：页内 Markdown 组合保留每个物理框的来源映射，结构不兼容时保留原片段并给出 `continuation_structure_preserved` 诊断，不猜拆或压平复杂表格。整书阅读仅组合已加载的正文链，保留分段页码和框定位；原译对比保持物理行对齐。原文导出可组合跨页链；跨页译文导出暂按页保留并明确提示，不宣称已完成译文逻辑合并。搜索和证据仍按物理框消费自有文字。改接续来源或幂等重设关系不会恢复旧空框的文字，只有实际写入本框内容才清除未恢复状态。
 
 **Library**:
 The durable boundary for metadata, document instances, OCR/layout/search artifacts, versioned evidence URIs, snapshots, credentials, and MCP resolution. A library keeps the same identity when renamed or moved.
@@ -198,8 +200,21 @@ The workspace page that hosts the selected agent in an embedded PTY terminal. It
 _Avoid_: Chat page, workflow editor, built-in agent UI
 
 **Agent Workspace**:
-The per-Library directory `<runtime database directory>/agent-workspace/` used as the external agent's current directory. It is created on first launch, is owner-only on Unix, is not snapshot content, and never contains a user source folder or Library database path. Generated MCP configuration lives here.
+The per-Library directory `<runtime database directory>/agent-workspace/` used as the external agent's current directory. It is created on first launch, is owner-only on Unix, is not snapshot content, and never contains a user source folder or Library database path. Generated MCP configuration and any managed Skill copy live here.
 _Avoid_: Library root, source folder, synced workspace
+
+**Patchouli Agent Skill**:
+The single bundled `patchouli` skill with five on-demand reference documents. Settings →
+AI集成 → Agent 集成 shows one button per Agent for its external user-level directory. That
+button installs or clears only the user-level target. Before each eligible Agent launch,
+Patchouli prepares the per-Library workspace copy unless an Agent-readable user-level copy exists;
+in that case launch selection leaves the user copy untouched and removes readable managed copies;
+it does not inspect its contents/version or repair it. Application startup may replace a still-
+existing, explicitly registered user-level install when its version marker is older. Same-version
+and unmarked installs are not repaired, and unregistered directories are untouched. Clear then
+explicitly inject to reset. Upgrade maintenance does not stop/restart a running Agent, though it
+may replace files on disk; Skill changes do not revoke MCP authorization or unload already-loaded
+context. See [distribution contract](protocols/agent-skills.md).
 
 **Run**:
 The volatile runtime projection of an OCR task or a direct translation run, observed through `patchouli://runs/`. `runs/ocr/` and `runs/translation/` report their own status and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is not part of snapshots and cannot be `put`. The built-in Agent session projection was removed in 0.3.13.

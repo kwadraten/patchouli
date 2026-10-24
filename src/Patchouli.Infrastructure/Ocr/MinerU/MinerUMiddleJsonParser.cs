@@ -80,6 +80,7 @@ internal static class MinerUMiddleJsonParser
         {
             item["continues_prev"] = true;
         }
+
         switch (type)
         {
             case "equation":

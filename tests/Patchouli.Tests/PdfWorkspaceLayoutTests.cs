@@ -96,7 +96,7 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("Classes=\"continuationLink\"")
             .And.Contain("Classes=\"crossPageMark\"")
             .And.Contain("Classes.continuation=\"{Binding IsContinuation}\"")
-            .And.Contain("跳转到续接源框")
+            .And.Contain("跳转到接续源框")
             .And.Contain("JumpToContinuationSourceCommand");
         codeBehind.Should().Contain("OnCrossPageMarkPressed");
         viewModel.Should().Contain("UpdateContinuationLinksAsync")

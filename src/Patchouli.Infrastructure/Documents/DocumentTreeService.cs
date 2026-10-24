@@ -346,7 +346,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         CancellationToken cancellationToken = default)
     {
         return await CommitWorkingRevisionGuardedAsync(
-            connection, transaction, workingRevisionId, commitId, null, cancellationToken);
+            connection, transaction, workingRevisionId, commitId, null, null, null, cancellationToken);
     }
 
     // replacedCurrentRevisionIds 是批量提交时「本批将被取代的各页当前修订」的
@@ -357,6 +357,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentTreeRevisionId workingRevisionId,
         DocumentCommitId? commitId,
         IReadOnlyCollection<string>? replacedCurrentRevisionIds,
+        IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>>? batchFutureSnapshot,
+        IReadOnlyCollection<string>? batchReplacedPageIds,
         CancellationToken cancellationToken)
     {
         DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, workingRevisionId);
@@ -374,6 +376,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             return Result<DocumentTreeRevision>.Failure(
                 validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>> futureSnapshot = batchFutureSnapshot ??
+            new Dictionary<string, IReadOnlyList<DocumentBox>>
+            {
+                [working.PageId.ToString()] = boxes
+            };
+        Result continuationValidation = await ValidateChangedPageContinuationsAsync(
+            connection, transaction, working.DocumentInstanceId, futureSnapshot,
+            batchReplacedPageIds ?? [working.PageId.ToString()]);
+        if (continuationValidation.IsFailure)
+        {
+            return Result<DocumentTreeRevision>.Failure(continuationValidation.ErrorCode!,
+                continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
         }
 
         // 整页替换的跨页接续防护（N1，与 F1 删/拆/合防护同一不变量）：提交工作
@@ -463,11 +479,46 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             }
         }
 
+        Dictionary<string, IReadOnlyList<DocumentBox>> futureSnapshotByPage = new(StringComparer.Ordinal);
+        HashSet<string> replacedPageIds = new(StringComparer.Ordinal);
+        DocumentInstanceId? batchDocumentId = null;
+        foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
+        {
+            DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, revisionId);
+            if (row is null || row.Status != DocumentTreeRevisionStatus.Working)
+            {
+                continue;
+            }
+
+            DocumentTreeRevision revision = row.ToRevision();
+            if (batchDocumentId is not null && batchDocumentId != revision.DocumentInstanceId)
+            {
+                return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(AppErrorCodes.ValidationFailed,
+                    "A continuation commit batch must belong to one document instance.");
+            }
+
+            batchDocumentId = revision.DocumentInstanceId;
+            replacedPageIds.Add(revision.PageId.ToString());
+            futureSnapshotByPage[revision.PageId.ToString()] = await GetBoxesAsync(connection, transaction, revisionId);
+        }
+
+        if (batchDocumentId is not null)
+        {
+            Result continuationValidation = await ValidateChangedPageContinuationsAsync(
+                connection, transaction, batchDocumentId.Value, futureSnapshotByPage, replacedPageIds);
+            if (continuationValidation.IsFailure)
+            {
+                return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(continuationValidation.ErrorCode!,
+                    continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
+            }
+        }
+
         List<DocumentTreeRevision> committed = new(workingRevisionIds.Count);
         foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
         {
             Result<DocumentTreeRevision> result = await CommitWorkingRevisionGuardedAsync(
-                    connection, transaction, revisionId, commitId, replacedCurrentRevisionIds, cancellationToken)
+                    connection, transaction, revisionId, commitId, replacedCurrentRevisionIds,
+                    futureSnapshotByPage, replacedPageIds, cancellationToken)
                 .ConfigureAwait(false);
             if (result.IsFailure)
             {
@@ -831,6 +882,18 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
             }
 
+            Result continuationValidation = await ValidateChangedPageContinuationsAsync(
+                connection, transaction, documentInstanceId,
+                new Dictionary<string, IReadOnlyList<DocumentBox>>
+                {
+                    [pageId.ToString()] = clonedBoxes
+                }, [pageId.ToString()]);
+            if (continuationValidation.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(continuationValidation.ErrorCode!,
+                    continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
+            }
+
             await InsertRevisionAsync(connection, transaction, working, null);
             await ReplaceBoxesAsync(connection, transaction, working.TreeRevisionId, clonedBoxes);
 
@@ -940,6 +1003,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             {
                 return Result<DocumentTreeRevision>.Failure(
                     validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+            }
+
+            IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>> futureSnapshot =
+                new Dictionary<string, IReadOnlyList<DocumentBox>>
+                {
+                    [working.PageId.ToString()] = boxes
+                };
+            Result continuationValidation = await ValidateChangedPageContinuationsAsync(
+                connection, transaction, working.DocumentInstanceId, futureSnapshot,
+                [working.PageId.ToString()]);
+            if (continuationValidation.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(continuationValidation.ErrorCode!,
+                    continuationValidation.ErrorMessage!, continuationValidation.Conflicts);
             }
 
             // 提交期跨页防护（与变更期 CheckCrossPageContinuationGuardAsync 同一
@@ -1372,7 +1449,9 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
     /// <summary>
     /// 建立、纠正或解除接续关系。只改关系本身：不搬移、不清空、不复制任何框的文字；
-    /// 人工建立的关系是 v4 显式接续，兼容状态一并清除。跨页源框从本文档各页的当前
+    /// 建立或纠正关系不会恢复 legacy_unrecovered 框的局部文字；只有写入本框自己的
+    /// 非空内容才会清除该兼容状态。解除关系时清除状态，因为该框已不再声明接续。
+    /// 跨页源框从本文档各页的当前
     /// 已提交修订中解析（同页源框优先取草稿中的最新状态），并沿源框的接续链校验成环。
     /// </summary>
     public async Task<Result> SetContinuationAsync(
@@ -1438,6 +1517,14 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         "Continuation requires two boxes of the same eligible type (text, ref_text, list, or table).");
                 }
 
+                if (follower.ContinuesFromBoxId != sourceBoxId.Value &&
+                    await HasOtherContinuationFollowerAsync(
+                        connection, transaction, revision, boxes, sourceBoxId.Value, boxId))
+                {
+                    return Result<DocumentBox>.Failure(AppErrorCodes.ValidationFailed,
+                        "A continuation source can have only one explicit follower.");
+                }
+
                 // 接续方向沿阅读顺序：源框必须位于 follower 之前（更早的页，
                 // 或同页阅读序中更早），方向反了的关系从建立时即拒绝。
                 Result order = await ValidateContinuationOrderAsync(
@@ -1466,7 +1553,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 boxes[index] = follower with
                 {
                     ContinuesFromBoxId = sourceBoxId.Value,
-                    ContinuationState = null
+                    ContinuationState = follower.ContinuationState
                 };
             }
 
@@ -1518,6 +1605,170 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             ? Result.Success()
             : Result.Failure(AppErrorCodes.ValidationFailed,
                 "A continuation source must be on an earlier page than the box.");
+    }
+
+    // Validate only links touching pages changed by this commit. This deliberately ignores
+    // pre-existing dangling pointers elsewhere: old snapshots remain readable historical evidence.
+    // Batch overrides are installed together before checking, so a page earlier in the commit loop
+    // is validated against the complete future snapshot rather than its predecessor.
+    private static async Task<Result> ValidateChangedPageContinuationsAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentInstanceId documentInstanceId,
+        IReadOnlyDictionary<string, IReadOnlyList<DocumentBox>> overrides,
+        IReadOnlyCollection<string> changedPageIds)
+    {
+        HashSet<string> changed = changedPageIds.ToHashSet(StringComparer.Ordinal);
+        string[] changedPageArray = changed.ToArray();
+        IEnumerable<DocumentTreeRevisionRow> currentRows = await connection.QueryAsync<DocumentTreeRevisionRow>(
+            SelectRevisionSql +
+            " where document_instance_id = @DocumentInstanceId and page_id in @PageIds and status = 'committed' and is_current = 1;",
+            new { DocumentInstanceId = documentInstanceId.ToString(), PageIds = changedPageArray }, transaction);
+        DocumentTreeRevisionRow[] changedCurrentRows = currentRows.ToArray();
+        string[] changedRevisionIds = changedCurrentRows.Select(row => row.TreeRevisionId).ToArray();
+        DocumentBox[] changedCurrentBoxes = changedRevisionIds.Length == 0
+            ? []
+            : (await connection.QueryAsync<DocumentBoxRow>(
+                SelectBoxesSql + " where tree_revision_id in @RevisionIds;",
+                new { RevisionIds = changedRevisionIds }, transaction)).Select(row => row.ToBox()).ToArray();
+
+        DocumentBox[] overrideBoxes = overrides.Values.SelectMany(boxes => boxes).ToArray();
+        HashSet<DocumentBoxId> knownBoxIds = changedCurrentBoxes.Select(box => box.BoxId)
+            .Concat(overrideBoxes.Select(box => box.BoxId)).ToHashSet();
+        HashSet<DocumentBoxId> relevantIds = knownBoxIds
+            .Concat(changedCurrentBoxes.Where(box => box.ContinuesFromBoxId is not null)
+                .Select(box => box.ContinuesFromBoxId!.Value))
+            .Concat(overrideBoxes.Where(box => box.ContinuesFromBoxId is not null)
+                .Select(box => box.ContinuesFromBoxId!.Value)).ToHashSet();
+        if (relevantIds.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        DocumentBox[] relatedCurrentBoxes = (await connection.QueryAsync<DocumentBoxRow>(
+            SelectBoxesSql + "\n" + """
+                                    where document_boxes.document_instance_id = @DocumentInstanceId
+                                      and exists (
+                                          select 1 from document_tree_revisions r
+                                          where r.tree_revision_id = document_boxes.tree_revision_id
+                                            and r.status = 'committed' and r.is_current = 1)
+                                      and (document_boxes.box_id in @BoxIds or document_boxes.continues_from_box_id in @BoxIds);
+                                    """,
+            new
+            {
+                DocumentInstanceId = documentInstanceId.ToString(),
+                BoxIds = relevantIds.Select(id => id.ToString()).ToArray()
+            },
+            transaction)).Select(row => row.ToBox()).ToArray();
+
+        HashSet<string> overriddenPages = overrides.Keys.ToHashSet(StringComparer.Ordinal);
+        Dictionary<DocumentBoxId, DocumentBox> byId = relatedCurrentBoxes
+            .Where(box => !overriddenPages.Contains(box.PageId.ToString()))
+            .GroupBy(box => box.BoxId).ToDictionary(group => group.Key, group => group.First());
+        foreach (DocumentBox box in overrideBoxes)
+        {
+            byId[box.BoxId] = box;
+        }
+
+        Dictionary<DocumentBoxId, DocumentBox> oldChangedBoxes = changedCurrentBoxes
+            .GroupBy(box => box.BoxId).ToDictionary(group => group.Key, group => group.First());
+        HashSet<DocumentBoxId> overriddenBoxIds = overrideBoxes.Select(box => box.BoxId).ToHashSet();
+
+        foreach (DocumentBox follower in byId.Values.Where(box => box.ContinuesFromBoxId is not null))
+        {
+            DocumentBoxId sourceId = follower.ContinuesFromBoxId!.Value;
+            if (!byId.TryGetValue(sourceId, out DocumentBox? source))
+            {
+                // If the missing endpoint belonged to a changed page's old/future ID set,
+                // this is a newly introduced dangling link, not unrelated historical damage.
+                bool sourceWasRemoved = knownBoxIds.Contains(sourceId) && !byId.ContainsKey(sourceId);
+                bool relationWasIntroduced = overriddenBoxIds.Contains(follower.BoxId) &&
+                                             (!oldChangedBoxes.TryGetValue(follower.BoxId,
+                                                  out DocumentBox? oldFollower) ||
+                                              oldFollower.ContinuesFromBoxId != follower.ContinuesFromBoxId);
+                if ((sourceWasRemoved || relationWasIntroduced) && changed.Contains(follower.PageId.ToString()))
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "A continuation source was removed from the future page snapshot; the draft was kept.");
+                }
+
+                continue;
+            }
+
+            if (!changed.Contains(follower.PageId.ToString()) && !changed.Contains(source.PageId.ToString()))
+            {
+                continue;
+            }
+
+            if (follower.Suppressed || source.Suppressed ||
+                !DocumentContinuationRules.CanContinue(follower.BoxType, source.BoxType))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "A continuation link requires two unsuppressed boxes of the same eligible type; the draft was kept.");
+            }
+        }
+
+        HashSet<DocumentBoxId> newlyLinkedFollowers = overrideBoxes
+            .Where(box => box.ContinuesFromBoxId is not null &&
+                          box.ContinuationState != DocumentContinuationState.LegacyUnrecovered &&
+                          (!oldChangedBoxes.TryGetValue(box.BoxId, out DocumentBox? oldBox) ||
+                           oldBox.ContinuesFromBoxId != box.ContinuesFromBoxId))
+            .Select(box => box.BoxId).ToHashSet();
+        foreach (IGrouping<DocumentBoxId, DocumentBox> branch in byId.Values
+                     .Where(box => box.ContinuesFromBoxId is not null)
+                     .GroupBy(box => box.ContinuesFromBoxId!.Value))
+        {
+            DocumentBox[] followers = branch.ToArray();
+            if (byId.ContainsKey(branch.Key) && followers.Length > 1 &&
+                followers.Any(box => newlyLinkedFollowers.Contains(box.BoxId)))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "A continuation source can have only one explicit follower; the draft was kept.");
+            }
+        }
+
+        return Result.Success();
+    }
+
+    private static async Task<bool> HasOtherContinuationFollowerAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevision callerRevision,
+        IReadOnlyList<DocumentBox> callerDraft,
+        DocumentBoxId sourceBoxId,
+        DocumentBoxId followerBoxId)
+    {
+        bool callerDraftHasOther = callerDraft.Any(box => box.BoxId != followerBoxId &&
+                                                          box.ContinuesFromBoxId == sourceBoxId);
+        if (callerDraftHasOther)
+        {
+            return true;
+        }
+
+        int otherPageFollowers = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1)
+            from document_boxes b
+            join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+            where b.document_instance_id = @DocumentInstanceId
+              and b.page_id <> @CallerPageId
+              and b.continues_from_box_id = @SourceBoxId
+              and (
+                    (r.status = 'committed' and r.is_current = 1 and not exists (
+                        select 1 from document_tree_revisions draft
+                        where draft.document_instance_id = r.document_instance_id
+                          and draft.page_id = r.page_id and draft.status = 'working'
+                          and draft.edit_session_id is not null))
+                 or (r.status = 'working' and r.edit_session_id is not null)
+              );
+            """,
+            new
+            {
+                DocumentInstanceId = callerRevision.DocumentInstanceId.ToString(),
+                CallerPageId = callerRevision.PageId.ToString(),
+                SourceBoxId = sourceBoxId.ToString()
+            }, transaction);
+        return otherPageFollowers > 0;
     }
 
     private static Dictionary<DocumentBoxId, int> ReadingOrderPositions(IReadOnlyList<DocumentBox> boxes)

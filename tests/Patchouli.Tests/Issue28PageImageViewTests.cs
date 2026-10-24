@@ -67,6 +67,29 @@ public sealed class Issue28PageImageViewTests
     }
 
     [Fact]
+    public async Task Large_deep_tree_numbering_is_ordered_without_recursive_stack_growth()
+    {
+        Harness harness = new();
+        DocumentBoxId? parent = null;
+        const int boxCount = 1_200;
+        List<DocumentBoxId> expected = new(boxCount);
+        for (int index = 0; index < boxCount; index++)
+        {
+            parent = harness.AddBox(parent, null, new NormalizedBBox(0.05, 0.05, 0.01, 0.01));
+            expected.Add(parent.Value);
+        }
+
+        Result<PageImageViewResult> result = await harness.Service.ViewAsync(
+            harness.Request(numberedBoxes: true));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.BoxNumbers.Should().HaveCount(boxCount);
+        result.Value.BoxNumbers!.Select(number => number.Index)
+            .Should().Equal(Enumerable.Range(1, boxCount));
+        result.Value.BoxNumbers.Select(number => number.BoxId).Should().Equal(expected);
+    }
+
+    [Fact]
     public async Task Boxes_region_crop_reports_only_intersecting_boxes_with_global_numbers()
     {
         Harness harness = new();

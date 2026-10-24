@@ -1,3 +1,4 @@
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -34,9 +35,12 @@ internal sealed record LoadedTranslationPage(
     /// <summary>True when every translatable leaf already has a current row in <paramref name="targetLanguage"/>.</summary>
     public bool IsCurrentIn(string targetLanguage)
     {
+        // Both sides canonicalize before comparing: a header stored before canonicalization
+        // (zh-CN) must still count as current for the canonical setting value (zh-Hans).
         return Status.IsCurrent &&
                Status.TargetLanguage is not null &&
-               string.Equals(Status.TargetLanguage, targetLanguage, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(ItemLanguage.Canonicalize(Status.TargetLanguage),
+                   ItemLanguage.Canonicalize(targetLanguage), StringComparison.Ordinal) &&
                !Status.StaleBoxIds.Any(TranslatableLeafBoxIds.Contains);
     }
 }

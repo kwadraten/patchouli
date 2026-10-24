@@ -1,4 +1,5 @@
 using Patchouli.Core.Bibliography.MetadataLookup;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Extensions;
@@ -25,14 +26,24 @@ public sealed class McpHostImplementationCatalogApi(
     public async Task<Result<IReadOnlyList<McpImplementationEntry>>> ListAsync(string domain,
         CancellationToken cancellationToken = default)
     {
-        return domain switch
+        try
         {
-            "ocr" => Result<IReadOnlyList<McpImplementationEntry>>.Success(ListOcrEngines()),
-            "translation" => await ListTranslationExtensionsAsync(cancellationToken).ConfigureAwait(false),
-            "metadata" => Result<IReadOnlyList<McpImplementationEntry>>.Success(ListMetadataSources()),
-            _ => Result<IReadOnlyList<McpImplementationEntry>>.Failure(AppErrorCodes.InvalidArgument,
-                $"Unknown runs domain '{domain}'.")
-        };
+            cancellationToken.ThrowIfCancellationRequested();
+            return domain switch
+            {
+                "ocr" => Result<IReadOnlyList<McpImplementationEntry>>.Success(ListOcrEngines()),
+                "translation" => await ListTranslationExtensionsAsync(cancellationToken).ConfigureAwait(false),
+                "metadata" => Result<IReadOnlyList<McpImplementationEntry>>.Success(ListMetadataSources()),
+                _ => Result<IReadOnlyList<McpImplementationEntry>>.Failure(AppErrorCodes.InvalidArgument,
+                    $"Unknown runs domain '{domain}'.")
+            };
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "host.mcp-implementation-catalog", domain))
+        {
+            return Result<IReadOnlyList<McpImplementationEntry>>.Failure(
+                "implementation_catalog_unavailable", "The implementation catalog is unavailable.");
+        }
     }
 
     private IReadOnlyList<McpImplementationEntry> ListOcrEngines()

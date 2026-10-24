@@ -21,8 +21,15 @@ type Settings = {
 
 let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IExtensionResources) (http: HttpClient) (endpoint: string) (segment: Segment) cancellationToken = task {
     let text, tokens = protect segment.Id segment.Text
-    let source = sourceLanguage common job
-    let target = targetLanguage common job
+    // Google codes are region-style: the canonical script tags map back to zh-CN/zh-TW;
+    // every other canonical tag (including the auto sentinel) passes through unchanged.
+    let toGoogle (language: string) =
+        match language with
+        | "zh-Hans" -> "zh-CN"
+        | "zh-Hant" -> "zh-TW"
+        | other -> other
+    let source = toGoogle (sourceLanguage common job)
+    let target = toGoogle (targetLanguage common job)
     let uri = endpoint + "?client=gtx&dt=t&dj=1&sl=" + Uri.EscapeDataString(source) + "&tl=" + Uri.EscapeDataString(target) + "&q=" + Uri.EscapeDataString(text)
     if uri.Length > 8192 then invalidOp "The Google Translate URL exceeds the safe request length. Reduce the maximum query characters or use another provider."
     let options = effectiveEngineOptions common job (Some 1) (Some 1M)

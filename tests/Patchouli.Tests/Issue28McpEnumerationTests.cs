@@ -13,7 +13,9 @@ using Patchouli.Host.Composition;
 using Patchouli.Host.Extensions;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
+using Patchouli.Ocr;
 using Patchouli.UI;
+using Patchouli.Host.Mcp;
 
 namespace Patchouli.Tests;
 
@@ -91,6 +93,47 @@ public sealed class Issue28McpEnumerationTests
         code.Should().Be(McpErrorCode.Unavailable);
     }
 
+    [Fact]
+    public async Task Host_catalog_exception_becomes_unavailable_without_exposing_exception_details()
+    {
+        (_, Stub<IMetadataSourceRegistry> metadata) = Stub<IMetadataSourceRegistry>.Create();
+        bool sourcesRead = false;
+        metadata.Handle("get_" + nameof(IMetadataSourceRegistry.Sources), _ =>
+        {
+            sourcesRead = true;
+            throw new IOException("secret-path=C:\\private\\catalog.sqlite token=do-not-leak");
+        });
+        McpHostImplementationCatalogApi catalog = new(
+            CreateEmptyOcrRegistry(), () => "", null!, metadata.Proxy, () => "");
+        McpCommandService commands = CreateService(catalog);
+
+        McpFetchResult entry = await FetchControlAsync(commands, "metadata");
+
+        sourcesRead.Should().BeTrue("the real host catalog must read the registry getter");
+        McpToolError.TryGetCode(entry.Error, out McpErrorCode code).Should().BeTrue();
+        code.Should().Be(McpErrorCode.Unavailable);
+        entry.Error.Should().NotContain("private").And.NotContain("do-not-leak");
+    }
+
+    [Fact]
+    public async Task Host_catalog_preserves_cancellation()
+    {
+        (_, Stub<IMetadataSourceRegistry> metadata) = Stub<IMetadataSourceRegistry>.Create();
+        bool sourcesRead = false;
+        metadata.Handle("get_" + nameof(IMetadataSourceRegistry.Sources), _ =>
+        {
+            sourcesRead = true;
+            throw new OperationCanceledException("catalog cancelled");
+        });
+        McpHostImplementationCatalogApi catalog = new(
+            CreateEmptyOcrRegistry(), () => "", null!, metadata.Proxy, () => "");
+
+        Func<Task> act = () => catalog.ListAsync("metadata");
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        sourcesRead.Should().BeTrue("cancellation is thrown by the invoked registry delegate");
+    }
+
     // ---------- host level (real registries) ----------
 
     [Fact]
@@ -140,6 +183,31 @@ public sealed class Issue28McpEnumerationTests
         string[] expectedDefaults = string.IsNullOrWhiteSpace(configured) ? [] : [configured];
         result.Value.Where(entry => entry.IsDefault).Select(entry => entry.Id)
             .Should().Equal(expectedDefaults);
+    }
+
+    [Fact]
+    public async Task Host_translation_catalog_io_failure_is_unavailable_not_an_empty_success()
+    {
+        await using HostContext context = await HostContext.CreateAsync(true);
+        HostServices services = context.Services;
+
+        Result<IReadOnlyList<McpImplementationEntry>> catalogResult =
+            await services.McpImplementationCatalog.ListAsync("translation");
+        catalogResult.IsFailure.Should().BeTrue();
+        catalogResult.ErrorCode.Should().Be("implementation_catalog_unavailable");
+
+        McpServerSettings current = (await services.McpSettings.GetSettingsAsync()).Value;
+        McpServerSettings granted = current with
+        {
+            DomainPermissions =
+            [.. current.DomainPermissions, new McpDomainPermission("runs/translation", "send", true)]
+        };
+        (await services.McpSettings.SaveSettingsAsync(granted)).IsSuccess.Should().BeTrue();
+        McpFetchResult entry = await FetchControlAsync(services.McpCommands, "translation");
+
+        McpToolError.TryGetCode(entry.Error, out McpErrorCode code).Should().BeTrue();
+        code.Should().Be(McpErrorCode.Unavailable);
+        entry.Error.Should().NotContain(context.ExtensionRootPath);
     }
 
     [Fact]
@@ -231,7 +299,7 @@ public sealed class Issue28McpEnumerationTests
             : McpToonCodec.DecodeToJson(content));
     }
 
-    private static McpCommandService CreateService(StubCatalog? catalog)
+    private static McpCommandService CreateService(IMcpImplementationCatalogApi? catalog)
     {
         (_, Stub<IMcpReadApi> read) = Stub<IMcpReadApi>.Create();
         read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
@@ -274,6 +342,13 @@ public sealed class Issue28McpEnumerationTests
         }
     }
 
+    private static IOcrAdapterRegistry CreateEmptyOcrRegistry()
+    {
+        (_, Stub<IOcrAdapterRegistry> registry) = Stub<IOcrAdapterRegistry>.Create();
+        registry.Handle(nameof(IOcrAdapterRegistry.ListCapabilities), _ => Array.Empty<OcrEngineCapability>());
+        return registry.Proxy;
+    }
+
     /// <summary>Minimal DispatchProxy stub: unhandled methods throw loudly.</summary>
     private class Stub<T> : DispatchProxy where T : class
     {
@@ -307,20 +382,28 @@ public sealed class Issue28McpEnumerationTests
 
     private sealed class HostContext : IAsyncDisposable
     {
-        private HostContext(string tempRoot, HostServices services)
+        private HostContext(string tempRoot, HostServices services, string extensionRootPath)
         {
             TempRoot = tempRoot;
             Services = services;
+            ExtensionRootPath = extensionRootPath;
         }
 
         public string TempRoot { get; }
         public HostServices Services { get; }
+        public string ExtensionRootPath { get; }
 
-        public static async Task<HostContext> CreateAsync()
+        public static async Task<HostContext> CreateAsync(bool extensionRootAsFile = false)
         {
             string tempRoot = Path.Combine(Path.GetTempPath(), $"patchouli-issue28-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempRoot);
             string databasePath = Path.Combine(tempRoot, "runtime.sqlite");
+            string extensionRootPath = Path.Combine(tempRoot, "extension-runtime");
+            if (extensionRootAsFile)
+            {
+                await File.WriteAllTextAsync(extensionRootPath, "not-a-directory");
+            }
+
             PatchouliAppSettings defaults = PatchouliAppSettings.Default();
             PatchouliAppSettings settings = defaults with
             {
@@ -337,7 +420,7 @@ public sealed class Issue28McpEnumerationTests
             Result<Core.Library.LibraryMetadata> create =
                 await services.Library.CreateLibraryAsync("Issue 28 Test");
             create.IsSuccess.Should().BeTrue(create.ErrorMessage);
-            return new HostContext(tempRoot, services);
+            return new HostContext(tempRoot, services, extensionRootPath);
         }
 
         public ValueTask DisposeAsync()

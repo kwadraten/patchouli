@@ -3,6 +3,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Tests;
@@ -38,8 +39,44 @@ public sealed class ExtensionCandidateValidationTests
             .IsSuccess.Should().BeTrue();
     }
 
+    [Fact]
+    public void Retrieval_candidate_rejects_nonfinite_scores()
+    {
+        SearchMatchedUnit allowed = SearchUnit("allowed");
+        RetrievalExtensionContext context = new("query",
+            new ExtensionConfigSnapshot(new Dictionary<string, string>(), 0), [allowed], 4);
+        foreach (double score in new[] { double.NaN, double.PositiveInfinity })
+        {
+            ExtensionCandidateValidation.ValidateRetrieval(context,
+                    new RetrievalExtensionResult([new RetrievalExtensionMatch(allowed.UnitId, score)])).IsFailure
+                .Should()
+                .BeTrue();
+        }
+    }
+
+    [Fact]
+    public void Retrieval_candidate_rejects_foreign_and_duplicate_units()
+    {
+        SearchMatchedUnit allowed = SearchUnit("allowed");
+        SearchMatchedUnit foreign = SearchUnit("foreign");
+        RetrievalExtensionContext context = new("query",
+            new ExtensionConfigSnapshot(new Dictionary<string, string>(), 0), [allowed], 4);
+        ExtensionCandidateValidation.ValidateRetrieval(context,
+                new RetrievalExtensionResult([new RetrievalExtensionMatch(foreign.UnitId, 0.5)])).IsFailure.Should()
+            .BeTrue();
+        ExtensionCandidateValidation.ValidateRetrieval(context, new RetrievalExtensionResult([
+            new RetrievalExtensionMatch(allowed.UnitId, 0.7), new RetrievalExtensionMatch(allowed.UnitId, 0.6)
+        ])).IsFailure.Should().BeTrue();
+    }
+
     private static ExtensionPageIdentity Page()
     {
         return new ExtensionPageIdentity(DocumentInstanceId.New(), PageId.New(), DocumentTreeRevisionId.New(), 1);
+    }
+
+    private static SearchMatchedUnit SearchUnit(string text)
+    {
+        return new SearchMatchedUnit(SearchUnitId.New(), PageId.New(),
+            DocumentBoxId.New(), text, "text", 0, DocumentTreeRevisionId.New(), true);
     }
 }

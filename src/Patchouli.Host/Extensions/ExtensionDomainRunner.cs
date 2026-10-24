@@ -3,7 +3,7 @@ using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Host.Extensions;
 
-/// <summary>A pinned OCR invocation. The caller retains source-version and commit authority.</summary>
+/// <summary>A pinned OCR or retrieval invocation. The caller retains source-version and commit authority.</summary>
 public sealed class ExtensionDomainRun : IAsyncDisposable
 {
     private readonly IExtensionLease _lease;
@@ -56,6 +56,36 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
                 Boxes = Array.AsReadOnly(candidate.Boxes.ToArray())
             })
             : Result<OcrExtensionCandidate>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
+    }
+
+    public async Task<Result<RetrievalExtensionResult>> RankAsync(RetrievalExtensionContext input,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        IRetrievalExtension extension = _lease.Retrieval
+                                        ?? throw new InvalidOperationException(
+                                            "The selected extension does not implement retrieval.");
+        RetrievalExtensionContext context = input with
+        {
+            Config = _config,
+            Candidates = Array.AsReadOnly(input.Candidates.ToArray())
+        };
+        Result validInput = ExtensionCandidateValidation.ValidateRetrieval(context, new RetrievalExtensionResult([]));
+        if (validInput.IsFailure)
+        {
+            return Result<RetrievalExtensionResult>.Failure(validInput.ErrorCode!, validInput.ErrorMessage!);
+        }
+
+        RetrievalExtensionResult candidate = await extension.RankAsync(context, _capabilities, cancellationToken)
+            .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        Result valid = ExtensionCandidateValidation.ValidateRetrieval(context, candidate);
+        return valid.IsSuccess
+            ? Result<RetrievalExtensionResult>.Success(candidate with
+            {
+                Matches = Array.AsReadOnly(candidate.Matches.ToArray())
+            })
+            : Result<RetrievalExtensionResult>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
     }
 
     public async ValueTask DisposeAsync()

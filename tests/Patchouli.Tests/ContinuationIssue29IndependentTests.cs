@@ -194,7 +194,7 @@ public sealed class ContinuationIssue29IndependentTests
     }
 
     [Fact]
-    public async Task Rectifying_and_unlinking_a_legacy_follower_clears_its_state_without_touching_text()
+    public async Task Rectifying_a_legacy_follower_preserves_unrecovered_state_until_unlinked()
     {
         await using Context context = await Context.CreateAsync();
         PageId pageId = context.PageIds[0];
@@ -212,7 +212,8 @@ public sealed class ContinuationIssue29IndependentTests
         IReadOnlyList<DocumentBox> draft = (await context.Trees.ListBoxesAsync(session.DraftRevisionId)).Value;
         DocumentBox rectified = draft.Single(box => box.BoxId == follower);
         rectified.ContinuesFromBoxId.Should().Be(headTwo);
-        rectified.ContinuationState.Should().BeNull("人工纠正后按显式接续处理");
+        rectified.ContinuationState.Should().Be(DocumentContinuationState.LegacyUnrecovered,
+            "改变关系不会恢复本框缺失的局部正文");
         rectified.Payload.Should().Be(new TextBoxPayload(""));
         draft.Single(box => box.BoxId == headOne).Payload.Should().Be(new TextBoxPayload("Full text one."));
         draft.Single(box => box.BoxId == headTwo).Payload.Should().Be(new TextBoxPayload("Other head."));
@@ -225,6 +226,11 @@ public sealed class ContinuationIssue29IndependentTests
             .Single(box => box.BoxId == follower);
         cleared.ContinuesFromBoxId.Should().BeNull();
         cleared.ContinuationState.Should().BeNull();
+        cleared.Payload.Should().Be(new TextBoxPayload(""));
+        IReadOnlyList<DocumentBox> afterUnlink =
+            (await context.Trees.ListBoxesAsync(clearing.DraftRevisionId)).Value;
+        afterUnlink.Single(box => box.BoxId == headOne).Payload.Should().Be(new TextBoxPayload("Full text one."));
+        afterUnlink.Single(box => box.BoxId == headTwo).Payload.Should().Be(new TextBoxPayload("Other head."));
     }
 
     [Fact]

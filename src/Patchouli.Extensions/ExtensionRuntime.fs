@@ -506,6 +506,16 @@ type CompiledExtensionGenerationLoader(runtimeDirectory: string) =
                             match extension with
                             | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
                             | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? IRetrievalExtension as extension ->
+                    { new IRetrievalExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.RankAsync(context, resources, token) = extension.RankAsync(context, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
                 | _ -> invalidOp "Compiled extension kind is not supported by this host API."
             return CompiledExtensionGeneration(package.Id, context, export, projected) :> IExtensionGeneration
         with error ->
@@ -632,6 +642,11 @@ type private ExtensionLease(active: ActiveGeneration) =
         member _.Ocr =
             match (current ()).Definition with
             | :? IOcrExtension as extension -> Some extension
+            | _ -> None
+            |> Option.toObj
+        member _.Retrieval =
+            match (current ()).Definition with
+            | :? IRetrievalExtension as extension -> Some extension
             | _ -> None
             |> Option.toObj
         member _.DisposeAsync() =
@@ -878,6 +893,7 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionResource
                           descriptor.Kind = expectedKind
                           && (expectedKind <> ExtensionKind.Metadata || definition :? IMetadataExtension)
                           && (expectedKind <> ExtensionKind.Ocr || definition :? IOcrExtension)
+                          && (expectedKind <> ExtensionKind.Retrieval || definition :? IRetrievalExtension)
                           && (expectedKind <> ExtensionKind.Translation || definition :? ITranslationExtension)
                       if descriptor.Id <> metadata.Id || descriptor.HostApi <> metadata.HostApi
                           || descriptor.Name <> metadata.Name || descriptor.Description <> metadata.Summary

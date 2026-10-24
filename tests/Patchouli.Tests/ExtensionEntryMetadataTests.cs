@@ -124,16 +124,14 @@ public sealed class ExtensionEntryMetadataTests
     }
 
     [Fact]
-    public void Parse_rejects_the_removed_retrieval_kind()
+    public void Parse_accepts_the_existing_retrieval_kind()
     {
         string source = "/// <summary>Summary.</summary>\n" +
                         "/// <patchouli-extension id=\"test.parser\"\n" +
                         "/// kind=\"retrieval\" version=\"1.0.0\" host-api=\"patchouli.extensions/3\">\n" +
                         "/// <name>Parser</name>\n/// </patchouli-extension>\nlet extension = 1";
 
-        Action parse = () => ExtensionEntryMetadata.Parse(Package(source));
-
-        parse.Should().Throw<ExtensionMetadataException>();
+        ExtensionEntryMetadata.Parse(Package(source)).Kind.Should().Be(ExtensionKind.Retrieval);
     }
 
     [Theory]

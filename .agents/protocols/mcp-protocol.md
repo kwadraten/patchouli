@@ -52,7 +52,8 @@ Continuation (MinerU v4 `continues_prev`) is expressed as independent box metada
 mixed into payload text. A box that continues an earlier box carries
 `continues_from="<source box id>"` — the stable box identity, valid for same-page,
 cross-page, and chained continuations; element adjacency is never the relation. When the
-source box's page can be resolved within the read revision's document commit, the box also
+source box's page can be resolved through the read revision's commit ancestry or an
+unambiguous stable page identity in the document's committed history, the box also
 carries `continues_from_page="<one-based page index>"` so a cross-page target can be
 located even when the read range excludes the source page. Each box's payload always holds
 only its own text. A legacy continuation whose per-box text was never recovered (old

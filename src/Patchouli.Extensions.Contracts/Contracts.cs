@@ -2,6 +2,7 @@ namespace Patchouli.Extensions.Contracts;
 
 using Core.Ids;
 using Core.Layout;
+using Core.Bibliography;
 using Core.Bibliography.MetadataLookup;
 using Core.Results;
 using Core.Documents;
@@ -62,7 +63,8 @@ public enum ExtensionKind
 {
     Translation,
     Metadata,
-    Ocr
+    Ocr,
+    Retrieval
 }
 
 public sealed record ExtensionDescriptor(
@@ -339,14 +341,59 @@ public sealed record TranslationExtensionOptions(
     string? Model = null);
 
 /// <summary>
+/// A canonical host language tag (for example <c>zh-Hans</c>). The dedicated type is how the
+/// compiler and the extension surface recognize a language field: construction goes through
+/// <see cref="Create"/> (or the <see cref="Auto"/>/<see cref="Unspecified"/> sentinels), whose
+/// constructor path runs the host normalization (<see cref="ItemLanguage.Canonicalize"/>)
+/// exactly once at the boundary, so every downstream consumer compares and maps canonical
+/// values and no raw user text can reach an engine unnormalized. As with any struct,
+/// <c>default(LanguageTag)</c> runs no constructor and reads as unspecified. Each extension
+/// then maps the canonical tag to its provider's codes itself; there is deliberately no
+/// shared provider mapping.
+/// </summary>
+public readonly record struct LanguageTag
+{
+    private LanguageTag(string? value)
+    {
+        Value = ItemLanguage.Canonicalize(value) ?? string.Empty;
+    }
+
+    /// <summary>The canonical tag text; empty when the tag is unspecified.</summary>
+    public string Value { get; }
+
+    /// <summary>The auto-detection sentinel; valid for source languages.</summary>
+    public static LanguageTag Auto => new("auto");
+
+    /// <summary>The absence of a language; job-level fallbacks decide what replaces it.</summary>
+    public static LanguageTag Unspecified => new(null as string);
+
+    /// <summary>True when no language was supplied.</summary>
+    public bool IsUnspecified => string.IsNullOrEmpty(Value);
+
+    /// <summary>True for the auto-detection sentinel.</summary>
+    public bool IsAuto => string.Equals(Value, "auto", StringComparison.Ordinal);
+
+    /// <summary>Canonicalizes arbitrary host or user text into a <see cref="LanguageTag"/>.</summary>
+    public static LanguageTag Create(string? value)
+    {
+        return new LanguageTag(value);
+    }
+
+    public override string ToString()
+    {
+        return Value ?? string.Empty;
+    }
+}
+
+/// <summary>
 /// Immutable facts about one translation job. The config snapshot is the run-pinned view; the host
 /// never changes these values while the job lives.
 /// </summary>
 public sealed record TranslationJobInfo(
     string JobId,
     DocumentInstanceId DocumentId,
-    string SourceLanguage,
-    string TargetLanguage,
+    LanguageTag SourceLanguage,
+    LanguageTag TargetLanguage,
     TranslationExtensionOptions Options,
     ExtensionConfigSnapshot Config);
 
@@ -435,7 +482,7 @@ public sealed record TranslationContextPageSnapshot(ExtensionPageIdentity Page, 
 public sealed record TranslationContextTranslationSnapshot(
     ExtensionPageIdentity Page,
     string Markdown,
-    string? TargetLanguage,
+    LanguageTag TargetLanguage,
     int Version);
 
 /// <summary>Controlled, read-only context supplied by the host; extensions choose how to use it.</summary>
@@ -558,6 +605,7 @@ public interface IExtensionLease : IAsyncDisposable
     ITranslationExtension Translation { get; }
     IMetadataExtension? Metadata { get; }
     IOcrExtension? Ocr { get; }
+    IRetrievalExtension? Retrieval { get; }
 }
 
 public interface IMetadataExtension : IExtensionDefinition
@@ -623,6 +671,22 @@ public sealed record OcrExtensionCandidate(
 public interface IOcrExtension : IExtensionDefinition
 {
     Task<OcrExtensionCandidate> RecognizeAsync(OcrExtensionContext context,
+        IExtensionResources resources, CancellationToken cancellationToken = default);
+}
+
+public sealed record RetrievalExtensionContext(
+    string Query,
+    ExtensionConfigSnapshot Config,
+    IReadOnlyList<SearchMatchedUnit> Candidates,
+    int ResultLimit);
+
+public sealed record RetrievalExtensionMatch(SearchUnitId UnitId, double Score, string? Explanation = null);
+
+public sealed record RetrievalExtensionResult(IReadOnlyList<RetrievalExtensionMatch> Matches);
+
+public interface IRetrievalExtension : IExtensionDefinition
+{
+    Task<RetrievalExtensionResult> RankAsync(RetrievalExtensionContext context,
         IExtensionResources resources, CancellationToken cancellationToken = default);
 }
 
@@ -696,6 +760,50 @@ public static class ExtensionCandidateValidation
                 (!double.IsFinite(confidence) || confidence < 0 || confidence > 1))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR confidence must be within 0..1.");
+            }
+        }
+
+        return Result.Success();
+    }
+
+    public static Result ValidateRetrieval(RetrievalExtensionContext context, RetrievalExtensionResult result)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(result);
+        if (context.Candidates is null || result.Matches is null)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Retrieval candidates and result matches are required.");
+        }
+
+        if (context.ResultLimit < 0 || result.Matches.Count > context.ResultLimit)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Retrieval result exceeds the host supplied result limit.");
+        }
+
+        HashSet<SearchUnitId> allowed = [];
+        foreach (SearchMatchedUnit candidate in context.Candidates)
+        {
+            if (!allowed.Add(candidate.UnitId))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "Host supplied retrieval candidate identities must be unique.");
+            }
+        }
+
+        HashSet<SearchUnitId> returned = [];
+        foreach (RetrievalExtensionMatch match in result.Matches)
+        {
+            if (!allowed.Contains(match.UnitId) || !returned.Add(match.UnitId))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "Retrieval results must reference unique units supplied by the host.");
+            }
+
+            if (!double.IsFinite(match.Score))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed, "Retrieval score must be finite.");
             }
         }
 

@@ -50,6 +50,33 @@ public sealed class AppPathsTests
     }
 
     [Fact]
+    public void Agent_skill_directory_hints_are_narrow_and_injectable()
+    {
+        using AgentTestDirectory directory = new();
+        string xdg = directory.Combine("xdg-config");
+        string claude = directory.Combine("claude-config");
+        List<string> requested = [];
+        PlatformAppPaths paths = new(AppPlatform.Linux, directory.Combine("home"),
+            directory.Combine("data"), directory.Combine("app"), name =>
+            {
+                requested.Add(name);
+                return name switch
+                {
+                    "XDG_CONFIG_HOME" => xdg,
+                    "CLAUDE_CONFIG_DIR" => claude,
+                    _ => throw new InvalidOperationException("Unapproved directory hint requested.")
+                };
+            });
+
+        IReadOnlyDictionary<string, string> hints = paths.GetAgentSkillDirectoryOverrides();
+
+        hints.Should().HaveCount(2);
+        hints["XDG_CONFIG_HOME"].Should().Be(xdg);
+        hints["CLAUDE_CONFIG_DIR"].Should().Be(claude);
+        requested.Should().Equal("XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR");
+    }
+
+    [Fact]
     public void Windows_uses_local_application_data()
     {
         string root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "local-app-data"));

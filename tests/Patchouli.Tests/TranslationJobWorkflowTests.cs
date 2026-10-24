@@ -585,7 +585,7 @@ public sealed class TranslationJobWorkflowTests
                         new TranslationContextTranslationSnapshot(
                             new ExtensionPageIdentity(Info.DocumentId, PageId.New(), DocumentTreeRevisionId.New(),
                                 pageIndex),
-                            "translated-" + StableBoxId("page-one"), "fr", 1));
+                            "translated-" + StableBoxId("page-one"), LanguageTag.Create("fr"), 1));
                 }
             }
 

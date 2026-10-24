@@ -33,7 +33,9 @@ entrypoint and requires metadata/translation configuration windows to use one fa
 Every package has a fixed `main.fsx` entrypoint. Its exported top-level `extension` binding
 has one XML documentation declaration containing id, kind, package version, Host API,
 display name and summary. Helper scripts may still be loaded, but do not declare packages.
-Translation, metadata and OCR use the same format and parser.
+Translation, metadata, OCR and retrieval use the same format and parser. Retrieval remains an
+existing explicit SDK capability: retaining its package kind does not deliver or select a
+default vector or hybrid search pipeline.
 
 `extension.yml` is not generated or accepted as an alternative metadata authority for new
 packages. `entry: main.fsx` disappears because it adds no information. Identity and display

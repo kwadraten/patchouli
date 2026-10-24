@@ -308,6 +308,236 @@ public sealed class BuiltInMetadataSourceTests
             identifier.Scheme == BuiltInIdentifierSchemes.ISBN && identifier.Value == "978-3-16-148410-0");
     }
 
+    // Fixture trimmed from the live response for CRID 1910302385685827200
+    // (https://cir.nii.ac.jp/crid/1910302385685827200.json, retrieved 2026-10-24): CiNii Research
+    // serves Dublin Core JSON-LD — dc:title language-tagged values, creator objects with
+    // foaf:name, and productIdentifier entries — not the schema.org shape.
+    [Fact]
+    public async Task Cinii_crid_parses_dublin_core_json_ld()
+    {
+        const string json = """
+                            {"@id":"https://cir.nii.ac.jp/crid/1910302385685827200.json","@type":"Dissertation","dc:title":[{"@value":"日本近世地域社会の研究"},{"@language":"ja-Kana","@value":"ニホン キンセイ チイキ シャカイ ノ ケンキュウ"}],"dc:language":"ja","description":[{"type":"Other","notation":[{"@value":"博士学位論文 (Thesis(doctor))"}]},{"notation":[{"@value":"博士論文"}]}],"creator":[{"@id":"https://cir.nii.ac.jp/crid/1070282677705676288","@type":"Researcher","foaf:name":[{"@value":"平川,  新"}]}],"ndl:dateGranted":"1995-01-12","productIdentifier":[{"identifier":{"@type":"DOI","@value":"10.11501/3080788"}},{"identifier":{"@type":"NAID","@value":"500001124362"}},{"identifier":{"@type":"NDL_BIB_ID","@value":"000000280987"}}]}
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.cinii", BuiltInIdentifierSchemes.Crid,
+            "1910302385685827200", _ => JsonResponse(json));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("日本近世地域社会の研究");
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal!.Contains("平川"));
+        harness.Result.Value.Language.Should().Be("ja");
+        harness.Result.Value.Dates.Should().Contain(date => date.Literal == "1995-01-12");
+        harness.Result.Value.Abstract.Should().BeNull("CiNii notation entries are classification notes, not abstracts");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.DOI && identifier.Value == "10.11501/3080788");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Naid && identifier.Value == "500001124362");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Ndlbibid && identifier.Value == "000000280987");
+        harness.Requests[0].Uri.AbsoluteUri.Should()
+            .Contain("cir.nii.ac.jp/crid/1910302385685827200.json");
+    }
+
+    // Fixture trimmed from the live response for NCID BN0368958X
+    // (https://ci.nii.ac.jp/ncid/BN0368958X.json, retrieved 2026-10-24): the legacy endpoint wraps
+    // the entity in @graph and uses the same Dublin Core vocabulary.
+    [Fact]
+    public async Task Cinii_ncid_parses_legacy_graph_json_ld()
+    {
+        const string json = """
+                            {"@graph":[{"@id":"https://ci.nii.ac.jp/ncid/BN0368958X#entity","@type":"bibo:Book","dc:title":[{"@value":"世界各国の憲法集"},{"@value":"セカイ カッコク ノ ケンポウシュウ","@language":"ja-hrkt"}],"dc:creator":"大石憲法研究所編","dc:publisher":[{"@value":"嵯峨野書院"}],"dc:language":"jpn","dc:date":"1973","prism:publicationDate":["1973.9"],"cinii:ncid":"BN0368958X","foaf:maker":[{"@id":"https://ci.nii.ac.jp/author/DA0123705X#entity","@type":"foaf:Person","foaf:name":[{"@value":"大石憲法研究所"},{"@value":"オオイシ ケンポウ ケンキュウジョ","@language":"ja-hrkt"}]}]}]}
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.cinii", BuiltInIdentifierSchemes.Ncid,
+            "BN0368958X", _ => JsonResponse(json));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("世界各国の憲法集");
+        harness.Result.Value.Publisher.Should().Be("嵯峨野書院");
+        harness.Result.Value.Language.Should().Be("jpn");
+        harness.Result.Value.Dates.Should().Contain(date => date.Literal == "1973.9");
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal == "大石憲法研究所");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Ncid && identifier.Value == "BN0368958X");
+        harness.Requests[0].Uri.AbsoluteUri.Should().Contain("ci.nii.ac.jp/ncid/BN0368958X.json");
+    }
+
+    // Fixture trimmed from the live response for OpenAlex work W2159974629
+    // (DOI 10.1038/nature12373, retrieved 2026-10-24): ids.doi is a full URL whose path is the
+    // DOI itself, so it must survive identifier discovery intact.
+    [Fact]
+    public async Task OpenAlex_preserves_full_doi_and_discovers_mag()
+    {
+        const string json = """
+                            {"id":"https://openalex.org/W2159974629","doi":"https://doi.org/10.1038/nature12373","title":"Nanometre-scale thermometry in a living cell","display_name":"Nanometre-scale thermometry in a living cell","publication_year":2013,"type":"article","language":"en","ids":{"openalex":"https://openalex.org/W2159974629","doi":"https://doi.org/10.1038/nature12373","mag":"2159974629","pmid":"https://pubmed.ncbi.nlm.nih.gov/23903748"},"biblio":{"volume":"500","issue":"7460","first_page":"54","last_page":"58"},"primary_location":{"source":{"display_name":"Nature"}},"authorships":[{"author":{"display_name":"Georg Kucsko"}},{"author":{"display_name":"Peter C. Maurer"}}]}
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.openalex", BuiltInIdentifierSchemes.DOI,
+            "10.1038/nature12373", _ => JsonResponse(json));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Nanometre-scale thermometry in a living cell");
+        harness.Result.Value.PublicationTitle.Should().Be("Nature");
+        harness.Result.Value.Pages.Should().Be("54-58");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.DOI && identifier.Value == "10.1038/nature12373");
+        harness.Result.Value.Identifiers.Should().NotContain(identifier => identifier.Value == "nature12373");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Mag && identifier.Value == "2159974629");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Pmid && identifier.Value == "23903748");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.OpenAlex && identifier.Value == "W2159974629");
+    }
+
+    // Fixture trimmed from the live response for LCCN 2008024750
+    // (https://www.loc.gov/item/2008024750/?fo=json, retrieved 2026-10-24): all bibliographic
+    // fields live inside "item"; contributors are {name: url} objects, the name list is in
+    // contributor_names, and publisher/place exist only in the created_published free text.
+    [Fact]
+    public async Task Library_of_congress_reads_item_fields_and_created_published()
+    {
+        const string json = """
+                            {"item":{"title":"Clean code : a handbook of agile software craftsmanship","date":"2009","contributor_names":["Martin, Robert C."],"contributors":[{"martin, robert c.":"https://www.loc.gov/search/?fa=contributor:martin,+robert+c.&fo=json"}],"subject":["reliability","computer software","agile software development"],"language":["english"],"created_published":["Upper Saddle River, NJ : Prentice Hall, c2009."]}}
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.library-of-congress",
+            BuiltInIdentifierSchemes.Lccn, "2008024750", _ => JsonResponse(json));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Clean code : a handbook of agile software craftsmanship");
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal == "Martin, Robert C.");
+        harness.Result.Value.Language.Should().Be("english");
+        harness.Result.Value.Tags.Should().Contain("agile software development");
+        harness.Result.Value.Publisher.Should().Be("Prentice Hall");
+        harness.Result.Value.Place.Should().Be("Upper Saddle River, NJ");
+        harness.Result.Value.Dates.Should().Contain(date => date.Literal == "2009");
+    }
+
+    // Fixture is the live OpenSearch response for any=R100000002-I000000280987 (retrieved
+    // 2026-10-24, archived in the metadata audit): the response carries the BibID only in short
+    // form, and the item's first description element is the RSS HTML blob while the real abstract
+    // is the dc:description text.
+    [Fact]
+    public async Task Ndl_matches_url_form_bib_id_and_prefers_dc_description()
+    {
+        const string xml = """
+                           <rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcndl="http://ndl.go.jp/dcndl/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.0"><channel><title>R100000002-I000000280987 - 国立国会図書館サーチ OpenSearch</title><item><title>日本近世地域社会の研究</title><link>https://ndlsearch.ndl.go.jp/books/R100000002-I000000280987</link><description><![CDATA[<p><p><ul><li>タイトル：日本近世地域社会の研究</li><li>責任表示：平川新 [著]</li></ul>]]></description><author>平川, 新, 1950-,平川新 [著]</author><dc:title>日本近世地域社会の研究</dc:title><dc:creator>平川, 新, 1950-</dc:creator><dc:identifier xsi:type="dcndl:NDLBibID">000000280987</dc:identifier><dc:subject xsi:type="dcndl:NDLC">UT51</dc:subject><dc:description>博士論文</dc:description><dc:description/></item></channel></rss>
+                           """;
+        Harness harness = await Harness.LookupAsync("metadata.ndl", BuiltInIdentifierSchemes.Ndlbibid,
+            "R100000002-I000000280987", _ => XmlResponse(xml));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("日本近世地域社会の研究");
+        harness.Result.Value.Abstract.Should().Be("博士論文");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Ndlbibid && identifier.Value == "000000280987");
+        harness.Requests[0].Uri.Query.Should().Contain("any=R100000002-I000000280987");
+    }
+
+    // Fixture rows are verbatim from the live Aleph page for ISBN 9787020002207 (retrieved
+    // 2026-10-24, archived in the metadata audit): Aleph emits attribute values WITHOUT quotes
+    // (<td class=td1>), which the cell extractor must accept. The script line reproduces how the
+    // requested ISBN appears on the real page.
+    [Fact]
+    public async Task National_library_of_china_parses_unquoted_aleph_attributes()
+    {
+        const string html = """
+                            <html><script>g('cclterm').value=parseccl('ISB = \"9787020002207\"');</script><table id="td" width="90%"><tr>
+                              <td style="background:#fff;" class=td1 id=bold width=15% valign=center nowrap> 题名与责任 </td>
+                              <td style="background:#fff;" class=td1 align=left > 红楼梦&nbsp;[专著]&nbsp;/&nbsp;曹雪芹著&nbsp;;&nbsp;无名氏续&nbsp;;&nbsp;程伟元，高鹗整理 </td>
+                            </tr><tr>
+                              <td style="background:#fff;" class=td1 id=bold width=15% valign=center nowrap> 出版项 </td>
+                              <td style="background:#fff;" class=td1 align=left > 北京&nbsp;:&nbsp;人民文学出版社,&nbsp;2022,&nbsp;2025重印) </td>
+                            </tr><tr>
+                              <td style="background:#fff;" class=td1 id=bold width=15% valign=center nowrap> 著者 </td>
+                              <td style="background:#fff;" class=td1 align=left > (清)曹雪芹 (1715/1724~1763/1764) 著 </td>
+                            </tr><tr>
+                              <td style="background:#fff;" class=td1 id=bold width=15% valign=center nowrap> 主题 </td>
+                              <td style="background:#fff;" class=td1 align=left > 古典小说 -- 中国 -- 清代 </td>
+                            </tr><tr>
+                              <td style="background:#fff;" class=td1 id=bold width=15% valign=center nowrap> 中图分类号 </td>
+                              <td style="background:#fff;" class=td1 align=left > I242.47 </td>
+                            </tr></table></html>
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.nlc", BuiltInIdentifierSchemes.ISBN,
+            "9787020002207", _ => HtmlResponse(html));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("红楼梦");
+        harness.Result.Value.Publisher.Should().Be("人民文学出版社");
+        harness.Result.Value.Dates.Should().ContainSingle(date => date.DateParts!.SequenceEqual(new[] { 2022 }));
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal!.Contains("曹雪芹"));
+        harness.Result.Value.Tags.Should().Contain(["古典小说", "I242.47"]);
+    }
+
+    // Fixture trimmed from the live sru/authorities response for GND 118540238 (Goethe,
+    // retrieved 2026-10-24, archived in the metadata audit): authority records have no 245
+    // title field; the authorized heading is field 100.
+    [Fact]
+    public async Task Dnb_gnd_uses_authorities_endpoint_and_heading()
+    {
+        const string xml = """
+                           <searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/"><version>1.1</version><numberOfRecords>1</numberOfRecords><records><record><recordData><record xmlns="http://www.loc.gov/MARC21/slim"><controlfield tag="001">118540238</controlfield><controlfield tag="003">DE-101</controlfield><datafield tag="024" ind1="7" ind2=" "><subfield code="a">118540238</subfield><subfield code="0">http://d-nb.info/gnd/118540238</subfield><subfield code="2">gnd</subfield></datafield><datafield tag="100" ind1="1" ind2=" "><subfield code="a">Goethe, Johann Wolfgang von</subfield><subfield code="d">1749-1832</subfield></datafield><datafield tag="548" ind1=" " ind2=" "><subfield code="a">1749-1832</subfield><subfield code="4">datl</subfield></datafield><datafield tag="550" ind1=" " ind2=" "><subfield code="a">Schriftsteller</subfield><subfield code="4">berc</subfield></datafield></record></recordData></record></records></searchRetrieveResponse>
+                           """;
+        Harness harness = await Harness.LookupAsync("metadata.dnb", BuiltInIdentifierSchemes.Gnd,
+            "118540238", _ => XmlResponse(xml));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Goethe, Johann Wolfgang von");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Gnd && identifier.Value == "118540238");
+        harness.Requests[0].Uri.AbsoluteUri.Should()
+            .Contain("services.dnb.de/sru/authorities").And.Contain("nid%3D118540238");
+    }
+
+    [Fact]
+    public async Task Dnb_urn_lookup_is_rejected_as_unsupported()
+    {
+        Harness harness = await Harness.LookupAsync("metadata.dnb", BuiltInIdentifierSchemes.UrnNbnDe,
+            "urn:nbn:de:101-1", _ => XmlResponse(""));
+
+        harness.Result.IsFailure.Should().BeTrue();
+        harness.Result.ErrorCode.Should().Be(MetadataLookupErrorCodes.UnsupportedIdentifier);
+        harness.Requests.Should().BeEmpty("the DNB SRU service has no URN index to query");
+    }
+
+    // Fixture record is verbatim from the live catalogue response for ark:/12148/cb397758340
+    // (retrieved 2026-10-24, archived in the metadata audit): INTERMARC 260 carries the place in
+    // $a, the PUBLISHER in $c and the date in $d — the MARC21 reading put the publisher name in
+    // the date and left the publisher empty.
+    [Fact]
+    public async Task Bnf_ark_query_uses_full_form_and_intermarc_260()
+    {
+        const string xml = """
+                           <srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/" xmlns:mxc="info:lc/xmlns/marcxchange-v2"><srw:version>1.2</srw:version><srw:numberOfRecords>1</srw:numberOfRecords><srw:records><srw:record><srw:recordData><mxc:record xmlns:mxc="info:lc/xmlns/marcxchange-v2" format="INTERMARC" id="ark:/12148/cb397758340" type="Bibliographic"><mxc:controlfield tag="001">FRBNF397758340000009</mxc:controlfield><mxc:controlfield tag="003">http://catalogue.bnf.fr/ark:/12148/cb397758340</mxc:controlfield><mxc:datafield tag="100" ind1=" " ind2=" "><mxc:subfield code="a">Christie</mxc:subfield><mxc:subfield code="m">John</mxc:subfield></mxc:datafield><mxc:datafield tag="245" ind1="1" ind2=" "><mxc:subfield code="a">Emile Zola</mxc:subfield><mxc:subfield code="d">Texte imprimé</mxc:subfield><mxc:subfield code="e">Germinal</mxc:subfield></mxc:datafield><mxc:datafield tag="260" ind1=" " ind2=" "><mxc:subfield code="a">Paris</mxc:subfield><mxc:subfield code="c">Didier</mxc:subfield><mxc:subfield code="d">1974</mxc:subfield></mxc:datafield><mxc:datafield tag="700" ind1=" " ind2=" "><mxc:subfield code="a">Tancock</mxc:subfield><mxc:subfield code="m">Léonard</mxc:subfield></mxc:datafield></mxc:record></srw:recordData></srw:record></srw:records></srw:searchRetrieveResponse>
+                           """;
+        Harness harness = await Harness.LookupAsync("metadata.bnf", BuiltInIdentifierSchemes.Ark,
+            "12148/cb397758340", _ => XmlResponse(xml));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Emile Zola");
+        // INTERMARC 245 carries the subtitle in $e ("Germinal"); MARC21 has no 245 $e.
+        harness.Result.Value.Subtitle.Should().Be("Germinal");
+        harness.Result.Value.Publisher.Should().Be("Didier");
+        harness.Result.Value.Place.Should().Be("Paris");
+        harness.Result.Value.Dates.Should().Contain(date => date.Literal == "1974");
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal == "Christie, John");
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal == "Tancock, Léonard");
+        harness.Requests[0].Uri.AbsoluteUri.Should()
+            .Contain("bib.ark").And.Contain("ark%3A%2F12148%2Fcb397758340");
+    }
+
+    [Fact]
+    public async Task Bnf_frbnf_uses_recordid_index()
+    {
+        const string xml = """
+                           <srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/" xmlns:mxc="info:lc/xmlns/marcxchange-v2"><srw:version>1.2</srw:version><srw:numberOfRecords>1</srw:numberOfRecords><srw:records><srw:record><srw:recordData><mxc:record xmlns:mxc="info:lc/xmlns/marcxchange-v2" format="INTERMARC" id="ark:/12148/cb397758340" type="Bibliographic"><mxc:controlfield tag="001">FRBNF397758340000009</mxc:controlfield><mxc:datafield tag="245" ind1="1" ind2=" "><mxc:subfield code="a">Emile Zola</mxc:subfield></mxc:datafield><mxc:datafield tag="260" ind1=" " ind2=" "><mxc:subfield code="a">Paris</mxc:subfield><mxc:subfield code="c">Didier</mxc:subfield><mxc:subfield code="d">1974</mxc:subfield></mxc:datafield></mxc:record></srw:recordData></srw:record></srw:records></srw:searchRetrieveResponse>
+                           """;
+        Harness harness = await Harness.LookupAsync("metadata.bnf", BuiltInIdentifierSchemes.Frbnf,
+            "FRBNF397758340000009", _ => XmlResponse(xml));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Emile Zola");
+        harness.Requests[0].Uri.AbsoluteUri.Should().Contain("bib.recordid");
+    }
+
     private static TestHttpResponse JsonResponse(string body, int statusCode = 200)
     {
         return ProtocolTestHttp.Response(body, statusCode);

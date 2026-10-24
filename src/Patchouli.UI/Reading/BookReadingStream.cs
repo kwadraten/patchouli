@@ -129,6 +129,26 @@ public sealed class BookReadingStream : IBookReadingStream
             ? PlaceholderScene(pageIndex)
             : ReadingSceneBuilder.Build(model, compiled.Value.SourceMap, pageBoxes, imageKey, pageIndex,
                 compiled.Value.Markdown);
+        Dictionary<DocumentBoxId, DocumentBoxId> predecessors = compiled.Value.Continuations
+            .ToDictionary(item => item.BoxId, item => item.FromBoxId);
+        Dictionary<DocumentBoxId, DocumentBox> boxesById = pageBoxes.ToDictionary(box => box.BoxId);
+        source = new ReadingScene(source.Blocks.Select(block =>
+        {
+            IReadOnlyList<DocumentBoxId> sourceIds = block.SourceBoxIds ??
+                                                     (block.BoxId is { } sourceId ? [sourceId] : []);
+            DocumentBoxId? predecessor = sourceIds
+                .Select(id => predecessors.TryGetValue(id, out DocumentBoxId parent) ? parent : (DocumentBoxId?)null)
+                .FirstOrDefault(parent => parent is not null);
+            bool hasContinuation = sourceIds.Any(predecessors.ContainsKey) ||
+                                   compiled.Value.Continuations.Any(item => sourceIds.Contains(item.FromBoxId));
+            return block with
+            {
+                ContinuesFromBoxId = predecessor,
+                Segments = hasContinuation
+                    ? BuildContinuationSegments(block, sourceIds, compiled.Value.SourceMap, boxesById, pageIndex)
+                    : null
+            };
+        }).ToArray());
 
         TranslatedPageMarkdown? translation =
             await _getPageTranslation(page.DocumentInstanceId, page.PageId, cancellationToken).ConfigureAwait(false);
@@ -136,6 +156,39 @@ public sealed class BookReadingStream : IBookReadingStream
 
         // IsPrepend is the view model's call; the stream only reports page content.
         return new BookReadingPage(pageIndex, pageCount, false, source, translated);
+    }
+
+    private IReadOnlyList<ReadingBlockSegment> BuildContinuationSegments(
+        ReadingBlock block,
+        IReadOnlyList<DocumentBoxId> sourceIds,
+        IReadOnlyList<MarkdownSourceMapEntry> sourceMap,
+        IReadOnlyDictionary<DocumentBoxId, DocumentBox> boxes,
+        int pageIndex)
+    {
+        List<ReadingBlockSegment> segments = [];
+        int start = 0;
+        foreach (MarkdownSourceMapEntry map in sourceMap.Where(entry => sourceIds.Contains(entry.BoxId))
+                     .OrderBy(entry => entry.Start))
+        {
+            if (!boxes.TryGetValue(map.BoxId, out DocumentBox? box) ||
+                box.BoxType is not (DocumentBoxType.Text or DocumentBoxType.RefText) ||
+                box.Payload is not TextBoxPayload payload || box.Payload.Annotations is { Count: > 0 })
+            {
+                return [];
+            }
+
+            IReadOnlyList<MarkdownBlock> fragmentBlocks = _parseMarkdown(payload.Markdown).Blocks;
+            if (fragmentBlocks.Count != 1 || fragmentBlocks[0].Kind != "paragraph")
+            {
+                return [];
+            }
+
+            int length = Math.Min(fragmentBlocks[0].Text.Length, Math.Max(0, block.Text.Length - start));
+            segments.Add(new ReadingBlockSegment(start, length, pageIndex, map.BoxId));
+            start += length + 1; // Safe text continuations are joined with one space by the renderer.
+        }
+
+        return segments;
     }
 
     // A page with no committed content renders as a single muted note so the reading flow keeps a

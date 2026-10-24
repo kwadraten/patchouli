@@ -162,7 +162,9 @@ internal sealed class MinerUDocumentTreeCandidateMapper
     // 旧版 MinerU 把跨页/跨栏段落的全文留在首框、其余区域发为空框。此推断仅供
     // content_list（v3 及更早）兼容导入使用，推断出的接续框会被标记为
     // legacy_unrecovered（本框文字未恢复），与 v4 显式接续严格区分。
-    [Obsolete("旧版 MinerU（v3 及更早）空框推断兼容路径，仅可由 LinkContinuationsForProduct 在产物协议确认为 content_list 时调用；新代码必须使用 v4 continues_prev 显式接续（LinkContinuationsExplicit）。", error: false)]
+    [Obsolete(
+        "旧版 MinerU（v3 及更早）空框推断兼容路径，仅可由 LinkContinuationsForProduct 在产物协议确认为 content_list 时调用；新代码必须使用 v4 continues_prev 显式接续（LinkContinuationsExplicit）。",
+        false)]
     private static IReadOnlyList<OcrPageCandidate> LinkContinuations(
         IReadOnlyList<OcrPageCandidate> pages,
         List<OcrDiagnostic> diagnostics)

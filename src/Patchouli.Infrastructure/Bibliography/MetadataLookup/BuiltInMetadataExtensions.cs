@@ -68,7 +68,7 @@ public static class BuiltInMetadataExtensions
         Def("metadata.library-of-congress", "library-of-congress", "Library of Congress", 5,
             BuiltInIdentifierSchemes.Lccn),
         Def("metadata.dnb", "dnb", "Deutsche Nationalbibliothek", 5, BuiltInIdentifierSchemes.Dnb,
-            BuiltInIdentifierSchemes.Gnd, BuiltInIdentifierSchemes.UrnNbnDe),
+            BuiltInIdentifierSchemes.Gnd),
         Def("metadata.bnf", "bnf", "Bibliotheque nationale de France", 5, BuiltInIdentifierSchemes.Ark,
             BuiltInIdentifierSchemes.Frbnf)
     ];

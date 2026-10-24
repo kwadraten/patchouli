@@ -98,7 +98,7 @@ public sealed class PageImageViewService : IPageImageViewService
                 return Result<PageImageViewResult>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
             }
 
-            numberedBoxes = NumberBoxes(boxes.Value, page.PageId);
+            numberedBoxes = NumberBoxes(boxes.Value, page.PageId, cancellationToken);
         }
 
         int dpi = ChooseDpi(page, region.Crop, request.MaxEdge);
@@ -203,26 +203,97 @@ public sealed class PageImageViewService : IPageImageViewService
     /// drawn on the image to the n-th <c>&lt;box&gt;</c> element of the fetched page XML,
     /// and the result's mapping resolves that number to the stable box id.
     /// </summary>
-    private static IReadOnlyList<NumberedBox> NumberBoxes(IReadOnlyList<DocumentBox> boxes, PageId pageId)
+    private static IReadOnlyList<NumberedBox> NumberBoxes(IReadOnlyList<DocumentBox> boxes, PageId pageId,
+        CancellationToken cancellationToken)
     {
         DocumentBox[] pageBoxes = boxes.Where(box => box.PageId == pageId).ToArray();
-        List<NumberedBox> numbered = [];
-
-        void Visit(DocumentBox box)
+        // Build parent/child groups and each sibling chain once. The projection helper
+        // scans the entire page per parent, which made this traversal quadratic.
+        List<DocumentBox> rootBoxes = [];
+        Dictionary<DocumentBoxId, List<DocumentBox>> byParent = [];
+        Dictionary<DocumentBoxId, DocumentBox> byId = new(pageBoxes.Length);
+        foreach (DocumentBox box in pageBoxes)
         {
-            numbered.Add(new NumberedBox(numbered.Count + 1, box.BoxId, box.BBox));
-            foreach (DocumentBox child in DocumentBoxProjection.Siblings(pageBoxes, box.BoxId))
+            cancellationToken.ThrowIfCancellationRequested();
+            byId.TryAdd(box.BoxId, box);
+            if (box.ParentBoxId is not { } parentId)
             {
-                Visit(child);
+                rootBoxes.Add(box);
+                continue;
+            }
+
+            if (!byParent.TryGetValue(parentId, out List<DocumentBox>? children))
+            {
+                children = [];
+                byParent.Add(parentId, children);
+            }
+
+            children.Add(box);
+        }
+
+        Dictionary<DocumentBoxId, DocumentBox[]> orderedChildren = new(byParent.Count);
+        DocumentBox[] orderedRoots = OrderSiblings(rootBoxes, null);
+        foreach ((DocumentBoxId parentId, List<DocumentBox> children) in byParent)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            orderedChildren.Add(parentId, OrderSiblings(children, parentId));
+        }
+
+        List<NumberedBox> numbered = [];
+        Stack<DocumentBox> pending = new();
+        for (int index = orderedRoots.Length - 1; index >= 0; index--)
+        {
+            pending.Push(orderedRoots[index]);
+        }
+
+        // Iterative pre-order avoids call-stack growth for unusually deep but valid trees.
+        HashSet<DocumentBoxId> visited = [];
+        while (pending.TryPop(out DocumentBox? box))
+        {
+            if (box is null)
+            {
+                continue;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!visited.Add(box.BoxId))
+            {
+                continue;
+            }
+
+            numbered.Add(new NumberedBox(numbered.Count + 1, box.BoxId, box.BBox));
+            if (orderedChildren.TryGetValue(box.BoxId, out DocumentBox[]? children))
+            {
+                for (int index = children.Length - 1; index >= 0; index--)
+                {
+                    pending.Push(children[index]);
+                }
             }
         }
 
-        foreach (DocumentBox root in DocumentBoxProjection.Siblings(pageBoxes, null))
-        {
-            Visit(root);
-        }
-
         return numbered;
+
+        DocumentBox[] OrderSiblings(IReadOnlyList<DocumentBox> siblings, DocumentBoxId? parentId)
+        {
+            HashSet<DocumentBoxId> referenced = siblings
+                .Where(child => child.NextSiblingBoxId is not null)
+                .Select(child => child.NextSiblingBoxId!.Value)
+                .ToHashSet();
+            DocumentBox? current = siblings.FirstOrDefault(child => !referenced.Contains(child.BoxId));
+            List<DocumentBox> ordered = new(siblings.Count);
+            HashSet<DocumentBoxId> visitedSiblings = [];
+            while (current is not null && visitedSiblings.Add(current.BoxId))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ordered.Add(current);
+                current = current.NextSiblingBoxId is { } next && byId.TryGetValue(next, out DocumentBox? nextBox) &&
+                          nextBox.ParentBoxId == parentId
+                    ? nextBox
+                    : null;
+            }
+
+            return ordered.ToArray();
+        }
     }
 
     private async Task<Result<ViewRegion>> ResolveRegionAsync(

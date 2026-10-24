@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Extensions;
 using Patchouli.Extensions.Contracts;
@@ -127,7 +128,7 @@ public sealed class BuiltInTranslationExtensionProtocolTests
             {
                 body.RootElement.GetProperty("text").GetString().Should().Be("Hello");
                 body.RootElement.GetProperty("source_lang").GetString().Should().Be("auto");
-                body.RootElement.GetProperty("target_lang").GetString().Should().Be("fr");
+                body.RootElement.GetProperty("target_lang").GetString().Should().Be("FR");
             }
         }
     }
@@ -607,7 +608,7 @@ public sealed class BuiltInTranslationExtensionProtocolTests
             new ExtensionPageIdentity(DocumentInstanceId.Parse("00000000-0000-0000-0000-000000000001"),
                 PageId.Parse("00000000-0000-0000-0000-000000000002"),
                 DocumentTreeRevisionId.Parse("00000000-0000-0000-0000-000000000003"), 1),
-            "translated-" + StableBoxId("first-page"), "fr", 1);
+            "translated-" + StableBoxId("first-page"), LanguageTag.Create("fr"), 1);
 
         await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
 
@@ -622,6 +623,364 @@ public sealed class BuiltInTranslationExtensionProtocolTests
         job.Committed.Should().HaveCount(2);
         job.Committed.SelectMany(page => page.Outcomes)
             .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+    }
+
+    [Theory]
+    // Google codes are region-style: the canonical script tags (and any raw region spelling a
+    // stored job still carries) map back to zh-CN/zh-TW on the wire.
+    [InlineData("zh-Hans", "zh-CN")]
+    [InlineData("zh-CN", "zh-CN")]
+    [InlineData("zh-Hant", "zh-TW")]
+    [InlineData("zh-TW", "zh-TW")]
+    public async Task Google_maps_canonical_script_tags_to_region_codes(string targetInput, string expectedCode)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"Bonjour"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), "auto",
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        capabilities.HttpRequests.Should().ContainSingle();
+        capabilities.HttpRequests[0].Uri.Query.Should().Contain("tl=" + expectedCode).And.Contain("sl=auto");
+    }
+
+    [Fact]
+    public async Task Google_maps_a_canonical_chinese_source_to_its_region_code()
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"Bonjour"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), "zh-Hans",
+                "fr"),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        capabilities.HttpRequests.Should().ContainSingle();
+        capabilities.HttpRequests[0].Uri.Query.Should().Contain("sl=zh-CN").And.Contain("tl=fr");
+    }
+
+    [Theory]
+    // DeepL web has a single Chinese code: both canonical script tags collapse to "ZH", and the
+    // auto sentinel stays lowercase instead of being uppercased with the other codes.
+    [InlineData("auto", "zh-Hans", "auto", "ZH")]
+    [InlineData("auto", "zh-Hant", "auto", "ZH")]
+    [InlineData("zh-Hans", "fr", "ZH", "FR")]
+    public async Task DeepL_free_collapses_chinese_to_ZH_and_keeps_auto_lowercase(
+        string sourceInput, string targetInput, string expectedSource, string expectedTarget)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"result":{"texts":[{"text":"Bonjour"}]}}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/deepl"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), sourceInput,
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.deepl-free", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.HttpRequests.Should().ContainSingle().Subject.Body!);
+        JsonElement lang = body.RootElement.GetProperty("params").GetProperty("lang");
+        lang.GetProperty("source_lang_user_selected").GetString().Should().Be(expectedSource);
+        lang.GetProperty("target_lang").GetString().Should().Be(expectedTarget);
+    }
+
+    [Theory]
+    // DeepLX forwards script-specific uppercase DeepL codes; only the auto sentinel stays lowercase.
+    [InlineData("auto", "zh-Hans", "auto", "ZH-HANS")]
+    [InlineData("auto", "zh-Hant", "auto", "ZH-HANT")]
+    [InlineData("zh-Hans", "zh-Hant", "ZH-HANS", "ZH-HANT")]
+    public async Task DeepLX_maps_canonical_script_tags_to_uppercase_script_codes(
+        string sourceInput, string targetInput, string expectedSource, string expectedTarget)
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"data":"Bonjour"}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "http://unit.test/translate"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options), sourceInput,
+                targetInput),
+            [Page(1, Box("box-1", "Hello"))]);
+
+        await RunBuiltInAsync("translation.deeplx", capabilities, job, config, options);
+
+        job.Committed.Single().Outcomes.Single().Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        using JsonDocument body = JsonDocument.Parse(capabilities.HttpRequests.Should().ContainSingle().Subject.Body!);
+        body.RootElement.GetProperty("source_lang").GetString().Should().Be(expectedSource);
+        body.RootElement.GetProperty("target_lang").GetString().Should().Be(expectedTarget);
+    }
+
+    [Fact]
+    public async Task Llm_backfill_matches_a_committed_snapshot_across_raw_language_spellings()
+    {
+        // The job was requested with the raw region spelling "zh-CN" while the committed page was
+        // stored under the canonical "zh-Hans": tag-on-tag comparison must still recognize them as
+        // the same language and backfill. A raw string comparison would silently skip the backfill.
+        List<string> prompts = BackfillPrompts(out FakeCapabilities capabilities);
+        ExtensionConfigSnapshot config = BackfillConfig();
+        TranslationExtensionOptions options = BackfillOptions();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options),
+                targetLanguage: "zh-CN"),
+            [
+                Page(1, Box("first-page", "The first paragraph")),
+                Page(2, Box("second-page", "The second paragraph"))
+            ]);
+        job.CommittedTranslations[1] = CommittedSnapshot("zh-Hans", "first-page");
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        prompts.Should().HaveCount(2);
+        prompts[1].Should().Contain("Previous page translation")
+            .And.Contain("translated-" + StableBoxId("first-page"));
+        job.Committed.SelectMany(page => page.Outcomes)
+            .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+    }
+
+    [Fact]
+    public async Task Llm_backfill_skips_a_committed_snapshot_in_a_different_language()
+    {
+        List<string> prompts = BackfillPrompts(out FakeCapabilities capabilities);
+        ExtensionConfigSnapshot config = BackfillConfig();
+        TranslationExtensionOptions options = BackfillOptions();
+        TestTranslationJob job = new(TestTranslationJob.CreateInfo(options, ConfigFor(config, options),
+                targetLanguage: "zh-CN"),
+            [
+                Page(1, Box("first-page", "The first paragraph")),
+                Page(2, Box("second-page", "The second paragraph"))
+            ]);
+        job.CommittedTranslations[1] = CommittedSnapshot("fr", "first-page");
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        prompts.Should().HaveCount(2);
+        prompts[1].Should().NotContain("Previous page translation");
+    }
+
+    [Fact]
+    public async Task Microsoft_bisects_a_poisoned_batch_so_only_the_bad_segment_fails()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(request =>
+        {
+            Interlocked.Increment(ref calls);
+            using JsonDocument body = JsonDocument.Parse(request.Body!);
+            if (body.RootElement.EnumerateArray().Any(item => item.GetString()!.Contains("poison")))
+            {
+                return new TestHttpResponse(400, new Dictionary<string, string>(), "rejected");
+            }
+
+            int count = body.RootElement.GetArrayLength();
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                JsonSerializer.Serialize(Enumerable.Repeat(
+                    new { translations = new[] { new { text = "Bonjour" } } }, count).ToArray()));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/microsoft"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            Box("good", "Hello"),
+            Box("bad", "poison")
+        ]);
+
+        await RunBuiltInAsync("translation.microsoft-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome[] outcomes = job.Committed.Should().ContainSingle().Subject.Outcomes.ToArray();
+        outcomes[0].Kind.Should().Be(ExtensionBoxOutcomeKind.Translated,
+            $"the clean segment survives once the batch is bisected (code={outcomes[0].ErrorCode} msg={outcomes[0].ErrorMessage})");
+        outcomes[1].Kind.Should().Be(ExtensionBoxOutcomeKind.Failed);
+        calls.Should().Be(3, "one rejected batch plus one request per bisected single segment");
+    }
+
+    [Fact]
+    public async Task Html_table_retranslates_only_the_cells_that_break_the_structure()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(_ =>
+        {
+            string text = Interlocked.Increment(ref calls) <= 2 ? "</td><td>" : "Bonjour";
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                JsonSerializer.Serialize(new { sentences = new[] { new { trans = text } } }));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        const string html = "<table><tbody><tr><td>Alpha</td><td>Beta</td></tr></tbody></table>";
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("html-table"), null, "table", null, html,
+                """{"markdown":"","html":"<table><tbody><tr><td>Alpha</td><td>Beta</td></tr></tbody></table>","contentFormat":"html","contentFormatVersion":1}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        TableBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<TableBoxPayload>().Subject;
+        payload.Html.Should().Contain("<td>Bonjour</td><td>Bonjour</td>");
+        calls.Should().Be(4, "two poisoned cells are retranslated one request each after merge validation fails");
+    }
+
+    [Fact]
+    public async Task Gfm_table_cells_escape_pipes_and_line_breaks_in_translations()
+    {
+        FakeCapabilities capabilities = new(_ => new TestHttpResponse(200, new Dictionary<string, string>(),
+            """{"sentences":[{"trans":"a|b\nc"}]}"""));
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("gfm-table"), null, "table", null, "| A | B |\n|---|---|\n| x | y |",
+                """{"markdown":"| A | B |\n|---|---|\n| x | y |"}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        TableBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<TableBoxPayload>().Subject;
+        payload.Markdown.Should().Contain("|---|---|", "the separator row survives the splice");
+        payload.Markdown.Should().Contain("a\\|b<br>c",
+            "provider cell text cannot corrupt the grid: pipes are escaped and breaks become <br>");
+    }
+
+    [Fact]
+    public async Task List_items_translate_individually_and_keep_their_markers()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(_ =>
+        {
+            Interlocked.Increment(ref calls);
+            return new TestHttpResponse(200, new Dictionary<string, string>(),
+                """{"sentences":[{"trans":"UNO"}]}""");
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>
+        {
+            ["endpoint"] = "https://unit.test/google"
+        }, 1);
+        TranslationExtensionOptions options = Options();
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            new ExtensionBox(StableBoxId("list"), null, "list", null, "- first\n- second\n- third",
+                """{"markdown":"- first\n- second\n- third"}""")
+        ]);
+
+        await RunBuiltInAsync("translation.google-free", capabilities, job, config, options);
+
+        ExtensionBoxOutcome outcome = job.Committed.Should().ContainSingle().Subject.Outcomes.Should()
+            .ContainSingle().Subject;
+        outcome.Kind.Should().Be(ExtensionBoxOutcomeKind.Translated);
+        ListBoxPayload payload = outcome.TranslatedPayload.Should().BeOfType<ListBoxPayload>().Subject;
+        payload.Markdown.Should().Be("- UNO\n- UNO\n- UNO",
+            "item bodies are replaced while the list markers stay structural");
+        calls.Should().Be(3, "each top-level item is its own segment");
+    }
+
+    [Fact]
+    public async Task Llm_bisects_a_batch_when_the_response_omits_an_id()
+    {
+        int calls = 0;
+        FakeCapabilities capabilities = new(llm: request =>
+        {
+            Interlocked.Increment(ref calls);
+            string user = request.Messages.Single(message => message.Role == "user").Content;
+            using JsonDocument input = JsonDocument.Parse(user);
+            string[] ids = input.RootElement.EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            // Multi-item requests drop the last id; single-item replies are complete.
+            IEnumerable<string> returned = ids.Length > 1 ? ids.Take(ids.Length - 1) : ids;
+            return new LlmResponse(JsonSerializer.Serialize(
+                returned.Select(id => new { id, text = "T" })));
+        });
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>(), 1);
+        TranslationExtensionOptions options = Options(8);
+        TestTranslationJob job = CreateJob(config, options,
+        [
+            Box("one", "first"),
+            Box("two", "second"),
+            Box("three", "third")
+        ]);
+
+        await RunBuiltInAsync("translation.llm", capabilities, job, config, options);
+
+        job.Committed.Should().ContainSingle().Subject.Outcomes
+            .Should().OnlyContain(outcome => outcome.Kind == ExtensionBoxOutcomeKind.Translated);
+        calls.Should().Be(5, "3-id batch fails, then [1] succeeds and [2,3] bisects into two singles");
+    }
+
+    private static List<string> BackfillPrompts(out FakeCapabilities capabilities)
+    {
+        List<string> prompts = [];
+        capabilities = new FakeCapabilities(llm: request =>
+        {
+            string user = request.Messages.Single(message => message.Role == "user").Content;
+            lock (prompts)
+            {
+                prompts.Add(string.Join(Environment.NewLine,
+                    request.Messages.Select(message => message.Content)));
+            }
+
+            using JsonDocument input = JsonDocument.Parse(user);
+            string[] ids = input.RootElement.EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            return new LlmResponse(JsonSerializer.Serialize(ids.Select(id => new { id, text = "translated-" + id })));
+        });
+        return prompts;
+    }
+
+    private static ExtensionConfigSnapshot BackfillConfig()
+    {
+        return new ExtensionConfigSnapshot(new Dictionary<string, string>
+        {
+            ["backfill"] = "true",
+            ["window-radius"] = "0",
+            ["max-retries"] = "0"
+        }, 1);
+    }
+
+    private static TranslationExtensionOptions BackfillOptions()
+    {
+        return Options() with
+        {
+            BackfillPreviousWindowTranslation = true,
+            WindowRadius = 0
+        };
+    }
+
+    private static TranslationContextTranslationSnapshot CommittedSnapshot(string targetLanguage, string boxId)
+    {
+        return new TranslationContextTranslationSnapshot(
+            new ExtensionPageIdentity(DocumentInstanceId.Parse("00000000-0000-0000-0000-000000000001"),
+                PageId.Parse("00000000-0000-0000-0000-000000000002"),
+                DocumentTreeRevisionId.Parse("00000000-0000-0000-0000-000000000003"), 1),
+            "translated-" + StableBoxId(boxId), LanguageTag.Create(targetLanguage), 1);
     }
 
     private static TestTranslationJob CreateJob(ExtensionConfigSnapshot config, TranslationExtensionOptions options,

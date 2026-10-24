@@ -14,6 +14,9 @@ using Patchouli.Mcp;
 using Patchouli.Core.Search;
 using Patchouli.Ocr;
 using System.Text.Json;
+using System.Globalization;
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Time;
 
@@ -99,9 +102,18 @@ public sealed class McpReadApi : IMcpReadApi
 
             Result<PageXmlTranslation> translated = await _pageTranslations.GetPageXmlAsync(request.DocumentId,
                 request.PageId, request.PageIndex, cancellationToken);
-            return translated.IsFailure
-                ? Result<McpPageXmlResponse>.Failure(translated.ErrorCode!, translated.ErrorMessage!)
-                : Result<McpPageXmlResponse>.Success(new McpPageXmlResponse(translated.Value.Xml,
+            if (translated.IsFailure)
+            {
+                return Result<McpPageXmlResponse>.Failure(translated.ErrorCode!, translated.ErrorMessage!);
+            }
+
+            Result<string> xmlWithContinuationPages = await AddTranslationContinuationPagesAsync(
+                request.DocumentId, request.PageId, request.PageIndex,
+                translated.Value.Status.SourceTreeRevisionId, translated.Value.Xml, cancellationToken);
+            return xmlWithContinuationPages.IsFailure
+                ? Result<McpPageXmlResponse>.Failure(
+                    xmlWithContinuationPages.ErrorCode!, xmlWithContinuationPages.ErrorMessage!)
+                : Result<McpPageXmlResponse>.Success(new McpPageXmlResponse(xmlWithContinuationPages.Value,
                     translated.Value.Status.SourceTreeRevisionId.ToString(),
                     translated.Value.Status.Version,
                     Project(translated.Value.Status)));
@@ -152,9 +164,100 @@ public sealed class McpReadApi : IMcpReadApi
             continuationSourcePages: continuationSourcePages), revision.Value.TreeRevisionId.ToString()));
     }
 
-    // 接续 XML 的跨页定位：把本页框的接续源框 ID 解析为一基页码。解析范围与所读
-    // 修订一致——当前修订读当前树，历史修订读其所属文档提交内的各页修订，
-    // 避免用 HEAD 的页码标注历史页面中的关系。
+    private async Task<Result<string>> AddTranslationContinuationPagesAsync(
+        DocumentInstanceId documentId,
+        PageId pageId,
+        int pageIndex,
+        DocumentTreeRevisionId sourceRevisionId,
+        string xml,
+        CancellationToken cancellationToken)
+    {
+        DocumentTreeService trees = new(_connectionFactory, new SystemClock(), _markdown);
+        Result<IReadOnlyList<DocumentBox>> sourceBoxesResult =
+            await trees.ListBoxesAsync(sourceRevisionId, cancellationToken);
+        if (sourceBoxesResult.IsFailure)
+        {
+            return Result<string>.Failure(sourceBoxesResult.ErrorCode!, sourceBoxesResult.ErrorMessage!);
+        }
+
+        IReadOnlyList<DocumentBox> sourceBoxes = sourceBoxesResult.Value;
+        if (sourceBoxes.Any(box => box.DocumentInstanceId != documentId || box.PageId != pageId ||
+                                   box.TreeRevisionId != sourceRevisionId))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "Translation XML source revision does not match the requested page.");
+        }
+
+        IReadOnlyDictionary<DocumentBoxId, int> sourcePages = await ResolveContinuationSourcePagesAsync(
+            documentId, sourceRevisionId, sourceBoxes, cancellationToken);
+        try
+        {
+            using XmlReader reader = XmlReader.Create(new StringReader(xml), new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null
+            });
+            XDocument document = XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+            XElement? root = document.Root;
+            if (root is null || root.Name != "page" ||
+                (string?)root.Attribute("document_id") != documentId.ToString() ||
+                (string?)root.Attribute("page_index") != pageIndex.ToString(CultureInfo.InvariantCulture) ||
+                (string?)root.Attribute("source_revision") != sourceRevisionId.ToString())
+            {
+                return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                    "Translation XML identity does not match its source revision.");
+            }
+
+            Dictionary<DocumentBoxId, DocumentBox> sourceById = sourceBoxes.ToDictionary(box => box.BoxId);
+            HashSet<DocumentBoxId> seen = [];
+            foreach (XElement element in root.Descendants("box"))
+            {
+                if (!Guid.TryParse((string?)element.Attribute("id"), out Guid rawId))
+                {
+                    return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                        "Translation XML contains an invalid box identity.");
+                }
+
+                DocumentBoxId boxId = new(rawId);
+                if (!sourceById.TryGetValue(boxId, out DocumentBox? sourceBox) || !seen.Add(boxId))
+                {
+                    return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                        "Translation XML box identities do not match the source revision.");
+                }
+
+                string? expectedSourceId = sourceBox.ContinuesFromBoxId?.ToString();
+                if ((string?)element.Attribute("continues_from") != expectedSourceId ||
+                    (string?)element.Attribute("continuation_state") != sourceBox.ContinuationState)
+                {
+                    return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                        "Translation XML continuation metadata does not match the source revision.");
+                }
+
+                element.Attribute("continues_from_page")?.Remove();
+                if (sourceBox.ContinuesFromBoxId is { } sourceId &&
+                    sourcePages.TryGetValue(sourceId, out int sourcePage))
+                {
+                    element.SetAttributeValue("continues_from_page", sourcePage);
+                }
+            }
+
+            if (seen.Count != sourceById.Count)
+            {
+                return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                    "Translation XML is missing source revision boxes.");
+            }
+
+            return Result<string>.Success(document.ToString(SaveOptions.DisableFormatting));
+        }
+        catch (XmlException exception)
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                $"Invalid translation XML: {exception.Message}");
+        }
+    }
+
+    // 接续 XML 的跨页定位：把本页框的接续源框 ID 解析为一基页码。文档提交是
+    // 增量记录，沿父链读取页面快照，并结合稳定 ID 的文档内历史页面身份；歧义时不猜。
     private async Task<IReadOnlyDictionary<DocumentBoxId, int>> ResolveContinuationSourcePagesAsync(
         DocumentInstanceId documentId,
         DocumentTreeRevisionId revisionId,
@@ -173,35 +276,71 @@ public sealed class McpReadApi : IMcpReadApi
 
         await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
         await connection.OpenAsync(cancellationToken);
-        string? commitId = await connection.ExecuteScalarAsync<string>(
-            "select commit_id from document_commit_pages where tree_revision_id = @RevisionId;",
-            new { RevisionId = revisionId.ToString() });
-        // 所读修订属于某个文档提交时按该提交的各页修订解析（当前修订所属的最新
-        // 提交与当前树一致）；找不到提交时退回当前树范围。
-        string[] revisionIds = commitId is not null
-            ? (await connection.QueryAsync<string>(
-                "select tree_revision_id from document_commit_pages where commit_id = @CommitId;",
-                new { CommitId = commitId })).ToArray()
-            : (await connection.QueryAsync<string>(
-                """
-                select tree_revision_id from document_tree_revisions
-                where document_instance_id = @DocumentId and status = 'committed' and is_current = 1;
-                """,
-                new { DocumentId = documentId.ToString() })).ToArray();
-
-        (string BoxId, int PageIndex)[] rows = (await connection.QueryAsync<(string BoxId, int PageIndex)>(
+        string? commitId = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
             """
-            select b.box_id as BoxId, p.page_index as PageIndex
-            from document_boxes b
-            join pages p on p.page_id = b.page_id
-            where b.document_instance_id = @DocumentId and b.box_id in @TargetIds
-              and b.tree_revision_id in @RevisionIds;
+            select cp.commit_id
+            from document_commit_pages cp
+            join document_commits c on c.commit_id = cp.commit_id
+            where cp.tree_revision_id = @RevisionId and c.document_instance_id = @DocumentId
+            limit 1;
             """,
-            new
-            {
-                DocumentId = documentId.ToString(), TargetIds = targetIds, RevisionIds = revisionIds
-            })).ToArray();
-        return rows.ToDictionary(row => DocumentBoxId.Parse(row.BoxId), row => row.PageIndex + 1);
+            new { RevisionId = revisionId.ToString(), DocumentId = documentId.ToString() },
+            cancellationToken: cancellationToken));
+        List<(string BoxId, int PageIndex)> candidates = [];
+        if (commitId is not null)
+        {
+            // Each commit records changed pages only. Walking parents and taking the first
+            // revision per page reconstructs that commit's effective document snapshot.
+            candidates.AddRange(await connection.QueryAsync<(string BoxId, int PageIndex)>(new CommandDefinition(
+                """
+                with recursive ancestors(commit_id, depth, path) as (
+                    select commit_id, 0, '|' || commit_id || '|'
+                    from document_commits
+                    where commit_id = @CommitId and document_instance_id = @DocumentId
+                    union all
+                    select parent.commit_id, child.depth + 1, child.path || parent.commit_id || '|'
+                    from ancestors child
+                    join document_commits current on current.commit_id = child.commit_id
+                    join document_commits parent on parent.commit_id = current.parent_commit_id
+                    where parent.document_instance_id = @DocumentId
+                      and instr(child.path, '|' || parent.commit_id || '|') = 0
+                ), latest_pages as (
+                    select cp.page_id, cp.tree_revision_id,
+                           row_number() over (partition by cp.page_id order by a.depth) as rank
+                    from ancestors a
+                    join document_commit_pages cp on cp.commit_id = a.commit_id
+                )
+                select b.box_id as BoxId, p.page_index as PageIndex
+                from latest_pages lp
+                join pages p on p.page_id = lp.page_id and p.document_instance_id = @DocumentId
+                join document_boxes b on b.tree_revision_id = lp.tree_revision_id
+                                     and b.page_id = lp.page_id and b.document_instance_id = @DocumentId
+                where lp.rank = 1 and b.box_id in @TargetIds;
+                """,
+                new { CommitId = commitId, DocumentId = documentId.ToString(), TargetIds = targetIds },
+                cancellationToken: cancellationToken)));
+        }
+
+        // Older/partial commit ancestry can omit an unchanged page. Stable box IDs locate
+        // page identity across committed history even if that page's current boxes changed
+        // or the source was later deleted. Add these candidates in either case; if an ID was
+        // reused on another page, the final uniqueness check deliberately withholds a page.
+        candidates.AddRange(await connection.QueryAsync<(string BoxId, int PageIndex)>(
+            new CommandDefinition(
+                """
+                select distinct b.box_id as BoxId, p.page_index as PageIndex
+                from document_boxes b
+                join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                join pages p on p.page_id = b.page_id and p.document_instance_id = @DocumentId
+                where b.document_instance_id = @DocumentId and r.status = 'committed'
+                  and b.box_id in @TargetIds;
+                """,
+                new { DocumentId = documentId.ToString(), TargetIds = targetIds },
+                cancellationToken: cancellationToken)));
+
+        return candidates.GroupBy(row => row.BoxId, StringComparer.Ordinal)
+            .Where(group => group.Select(row => row.PageIndex).Distinct().Count() == 1)
+            .ToDictionary(group => DocumentBoxId.Parse(group.Key), group => group.First().PageIndex + 1);
     }
 
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
