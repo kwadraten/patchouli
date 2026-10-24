@@ -79,6 +79,10 @@ public sealed class MigrationRunner
                 {
                     await DocumentBoxTypeMigration.ApplyAsync(connection, transaction, sql);
                 }
+                else if (file.Id == "054")
+                {
+                    await ContinuationStateMigration.ApplyAsync(connection, transaction, sql);
+                }
                 else
                 {
                     await connection.ExecuteAsync(sql, transaction: transaction);
