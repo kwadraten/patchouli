@@ -387,6 +387,44 @@ public sealed class BuiltInMetadataSourceTests
             identifier.Scheme == BuiltInIdentifierSchemes.OpenAlex && identifier.Value == "W2159974629");
     }
 
+    // Fixture trimmed from the live Semantic Scholar response for DOI 10.1038/nature12373
+    // (retrieved 2026-10-24, archived in the metadata audit): publicationTypes carries the
+    // unhyphenated "JournalArticle", which the shared mapType must map to article-journal;
+    // the abstract is trimmed to its first sentence.
+    [Fact]
+    public async Task Semantic_scholar_maps_unhyphenated_journal_article_type()
+    {
+        const string json = """
+                            {"paperId":"a5de30adc5c22bc86e8cfabe7fbd07c052d196a8","externalIds":{"MAG":"2159974629","ArXiv":"1304.1068","PubMedCentral":"4221854","DOI":"10.1038/nature12373","CorpusId":4314121,"PubMed":"23903748"},"title":"Nanometer scale thermometry in a living cell","venue":"Nature","year":2013,"publicationTypes":["JournalArticle"],"journal":{"name":"Nature","pages":"54 - 58","volume":"500"},"authors":[{"authorId":"4301543","name":"G. Kucsko"},{"authorId":"47762783","name":"P. Maurer"},{"authorId":"4138853","name":"N. Yao"},{"authorId":"2068210745","name":"Michael Kubo"},{"authorId":"2250179130","name":"H. Noh"},{"authorId":"47472726","name":"Peggy Lo"},{"authorId":"9236657","name":"Hongkun Park"},{"authorId":"145572474","name":"M. Lukin"}],"abstract":"Sensitive probing of temperature variations on nanometre scales is an outstanding challenge in many areas of modern science and technology."}
+                            """;
+        Harness harness = await Harness.LookupAsync("metadata.semantic-scholar", BuiltInIdentifierSchemes.DOI,
+            "10.1038/nature12373", _ => JsonResponse(json));
+
+        harness.Result.IsSuccess.Should().BeTrue(harness.Result.ErrorMessage);
+        harness.Result.Value.Title.Should().Be("Nanometer scale thermometry in a living cell");
+        harness.Result.Value.PublicationTitle.Should().Be("Nature");
+        harness.Result.Value.Volume.Should().Be("500");
+        harness.Result.Value.Pages.Should().Be("54 - 58");
+        harness.Result.Value.Dates.Should().ContainSingle(date => date.DateParts!.SequenceEqual(new[] { 2013 }));
+        harness.Result.Value.Creators.Should().HaveCount(8);
+        harness.Result.Value.Creators.Should().Contain(creator => creator.Literal == "G. Kucsko");
+        harness.Result.Value.Abstract.Should().StartWith("Sensitive probing of temperature variations");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.DOI && identifier.Value == "10.1038/nature12373");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.ArXiv && identifier.Value == "1304.1068");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Pmid && identifier.Value == "23903748");
+        harness.Result.Value.Identifiers.Should().Contain(identifier =>
+            identifier.Scheme == "semantic_scholar" && identifier.Value == "4314121");
+        harness.Result.Value.SuggestedItemType.Should().Be("article-journal");
+        harness.Result.Value.TypeConfidence.Should().Be(0.9);
+        harness.Requests.Should().ContainSingle();
+        harness.Requests[0].Uri.Host.Should().Be("api.semanticscholar.org");
+        harness.Requests[0].Uri.AbsoluteUri.Should().Contain("DOI%3A10.1038%2Fnature12373");
+        harness.Requests[0].Uri.Query.Should().Contain("publicationTypes");
+    }
+
     // Fixture trimmed from the live response for LCCN 2008024750
     // (https://www.loc.gov/item/2008024750/?fo=json, retrieved 2026-10-24): all bibliographic
     // fields live inside "item"; contributors are {name: url} objects, the name list is in
