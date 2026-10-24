@@ -144,8 +144,64 @@ public sealed class McpReadApi : IMcpReadApi
                 "Box does not belong to this page revision.");
         }
 
+        IReadOnlyDictionary<DocumentBoxId, int> continuationSourcePages =
+            await ResolveContinuationSourcePagesAsync(
+                request.DocumentId, revision.Value.TreeRevisionId, boxes.Value, cancellationToken);
         return Result<McpPageXmlResponse>.Success(new McpPageXmlResponse(PageXmlCodec.EncodePage(request.DocumentId,
-            request.PageIndex, revision.Value.TreeRevisionId, boxes.Value), revision.Value.TreeRevisionId.ToString()));
+            request.PageIndex, revision.Value.TreeRevisionId, boxes.Value,
+            continuationSourcePages: continuationSourcePages), revision.Value.TreeRevisionId.ToString()));
+    }
+
+    // 接续 XML 的跨页定位：把本页框的接续源框 ID 解析为一基页码。解析范围与所读
+    // 修订一致——当前修订读当前树，历史修订读其所属文档提交内的各页修订，
+    // 避免用 HEAD 的页码标注历史页面中的关系。
+    private async Task<IReadOnlyDictionary<DocumentBoxId, int>> ResolveContinuationSourcePagesAsync(
+        DocumentInstanceId documentId,
+        DocumentTreeRevisionId revisionId,
+        IReadOnlyList<DocumentBox> boxes,
+        CancellationToken cancellationToken)
+    {
+        string[] targetIds = boxes
+            .Where(box => box.ContinuesFromBoxId is not null)
+            .Select(box => box.ContinuesFromBoxId!.Value.ToString())
+            .Distinct()
+            .ToArray();
+        if (targetIds.Length == 0)
+        {
+            return new Dictionary<DocumentBoxId, int>();
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? commitId = await connection.ExecuteScalarAsync<string>(
+            "select commit_id from document_commit_pages where tree_revision_id = @RevisionId;",
+            new { RevisionId = revisionId.ToString() });
+        // 所读修订属于某个文档提交时按该提交的各页修订解析（当前修订所属的最新
+        // 提交与当前树一致）；找不到提交时退回当前树范围。
+        string[] revisionIds = commitId is not null
+            ? (await connection.QueryAsync<string>(
+                "select tree_revision_id from document_commit_pages where commit_id = @CommitId;",
+                new { CommitId = commitId })).ToArray()
+            : (await connection.QueryAsync<string>(
+                """
+                select tree_revision_id from document_tree_revisions
+                where document_instance_id = @DocumentId and status = 'committed' and is_current = 1;
+                """,
+                new { DocumentId = documentId.ToString() })).ToArray();
+
+        (string BoxId, int PageIndex)[] rows = (await connection.QueryAsync<(string BoxId, int PageIndex)>(
+            """
+            select b.box_id as BoxId, p.page_index as PageIndex
+            from document_boxes b
+            join pages p on p.page_id = b.page_id
+            where b.document_instance_id = @DocumentId and b.box_id in @TargetIds
+              and b.tree_revision_id in @RevisionIds;
+            """,
+            new
+            {
+                DocumentId = documentId.ToString(), TargetIds = targetIds, RevisionIds = revisionIds
+            })).ToArray();
+        return rows.ToDictionary(row => DocumentBoxId.Parse(row.BoxId), row => row.PageIndex + 1);
     }
 
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
@@ -358,7 +414,9 @@ public sealed class McpReadApi : IMcpReadApi
                        b.next_sibling_box_id as NextSiblingBoxId, b.box_type as BoxType, b.sub_type as SubType,
                        b.payload_json as PayloadJson, b.suppressed as Suppressed,
                        b.bbox_x as BBoxX, b.bbox_y as BBoxY,
-                       b.bbox_width as BBoxWidth, b.bbox_height as BBoxHeight
+                       b.bbox_width as BBoxWidth, b.bbox_height as BBoxHeight,
+                       b.continues_from_box_id as ContinuesFromBoxId,
+                       b.continuation_state as ContinuationState
                 from document_boxes b
                 where b.page_id = @PageId and b.tree_revision_id = @RevisionId
                 ;
@@ -1495,6 +1553,8 @@ public sealed class McpReadApi : IMcpReadApi
         public double BBoxY { get; set; }
         public double BBoxWidth { get; set; }
         public double BBoxHeight { get; set; }
+        public string? ContinuesFromBoxId { get; set; }
+        public string? ContinuationState { get; set; }
 
         public DocumentBox ToBox(DocumentInstanceId documentInstanceId, PageId pageId,
             DocumentTreeRevisionId treeRevisionId)
@@ -1504,7 +1564,9 @@ public sealed class McpReadApi : IMcpReadApi
                 NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, SubType,
                 new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
                 DocumentBoxPayloadSerializer.Deserialize(BoxType, SubType, PayloadJson), null, null, null,
-                Suppressed == 1);
+                Suppressed == 1,
+                ContinuesFromBoxId is null ? null : DocumentBoxId.Parse(ContinuesFromBoxId),
+                ContinuationState);
         }
     }
 
