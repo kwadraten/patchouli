@@ -83,6 +83,46 @@ public sealed class PageXmlCodecTests
         Assert.True(result.IsFailure);
     }
 
+    [Fact]
+    public void Decode_box_rejects_a_malformed_continues_from_page_hint()
+    {
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        DocumentTreeRevisionId revision = DocumentTreeRevisionId.New();
+        DocumentBoxId headId = DocumentBoxId.New();
+        DocumentBoxId followerId = DocumentBoxId.New();
+        DocumentBox head = Box(headId, null, DocumentBoxType.Text, new TextBoxPayload("First."))
+            with
+            {
+                NextSiblingBoxId = followerId
+            };
+        DocumentBox follower = Box(followerId, null, DocumentBoxType.Text, new TextBoxPayload("Second."))
+            with
+            {
+                ContinuesFromBoxId = headId
+            };
+        DocumentBox[] boxes = [head, follower];
+        string xml = PageXmlCodec.EncodePage(documentId, 1, revision, boxes,
+            continuationSourcePages: new Dictionary<DocumentBoxId, int> { [headId] = 1 });
+        XDocument document = XDocument.Parse(xml);
+        XElement followerElement = document.Root!.Elements("box")
+            .Single(element => element.Attribute("continues_from") is not null);
+
+        // box 级解码与页级解码共享提示的形式校验：必须是正整数页码。
+        followerElement.SetAttributeValue("continues_from_page", "0");
+        Assert.True(PageXmlCodec.DecodeBox(
+            followerElement.ToString(SaveOptions.DisableFormatting), follower).IsFailure);
+        followerElement.SetAttributeValue("continues_from_page", "abc");
+        Assert.True(PageXmlCodec.DecodeBox(
+            followerElement.ToString(SaveOptions.DisableFormatting), follower).IsFailure);
+        // 合法的正整数提示在 box 级被接受；它与源框实际页码是否一致由页级解码校验。
+        followerElement.SetAttributeValue("continues_from_page", "2");
+        Assert.True(PageXmlCodec.DecodeBox(
+            followerElement.ToString(SaveOptions.DisableFormatting), follower).IsSuccess);
+        // 页级解码：源框在本页时，提示必须等于本页页码。
+        Assert.True(PageXmlCodec.DecodePage(
+            document.ToString(SaveOptions.DisableFormatting), documentId, 1, revision, boxes).IsFailure);
+    }
+
     private static DocumentBox Box(
         DocumentBoxId id,
         DocumentBoxId? parent,

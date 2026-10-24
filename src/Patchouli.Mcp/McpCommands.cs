@@ -280,10 +280,16 @@ public sealed record McpAddResult(
 /// <param name="Uri">Page, box/evidence or translation page/box URI.</param>
 /// <param name="Context">"page" (default) or "region".</param>
 /// <param name="MaxEdge">Longest-edge pixel cap; null selects the validated default.</param>
+/// <param name="Boxes">
+/// Issue #28: when true, the returned image outlines every box of the page with its
+/// sequence number (page XML document order), and the image metadata carries the
+/// number-to-box-id mapping.
+/// </param>
 public sealed record McpViewRequest(
     string Uri,
     string? Context = null,
-    int? MaxEdge = null);
+    int? MaxEdge = null,
+    bool Boxes = false);
 
 public sealed record McpViewMeta(
     [property: JsonPropertyName("library_revision")]
@@ -304,7 +310,19 @@ public sealed record McpViewImageMetadata(
     [property: JsonPropertyName("height")] int Height,
     [property: JsonPropertyName("crop")] IReadOnlyList<double> Crop,
     [property: JsonPropertyName("image_index")]
-    int ImageIndex);
+    int ImageIndex,
+    [property: JsonPropertyName("boxes")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpViewBoxNumber>? Boxes = null);
+
+/// <summary>
+/// Issue #28: one numbered box overlay entry of a view response. <see cref="Index"/> is
+/// the sequence number drawn on the image (page XML document order); <see cref="BoxId"/>
+/// is the stable box identity that number stands for.
+/// </summary>
+public sealed record McpViewBoxNumber(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("box_id")] string BoxId);
 
 /// <summary>
 /// Issue #11: the full outcome of a view command. The envelope carries the text

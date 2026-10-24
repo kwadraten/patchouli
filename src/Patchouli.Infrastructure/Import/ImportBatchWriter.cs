@@ -488,12 +488,12 @@ public sealed class ImportBatchWriter
             insert into document_boxes (
                 tree_revision_id, box_id, document_instance_id, page_id, parent_box_id, next_sibling_box_id,
                 box_type, sub_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json,
-                heading_level, code_language, confidence, suppressed, continues_from_box_id
+                heading_level, code_language, confidence, suppressed, continues_from_box_id, continuation_state
             )
             values (
                 @TreeRevisionId, @BoxId, @DocumentInstanceId, @PageId, @ParentBoxId, @NextSiblingBoxId,
                 @BoxType, @SubType, @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @PayloadJson,
-                @HeadingLevel, @CodeLanguage, @Confidence, @Suppressed, @ContinuesFromBoxId
+                @HeadingLevel, @CodeLanguage, @Confidence, @Suppressed, @ContinuesFromBoxId, @ContinuationState
             );
             """,
             new
@@ -515,7 +515,8 @@ public sealed class ImportBatchWriter
                 box.CodeLanguage,
                 box.Confidence,
                 Suppressed = box.Suppressed ? 1 : 0,
-                ContinuesFromBoxId = box.ContinuesFromBoxId?.ToString()
+                ContinuesFromBoxId = box.ContinuesFromBoxId?.ToString(),
+                ContinuationState = box.ContinuationState
             },
             transaction);
     }

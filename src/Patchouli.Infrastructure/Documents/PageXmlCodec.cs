@@ -19,7 +19,8 @@ public static class PageXmlCodec
         DocumentTreeRevisionId sourceRevision,
         IReadOnlyList<DocumentBox> boxes,
         IReadOnlyDictionary<DocumentBoxId, string>? translations = null,
-        int translationVersion = 0)
+        int translationVersion = 0,
+        IReadOnlyDictionary<DocumentBoxId, int>? continuationSourcePages = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageIndex);
         XElement root = new("page",
@@ -32,7 +33,7 @@ public static class PageXmlCodec
 
         foreach (DocumentBox box in DocumentBoxProjection.Siblings(boxes, null))
         {
-            root.Add(EncodeBox(box, boxes, translations));
+            root.Add(EncodeBox(box, boxes, translations, continuationSourcePages));
         }
 
         return new XDocument(new XDeclaration("1.0", "utf-8", null), root)
@@ -104,6 +105,20 @@ public static class PageXmlCodec
                 if (!sourceById.TryGetValue(id, out DocumentBox? source) || !seen.Add(id))
                 {
                     return Failure<PageXmlDocument>("The page XML contains an unknown or duplicate box id.");
+                }
+
+                // continues_from_page 的正整数形式校验已下沉到 DecodePayload
+                // 与单框解码共享；此处只补页面上下文才能判定的部分：源框就在
+                // 本页时，标注页码必须等于本页页码。
+                string sourcePage = Attr(element, "continues_from_page");
+                if (sourcePage.Length > 0 &&
+                    int.TryParse(sourcePage, NumberStyles.None, CultureInfo.InvariantCulture,
+                        out int sourcePageValue) &&
+                    source.ContinuesFromBoxId is { } targetId && sourceById.ContainsKey(targetId) &&
+                    sourcePageValue != pageIndex)
+                {
+                    return Failure<PageXmlDocument>(
+                        "The continues_from_page attribute must match the source box page when it is on this page.");
                 }
 
                 Result<DocumentBoxPayload?> payload = DecodePayload(element, source, true);
@@ -186,7 +201,8 @@ public static class PageXmlCodec
     private static XElement EncodeBox(
         DocumentBox box,
         IReadOnlyList<DocumentBox> boxes,
-        IReadOnlyDictionary<DocumentBoxId, string>? translations)
+        IReadOnlyDictionary<DocumentBoxId, string>? translations,
+        IReadOnlyDictionary<DocumentBoxId, int>? continuationSourcePages = null)
     {
         string? storedTranslation = null;
         bool hasTranslation = translations is not null && translations.TryGetValue(box.BoxId, out storedTranslation);
@@ -214,6 +230,26 @@ public static class PageXmlCodec
             new XAttribute("suppressed", box.Suppressed ? "true" : "false"),
             new XAttribute("readonly", "false"),
             new XAttribute("translated", hasTranslation ? "true" : "false"));
+        // 接续（continues_prev）关系是独立元数据，绝不混入正文：continues_from 给出
+        // 源框的稳定 ID（同页、跨页与多框链都靠它识别，不靠元素相邻位置猜测）；
+        // 调用方能解析源框所在页时附 continues_from_page（一基页码）以便跨页定位；
+        // 旧版未恢复接续以 continuation_state 如实标注，不伪装成本框已有局部文字。
+        if (box.ContinuesFromBoxId is { } sourceId)
+        {
+            element.Add(new XAttribute("continues_from", sourceId));
+            if (continuationSourcePages is not null &&
+                continuationSourcePages.TryGetValue(sourceId, out int sourcePage))
+            {
+                element.Add(new XAttribute("continues_from_page",
+                    sourcePage.ToString(CultureInfo.InvariantCulture)));
+            }
+        }
+
+        if (box.ContinuationState is not null)
+        {
+            element.Add(new XAttribute("continuation_state", box.ContinuationState));
+        }
+
         string? format = PayloadFormat(boxPayload);
         if (format is not null)
         {
@@ -242,7 +278,7 @@ public static class PageXmlCodec
 
         foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
         {
-            element.Add(EncodeBox(child, boxes, translations));
+            element.Add(EncodeBox(child, boxes, translations, continuationSourcePages));
         }
 
         return element;
@@ -256,7 +292,7 @@ public static class PageXmlCodec
         string[] allowedAttributes =
         [
             "id", "type", "sub_type", "heading_level", "code_language", "suppressed", "readonly",
-            "translated"
+            "translated", "continues_from", "continues_from_page", "continuation_state"
         ];
         if (element.Attributes().Any(attribute => attribute.Name.Namespace != XNamespace.None ||
                                                   !allowedAttributes.Contains(attribute.Name.LocalName,
@@ -273,6 +309,28 @@ public static class PageXmlCodec
             Attr(element, "suppressed") != (source.Suppressed ? "true" : "false"))
         {
             return Failure<DocumentBoxPayload?>("Box identity and source attributes are read-only and must match.");
+        }
+
+        // 接续关系在页面 XML 中只读：put 往返必须原样保留 continues_from 与
+        // continuation_state，删改任一都会被拒绝，而不是静默丢失或重写关系。
+        // 关系本身只能在 PDF 工作台中建立、纠正或解除（见 IDocumentTreeEditor.SetContinuationAsync）。
+        // continues_from_page 是由关系派生的定位提示，不承载状态；其形式校验
+        // （出现时必须是正整数，即一基页码）在此处与 DecodeBox/DecodePage 共享，
+        // 而「源框同页时须等于本页页码」需要页面上下文，只在 DecodePage 中校验。
+        if (Attr(element, "continues_from") != (source.ContinuesFromBoxId?.ToString() ?? string.Empty) ||
+            Attr(element, "continuation_state") != (source.ContinuationState ?? string.Empty))
+        {
+            return Failure<DocumentBoxPayload?>(
+                "Continuation metadata is read-only and must match the source box.");
+        }
+
+        string sourcePage = Attr(element, "continues_from_page");
+        if (sourcePage.Length > 0 &&
+            (!int.TryParse(sourcePage, NumberStyles.None, CultureInfo.InvariantCulture,
+                out int sourcePageValue) || sourcePageValue < 1))
+        {
+            return Failure<DocumentBoxPayload?>(
+                "The continues_from_page attribute must be a positive page index.");
         }
 
         string? expectedFormat = PayloadFormat(source.Payload);

@@ -69,7 +69,7 @@ internal sealed class MinerUResultParser
             : new MinerUContentListPage(1, 1000, 1000, []);
         (OcrPageCandidate pageCandidate, IReadOnlyList<OcrDiagnostic> diagnostics) =
             new MinerUDocumentTreeCandidateMapper().MapImagePage(
-                contentPage, page, prepared.ImageContext.RegionBBox);
+                contentPage, page, prepared.ImageContext.RegionBBox, contentList.Value.ContinuationSemantics);
         return Result<OcrDocumentTreeCandidate>.Success(
             new OcrDocumentTreeCandidate([pageCandidate], diagnostics));
     }

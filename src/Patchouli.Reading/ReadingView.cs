@@ -354,6 +354,22 @@ public sealed class ReadingView : Control, ICustomHitTest
             measured.Add(new ReadingMeasuredBlock(layout.Column, layout.BlockIndex,
                 new Rect(layout.Left, layout.Top, layout.Width, layout.Height),
                 layout.Source.Kind, layout.Source.BoxId, layout.Source.PageIndex));
+            // A logical continuation still occupies geometry on every contributing page. Expose
+            // its page/box anchors to page rails and navigation without fabricating separate text
+            // blocks (selection and links continue to use the single logical block).
+            if (layout.Source.Segments is { Count: > 0 } segments)
+            {
+                foreach (ReadingBlockSegment segment in segments.Skip(1))
+                {
+                    Rect textPosition = layout.Text is { } text && layout.Source.Text.Length > 0
+                        ? text.HitTestTextPosition(Math.Clamp(segment.Start, 0, layout.Source.Text.Length - 1))
+                        : new Rect(0, 0, 0, Math.Max(1, FontSize));
+                    measured.Add(new ReadingMeasuredBlock(layout.Column, layout.BlockIndex,
+                        new Rect(layout.Left, layout.Top + textPosition.Y, layout.Width,
+                            Math.Max(1, textPosition.Height)),
+                        layout.Source.Kind, segment.BoxId, segment.PageIndex));
+                }
+            }
         }
 
         return measured;
@@ -552,7 +568,21 @@ public sealed class ReadingView : Control, ICustomHitTest
         List<DocumentBoxId> ids = [];
         for (int index = Math.Max(0, start.BlockIndex); index <= end.BlockIndex && index < blocks.Count; index++)
         {
-            if (blocks[index].Source.BoxId is { } boxId && !ids.Contains(boxId))
+            BlockLayout layout = blocks[index];
+            int from = index == start.BlockIndex ? start.CharacterIndex : 0;
+            int to = index == end.BlockIndex ? end.CharacterIndex : layout.PlainText.Length;
+            if (layout.Source.Segments is { Count: > 0 } segments)
+            {
+                foreach (ReadingBlockSegment segment in segments)
+                {
+                    if (SegmentSelectionContainsText(layout.PlainText, segment, from, to) &&
+                        !ids.Contains(segment.BoxId))
+                    {
+                        ids.Add(segment.BoxId);
+                    }
+                }
+            }
+            else if (layout.Source.BoxId is { } boxId && !ids.Contains(boxId))
             {
                 ids.Add(boxId);
             }
@@ -614,8 +644,9 @@ public sealed class ReadingView : Control, ICustomHitTest
         if (TryHitTestPosition(point, out ReadingColumnRole column, out int blockIndex, out int characterIndex))
         {
             BeginSelection(column, blockIndex, characterIndex);
+            BlockLayout layout = ColumnBlocks(column)[blockIndex];
             BlockClicked?.Invoke(this,
-                new ReadingBlockActivation(column, ColumnBlocks(column)[blockIndex].Source.BoxId));
+                new ReadingBlockActivation(column, BoxIdAtCharacter(layout.Source, characterIndex)));
         }
         else
         {
@@ -719,11 +750,59 @@ public sealed class ReadingView : Control, ICustomHitTest
         }
 
         IReadOnlyList<BlockLayout> blocks = ColumnBlocks(selection.Column);
-        int pageIndex = selection.Start.BlockIndex >= 0 && selection.Start.BlockIndex < blocks.Count
-            ? blocks[selection.Start.BlockIndex].Source.PageIndex
-            : -1;
+        int pageIndex = SelectedStartPageIndex(selection, blocks);
         EditSelectionRequested?.Invoke(this,
             new ReadingEditSelectionRequest(GetSelectedBoxIds(), GetSelectedText(), pageIndex));
+    }
+
+    private static bool SegmentSelectionContainsText(string text, ReadingBlockSegment segment, int from, int to)
+    {
+        int start = Math.Max(from, segment.Start);
+        int end = Math.Min(to, segment.Start + segment.Length);
+        if (end <= start || start < 0 || start >= text.Length)
+        {
+            return false;
+        }
+
+        end = Math.Min(end, text.Length);
+        for (int index = start; index < end; index++)
+        {
+            if (!char.IsWhiteSpace(text[index]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int SelectedStartPageIndex(ReadingSelection selection, IReadOnlyList<BlockLayout> blocks)
+    {
+        ReadingTextPosition start = selection.Start;
+        ReadingTextPosition end = selection.End;
+        for (int index = Math.Max(0, start.BlockIndex); index <= end.BlockIndex && index < blocks.Count; index++)
+        {
+            BlockLayout layout = blocks[index];
+            int from = index == start.BlockIndex ? start.CharacterIndex : 0;
+            int to = index == end.BlockIndex ? end.CharacterIndex : layout.PlainText.Length;
+            if (layout.Source.Segments is { Count: > 0 } segments)
+            {
+                foreach (ReadingBlockSegment segment in segments.OrderBy(item => item.Start))
+                {
+                    if (SegmentSelectionContainsText(layout.PlainText, segment, from, to))
+                    {
+                        return segment.PageIndex;
+                    }
+                }
+            }
+
+            if (to > from)
+            {
+                return layout.Source.PageIndex;
+            }
+        }
+
+        return -1;
     }
 
     private void OnSceneChanged()
@@ -1389,7 +1468,8 @@ public sealed class ReadingView : Control, ICustomHitTest
             DrawBlockHighlight(context, layout, fill);
         }
 
-        if (SelectedBoxId is { } selected && layout.Source.BoxId == selected &&
+        if (SelectedBoxId is { } selected &&
+            (layout.Source.BoxId == selected || layout.Source.SourceBoxIds?.Contains(selected) == true) &&
             TryGetSelectionBrushes(out fill, out ImmutableSolidColorBrush bar))
         {
             double top = Math.Max(0, layout.Top - 3);
@@ -1397,6 +1477,18 @@ public sealed class ReadingView : Control, ICustomHitTest
             context.FillRectangle(fill, new Rect(layout.Left, top, layout.Width, bottom - top));
             context.FillRectangle(bar, new Rect(layout.Left, top, 3, bottom - top));
         }
+    }
+
+    private static DocumentBoxId? BoxIdAtCharacter(ReadingBlock block, int characterIndex)
+    {
+        if (block.Segments is not { Count: > 0 } segments)
+        {
+            return block.BoxId;
+        }
+
+        ReadingBlockSegment? segment = segments.LastOrDefault(candidate =>
+            characterIndex >= candidate.Start && characterIndex < candidate.Start + candidate.Length);
+        return segment?.BoxId ?? block.BoxId;
     }
 
     private void DrawBlockHighlight(DrawingContext context, BlockLayout layout, ImmutableSolidColorBrush fill)

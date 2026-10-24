@@ -44,6 +44,7 @@
 - 可嵌套公共设置 record（通常命名 `Common`）。父属性上的 `[<Override("key", value)>]` 覆盖该扩展的嵌套字段默认值；用户已保存的值优先于覆盖默认值。
 - Factory 用 `ConfigSettings.Read<Settings>(snapshot)` 将冻结配置读入 record。
 - 工厂为 `Extension.createTranslation<Settings>` 和 `Extension.createMetadata<Settings>`；入口身份与 descriptor 由加载器提供。
+- `ExtensionKind.Retrieval` 是既有的显式 SDK 能力。宿主可把搜索候选交给 `IRetrievalExtension.RankAsync` 排序，并验证返回单位仍属于该候选集且分数有限。它不会自动接管默认搜索，也不代表默认向量/混合搜索已经交付。
 - `IExtensionResources.Http` 提供标准 `HttpClient`；`ResolveLlm(defaultDomain, selection)` 获取托管 LLM，未指定 selection 时可跟随默认模型。凭据按引用调用 `GetCredentialAsync(reference, token)`，只在使用点取得明文，并避免写入日志、提示词或异常。
 - FSX 扩展访问联网不经过单独的联网授权流程；MCP 权限控制属于独立边界，不授权或限制可信 FSX 代码。不要把 MCP 权限误当成扩展网络沙箱。
 - 模型调用使用完整响应 `CompleteAsync`，没有流式输出。
@@ -129,9 +130,13 @@
 
 不支持的 scheme 返回 `UnsupportedIdentifier`；响应中没有可用元数据时返回 `InvalidResponse`；标准网络访问使用 `resources.Http`。候选只是提议，由 Core 校验并原子应用（见 [CITATIONS](CITATIONS.md)）。随包来源（`metadata.crossref`、`metadata.datacite`、`metadata.openalex` 等）可以作为模板复制。
 
-## OCR 与检索扩展
+## OCR 扩展
 
-`IOcrExtension` 与 `IRetrievalExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列和检索排序仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
+`IOcrExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
+
+## Retrieval 扩展
+
+`IRetrievalExtension` 通过显式 `RankSearchAsync` 使用：宿主先执行现有搜索，将有界候选及其证据交给扩展，验证排名仅引用这些候选且分数有限，再将结果关联回原证据。它不是默认搜索管线，不启用自动检索，也不意味着默认向量或混合搜索的交付。
 
 ## 证据边界
 

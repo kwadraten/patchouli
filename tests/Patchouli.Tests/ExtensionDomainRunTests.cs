@@ -6,12 +6,45 @@ using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Extensions;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Llm;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 
 [Trait("Category", "compiled-extension")]
 public sealed class ExtensionDomainRunTests
 {
+    [Fact]
+    public async Task Compiled_retrieval_v3_package_loads_and_executes_explicit_rank()
+    {
+        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-retrieval-{Guid.NewGuid():N}");
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
+                () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot package = RetrievalPackage();
+            ExtensionCheckResult activated = await catalog.ActivateAsync(package, CancellationToken.None);
+            activated.Succeeded.Should().BeTrue(string.Join(Environment.NewLine,
+                activated.Diagnostics.Select(issue => $"{issue.Code}: {issue.Message}")));
+            IExtensionLease lease = (await catalog.Manager.AcquireAsync(package.Id, CancellationToken.None))!;
+            lease.Retrieval.Should().NotBeNull();
+            ExtensionConfigSnapshot config = ExtensionConfiguration.Resolve(lease.ConfigFields, lease.Config);
+            await using ExtensionDomainRun run = new(lease, catalog.Resources.ForRun(config), config);
+            SearchMatchedUnit evidence = new(SearchUnitId.New(), PageId.New(), DocumentBoxId.New(), "evidence",
+                "text", 0, DocumentTreeRevisionId.New(), true);
+            Core.Results.Result<RetrievalExtensionResult> ranked = await run.RankAsync(new RetrievalExtensionContext(
+                "query", config, [evidence], 1));
+            ranked.IsSuccess.Should().BeTrue(ranked.ErrorMessage);
+            ranked.Value.Matches.Should().ContainSingle().Which.UnitId.Should().Be(evidence.UnitId);
+        }
+        finally
+        {
+            if (Directory.Exists(runtimeDirectory))
+            {
+                Directory.Delete(runtimeDirectory, true);
+            }
+        }
+    }
+
     [Fact]
     public async Task Catalog_keeps_metadata_packages_lazy_and_activates_only_the_requested_source()
     {
@@ -132,5 +165,24 @@ public sealed class ExtensionDomainRunTests
         {
             ["main.fsx"] = source
         });
+    }
+
+    private static ExtensionPackageSnapshot RetrievalPackage()
+    {
+        string source = """
+                        open System.Threading.Tasks
+                        open Patchouli.Extensions.Contracts
+
+                        /// <summary>Test retrieval extension.</summary>
+                        /// <patchouli-extension id="test.retrieval" kind="retrieval" version="1.0.0" host-api="patchouli.extensions/3">
+                        /// <name>Test retrieval</name>
+                        /// </patchouli-extension>
+                        let extension : IRetrievalExtension =
+                            { new IRetrievalExtension with
+                                member _.ConfigFields = [||]
+                                member _.RankAsync(context, _, _) =
+                                    Task.FromResult(RetrievalExtensionResult([| RetrievalExtensionMatch(context.Candidates.[0].UnitId, 0.75) |])) }
+                        """;
+        return new ExtensionPackageSnapshot("test.retrieval", new Dictionary<string, string> { ["main.fsx"] = source });
     }
 }

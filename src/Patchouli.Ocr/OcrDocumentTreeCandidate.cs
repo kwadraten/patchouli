@@ -80,7 +80,9 @@ public sealed record OcrBoxCandidate(
     DocumentBoxId? ParentLogicalPageBoxId = null,
     DocumentBoxId? PreassignedBoxId = null,
     DocumentBoxId? ContinuesFromBoxId = null,
-    string? CodeLanguage = null);
+    string? CodeLanguage = null,
+    bool ContinuesPrev = false,
+    string? ContinuationState = null);
 
 public sealed record OcrDiagnostic(
     string Code,

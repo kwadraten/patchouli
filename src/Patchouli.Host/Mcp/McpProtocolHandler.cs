@@ -35,7 +35,8 @@ public sealed class McpProtocolHandler
         IMcpOcrRunsApi? ocrRuns = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
-        IMcpMetadataRunsApi? metadataRuns = null)
+        IMcpMetadataRunsApi? metadataRuns = null,
+        IMcpImplementationCatalogApi? implementationCatalog = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
@@ -56,7 +57,8 @@ public sealed class McpProtocolHandler
             !IsSwitchOff(effectiveSettings, "patchouli.view"),
             ocrCommands,
             translationRuns,
-            metadataRuns);
+            metadataRuns,
+            implementationCatalog);
         _ = db;
         _settings = effectiveSettings with
         {
@@ -426,7 +428,9 @@ public sealed class McpProtocolHandler
                 "from the original PDF, never re-rendered from OCR text. One target, one image per call. " +
                 "Recommended collation flow: fetch (text plus version) to read the text, then view the same " +
                 "revision or box source image, then put with the original source_revision; if the version " +
-                "changed in the meantime the put reports a normal revision conflict instead of overwriting.",
+                "changed in the meantime the put reports a normal revision conflict instead of overwriting. " +
+                "A page without a box tree can still be viewed as a whole page; pass boxes=true to overlay " +
+                "numbered box outlines that match the page XML order.",
                 ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
@@ -439,6 +443,12 @@ public sealed class McpProtocolHandler
                         "bbox crop with a small margin."),
                     ["max_edge"] = ToolSchemaProperty.Integer(
                         "Longest-edge pixel cap, from 64 through 8192; default 2048."),
+                    ["boxes"] = ToolSchemaProperty.Boolean(
+                        "When true, every box of the page is drawn onto the image with its sequence " +
+                        "number. Numbers follow the page XML document order (the n-th number is the " +
+                        "n-th <box> element of the fetched page XML), and the text metadata lists " +
+                        "the number-to-box-id mapping. Pages without a box tree simply have no " +
+                        "numbered boxes."),
                     ["format"] = ToolSchemaProperty.String(
                         "Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the " +
                         "image is always a native image content block.")
@@ -681,9 +691,10 @@ public sealed class McpProtocolHandler
                        maxEdgeValue.ValueKind != JsonValueKind.Null
             ? ParseInteger(maxEdgeValue, "max_edge")
             : null;
+        bool boxes = OptionalBoolean(arguments, "boxes");
         string format = ResponseFormat(arguments);
 
-        McpViewCommandResult result = await _commands.ViewAsync(new McpViewRequest(uri, context, maxEdge), ct);
+        McpViewCommandResult result = await _commands.ViewAsync(new McpViewRequest(uri, context, maxEdge, boxes), ct);
         bool isError = result.Result.Error is not null;
         object envelope = result.Result.Envelope ??
                           McpErrorEnvelope.Build("view", result.Result.Error!, await CurrentLibraryRevisionAsync(ct));
@@ -762,7 +773,7 @@ public sealed class McpProtocolHandler
 
     private static readonly string[] AddArgumentKeys = ["path", "kind", "format"];
 
-    private static readonly string[] ViewArgumentKeys = ["uri", "context", "max_edge", "format"];
+    private static readonly string[] ViewArgumentKeys = ["uri", "context", "max_edge", "boxes", "format"];
 
     private static void RejectUnknownArguments(JsonElement arguments, IReadOnlyCollection<string> allowed)
     {

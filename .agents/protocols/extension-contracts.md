@@ -18,7 +18,7 @@ Author-facing guidance (SDK usage, nullability rules, examples) lives in the dis
 | Translation | Whole-task page order, cross-page batching, concurrency, retry policy, service protocol, alignment, candidate output | Page identity and revision checks, filtering pages requiring translation, frozen context snapshots, per-page atomic commits, progress reporting, and cancellation | Wrong identities, invalid payloads, or revision drift reject commit; a page settles once, and re-commit is valid only after Conflict+RetryPage; uncommitted pages settle as Failed/Cancelled on job completion |
 | Metadata | Identifier lookup and candidate content | Read-only proposal, expected-version check, atomic metadata/identifier application | Concurrent edits conflict; invalid identifiers cannot leave partial metadata |
 | OCR | Recognition and normalization to MinerU content semantics | MinerU-based shared model, input evidence, geometry/ownership checks, import commit | Provider-specific shapes cannot bypass normalization; candidate generation does not write document trees |
-| Retrieval | Query and ranking policy | Source revision/Box mapping, rebuildable derived index, evidence rules | Stale or foreign evidence cannot be promoted into authoritative source content |
+| Retrieval | Explicit reranking of host-supplied search candidates | Search evidence and candidate limits, lease/config snapshot, candidate identity and finite-score validation | Results cannot introduce or duplicate units; this SDK capability does not enable retrieval automatically or imply default vector/hybrid search |
 
 ## Authoring
 

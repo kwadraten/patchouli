@@ -538,7 +538,8 @@ public sealed class PdfPageRenderingTests
                 "050_file_search_root_sort_order.sql",
                 "051_file_import_recovery.sql",
                 "052_create_document_page_maps.sql",
-                "053_add_page_translation_target_language.sql");
+                "053_add_page_translation_target_language.sql",
+                "054_document_box_continuation_state.sql");
     }
 
     private sealed class Context : IAsyncDisposable

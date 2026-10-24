@@ -62,7 +62,8 @@ public static class ReadingSceneBuilder
         for (int index = 0; index < model.Blocks.Count; index++)
         {
             MarkdownBlock block = model.Blocks[index];
-            DocumentBoxId? boxId = FindBoxId(sourceMap, index);
+            DocumentBoxId[] sourceBoxIds = FindBoxIds(sourceMap, index);
+            DocumentBoxId? boxId = sourceBoxIds.Length > 0 ? sourceBoxIds[0] : null;
             DocumentBox? box = boxId is { } id && boxesById.TryGetValue(id, out DocumentBox? resolved)
                 ? resolved
                 : null;
@@ -93,25 +94,20 @@ public static class ReadingSceneBuilder
                 hasImage ? MediaLabelFor(box) : null,
                 box?.CodeLanguage,
                 hasImage ? MediaImageFor(box, imageKey) : null,
-                pageIndex));
+                pageIndex)
+            {
+                SourceBoxIds = sourceBoxIds
+            });
         }
 
         return new ReadingScene(blocks);
     }
 
-    // Source-map entries are ranges over preview node indexes; the first covering entry wins,
-    // matching how the preview binds a markdown block back to its originating box.
-    private static DocumentBoxId? FindBoxId(IReadOnlyList<MarkdownSourceMapEntry> sourceMap, int index)
+    private static DocumentBoxId[] FindBoxIds(IReadOnlyList<MarkdownSourceMapEntry> sourceMap, int index)
     {
-        foreach (MarkdownSourceMapEntry entry in sourceMap)
-        {
-            if (index >= entry.PreviewNodeStart && index < entry.PreviewNodeStart + entry.PreviewNodeCount)
-            {
-                return entry.BoxId;
-            }
-        }
-
-        return null;
+        return sourceMap.Where(entry => index >= entry.PreviewNodeStart &&
+                                        index < entry.PreviewNodeStart + entry.PreviewNodeCount)
+            .Select(entry => entry.BoxId).Distinct().ToArray();
     }
 
     // Box types describe the authored leaf; reading kinds describe how to draw it. Auxiliary
