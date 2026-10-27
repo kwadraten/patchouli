@@ -3,6 +3,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Ocr;
 
@@ -54,7 +55,7 @@ public sealed class QueuedOcrRunCoordinatorTests
         result.IsSuccess.Should().BeTrue(result.ErrorMessage);
         engine.Calls.Should().Contain("pages");
         OcrQueueTask task = (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
-        task.TaskKind.Should().Be(OcrQueueTaskKind.MockPages);
+        task.TaskKind.Should().Be(OcrQueueTaskKind.Pages);
         task.Priority.Should().Be(OcrQueuePriority.InteractiveSelectedPages);
         task.EngineId.Should().Be(OcrEngineIds.Mock);
     }
@@ -88,37 +89,6 @@ public sealed class QueuedOcrRunCoordinatorTests
         task.Priority.Should().Be(OcrQueuePriority.InteractiveCurrentPage);
         task.RegionBBox.Should().Be(region);
         task.CommitOnCompletion.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task Image_page_run_enqueues_image_page_kind()
-    {
-        (QueuedOcrRunCoordinator facade, OcrQueueScheduler scheduler, FakeEngine engine) = Create();
-
-        Result<OcrRun> result = await facade.RunPresetOnImagePageAsync(
-            engine.Run.DocumentInstanceId, engine.Run.PresetId, engine.PageIds[0], "image.png");
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        engine.Calls.Should().Contain("image");
-        OcrQueueTask task = (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
-        task.TaskKind.Should().Be(OcrQueueTaskKind.ImagePage);
-        task.ImagePath.Should().Be("image.png");
-        task.Priority.Should().Be(OcrQueuePriority.InteractiveCurrentPage);
-    }
-
-    [Fact]
-    public async Task Rendered_pdf_page_run_enqueues_rendered_kind_with_dpi()
-    {
-        (QueuedOcrRunCoordinator facade, OcrQueueScheduler scheduler, FakeEngine engine) = Create();
-
-        Result<OcrRun> result = await facade.RunPresetOnRenderedPdfPageAsync(
-            engine.Run.DocumentInstanceId, engine.Run.PresetId, engine.PageIds[0], 300);
-
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-        engine.Calls.Should().Contain("rendered");
-        OcrQueueTask task = (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
-        task.TaskKind.Should().Be(OcrQueueTaskKind.RenderedPdfPage);
-        task.Dpi.Should().Be(300);
     }
 
     [Fact]
@@ -216,6 +186,28 @@ public sealed class QueuedOcrRunCoordinatorTests
     }
 
     [Fact]
+    public async Task Ephemeral_region_recognition_runs_off_the_callers_synchronization_context()
+    {
+        (QueuedOcrRunCoordinator facade, OcrQueueScheduler scheduler, FakeEngine engine) = Create();
+        SynchronizationContext? previous = SynchronizationContext.Current;
+        Task<Result<OcrRegionCandidate>> recognition;
+        SynchronizationContext.SetSynchronizationContext(new SynchronizationContext());
+        try
+        {
+            recognition = facade.RecognizeRegionCandidateAsync(engine.Run.DocumentInstanceId,
+                engine.Run.PresetId, engine.PageIds[0], new NormalizedBBox(.1, .2, .3, .4));
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
+        (await recognition).IsSuccess.Should().BeTrue();
+        engine.RegionCandidateContext.Should().BeNull();
+        (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Query_and_management_members_delegate_to_engine()
     {
         (QueuedOcrRunCoordinator facade, _, FakeEngine engine) = Create();
@@ -243,7 +235,7 @@ public sealed class QueuedOcrRunCoordinatorTests
         OcrQueueTaskExecutor executor = new(engine);
         OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
             loopInterval: TimeSpan.FromMilliseconds(10));
-        QueuedOcrRunCoordinator facade = new(scheduler, engine, () => "anthropic");
+        QueuedOcrRunCoordinator facade = new(scheduler, engine, () => "anthropic", new MultimodalCatalog());
         try
         {
             Result<OcrRun> result = scope switch
@@ -294,6 +286,27 @@ public sealed class QueuedOcrRunCoordinatorTests
         throw new InvalidOperationException($"Queue task never reached state {state}.");
     }
 
+    private sealed class MultimodalCatalog : IOcrEngineCatalog
+    {
+        private static readonly OcrEngineDefinition Definition = new(OcrEngineIds.MultimodalLlm,
+            "Fixture multimodal engine", OcrAdapterKind.CloudApi, "fixture", [OcrInputKinds.PageImage],
+            true);
+
+        public IReadOnlyList<OcrEngineDefinition> ListDefinitions()
+        {
+            return [Definition];
+        }
+
+        public Task<Result<OcrEngineDefinition>> GetDefinitionAsync(string engineId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(
+                engineId == Definition.EngineId
+                    ? Result<OcrEngineDefinition>.Success(Definition)
+                    : Result<OcrEngineDefinition>.Failure(AppErrorCodes.NotFound, "Unknown fixture engine."));
+        }
+    }
+
     private sealed class FakeEngine : IOcrRunEngine
     {
         public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
@@ -314,11 +327,29 @@ public sealed class QueuedOcrRunCoordinatorTests
 
         public List<string> Calls { get; } = [];
         public List<PageId> PageIds { get; } = [PageId.New(), PageId.New()];
+        public List<OcrRunExecutionRequest> Requests { get; } = [];
         public OcrPresetVersion Version { get; }
         public OcrRun Run { get; }
         public string? RunFailureCode { get; set; }
         public bool FailVersion { get; set; }
         public bool BlockUntilCancelled { get; set; }
+        public SynchronizationContext? RegionCandidateContext { get; private set; }
+
+        public Task<Result<OcrRun>> ExecuteAsync(OcrRunExecutionRequest request,
+            OcrRunExecutionContext? execution = null, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
+        {
+            Requests.Add(request);
+            execution?.ReportRunCreated(Run.OcrRunId);
+            string call = request.Scope switch
+            {
+                OcrRunExecutionScope.Document => "document",
+                OcrRunExecutionScope.Pages => request.WorkingDraft ? "working-page" : "pages",
+                OcrRunExecutionScope.Region => "region",
+                _ => "unknown"
+            };
+            return RunAsync(call, cancellationToken);
+        }
 
         public Task<Result<IReadOnlyList<PageId>>> ListPageIdsAsync(DocumentInstanceId d,
             CancellationToken c = default)
@@ -374,21 +405,10 @@ public sealed class QueuedOcrRunCoordinatorTests
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
             PageId page, NormalizedBBox bbox, CancellationToken c = default)
         {
+            RegionCandidateContext = SynchronizationContext.Current;
             Calls.Add("region_candidate");
             return Task.FromResult(Result<OcrRegionCandidate>.Success(
                 new OcrRegionCandidate(page, bbox, DocumentBoxType.Text, new TextBoxPayload("text"))));
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            string path, CancellationToken c = default)
-        {
-            return RunAsync("image", c);
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            int dpi = 200, CancellationToken c = default)
-        {
-            return RunAsync("rendered", c);
         }
 
         public Task<Result> CancelRunAsync(OcrRunId r, CancellationToken c = default)

@@ -76,7 +76,7 @@ public sealed class OcrCommandExecutorIndependentTests
     public async Task Recognition_error_stops_before_page_results_commit_and_index()
     {
         Harness harness = new();
-        harness.Engine.Handler = (method, _) => method == nameof(IOcrRunEngine.RunPresetOnDocumentAsync)
+        harness.Engine.Handler = (method, _) => method == nameof(IOcrRunEngine.ExecuteAsync)
             ? Task.FromResult(Result<OcrRun>.Failure("ocr_engine_failure", "Engine rejected input."))
             : throw new NotSupportedException(method);
 
@@ -138,11 +138,11 @@ public sealed class OcrCommandExecutorIndependentTests
             Task = new OcrQueueTask(OcrQueueTaskId.New(), LibraryId.New(), Run.DocumentInstanceId, Run.PresetId,
                 Pages.Select(page => page.PageId).ToArray(), OcrQueueTaskKind.Document, Run.EngineId,
                 OcrAdapterKind.LocalLibrary, null, OcrQueuePriority.UserStartedDocument, now, now,
-                OcrQueueTaskState.Running, 1, 1, null, null, null, null, null, null);
-            Engine.Handler = (method, _) => method switch
+                OcrQueueTaskState.Running, 1, 1, null, null, null, null);
+            Engine.Handler = (method, arguments) => method switch
             {
                 nameof(IOcrRunEngine.GetRunAsync) => Record("run", Result<OcrRun>.Success(Run)),
-                nameof(IOcrRunEngine.RunPresetOnDocumentAsync) => Record("recognize", Result<OcrRun>.Success(Run)),
+                nameof(IOcrRunEngine.ExecuteAsync) => Recognize((OcrRunExecutionRequest)arguments[0]!),
                 nameof(IOcrRunEngine.ListPageResultsAsync) => Record("pages",
                     Result<IReadOnlyList<OcrPageResult>>.Success(Pages)),
                 nameof(IOcrRunEngine.CommitCandidateRunAsync) => Record("commit", CommitResult),
@@ -157,6 +157,15 @@ public sealed class OcrCommandExecutorIndependentTests
                 ? Record("fts", IndexResult)
                 : throw new NotSupportedException(method);
             Executor = new OcrQueueTaskExecutor(Engine.Value, units.Value, index.Value);
+        }
+
+        private Task<Result<OcrRun>> Recognize(OcrRunExecutionRequest request)
+        {
+            request.Scope.Should().Be(OcrRunExecutionScope.Document);
+            request.DocumentInstanceId.Should().Be(Task.DocumentInstanceId);
+            request.PresetId.Should().Be(Task.PresetId);
+            request.PageIds.Should().Equal(Task.PageIds);
+            return Record("recognize", Result<OcrRun>.Success(Run));
         }
 
         public OcrPageResult Page(string state)

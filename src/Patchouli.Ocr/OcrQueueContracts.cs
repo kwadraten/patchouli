@@ -7,10 +7,22 @@ namespace Patchouli.Ocr;
 public static class OcrQueueTaskKind
 {
     public const string Document = "document";
-    public const string MockPages = "mock_pages";
-    public const string ImagePage = "image_page";
-    public const string RenderedPdfPage = "rendered_pdf_page";
+    public const string Pages = "pages";
     public const string Region = "region";
+}
+
+/// <summary>Recorded origin of one accepted queue task; shared across queue/UI/MCP owners.</summary>
+public static class OcrQueueSource
+{
+    public const string UiDocument = "ui-document";
+    public const string UiPages = "ui-pages";
+    public const string UiRegion = "ui-region";
+    public const string UiWorking = "ui-working";
+    public const string Mcp = "mcp";
+    public const string Batch = "batch";
+    public const string Retry = "retry";
+    public const string Test = "test";
+    public const string Unknown = "unknown";
 }
 
 public static class OcrQueuePriority
@@ -62,6 +74,7 @@ public static class OcrQueueChangeKind
 public static class OcrTaskStage
 {
     public const string Preparing = "preparing";
+    public const string ParsingTextLayer = "parsing_text_layer";
     public const string Recognizing = "recognizing";
     public const string Uploading = "uploading";
     public const string WaitingCloud = "waiting_cloud";
@@ -91,14 +104,13 @@ public sealed record OcrQueueTask(
     string? LastErrorCode,
     string? LastErrorMessage,
     DateTimeOffset? ScheduledAfter,
-    string? ImagePath,
-    int? Dpi,
     OcrRunId? RunId = null,
     int CompletedPageCount = 0,
     int FailedPageCount = 0,
     NormalizedBBox? RegionBBox = null,
     bool CommitOnCompletion = true,
-    OcrPresetVersionId? PresetVersionId = null);
+    OcrPresetVersionId? PresetVersionId = null,
+    string Source = OcrQueueSource.Unknown);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -109,12 +121,11 @@ public sealed record OcrQueueTaskRequest(
     string AdapterKind,
     string? ProviderId,
     string Priority,
-    string? ImagePath = null,
-    int? Dpi = null,
     int MaxAttempts = 3,
     NormalizedBBox? RegionBBox = null,
     bool CommitOnCompletion = true,
-    OcrPresetVersionId? PresetVersionId = null);
+    OcrPresetVersionId? PresetVersionId = null,
+    string Source = OcrQueueSource.Unknown);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,
@@ -161,7 +172,8 @@ public sealed record OcrTaskProgressReport(
     OcrQueueTaskId TaskId,
     string Stage,
     double? Fraction,
-    string? Detail);
+    string? Detail,
+    int? Attempt = null);
 
 public sealed record OcrTaskStageProgress(
     string Stage,
@@ -172,6 +184,17 @@ public interface IOcrQueueTaskExecutor
 {
     Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
         IProgress<OcrTaskProgressReport>? progress = null);
+
+    /// <summary>
+    /// Executes one claimed task with its typed per-attempt context. The scheduler supplies
+    /// <paramref name="execution"/> so the created run can be bound to this task and attempt;
+    /// executors that do not implement the overload keep the pre-binding behavior.
+    /// </summary>
+    Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, OcrRunExecutionContext? execution,
+        CancellationToken cancellationToken, IProgress<OcrTaskProgressReport>? progress = null)
+    {
+        return ExecuteAsync(task, cancellationToken, progress);
+    }
 }
 
 public interface IOcrRetryPolicy
@@ -190,12 +213,6 @@ public interface IOcrQueueScheduler
         string engineId, string adapterKind, string? providerId, string priority, CancellationToken c = default);
 
     Task<Result<OcrQueueTask>> EnqueueMockPagesAsync(DocumentInstanceId d, OcrPresetId p, IReadOnlyList<PageId> pages,
-        string priority, CancellationToken c = default);
-
-    Task<Result<OcrQueueTask>> EnqueueImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page, string imagePath,
-        string priority, CancellationToken c = default);
-
-    Task<Result<OcrQueueTask>> EnqueueRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page, int dpi,
         string priority, CancellationToken c = default);
 
     Task<Result<OcrQueueTask>> EnqueueRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,

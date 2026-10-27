@@ -22,6 +22,8 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
     public async Task<Result<IReadOnlyList<OcrQueueRow>>> ListRowsAsync(bool includeCompleted = false,
         CancellationToken cancellationToken = default)
     {
+        // The scheduler snapshot is taken before any database access; no queue state is touched
+        // while a read connection is open, and every row is projected from this one snapshot.
         Result<IReadOnlyList<OcrQueueTask>> tasks =
             await _scheduler.ListTasksAsync(new OcrQueueTaskFilter(IncludeCompleted: includeCompleted),
                 cancellationToken);
@@ -35,47 +37,63 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             Dictionary<string, string> titles = (await connection.QueryAsync<Row>(
-                    """
-                    select di.document_instance_id as DocumentInstanceId,
-                           i.title as ItemTitle
-                    from document_instances di
-                    join items i on i.item_id = di.item_id
-                    where di.document_instance_id in @Ids;
-                    """,
-                    new { Ids = tasks.Value.Select(task => task.DocumentInstanceId.ToString()).Distinct().ToArray() }))
+                    new CommandDefinition(
+                        """
+                        select di.document_instance_id as DocumentInstanceId,
+                               i.title as ItemTitle
+                        from document_instances di
+                        join items i on i.item_id = di.item_id
+                        where di.document_instance_id in
+                              (select value from json_each(@DocumentIdsJson));
+                        """,
+                        new
+                        {
+                            DocumentIdsJson = JsonSerializer.Serialize(tasks.Value
+                                .Select(task => task.DocumentInstanceId.ToString()).Distinct())
+                        },
+                        cancellationToken: cancellationToken)))
                 .ToDictionary(row => row.DocumentInstanceId, row => row.ItemTitle, StringComparer.Ordinal);
 
-            string[] runningDocumentIds = tasks.Value
-                .Where(task => task.State == OcrQueueTaskState.Running || task.RunId is not null)
-                .Select(task => task.DocumentInstanceId.ToString())
-                .Distinct()
+            string[] linkedRunIds = tasks.Value
+                .Select(task => task.RunId?.ToString())
+                .OfType<string>()
+                .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            OcrRunProgressRow[] progressRows = runningDocumentIds.Length == 0
-                ? []
+            string linkedRunIdsJson = JsonSerializer.Serialize(linkedRunIds);
+
+            // Progress belongs only to the run a task explicitly links to. A queued task without
+            // a RunId shows no page counts — it must not borrow progress from another run of the
+            // same document. A retained-Run adoption/index retry keeps its own run's counters.
+            Dictionary<string, OcrRunProgressRow> progressByRunId = linkedRunIds.Length == 0
+                ? new Dictionary<string, OcrRunProgressRow>(StringComparer.Ordinal)
                 : (await connection.QueryAsync<OcrRunProgressRow>(
-                    """
-                    select r.ocr_run_id as RunId,
-                           r.document_instance_id as DocumentInstanceId,
-                           sum(case when pr.state = 'succeeded' then 1 else 0 end) as Succeeded,
-                           sum(case when pr.state in ('failed', 'skipped', 'cancelled') then 1 else 0 end) as Failed,
-                           sum(case when pr.state = 'processing' then 1 else 0 end) as Processing,
-                           count(pr.result_id) as Total
-                    from ocr_runs r
-                    left join ocr_page_results pr on pr.ocr_run_id = r.ocr_run_id
-                    where r.document_instance_id in @DocumentIds
-                    group by r.ocr_run_id, r.document_instance_id, r.updated_at
-                    order by r.updated_at desc;
-                    """,
-                    new { DocumentIds = runningDocumentIds })).ToArray();
+                    new CommandDefinition(
+                        """
+                        select r.ocr_run_id as RunId,
+                               sum(case when pr.state = 'succeeded' then 1 else 0 end) as Succeeded,
+                               sum(case when pr.state in ('failed', 'skipped', 'cancelled') then 1 else 0 end)
+                                   as Failed,
+                               sum(case when pr.state = 'processing' then 1 else 0 end) as Processing,
+                               count(pr.result_id) as Total
+                        from json_each(@RunIdsJson) linked
+                        join ocr_runs r on r.ocr_run_id = linked.value
+                        left join ocr_page_results pr on pr.ocr_run_id = r.ocr_run_id
+                        group by r.ocr_run_id;
+                        """,
+                        new { RunIdsJson = linkedRunIdsJson },
+                        cancellationToken: cancellationToken)))
+                .ToDictionary(row => row.RunId, StringComparer.Ordinal);
 
             Dictionary<string, OcrRunOutcomeRow> outcomeRows = await LoadOutcomeRowsAsync(
-                connection, tasks.Value, cancellationToken);
+                connection, linkedRunIds, linkedRunIdsJson, cancellationToken);
 
             return Result<IReadOnlyList<OcrQueueRow>>.Success(tasks.Value.Select(task =>
             {
-                OcrRunProgressRow? progress = progressRows.FirstOrDefault(row =>
-                    task.RunId?.ToString() == row.RunId ||
-                    (task.RunId is null && task.DocumentInstanceId.ToString() == row.DocumentInstanceId));
+                string? runId = task.RunId?.ToString();
+                OcrRunProgressRow? progress = runId is not null &&
+                                              progressByRunId.TryGetValue(runId, out OcrRunProgressRow? row)
+                    ? row
+                    : null;
                 return new OcrQueueRow(
                     task.TaskId,
                     titles.GetValueOrDefault(task.DocumentInstanceId.ToString(), "(unknown item)"),
@@ -90,7 +108,7 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
                         ? null
                         : new OcrQueueProgress(progress.Succeeded, progress.Failed, progress.Processing,
                             progress.Total),
-                    task.RunId is { } runId && outcomeRows.TryGetValue(runId.ToString(), out OcrRunOutcomeRow? outcome)
+                    runId is not null && outcomeRows.TryGetValue(runId, out OcrRunOutcomeRow? outcome)
                         ? new OcrQueueOutcome(
                             outcome.RunState,
                             outcome.CommittedPageCount > 0,
@@ -122,141 +140,127 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
     /// <summary>
     ///     Loads the durable per-run truth (run state, candidate adoption, document index status)
     ///     that the volatile queue state cannot express — notably a committed body whose index
-    ///     rebuild failed after the commit transaction.
+    ///     rebuild failed after the commit transaction. Collections travel as a single JSON
+    ///     parameter joined through <c>json_each</c>: expanding every adopted revision id into
+    ///     <c>IN</c> variables made parameter binding grow super-linearly on large histories.
     /// </summary>
     private static async Task<Dictionary<string, OcrRunOutcomeRow>> LoadOutcomeRowsAsync(
         SqliteConnection connection,
-        IReadOnlyList<OcrQueueTask> tasks,
+        string[] runIds,
+        string runIdsJson,
         CancellationToken cancellationToken)
     {
-        string[] runIds = tasks.Select(task => task.RunId?.ToString())
-            .OfType<string>()
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
         if (runIds.Length == 0)
         {
             return new Dictionary<string, OcrRunOutcomeRow>(StringComparer.Ordinal);
         }
 
         Dictionary<string, string> runStates = (await connection.QueryAsync<RunStateRow>(
-                """
-                select ocr_run_id as RunId, state as State
-                from ocr_runs
-                where ocr_run_id in @RunIds;
-                """,
-                new { RunIds = runIds }))
+                new CommandDefinition(
+                    """
+                    select ocr_run_id as RunId, state as State
+                    from ocr_runs
+                    where ocr_run_id in (select value from json_each(@RunIdsJson));
+                    """,
+                    new { RunIdsJson = runIdsJson },
+                    cancellationToken: cancellationToken)))
             .ToDictionary(row => row.RunId, row => row.State, StringComparer.Ordinal);
 
+        // A historical task's adopted body must not borrow the document's current index: if any
+        // adopted revision was superseded by a newer commit (or no longer exists), the task's
+        // index_state is reported as "superseded" instead of "indexed". Both the page count and
+        // the superseded check are computed in SQL against json_each so no revision id crosses
+        // the C# boundary. Malformed, non-array, or non-string-element JSON keeps the previous
+        // tolerant "parse as empty" outcome instead of failing the whole projection.
         Dictionary<string, AdoptionRow> adoptions = new(StringComparer.Ordinal);
         foreach (AdoptionRow adoption in await connection.QueryAsync<AdoptionRow>(
-                     """
-                     select ocr_run_id as RunId, adopted_pages_json as PagesJson,
-                            adopted_tree_revisions_json as RevisionsJson
-                     from ocr_candidate_adoptions
-                     where ocr_run_id in @RunIds;
-                     """,
-                     new { RunIds = runIds }))
+                     new CommandDefinition(
+                         """
+                         select a.ocr_run_id as RunId,
+                                a.document_instance_id as DocumentInstanceId,
+                                case
+                                    when json_valid(a.adopted_pages_json) = 1
+                                         and json_type(case when json_valid(a.adopted_pages_json)
+                                                            then a.adopted_pages_json
+                                                            else '[]' end) = 'array'
+                                         and not exists (select 1
+                                                         from json_each(
+                                                             case when json_valid(a.adopted_pages_json)
+                                                                  then a.adopted_pages_json
+                                                                  else '[]' end) e
+                                                         where e.type not in ('text', 'null'))
+                                    then json_array_length(a.adopted_pages_json)
+                                    else 0
+                                end as CommittedPageCount,
+                                case
+                                    when json_valid(a.adopted_tree_revisions_json) = 1
+                                         and json_type(case when json_valid(a.adopted_tree_revisions_json)
+                                                            then a.adopted_tree_revisions_json
+                                                            else '[]' end) = 'array'
+                                         and not exists (select 1
+                                                         from json_each(
+                                                             case when json_valid(a.adopted_tree_revisions_json)
+                                                                  then a.adopted_tree_revisions_json
+                                                                  else '[]' end) e
+                                                         where e.type not in ('text', 'null'))
+                                         and exists (select 1
+                                                     from json_each(
+                                                         case when json_valid(a.adopted_tree_revisions_json)
+                                                              then a.adopted_tree_revisions_json
+                                                              else '[]' end) e
+                                                     left join document_tree_revisions r
+                                                         on r.tree_revision_id = e.value
+                                                     where r.is_current is null or r.is_current = 0)
+                                    then 1
+                                    else 0
+                                end as Superseded
+                         from ocr_candidate_adoptions a
+                         where a.ocr_run_id in (select value from json_each(@RunIdsJson))
+                         order by a.rowid;
+                         """,
+                         new { RunIdsJson = runIdsJson },
+                         cancellationToken: cancellationToken)))
         {
+            // A run normally commits once; if several adoption rows exist the latest inserted row
+            // wins, matching the previous dictionary-overwrite behaviour but deterministically.
             adoptions[adoption.RunId] = adoption;
         }
 
-        Dictionary<string, int> committedPages = adoptions.ToDictionary(
-            pair => pair.Key,
-            pair => CountCommittedPages(pair.Value.PagesJson),
-            StringComparer.Ordinal);
-
-        // A historical task's adopted body must not borrow the document's current index: if any
-        // adopted revision was superseded by a newer commit, the task's index_state is reported
-        // as "superseded" instead of "indexed".
-        HashSet<string> currentRevisionIds = new(StringComparer.Ordinal);
-        string[] adoptedRevisionIds = adoptions.Values
-            .SelectMany(adoption => ParseRevisionIds(adoption.RevisionsJson))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (adoptedRevisionIds.Length > 0)
-        {
-            foreach (RevisionCurrentRow row in await connection.QueryAsync<RevisionCurrentRow>(
-                         """
-                         select tree_revision_id as TreeRevisionId
-                         from document_tree_revisions
-                         where tree_revision_id in @Ids and is_current = 1;
-                         """,
-                         new { Ids = adoptedRevisionIds }))
-            {
-                currentRevisionIds.Add(row.TreeRevisionId);
-            }
-        }
-
-        Dictionary<string, bool> supersededRuns = adoptions.ToDictionary(
-            pair => pair.Key,
-            pair => ParseRevisionIds(pair.Value.RevisionsJson)
-                .Any(id => !currentRevisionIds.Contains(id)),
-            StringComparer.Ordinal);
-
-        string[] committedDocumentIds = tasks
-            .Where(task => task.RunId is { } runId &&
-                           committedPages.ContainsKey(runId.ToString()))
-            .Select(task => task.DocumentInstanceId.ToString())
+        string[] committedDocumentIds = adoptions.Values
+            .Select(adoption => adoption.DocumentInstanceId)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         Dictionary<string, string> indexStates = committedDocumentIds.Length == 0
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : (await connection.QueryAsync<IndexStateRow>(
-                """
-                select scope_id as ScopeId, status as Status
-                from search_index_status
-                where scope_type = 'document_instance' and scope_id in @ScopeIds;
-                """,
-                new { ScopeIds = committedDocumentIds }))
+                new CommandDefinition(
+                    """
+                    select scope_id as ScopeId, status as Status
+                    from search_index_status
+                    where scope_type = 'document_instance'
+                      and scope_id in (select value from json_each(@ScopeIdsJson));
+                    """,
+                    new { ScopeIdsJson = JsonSerializer.Serialize(committedDocumentIds) },
+                    cancellationToken: cancellationToken)))
             .ToDictionary(row => row.ScopeId, row => row.Status, StringComparer.Ordinal);
 
         Dictionary<string, OcrRunOutcomeRow> outcomes = new(StringComparer.Ordinal);
         foreach (string runId in runIds)
         {
-            string? documentId = tasks.FirstOrDefault(task => task.RunId?.ToString() == runId)
-                ?.DocumentInstanceId.ToString();
+            if (!runStates.TryGetValue(runId, out string? runState))
+            {
+                continue;
+            }
+
+            adoptions.TryGetValue(runId, out AdoptionRow? adoption);
             outcomes[runId] = new OcrRunOutcomeRow(
-                runStates.GetValueOrDefault(runId),
-                committedPages.GetValueOrDefault(runId),
-                documentId is not null ? indexStates.GetValueOrDefault(documentId) : null,
-                supersededRuns.GetValueOrDefault(runId));
+                runState,
+                adoption?.CommittedPageCount ?? 0,
+                adoption is null ? null : indexStates.GetValueOrDefault(adoption.DocumentInstanceId),
+                adoption?.Superseded ?? false);
         }
 
         return outcomes;
-    }
-
-    private static IReadOnlyList<string> ParseRevisionIds(string? revisionsJson)
-    {
-        if (string.IsNullOrWhiteSpace(revisionsJson))
-        {
-            return [];
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(revisionsJson) ?? [];
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
-
-    private static int CountCommittedPages(string? pagesJson)
-    {
-        if (string.IsNullOrWhiteSpace(pagesJson))
-        {
-            return 0;
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(pagesJson)?.Count ?? 0;
-        }
-        catch (JsonException)
-        {
-            return 0;
-        }
     }
 
     public Task<Result> PauseRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default)
@@ -283,7 +287,6 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
     private sealed class OcrRunProgressRow
     {
         public string RunId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
         public int Succeeded { get; set; }
         public int Failed { get; set; }
         public int Processing { get; set; }
@@ -299,19 +302,15 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
     private sealed class AdoptionRow
     {
         public string RunId { get; set; } = "";
-        public string? PagesJson { get; set; }
-        public string? RevisionsJson { get; set; }
+        public string DocumentInstanceId { get; set; } = "";
+        public int CommittedPageCount { get; set; }
+        public bool Superseded { get; set; }
     }
 
     private sealed class IndexStateRow
     {
         public string ScopeId { get; set; } = "";
         public string Status { get; set; } = "";
-    }
-
-    private sealed class RevisionCurrentRow
-    {
-        public string TreeRevisionId { get; set; } = "";
     }
 
     private sealed record OcrRunOutcomeRow(

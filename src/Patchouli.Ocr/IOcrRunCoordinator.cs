@@ -46,12 +46,6 @@ public interface IOcrRunCoordinator
         OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
         CancellationToken cancellationToken = default);
 
-    Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        PageId pageId, string imagePath, CancellationToken cancellationToken = default);
-
-    Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        PageId pageId, int dpi = 200, CancellationToken cancellationToken = default);
-
     Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default);
 
     Task<Result> UnsetCurrentOcrAsync(DocumentInstanceId documentInstanceId,

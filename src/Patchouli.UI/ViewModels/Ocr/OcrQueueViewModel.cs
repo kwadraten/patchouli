@@ -1,15 +1,13 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
-using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
-using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
@@ -23,13 +21,15 @@ namespace Patchouli.UI.ViewModels;
 public sealed partial class OcrQueueViewModel : ViewModelBase
 {
     private static readonly TimeSpan DefaultRefreshThrottle = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan TitleCacheTtl = TimeSpan.FromSeconds(30);
+    internal const int MaxLabelledTaskPages = 16;
 
     private readonly MainWindowViewModel _main;
     private readonly IScheduler _timingScheduler;
     private readonly IScheduler _uiScheduler;
     private readonly TimeSpan _refreshThrottle;
-    private readonly Subject<Unit> _refreshRequests = new();
     private readonly SerialDisposable _queueSubscription = new();
+    private readonly SerialDisposable _scheduledRefresh = new();
     private IOcrQueueScheduler? _subscribedQueue;
     private readonly ObservableCollection<OcrQueueTaskViewModel> _ocrActive = new();
     private readonly ObservableCollection<OcrQueueTaskViewModel> _ocrFinished = new();
@@ -41,8 +41,27 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     private readonly HashSet<Guid> _retriedMetadataRuns = new();
     private readonly SerialDisposable _polling = new();
     private readonly Dictionary<string, string> _translationTitles = new();
-    private readonly Dictionary<string, string> _metadataBatchTitles = new();
+    private readonly Dictionary<string, string> _metadataItemTitles = new();
+    private readonly Dictionary<string, IReadOnlyDictionary<PageId, string>> _pageLabels = new();
+    private readonly Dictionary<string, DateTimeOffset> _translationTitleResolvedUtc = new();
+    private readonly Dictionary<string, DateTimeOffset> _itemTitleResolvedUtc = new();
+    private readonly Dictionary<string, DateTimeOffset> _pageLabelsResolvedUtc = new();
+    private readonly object _ingressGate = new();
+    private readonly object _refreshGate = new();
+    private CancellationTokenSource? _activeLoad;
+    private long _visibilityEpoch;
+    private bool _refreshSuspended = true;
+    private bool _refreshScheduled;
+    private bool _refreshDirty;
+    private bool _snapshotInFlight;
+    private bool _queueDisposed;
     private bool _isDetached;
+
+    /// <summary>
+    /// Test seam: wraps the freshly resolved row service before a snapshot reads it. Production
+    /// never sets it; tests use it to slow or count row projections deterministically.
+    /// </summary>
+    internal Func<IOcrQueueRowService, IOcrQueueRowService>? OcrQueueRowsDecorator { get; set; }
 
     internal void AddOcrRowForTesting(OcrQueueTaskViewModel row)
     {
@@ -51,7 +70,27 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     }
 
     [ObservableProperty] public partial int SelectedTaskTabIndex { get; set; }
-    public string? FocusedTaskId { get; set; }
+
+    private string? _focusedTaskId;
+
+    /// <summary>
+    /// The task row to highlight. Setting it re-applies the filter so the highlight is
+    /// immediate; it may promote the row inside the non-running active lane, but never
+    /// ahead of running tasks and never rewrites finished ordering (newest-first only).
+    /// </summary>
+    public string? FocusedTaskId
+    {
+        get => _focusedTaskId;
+        set
+        {
+            if (_focusedTaskId != value)
+            {
+                _focusedTaskId = value;
+                ApplyTaskFilter();
+            }
+        }
+    }
+
     public IReadOnlyList<string> TaskTypes { get; } = ["全部任务", "OCR", "翻译", "元数据"];
     [ObservableProperty] public partial string SelectedTaskType { get; set; } = "全部任务";
 
@@ -60,24 +99,62 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         ApplyTaskFilter();
     }
 
+    /// <summary>
+    /// Marks the queue page usable: the pump is armed and a catch-up refresh is requested.
+    /// A disposed queue never restarts polls — a closed retained tab cannot resurrect the VM.
+    /// </summary>
     public void StartObserving()
     {
+        lock (_refreshGate)
+        {
+            if (_queueDisposed)
+            {
+                return;
+            }
+
+            _refreshSuspended = false;
+            _visibilityEpoch++;
+        }
+
         _polling.Disposable = Observable.Interval(TimeSpan.FromSeconds(1), _timingScheduler)
-            .Subscribe(_ => ScheduleRefresh());
-        ScheduleRefresh();
+            .Subscribe(_ => RequestRefresh());
+        RequestRefresh();
     }
 
+    /// <summary>
+    /// Marks the queue page hidden: demand collapses to the dirty mark, the pending tick and
+    /// the in-flight load (if any) are cancelled under the refresh gate so cancellation and
+    /// the load-owner's dispose can never interleave into ObjectDisposedException. Bumping
+    /// <see cref="_visibilityEpoch"/> guarantees a cancellation-ignoring load can never apply
+    /// after a hide→show cycle either.
+    /// </summary>
     public void StopObserving()
     {
+        lock (_refreshGate)
+        {
+            _refreshSuspended = true;
+            _refreshDirty = true;
+            _visibilityEpoch++;
+            _scheduledRefresh.Disposable = null;
+            _activeLoad?.Cancel();
+        }
+
         _polling.Disposable = null;
     }
 
     internal void ApplyTaskFilter()
     {
-        IEnumerable<OcrQueueTaskViewModel> rows = _ocrActive.Concat(_ocrFinished)
+        OcrQueueTaskViewModel[] all = _ocrActive.Concat(_ocrFinished)
             .Concat(_translations.Values)
-            .Concat(_metadataRuns.Values);
-        OcrQueueTaskViewModel[] visible = rows.OrderByDescending(row => row.TaskId == FocusedTaskId).Where(row =>
+            .Concat(_metadataRuns.Values)
+            .ToArray();
+        string? focused = FocusedTaskId;
+        foreach (OcrQueueTaskViewModel row in all)
+        {
+            row.IsFocused = focused is not null && row.TaskId == focused;
+        }
+
+        OcrQueueTaskViewModel[] visible = all.Where(row =>
             SelectedTaskType switch
             {
                 "全部任务" => true,
@@ -86,8 +163,18 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                 "元数据" => row.IsMetadata,
                 _ => true
             }).ToArray();
-        SyncVisible(ActiveTaskRows, visible.Where(row => row.IsActive));
-        SyncVisible(FinishedTaskRows, visible.Where(row => !row.IsActive));
+        // Running work always leads the active tab; a focused row is highlighted and promoted
+        // inside the non-running lane instead of burying running tasks beneath it. Finished
+        // rows sort purely by actual finish/update time, newest first — focus is a visual
+        // highlight there, never a promotion over newer rows.
+        SyncVisible(ActiveTaskRows, visible.Where(row => row.IsActive)
+            .OrderByDescending(row => row.State == OcrQueueTaskState.Running)
+            .ThenByDescending(row => row.IsFocused)
+            .ThenByDescending(row => row.SortTimestamp)
+            .ThenBy(row => row.TaskId, StringComparer.Ordinal));
+        SyncVisible(FinishedTaskRows, visible.Where(row => !row.IsActive)
+            .OrderByDescending(row => row.SortTimestamp)
+            .ThenBy(row => row.TaskId, StringComparer.Ordinal));
         HasFinishedTasks = _ocrFinished.Count > 0 || _translations.Values.Any(row => !row.IsActive) ||
                            _metadataRuns.Values.Any(row => !row.IsActive);
         HasRetryableTasks = _ocrFinished.Concat(_translations.Values).Concat(_metadataRuns.Values)
@@ -225,12 +312,18 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                 continue;
             }
 
-            string title = _metadataBatchTitles.GetValueOrDefault(run.TaskId.ToString())
-                           ?? (run.Total == 1 && run.Items.Count > 0
-                               ? _main.Shell.Items.FirstOrDefault(item => item.ItemId == run.Items[0].ItemId.ToString())
-                                     ?.Title
-                                 ?? $"元数据获取 · {run.Items[0].ItemId}"
-                               : $"批量元数据获取 ({run.Total} 项)");
+            string title;
+            if (run.Total == 1 && run.Items.Count > 0)
+            {
+                string itemKey = run.Items[0].ItemId.ToString();
+                title = _metadataItemTitles.GetValueOrDefault(itemKey)
+                        ?? _main.Shell.Items.FirstOrDefault(item => item.ItemId == itemKey)?.Title
+                        ?? $"元数据获取 · {run.Items[0].ItemId}";
+            }
+            else
+            {
+                title = $"批量元数据获取 ({run.Total} 项)";
+            }
 
             if (!_metadataRuns.TryGetValue(run.TaskId, out OcrQueueTaskViewModel? row))
             {
@@ -305,8 +398,76 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             TaskPoolScheduler.Default,
             SynchronizationContext.Current is { } synchronizationContext
                 ? new SynchronizationContextScheduler(synchronizationContext)
-                : CurrentThreadScheduler.Instance)
+                : new AvaloniaDispatcherScheduler())
     {
+    }
+
+    /// <summary>
+    /// Minimal <see cref="IScheduler"/> bound to the real <see cref="Dispatcher.UIThread"/>,
+    /// used when no synchronization context is ambient so UI-marshalled work still lands on
+    /// the dispatcher instead of an arbitrary pool thread. Timed work uses
+    /// <see cref="DispatcherTimer"/> so it also stays dispatcher-owned.
+    /// </summary>
+    private sealed class AvaloniaDispatcherScheduler : IScheduler
+    {
+        public DateTimeOffset Now => DateTimeOffset.Now;
+
+        public IDisposable Schedule<TState>(TState state,
+            Func<IScheduler, TState, IDisposable> action)
+        {
+            CancellationDisposable cancelled = new();
+            if (Dispatcher.UIThread.CheckAccess())
+            {
+                if (!cancelled.Token.IsCancellationRequested)
+                {
+                    action(this, state);
+                }
+            }
+            else
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!cancelled.Token.IsCancellationRequested)
+                    {
+                        action(this, state);
+                    }
+                });
+            }
+
+            return cancelled;
+        }
+
+        public IDisposable Schedule<TState>(TState state, TimeSpan dueTime,
+            Func<IScheduler, TState, IDisposable> action)
+        {
+            if (dueTime <= TimeSpan.Zero)
+            {
+                return Schedule(state, action);
+            }
+
+            CancellationDisposable cancelled = new();
+            DispatcherTimer timer = new(DispatcherPriority.Background) { Interval = dueTime };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                if (!cancelled.Token.IsCancellationRequested)
+                {
+                    action(this, state);
+                }
+            };
+            timer.Start();
+            return Disposable.Create(() =>
+            {
+                cancelled.Dispose();
+                Dispatcher.UIThread.Post(timer.Stop);
+            });
+        }
+
+        public IDisposable Schedule<TState>(TState state, DateTimeOffset dueTime,
+            Func<IScheduler, TState, IDisposable> action)
+        {
+            return Schedule(state, dueTime - Now, action);
+        }
     }
 
     internal OcrQueueViewModel(
@@ -323,7 +484,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
         Register(_queueSubscription);
         Register(_polling);
-        Register(_refreshRequests);
+        Register(_scheduledRefresh);
 
         RefreshCommand = new AsyncCommand(() => RefreshAsync());
         EnqueueMockCommand = new AsyncCommand(EnqueueMockAsync);
@@ -333,14 +494,6 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         ResumeGlobalCommand = new AsyncCommand(() => ResumeAsync(OcrPauseScope.Global), () => IsGloballyPaused);
         ClearFinishedCommand = new AsyncCommand(ClearFinishedAsync, () => HasFinishedTasks);
         RetryFailedCommand = new AsyncCommand(RetryFailedAsync, () => HasRetryableTasks);
-
-        Register(ReactiveUiFlow.SubscribeBufferedSequential(
-            _refreshRequests,
-            _refreshThrottle,
-            _timingScheduler,
-            _uiScheduler,
-            (_, _) => RefreshOnUiThreadAsync(),
-            exception => _main.ReportError($"刷新 OCR 队列失败：{exception.Message}")));
 
         IObservable<Unit> activeRowsChanged = Observable
             .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
@@ -385,14 +538,17 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                 $"已完成 ({FinishedTaskRows.Count})");
 
         finishedRowsChanged
-            .Select(_ => FinishedTaskRows.Count > 0)
-            .BindOutput(this, has => HasFinishedTasks = has, ImmediateScheduler.Instance, null, true,
-                FinishedTaskRows.Count > 0);
-
-        finishedRowsChanged
             .Select(_ => FinishedTaskRows.Count == 0)
             .BindOutput(this, no => NoFinishedTasks = no, ImmediateScheduler.Instance, null, true,
                 FinishedTaskRows.Count == 0);
+
+        // These cover rows mutated directly on the collection (e.g. projections without a full
+        // snapshot pass); inside ApplyTaskFilter the unfiltered write follows SyncVisible and
+        // always wins, keeping the clear/retry commands global across hidden task types.
+        finishedRowsChanged
+            .Select(_ => FinishedTaskRows.Count > 0)
+            .BindOutput(this, has => HasFinishedTasks = has, ImmediateScheduler.Instance, null, true,
+                FinishedTaskRows.Count > 0);
 
         finishedRowsChanged
             .Select(_ => FinishedTaskRows.Any(row => row.CanRetry))
@@ -725,142 +881,670 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         await RefreshAsync();
     }
 
+    /// <summary>
+    /// One snapshot cycle = capture immutable context on the UI surface, one in-flight background
+    /// <see cref="LoadSnapshotAsync"/>, then a guarded apply. Callers that arrive while a cycle
+    /// is in flight collapse into a single dirty mark and at most one trailing reload; no
+    /// equivalent full refreshes queue up behind each other.
+    /// </summary>
     public async Task RefreshAsync()
     {
-        HostServices services = await _main.ServicesAsync();
-        int libraryGeneration = _main.LibraryGeneration;
-        Result<IReadOnlyList<TranslationRunStatus>> translations = await services.TranslationRuns.ListAsync();
-        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        lock (_refreshGate)
         {
-            return;
-        }
-
-        if (translations.IsSuccess)
-        {
-            foreach (TranslationRunStatus run in translations.Value)
+            // Hidden pages never reach the service layer — manual refresh while suspended is
+            // a dirty mark only, exactly like poll/event ingress. Callers that intentionally
+            // drive the queue arm it with StartObserving first.
+            if (_queueDisposed || _refreshSuspended)
             {
-                string key = run.DocumentInstanceId.ToString();
-                if (_translationTitles.ContainsKey(key))
-                {
-                    continue;
-                }
-
-                Result<DocumentInstance> document =
-                    await services.Documents.GetDocumentInstanceAsync(run.DocumentInstanceId);
-                if (document.IsSuccess)
-                {
-                    Result<ItemMetadata> item = await services.Items.GetItemAsync(document.Value.ItemId);
-                    if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-                    {
-                        return;
-                    }
-
-                    if (item.IsSuccess)
-                    {
-                        _translationTitles[key] = item.Value.Title;
-                    }
-                }
+                _refreshDirty = true;
+                return;
             }
 
-            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            if (_snapshotInFlight)
+            {
+                _refreshDirty = true;
+                return;
+            }
+
+            _snapshotInFlight = true;
+            _refreshDirty = false;
+        }
+
+        await RunSnapshotCycleAsync();
+    }
+
+    /// <summary>
+    /// Synchronized event/poll ingress: every caller collapses into the dirty mark; at most one
+    /// throttle tick (retained in <see cref="_scheduledRefresh"/>) and at most one in-flight
+    /// snapshot exist at any moment. A hidden or disposed page records dirty only.
+    /// </summary>
+    private void RequestRefresh()
+    {
+        lock (_refreshGate)
+        {
+            _refreshDirty = true;
+            if (_refreshSuspended || _queueDisposed || _refreshScheduled || _snapshotInFlight)
             {
                 return;
             }
 
-            UpdateTranslations(translations.Value, services.TranslationRuns);
+            _refreshScheduled = true;
+        }
+
+        _scheduledRefresh.Disposable = _timingScheduler.Schedule(_refreshThrottle, OnRefreshScheduledTick);
+    }
+
+    private void OnRefreshScheduledTick()
+    {
+        lock (_refreshGate)
+        {
+            _refreshScheduled = false;
+            _scheduledRefresh.Disposable = null;
+            if (_refreshSuspended || _queueDisposed || _snapshotInFlight)
+            {
+                return;
+            }
+
+            _snapshotInFlight = true;
+            _refreshDirty = false;
+        }
+
+        _uiScheduler.Schedule(BeginSnapshotCycle);
+    }
+
+    private void BeginSnapshotCycle()
+    {
+        lock (_refreshGate)
+        {
+            // A queued UI tick can run after the page hid or the VM was disposed — the tick's
+            // flag check alone is not enough. Detached is deliberately NOT a gate here: only a
+            // real cycle can re-arm after a library switch.
+            if (_refreshSuspended || _queueDisposed)
+            {
+                _snapshotInFlight = false;
+                return;
+            }
+        }
+
+        // Poll/event-driven cycles must never open the runtime database implicitly; demand stays
+        // marked until a real context exists.
+        if (!_main.HasOpenRuntimeDatabase)
+        {
+            lock (_refreshGate)
+            {
+                _snapshotInFlight = false;
+                _refreshDirty = true;
+            }
+
+            return;
+        }
+
+        RunSnapshotCycleCoreAsync().Observe("ocr-queue-ui", "queue-snapshot");
+    }
+
+    /// <summary>
+    /// Runs one snapshot cycle explicitly on the provided UI scheduler surface and completes when
+    /// the cycle (capture → background load → UI apply) has finished there. Callers may invoke
+    /// this from any thread — no synchronization context is ever inherited from the caller.
+    /// </summary>
+    private Task RunSnapshotCycleAsync()
+    {
+        TaskCompletionSource<object?> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _uiScheduler.Schedule(() =>
+        {
+            RunSnapshotCycleCoreAsync().ContinueWith(task =>
+                {
+                    if (task.IsCanceled)
+                    {
+                        completion.TrySetCanceled();
+                    }
+                    else if (task.Exception is { } exception)
+                    {
+                        completion.TrySetException(exception.InnerException ?? exception);
+                    }
+                    else
+                    {
+                        completion.TrySetResult(null);
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        });
+        return completion.Task;
+    }
+
+    /// <summary>
+    /// Executes <paramref name="action"/> explicitly on the provided UI scheduler surface and
+    /// completes with its result — the only way UI-sensitive reads/writes happen, regardless of
+    /// which thread the surrounding async pipeline happens to resume on.
+    /// </summary>
+    private Task<T> OnUiAsync<T>(Func<T> action)
+    {
+        TaskCompletionSource<T> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _uiScheduler.Schedule(() =>
+        {
+            try
+            {
+                completion.TrySetResult(action());
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        });
+        return completion.Task;
+    }
+
+    /// <summary>
+    /// The sole snapshot pipeline. UI-sensitive phases — immutable context capture, the
+    /// <see cref="_activeLoad"/> lease registration and the apply — are marshalled through
+    /// <see cref="OnUiAsync"/>; everything else may run on any thread, so callers never need a
+    /// synchronization context. The background <see cref="LoadSnapshotAsync"/> touches neither
+    /// the view model nor Avalonia.
+    /// </summary>
+    private async Task RunSnapshotCycleCoreAsync()
+    {
+        CancellationTokenSource? load = new();
+        try
+        {
+            // Phase one runs on the UI surface BEFORE any service work: suspended/disposed is
+            // decided and the load lease + visibility epoch are captured inside one gate hold,
+            // so a concurrent StopObserving either wins outright or cancels this exact lease.
+            long epoch = await OnUiAsync(() =>
+            {
+                lock (_refreshGate)
+                {
+                    if (_refreshSuspended || _queueDisposed)
+                    {
+                        return -1L;
+                    }
+
+                    _isDetached = false;
+                    _activeLoad = load;
+                    return _visibilityEpoch;
+                }
+            }).ConfigureAwait(false);
+            if (epoch < 0)
+            {
+                return;
+            }
+
+            HostServices services = await _main.ServicesAsync().ConfigureAwait(false);
+            QueueSnapshotContext? context = await OnUiAsync(() =>
+            {
+                int generation = _main.LibraryGeneration;
+                lock (_refreshGate)
+                {
+                    // A hide→show or dispose during ServicesAsync invalidates the epoch; a stop
+                    // that already cancelled us cleared the lease under this same gate.
+                    if (_refreshSuspended || _queueDisposed || _visibilityEpoch != epoch ||
+                        !ReferenceEquals(_activeLoad, load))
+                    {
+                        return null;
+                    }
+                }
+
+                return !_main.IsCurrentLibraryContext(services, generation)
+                    ? null
+                    : new QueueSnapshotContext(
+                        services,
+                        generation,
+                        epoch,
+                        new Dictionary<string, DateTimeOffset>(_translationTitleResolvedUtc,
+                            StringComparer.Ordinal),
+                        new Dictionary<string, DateTimeOffset>(_itemTitleResolvedUtc,
+                            StringComparer.Ordinal),
+                        new Dictionary<string, DateTimeOffset>(_pageLabelsResolvedUtc,
+                            StringComparer.Ordinal),
+                        OcrQueueRowsDecorator);
+            }).ConfigureAwait(false);
+            if (context is null)
+            {
+                return;
+            }
+
+            OcrQueueSnapshot snapshot;
+            CancellationToken loadToken = load.Token;
+            snapshot = await Task.Run(() => LoadSnapshotAsync(context, loadToken))
+                .ConfigureAwait(false);
+
+            await OnUiAsync(() =>
+            {
+                ApplySnapshot(context, snapshot);
+                return true;
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_refreshGate)
+            {
+                _refreshDirty = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            await OnUiAsync(() =>
+            {
+                _main.ReportError($"刷新 OCR 队列失败：{exception.Message}");
+                return true;
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            CompleteSnapshotCycle(load);
+        }
+    }
+
+    /// <summary>
+    /// Releases the single in-flight slot and the load token — both under the refresh gate so a
+    /// concurrent <see cref="_activeLoad"/> cancellation can never hit a disposed source — then
+    /// schedules at most one trailing load when demand was marked during this cycle.
+    /// </summary>
+    private void CompleteSnapshotCycle(CancellationTokenSource? load)
+    {
+        bool scheduleNext;
+        lock (_refreshGate)
+        {
+            if (ReferenceEquals(_activeLoad, load))
+            {
+                _activeLoad = null;
+            }
+
+            load?.Dispose();
+            _snapshotInFlight = false;
+            scheduleNext = _refreshDirty && !_refreshSuspended && !_queueDisposed;
+            if (scheduleNext)
+            {
+                _refreshDirty = false;
+                _refreshScheduled = true;
+            }
+        }
+
+        if (scheduleNext)
+        {
+            _scheduledRefresh.Disposable =
+                _timingScheduler.Schedule(_refreshThrottle, OnRefreshScheduledTick);
+        }
+    }
+
+    /// <summary>
+    /// Background half of the refresh: every host read happens here with the caller token, and
+    /// nothing below touches view-model state or Avalonia. Title and page-label lookups are
+    /// bounded to ids not already cached by the view model and batched through the shared query
+    /// services where a batch API exists.
+    /// </summary>
+    private static async Task<OcrQueueSnapshot> LoadSnapshotAsync(
+        QueueSnapshotContext context, CancellationToken cancellationToken)
+    {
+        HostServices services = context.Services;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        IReadOnlyList<TranslationRunStatus>? translations = null;
+        string? translationsError = null;
+        Result<IReadOnlyList<TranslationRunStatus>> translationResult =
+            await services.TranslationRuns.ListAsync(cancellationToken);
+        if (translationResult.IsSuccess)
+        {
+            translations = translationResult.Value;
         }
         else
         {
-            _main.ReportError($"读取翻译任务失败：{translations.ErrorMessage}");
+            translationsError = translationResult.ErrorMessage;
         }
 
-        Result<IReadOnlyList<MetadataBatchRunStatus>> metadataRuns = await services.MetadataRuns.ListAsync();
-        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        IReadOnlyList<MetadataBatchRunStatus>? metadataRuns = null;
+        string? metadataError = null;
+        Result<IReadOnlyList<MetadataBatchRunStatus>> metadataResult =
+            await services.MetadataRuns.ListAsync(cancellationToken);
+        if (metadataResult.IsSuccess)
         {
-            return;
-        }
-
-        _isDetached = false;
-
-        if (metadataRuns.IsSuccess)
-        {
-            UpdateMetadataRuns(metadataRuns.Value, services.MetadataRuns);
+            metadataRuns = metadataResult.Value;
         }
         else
         {
-            _main.ReportError($"读取元数据任务失败：{metadataRuns.ErrorMessage}");
+            metadataError = metadataResult.ErrorMessage;
         }
 
-        Result<IOcrQueueScheduler> queueResult = await services.GetOcrQueueAsync();
-        if (queueResult.IsFailure || !_main.IsCurrentLibraryContext(services, libraryGeneration))
+        IOcrQueueScheduler? queue = null;
+        string? queueError = null;
+        OcrQueueStatus? status = null;
+        IReadOnlyList<OcrQueueRow>? activeRows = null;
+        IReadOnlyList<OcrQueueRow>? finishedRows = null;
+        string? rowsError = null;
+        Dictionary<OcrQueueTaskId, OcrTaskProgressReport> stages = new();
+        Dictionary<OcrQueueTaskId, DateTimeOffset> finishedAt = new();
+        Dictionary<string, string> translationTitles = new(StringComparer.Ordinal);
+        Dictionary<string, string> itemTitles = new(StringComparer.Ordinal);
+        Dictionary<string, IReadOnlyDictionary<PageId, string>> pageLabels = new(StringComparer.Ordinal);
+
+        Result<IOcrQueueScheduler> queueResult = await services.GetOcrQueueAsync(cancellationToken);
+        if (queueResult.IsFailure)
         {
-            if (queueResult.IsFailure)
+            queueError = queueResult.ErrorMessage;
+        }
+        else
+        {
+            queue = queueResult.Value;
+            Result<OcrQueueStatus> statusResult = await queue.GetQueueStatusAsync(cancellationToken);
+            Result<IOcrQueueRowService> rowServiceResult =
+                await services.GetOcrQueueRowsAsync(cancellationToken);
+            IReadOnlyList<OcrQueueRow>? rawRows = null;
+            if (statusResult.IsSuccess)
             {
-                _main.ReportError($"OCR 队列不可用：{queueResult.ErrorMessage}");
+                status = statusResult.Value;
+            }
+            else
+            {
+                rowsError = statusResult.ErrorMessage;
+            }
+
+            if (rowServiceResult.IsFailure)
+            {
+                rowsError ??= rowServiceResult.ErrorMessage;
+            }
+            else
+            {
+                IOcrQueueRowService rowService =
+                    context.RowServiceDecorator?.Invoke(rowServiceResult.Value) ?? rowServiceResult.Value;
+                Result<IReadOnlyList<OcrQueueRow>> rowsResult =
+                    await rowService.ListRowsAsync(true, cancellationToken);
+                if (rowsResult.IsFailure)
+                {
+                    rowsError ??= rowsResult.ErrorMessage;
+                }
+                else
+                {
+                    rawRows = rowsResult.Value;
+                }
+            }
+
+            if (rawRows is not null)
+            {
+                Dictionary<OcrQueueTaskId, OcrQueueRow> uniqueRows = new();
+                foreach (OcrQueueRow row in rawRows)
+                {
+                    if (!uniqueRows.TryGetValue(row.TaskId, out OcrQueueRow? existing) ||
+                        row.Task.UpdatedAt >= existing.Task.UpdatedAt)
+                    {
+                        uniqueRows[row.TaskId] = row;
+                    }
+                }
+
+                foreach (OcrQueueTaskId taskId in uniqueRows.Keys)
+                {
+                    if (queue.GetTaskProgress(taskId) is { } stage)
+                    {
+                        stages[taskId] = stage;
+                    }
+
+                    if (queue.GetTaskFinishedAt(taskId) is { } taskFinishedAt)
+                    {
+                        finishedAt[taskId] = taskFinishedAt;
+                    }
+                }
+
+                List<OcrQueueRow> active = [];
+                List<OcrQueueRow> finished = [];
+                foreach (OcrQueueRow row in uniqueRows.Values)
+                {
+                    (IsActiveState(row.Task.State) ? active : finished).Add(row);
+                }
+
+                activeRows = active;
+                finishedRows = finished;
+            }
+        }
+
+        List<string> resolvedTitleDocuments = [];
+        List<string> resolvedLabelDocuments = [];
+        await ResolveTitlesAsync(context, translations, metadataRuns, now,
+            translationTitles, itemTitles, resolvedTitleDocuments, cancellationToken);
+        if (activeRows is not null || finishedRows is not null)
+        {
+            await ResolvePageLabelsAsync(context,
+                (activeRows ?? Enumerable.Empty<OcrQueueRow>()).Concat(
+                    finishedRows ?? Enumerable.Empty<OcrQueueRow>()),
+                now, pageLabels, resolvedLabelDocuments, cancellationToken);
+        }
+
+        return new OcrQueueSnapshot(
+            translations, translationsError,
+            metadataRuns, metadataError,
+            queue, queueError, status,
+            activeRows, finishedRows, rowsError,
+            stages, finishedAt,
+            translationTitles, itemTitles, pageLabels,
+            resolvedTitleDocuments, resolvedLabelDocuments);
+    }
+
+    private static bool IsStale(IReadOnlyDictionary<string, DateTimeOffset> resolvedUtc,
+        string key, DateTimeOffset now)
+    {
+        return !resolvedUtc.TryGetValue(key, out DateTimeOffset fetched) ||
+               now - fetched > TitleCacheTtl;
+    }
+
+    /// <summary>
+    /// Resolves item titles for translation runs and single-item metadata runs in two bounded
+    /// host calls: ONE <see cref="ILibraryItemQueryService.GetDocumentItemIdsAsync"/> for every
+    /// stale translation document (the returned dictionary keeps the explicit document→item
+    /// pairing, so a non-primary document maps to its own item rather than borrowing the
+    /// primary document's row), then ONE <see cref="ILibraryItemQueryService.GetRowsByIdsAsync"/>
+    /// for the union — no N+1, and entries re-resolve after <see cref="TitleCacheTtl"/> so live
+    /// title edits surface.
+    /// </summary>
+    private static async Task ResolveTitlesAsync(
+        QueueSnapshotContext context,
+        IReadOnlyList<TranslationRunStatus>? translations,
+        IReadOnlyList<MetadataBatchRunStatus>? metadataRuns,
+        DateTimeOffset now,
+        Dictionary<string, string> translationTitles,
+        Dictionary<string, string> itemTitles,
+        List<string> resolvedTitleDocuments,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<DocumentInstanceId, ItemId> documentToItem =
+            new Dictionary<DocumentInstanceId, ItemId>();
+        HashSet<ItemId> itemIds = [];
+        if (translations is not null)
+        {
+            DocumentInstanceId[] staleDocuments = translations
+                .Select(run => run.DocumentInstanceId)
+                .Distinct()
+                .Where(id => IsStale(context.TitleResolvedUtc, id.ToString(), now))
+                .ToArray();
+            if (staleDocuments.Length > 0)
+            {
+                Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>> pairs =
+                    await context.Services.LibraryItems
+                        .GetDocumentItemIdsAsync(staleDocuments, cancellationToken);
+                if (pairs.IsSuccess)
+                {
+                    documentToItem = pairs.Value;
+                    resolvedTitleDocuments.AddRange(
+                        staleDocuments.Select(id => id.ToString()));
+                    itemIds.UnionWith(pairs.Value.Values);
+                }
+            }
+        }
+
+        if (metadataRuns is not null)
+        {
+            foreach (MetadataBatchItemResult item in metadataRuns
+                         .Where(run => run.Total == 1)
+                         .SelectMany(run => run.Items.Take(1))
+                         .Where(item => IsStale(context.ItemTitleResolvedUtc,
+                             item.ItemId.ToString(), now)))
+            {
+                itemIds.Add(item.ItemId);
+            }
+        }
+
+        if (itemIds.Count == 0)
+        {
+            return;
+        }
+
+        Result<IReadOnlyList<Patchouli.Core.Library.LibraryItemRow>> rows =
+            await context.Services.LibraryItems.GetRowsByIdsAsync(itemIds.ToArray(), cancellationToken);
+        if (rows.IsFailure)
+        {
+            return;
+        }
+
+        foreach (Patchouli.Core.Library.LibraryItemRow row in rows.Value)
+        {
+            itemTitles[row.ItemId.ToString()] = row.Title;
+        }
+
+        foreach (KeyValuePair<DocumentInstanceId, ItemId> pair in documentToItem)
+        {
+            if (itemTitles.TryGetValue(pair.Value.ToString(), out string? title))
+            {
+                translationTitles[pair.Key.ToString()] = title;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves physical page labels once per stale document so same-titled scoped tasks
+    /// (pages / working-draft page / region) can show their real page
+    /// scope; entries re-resolve after <see cref="TitleCacheTtl"/> so live label edits
+    /// surface.
+    /// </summary>
+    private static async Task ResolvePageLabelsAsync(
+        QueueSnapshotContext context,
+        IEnumerable<OcrQueueRow> rows,
+        DateTimeOffset now,
+        Dictionary<string, IReadOnlyDictionary<PageId, string>> pageLabels,
+        List<string> resolvedLabelDocuments,
+        CancellationToken cancellationToken)
+    {
+        string[] documentIds = rows
+            .Where(row => row.Task.TaskKind != OcrQueueTaskKind.Document &&
+                          row.Task.PageIds.Count is > 0 and <= MaxLabelledTaskPages)
+            .Select(row => row.Task.DocumentInstanceId.ToString())
+            .Distinct(StringComparer.Ordinal)
+            .Where(id => IsStale(context.PageLabelsResolvedUtc, id, now))
+            .ToArray();
+        foreach (string documentId in documentIds)
+        {
+            Result<IReadOnlyList<Patchouli.Core.Layout.Page>> pages = await context.Services.Pages
+                .ListPagesAsync(DocumentInstanceId.Parse(documentId), cancellationToken);
+            if (pages.IsFailure)
+            {
+                continue;
+            }
+
+            resolvedLabelDocuments.Add(documentId);
+            pageLabels[documentId] = pages.Value.ToDictionary(
+                page => page.PageId,
+                page => !string.IsNullOrWhiteSpace(page.PageLabel)
+                    ? page.PageLabel!
+                    : (page.PageIndex + 1).ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    private void ApplySnapshot(QueueSnapshotContext context, OcrQueueSnapshot snapshot)
+    {
+        // A load that completed despite cancellation (hidden page, library switch, dispose,
+        // or a hide→show that rolled the visibility epoch forward) is discarded here — hidden
+        // demand stays a dirty mark and never touches collections.
+        if (_queueDisposed || _isDetached || _refreshSuspended ||
+            context.VisibilityEpoch != _visibilityEpoch ||
+            !_main.IsCurrentLibraryContext(context.Services, context.LibraryGeneration))
+        {
+            lock (_refreshGate)
+            {
+                if (!_queueDisposed)
+                {
+                    _refreshDirty = true;
+                }
             }
 
             return;
         }
 
-        IOcrQueueScheduler queue = queueResult.Value;
-        SubscribeQueue(queue);
-        Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync();
-        Result<IOcrQueueRowService> rowService = await services.GetOcrQueueRowsAsync();
-        Result<IReadOnlyList<OcrQueueRow>> rows = rowService.IsSuccess
-            ? await rowService.Value.ListRowsAsync(true)
-            : Result<IReadOnlyList<OcrQueueRow>>.Failure(rowService.ErrorCode!, rowService.ErrorMessage!);
-        if (status.IsFailure || rows.IsFailure)
+        DateTimeOffset appliedUtc = DateTimeOffset.UtcNow;
+        foreach (KeyValuePair<string, string> pair in snapshot.TranslationTitles)
         {
-            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            _translationTitles[pair.Key] = pair.Value;
+        }
+
+        foreach (string documentKey in snapshot.ResolvedTitleDocuments)
+        {
+            _translationTitleResolvedUtc[documentKey] = appliedUtc;
+        }
+
+        foreach (KeyValuePair<string, string> pair in snapshot.ItemTitles)
+        {
+            _metadataItemTitles[pair.Key] = pair.Value;
+            _itemTitleResolvedUtc[pair.Key] = appliedUtc;
+        }
+
+        foreach (KeyValuePair<string, IReadOnlyDictionary<PageId, string>> pair in snapshot.PageLabels)
+        {
+            _pageLabels[pair.Key] = pair.Value;
+        }
+
+        foreach (string documentKey in snapshot.ResolvedLabelDocuments)
+        {
+            _pageLabelsResolvedUtc[documentKey] = appliedUtc;
+        }
+
+        if (snapshot.Translations is not null)
+        {
+            UpdateTranslations(snapshot.Translations, context.Services.TranslationRuns);
+        }
+        else if (snapshot.TranslationsError is not null)
+        {
+            _main.ReportError($"读取翻译任务失败：{snapshot.TranslationsError}");
+        }
+
+        if (snapshot.MetadataRuns is not null)
+        {
+            UpdateMetadataRuns(snapshot.MetadataRuns, context.Services.MetadataRuns);
+        }
+        else if (snapshot.MetadataError is not null)
+        {
+            _main.ReportError($"读取元数据任务失败：{snapshot.MetadataError}");
+        }
+
+        if (snapshot.Queue is not null)
+        {
+            SubscribeQueue(snapshot.Queue);
+        }
+
+        if (snapshot.QueueError is not null)
+        {
+            _main.ReportError($"OCR 队列不可用：{snapshot.QueueError}");
+            return;
+        }
+
+        if (snapshot.RowsError is not null || snapshot.Status is null ||
+            snapshot.ActiveRows is null || snapshot.FinishedRows is null)
+        {
+            if (_main.IsCurrentLibraryContext(context.Services, context.LibraryGeneration))
             {
-                _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? rows.ErrorMessage}");
+                _main.ReportError($"读取队列状态失败：{snapshot.RowsError ?? "未知错误"}");
             }
 
             return;
         }
 
-        if (!_main.IsCurrentLibraryContext(services, libraryGeneration) ||
-            !ReferenceEquals(queue, _subscribedQueue))
+        if (!ReferenceEquals(snapshot.Queue, _subscribedQueue))
         {
             return;
         }
 
-        Dictionary<string, string> titles = new(StringComparer.Ordinal);
-        foreach (OcrQueueRow row in rows.Value)
-        {
-            titles[row.Task.DocumentInstanceId.ToString()] = row.ItemTitle;
-        }
-
-        Dictionary<OcrQueueTaskId, OcrQueueRow> uniqueRows = new();
-        foreach (OcrQueueRow row in rows.Value)
-        {
-            if (!uniqueRows.TryGetValue(row.TaskId, out OcrQueueRow? existing) ||
-                row.Task.UpdatedAt >= existing.Task.UpdatedAt)
-            {
-                uniqueRows[row.TaskId] = row;
-            }
-        }
-
-        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress = uniqueRows.Values
-            .Where(static row => row.PageProgress is not null)
-            .ToDictionary(static row => row.TaskId, static row => row.PageProgress!);
-
-        IsQueueRunning = status.Value.IsRunning;
-        IsGloballyPaused = status.Value.PausedScopes.Contains("global:");
+        OcrQueueStatus status = snapshot.Status;
+        IsQueueRunning = status.IsRunning;
+        IsGloballyPaused = status.PausedScopes.Contains("global:");
         StatusSummary =
-            $"OCR {(status.Value.IsRunning ? "运行中" : "已停止")}；排队 {status.Value.Queued}，运行 {status.Value.Running}，成功 {status.Value.Succeeded}，失败 {status.Value.Failed}，已取消 {status.Value.Cancelled}，阻塞 {status.Value.Blocked}{FormatPausedScopes(status.Value.PausedScopes)}";
+            $"OCR {(status.IsRunning ? "运行中" : "已停止")}；排队 {status.Queued}，运行 {status.Running}，成功 {status.Succeeded}，失败 {status.Failed}，已取消 {status.Cancelled}，阻塞 {status.Blocked}{FormatPausedScopes(status.PausedScopes)}";
 
-        HashSet<string> pausedScopes = new(status.Value.PausedScopes, StringComparer.Ordinal);
-
-        List<OcrQueueTask> active = [];
-        List<OcrQueueTask> finished = [];
-        foreach (OcrQueueTask task in uniqueRows.Values.Select(static row => row.Task))
-        {
-            (IsActiveState(task.State) ? active : finished).Add(task);
-        }
-
-        SyncRows(_ocrActive, active, queue, titles, progress, pausedScopes);
-        SyncRows(_ocrFinished, finished, queue, titles, progress, pausedScopes);
+        HashSet<string> pausedScopes = new(status.PausedScopes, StringComparer.Ordinal);
+        SyncRows(_ocrActive, snapshot.ActiveRows, snapshot.Stages, snapshot.FinishedAt, pausedScopes);
+        SyncRows(_ocrFinished, snapshot.FinishedRows, snapshot.Stages, snapshot.FinishedAt, pausedScopes);
         ApplyTaskFilter();
     }
 
@@ -871,14 +1555,13 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private void SyncRows(
         ObservableCollection<OcrQueueTaskViewModel> collection,
-        List<OcrQueueTask> tasks,
-        IOcrQueueScheduler queue,
-        Dictionary<string, string> titles,
-        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress,
+        IReadOnlyList<OcrQueueRow> rows,
+        IReadOnlyDictionary<OcrQueueTaskId, OcrTaskProgressReport> stages,
+        IReadOnlyDictionary<OcrQueueTaskId, DateTimeOffset> finishedAt,
         HashSet<string> pausedScopes)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        HashSet<string> incomingTaskIds = new(tasks.Select(t => t.TaskId.ToString()), StringComparer.Ordinal);
+        HashSet<string> incomingTaskIds = new(rows.Select(row => row.TaskId.ToString()), StringComparer.Ordinal);
         for (int i = collection.Count - 1; i >= 0; i--)
         {
             if (!incomingTaskIds.Contains(collection[i].TaskId))
@@ -890,42 +1573,29 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         Dictionary<string, OcrQueueTaskViewModel> existingMap =
             collection.ToDictionary(row => row.TaskId, StringComparer.Ordinal);
 
-        for (int i = 0; i < tasks.Count; i++)
+        foreach (OcrQueueRow row in rows)
         {
-            OcrQueueTask task = tasks[i];
+            OcrQueueTask task = row.Task;
             string taskId = task.TaskId.ToString();
-            string title = titles.TryGetValue(task.DocumentInstanceId.ToString(), out string? t)
-                ? t
-                : task.DocumentInstanceId.ToString();
-            OcrQueueProgress? pageProgress = progress.GetValueOrDefault(task.TaskId);
-            OcrTaskProgressReport? stage = queue.GetTaskProgress(task.TaskId);
-            DateTimeOffset? finishedAt = queue.GetTaskFinishedAt(task.TaskId);
+            OcrTaskProgressReport? stage = stages.GetValueOrDefault(task.TaskId);
+            DateTimeOffset? finished = finishedAt.GetValueOrDefault(task.TaskId);
             bool isPaused = pausedScopes.Contains($"task:{taskId}");
-
+            IReadOnlyDictionary<PageId, string>? labels =
+                _pageLabels.GetValueOrDefault(task.DocumentInstanceId.ToString());
             if (existingMap.TryGetValue(taskId, out OcrQueueTaskViewModel? existingRow))
             {
-                existingRow.Update(task, title, pageProgress, stage, finishedAt, now);
+                existingRow.Update(task, row.ItemTitle, row.PageProgress, stage, finished, now, row.Outcome);
                 existingRow.IsPaused = isPaused;
-
-                if (i < collection.Count && ReferenceEquals(collection[i], existingRow))
-                {
-                    continue;
-                }
-
-                int currentIdx = collection.IndexOf(existingRow);
-                if (currentIdx != i && currentIdx >= 0)
-                {
-                    collection.Move(currentIdx, Math.Min(i, collection.Count - 1));
-                }
             }
             else
             {
                 OcrQueueTaskViewModel newRow =
-                    new(task, title, this, pageProgress, stage, finishedAt, now)
+                    new(task, row.ItemTitle, this, row.PageProgress, stage, finished, now,
+                        row.Outcome, labels)
                     {
                         IsPaused = isPaused
                     };
-                collection.Insert(Math.Min(i, collection.Count), newRow);
+                collection.Add(newRow);
                 existingMap[taskId] = newRow;
             }
         }
@@ -993,37 +1663,44 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private void OnQueueChanged(object? sender, OcrQueueChangedEventArgs e)
     {
-        if (sender is not null && !ReferenceEquals(sender, _subscribedQueue))
+        // The scheduler raises Changed from several worker threads; serialize ingress so status
+        // posts keep event order and the refresh request lands as one dirty mark.
+        lock (_ingressGate)
         {
-            return;
-        }
-
-        int libraryGeneration = _main.LibraryGeneration;
-        if (e.Task?.State == OcrQueueTaskState.Succeeded)
-        {
-            PostStatus(libraryGeneration, () => _main.Report("OCR 完成，搜索索引已更新。"));
-            RefreshAffectedItemsAsync(e.Task, libraryGeneration).Observe("ocr-queue-ui", "refresh-items-after-success");
-        }
-        else if (e.Task?.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked)
-        {
-            string message = e.Task.LastErrorMessage ?? "OCR 任务失败。";
-            PostStatus(libraryGeneration, () =>
+            if (sender is not null && !ReferenceEquals(sender, _subscribedQueue))
             {
-                _main.ReportError(message);
-                _main.Shell.ApplyOcrQueueTerminalState(e.Task);
-            });
-            RefreshAffectedItemsAsync(e.Task, libraryGeneration).Observe("ocr-queue-ui", "refresh-items-after-failure");
-        }
-        else if (e.Task?.State == OcrQueueTaskState.Cancelled)
-        {
-            PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueTerminalState(e.Task));
-        }
-        else if (e.Task?.State == OcrQueueTaskState.Running)
-        {
-            PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueRunningState(e.Task));
-        }
+                return;
+            }
 
-        ScheduleRefresh();
+            int libraryGeneration = _main.LibraryGeneration;
+            if (e.Task?.State == OcrQueueTaskState.Succeeded)
+            {
+                PostStatus(libraryGeneration, () => _main.Report("OCR 完成，搜索索引已更新。"));
+                RefreshAffectedItemsAsync(e.Task, libraryGeneration)
+                    .Observe("ocr-queue-ui", "refresh-items-after-success");
+            }
+            else if (e.Task?.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked)
+            {
+                string message = e.Task.LastErrorMessage ?? "OCR 任务失败。";
+                PostStatus(libraryGeneration, () =>
+                {
+                    _main.ReportError(message);
+                    _main.Shell.ApplyOcrQueueTerminalState(e.Task);
+                });
+                RefreshAffectedItemsAsync(e.Task, libraryGeneration)
+                    .Observe("ocr-queue-ui", "refresh-items-after-failure");
+            }
+            else if (e.Task?.State == OcrQueueTaskState.Cancelled)
+            {
+                PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueTerminalState(e.Task));
+            }
+            else if (e.Task?.State == OcrQueueTaskState.Running)
+            {
+                PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueRunningState(e.Task));
+            }
+
+            RequestRefresh();
+        }
     }
 
     private async Task RefreshAffectedItemsAsync(OcrQueueTask task, int libraryGeneration)
@@ -1059,17 +1736,29 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     internal void DetachLibraryContext()
     {
-        _isDetached = true;
+        lock (_refreshGate)
+        {
+            _isDetached = true;
+            _refreshDirty = false;
+            _refreshScheduled = false;
+            _scheduledRefresh.Disposable = null;
+            _activeLoad?.Cancel();
+        }
+
         _queueSubscription.Disposable = null;
         _subscribedQueue = null;
         _ocrActive.Clear();
         _ocrFinished.Clear();
         _translations.Clear();
         _translationTitles.Clear();
+        _translationTitleResolvedUtc.Clear();
         _hiddenTranslations.Clear();
         _retriedTranslations.Clear();
         _metadataRuns.Clear();
-        _metadataBatchTitles.Clear();
+        _metadataItemTitles.Clear();
+        _itemTitleResolvedUtc.Clear();
+        _pageLabels.Clear();
+        _pageLabelsResolvedUtc.Clear();
         _hiddenMetadataRuns.Clear();
         _retriedMetadataRuns.Clear();
         ActiveTaskRows.Clear();
@@ -1077,28 +1766,64 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         StatusSummary = "等待运行数据库打开。";
     }
 
-    private void ScheduleRefresh()
-    {
-        if (!_refreshRequests.IsDisposed)
-        {
-            _refreshRequests.OnNext(Unit.Default);
-        }
-    }
-
-    private Task RefreshOnUiThreadAsync()
-    {
-        return _main.HasOpenRuntimeDatabase ? DispatcherTasks.RunAsync(RefreshAsync) : Task.CompletedTask;
-    }
-
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            lock (_refreshGate)
+            {
+                // Disposal cancels under the same gate that hands out _activeLoad, so a
+                // concurrent load-owner dispose can never produce ObjectDisposedException.
+                _queueDisposed = true;
+                _refreshSuspended = true;
+                _refreshScheduled = false;
+                _scheduledRefresh.Disposable = null;
+                _activeLoad?.Cancel();
+            }
+
             _subscribedQueue = null;
         }
 
         base.Dispose(disposing);
     }
+
+    /// <summary>
+    /// Immutable context captured on the UI surface; the background load reads only this. The
+    /// resolved-UTC maps tell the load which title/label entries are stale instead of caching
+    /// forever.
+    /// </summary>
+    private sealed record QueueSnapshotContext(
+        HostServices Services,
+        int LibraryGeneration,
+        long VisibilityEpoch,
+        IReadOnlyDictionary<string, DateTimeOffset> TitleResolvedUtc,
+        IReadOnlyDictionary<string, DateTimeOffset> ItemTitleResolvedUtc,
+        IReadOnlyDictionary<string, DateTimeOffset> PageLabelsResolvedUtc,
+        Func<IOcrQueueRowService, IOcrQueueRowService>? RowServiceDecorator);
+
+    /// <summary>
+    /// One background load's result: every list/error resolved off the UI thread, plus the
+    /// scheduler's volatile stage/finish reads, newly resolved titles/page labels, and the
+    /// document keys whose lookups succeeded so the apply step can stamp their cache ages.
+    /// </summary>
+    private sealed record OcrQueueSnapshot(
+        IReadOnlyList<TranslationRunStatus>? Translations,
+        string? TranslationsError,
+        IReadOnlyList<MetadataBatchRunStatus>? MetadataRuns,
+        string? MetadataError,
+        IOcrQueueScheduler? Queue,
+        string? QueueError,
+        OcrQueueStatus? Status,
+        IReadOnlyList<OcrQueueRow>? ActiveRows,
+        IReadOnlyList<OcrQueueRow>? FinishedRows,
+        string? RowsError,
+        IReadOnlyDictionary<OcrQueueTaskId, OcrTaskProgressReport> Stages,
+        IReadOnlyDictionary<OcrQueueTaskId, DateTimeOffset> FinishedAt,
+        IReadOnlyDictionary<string, string> TranslationTitles,
+        IReadOnlyDictionary<string, string> ItemTitles,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<PageId, string>> PageLabels,
+        IReadOnlyList<string> ResolvedTitleDocuments,
+        IReadOnlyList<string> ResolvedLabelDocuments);
 }
 
 public sealed partial class OcrQueueTaskViewModel : ViewModelBase
@@ -1108,12 +1833,16 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
     public OcrQueueTaskViewModel(OcrQueueTask task, string title, OcrQueueViewModel queueViewModel,
         OcrQueueProgress? pageProgress, OcrTaskProgressReport? stage, DateTimeOffset? finishedAt,
-        DateTimeOffset now)
+        DateTimeOffset now, OcrQueueOutcome? outcome = null,
+        IReadOnlyDictionary<PageId, string>? pageLabels = null)
     {
         TaskId = task.TaskId.ToString();
         ShortTaskId = TaskId.Length <= 8 ? TaskId : TaskId[..8];
         Kind = task.TaskKind;
         Priority = task.Priority;
+        EngineId = task.EngineId;
+        Source = task.Source;
+        ScopeText = BuildScopeText(task, pageLabels);
 
         PauseCommand = new AsyncCommand(
             () => queueViewModel.PauseAsync(OcrPauseScope.Task, TaskId),
@@ -1129,13 +1858,20 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
             () => queueViewModel.RetryAsync(TaskId),
             () => State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked);
 
-        Update(task, title, pageProgress, stage, finishedAt, now);
+        Update(task, title, pageProgress, stage, finishedAt, now, outcome);
     }
 
     public bool IsTranslation { get; }
     public bool IsMetadata { get; }
     private bool TranslationControls { get; }
     [ObservableProperty] public partial bool RetryStarted { get; internal set; }
+
+    /// <summary>True while this row is the deliberately focused task; used for highlight only.</summary>
+    [ObservableProperty]
+    public partial bool IsFocused { get; internal set; }
+
+    /// <summary>Actual finish time when known, else the task's last update — the finished-list sort key.</summary>
+    public DateTimeOffset SortTimestamp { get; private set; }
 
     partial void OnRetryStartedChanged(bool value)
     {
@@ -1155,6 +1891,9 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         ShortTaskId = TaskId[..8];
         Kind = "翻译";
         Priority = "";
+        EngineId = "";
+        Source = "";
+        ScopeText = "";
         PauseCommand = new AsyncCommand(pause ?? (() => Task.CompletedTask),
             () => SupportsPause && IsActive && !IsPaused);
         ResumeCommand = new AsyncCommand(resume ?? (() => Task.CompletedTask),
@@ -1172,6 +1911,9 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         ShortTaskId = TaskId.Length <= 8 ? TaskId : TaskId[..8];
         Kind = "元数据";
         Priority = "";
+        EngineId = "";
+        Source = "";
+        ScopeText = "";
         PauseCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
         ResumeCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
         CancelCommand = new AsyncCommand(cancel, () => IsActive);
@@ -1278,6 +2020,19 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
     public string ShortTaskId { get; }
     public string Kind { get; }
 
+    /// <summary>The actual engine the task was accepted with — never inferred from the preset.</summary>
+    public string EngineId { get; }
+
+    /// <summary>The recorded task source (ui pages/document/region/working, mcp, batch, retry, test).</summary>
+    public string Source { get; }
+
+    /// <summary>Physical scope: concrete page labels, region geometry or whole-document marker.</summary>
+    public string ScopeText { get; }
+
+    /// <summary>Short form of the bound run once the task owns one; null before binding.</summary>
+    [ObservableProperty]
+    public partial string? RunIdShort { get; private set; }
+
     [ObservableProperty] public partial int PageCount { get; private set; }
     [ObservableProperty] public partial int ProcessedCount { get; private set; }
     [ObservableProperty] public partial int SucceededCount { get; private set; }
@@ -1287,16 +2042,15 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
     public string KindText => Kind switch
     {
-        OcrQueueTaskKind.MockPages => "测试页面 OCR",
+        OcrQueueTaskKind.Pages => "页面 OCR",
         OcrQueueTaskKind.Document => "文档 OCR",
-        OcrQueueTaskKind.ImagePage => "图片页 OCR",
-        OcrQueueTaskKind.RenderedPdfPage => "PDF 渲染页 OCR",
         OcrQueueTaskKind.Region => "区域 OCR",
         _ => Kind
     };
 
     public string Priority { get; }
 
+    /// <summary>Scheduling lane only — the displayed priority never stands in for task origin.</summary>
     public string PriorityText => Priority switch
     {
         OcrQueuePriority.InteractiveCurrentPage => "当前页",
@@ -1306,6 +2060,19 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         OcrQueuePriority.BatchCollection => "批量任务",
         OcrQueuePriority.Maintenance => "维护",
         _ => Priority
+    };
+
+    public string SourceText => Source switch
+    {
+        OcrQueueSource.UiDocument => "界面·文档",
+        OcrQueueSource.UiPages => "界面·页面",
+        OcrQueueSource.UiRegion => "界面·区域",
+        OcrQueueSource.UiWorking => "界面·工作页",
+        OcrQueueSource.Mcp => "MCP",
+        OcrQueueSource.Batch => "批量",
+        OcrQueueSource.Retry => "重试",
+        OcrQueueSource.Test => "测试",
+        _ => "未知来源"
     };
 
     [ObservableProperty] public partial string DocumentTitle { get; private set; } = "";
@@ -1364,13 +2131,16 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
     public AsyncCommand RetryCommand { get; }
 
     public void Update(OcrQueueTask task, string title, OcrQueueProgress? pageProgress,
-        OcrTaskProgressReport? stage, DateTimeOffset? finishedAt, DateTimeOffset now)
+        OcrTaskProgressReport? stage, DateTimeOffset? finishedAt, DateTimeOffset now,
+        OcrQueueOutcome? outcome = null)
     {
         DocumentTitle = title;
         State = task.State;
         PageCount = task.PageIds.Count;
         IsActive = task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused;
         IsFailed = task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked;
+        RunIdShort = Shorten(task.RunId?.ToString());
+        SortTimestamp = finishedAt ?? task.UpdatedAt;
         ErrorText = !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorMessage)
             ? task.LastErrorMessage!
             : !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorCode)
@@ -1385,7 +2155,66 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
         ProgressValue = ComputeProgress(task, pageProgress, stage, now);
         StageText = BuildStageText(task, pageProgress, stage, now);
-        MetaText = BuildMetaText(task, finishedAt);
+        MetaText = BuildMetaText(finishedAt, outcome);
+    }
+
+    private static string? Shorten(string? id)
+    {
+        return id is null ? null : id.Length <= 8 ? id : id[..8];
+    }
+
+    private static string BuildScopeText(OcrQueueTask task, IReadOnlyDictionary<PageId, string>? pageLabels)
+    {
+        string Label(PageId pageId)
+        {
+            return pageLabels is not null && pageLabels.TryGetValue(pageId, out string? label)
+                ? label
+                : Shorten(pageId.ToString()) ?? pageId.ToString();
+        }
+
+        switch (task.TaskKind)
+        {
+            case OcrQueueTaskKind.Document:
+                return "整篇文档";
+            case OcrQueueTaskKind.Pages when !task.CommitOnCompletion:
+                return task.PageIds.Count == 1 ? $"工作页 {Label(task.PageIds[0])}" : "工作页";
+            case OcrQueueTaskKind.Region:
+            {
+                string Pct(double v)
+                {
+                    return (v * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+                }
+
+                string region = task.RegionBBox is { } bounds
+                    ? $"区域 ({Pct(bounds.X)},{Pct(bounds.Y)} {Pct(bounds.Width)}×{Pct(bounds.Height)})"
+                    : "区域";
+                return task.PageIds.Count == 1 ? $"第 {Label(task.PageIds[0])} 页 · {region}" : region;
+            }
+            default:
+            {
+                if (task.PageIds.Count == 0)
+                {
+                    return "无页面";
+                }
+
+                if (task.PageIds.Count == 1)
+                {
+                    return $"第 {Label(task.PageIds[0])} 页";
+                }
+
+                // Over MaxLabelledTaskPages no label map is loaded: listing shortened ids would
+                // imply a physical-page range that id order does not guarantee — show the count.
+                if (task.PageIds.Count > OcrQueueViewModel.MaxLabelledTaskPages)
+                {
+                    return $"共 {task.PageIds.Count.ToString(CultureInfo.InvariantCulture)} 页";
+                }
+
+                string listed = string.Join("、", task.PageIds.Take(3).Select(Label));
+                return task.PageIds.Count <= 3
+                    ? $"第 {listed} 页"
+                    : $"第 {listed} 等 {task.PageIds.Count.ToString(CultureInfo.InvariantCulture)} 页";
+            }
+        }
     }
 
     private double ComputeProgress(OcrQueueTask task, OcrQueueProgress? pageProgress,
@@ -1430,13 +2259,22 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         {
             int total = pageProgress?.Total > 0 ? pageProgress.Total : Math.Max(1, task.PageIds.Count);
             int done = pageProgress?.Succeeded ?? task.CompletedPageCount;
+            if (task.State == OcrQueueTaskState.Queued)
+            {
+                // A queued row reports queue truth, not a zeroed progress read; a retained-run
+                // adoption/index retry still shows the bound run's real counters.
+                return done > 0 ? $"排队中 · {done}/{total} 页" : "排队中";
+            }
+
             return $"{done}/{total} 页";
         }
 
         string label = StageLabel(stage.Stage);
         string? detail = stage.Stage switch
         {
+            OcrTaskStage.ParsingTextLayer => FormatPageDetail(stage.Detail),
             OcrTaskStage.Recognizing => FormatPageDetail(stage.Detail),
+            OcrTaskStage.Importing => FormatPageDetail(stage.Detail),
             OcrTaskStage.Adopting => FormatPageDetail(stage.Detail),
             OcrTaskStage.Uploading => FormatChunkDetail(stage.Detail),
             OcrTaskStage.WaitingCloud => FormatWaitingDetail(stage.Detail, now),
@@ -1448,17 +2286,60 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
     private static string? FormatPageDetail(string? detail)
     {
-        if (detail is not null && detail.StartsWith("pages:", StringComparison.Ordinal))
+        if (detail is null)
         {
-            string[] parts = detail["pages:".Length..].Split('/');
-            if (parts.Length == 2 && int.TryParse(parts[0], out int processed) &&
-                int.TryParse(parts[1], out int total))
+            return null;
+        }
+
+        List<string> labels = [];
+        string? phase = null;
+        foreach (string part in detail.Split(';'))
+        {
+            int separator = part.IndexOf(':');
+            if (separator < 0)
             {
-                return $"{processed}/{total} 页";
+                continue;
+            }
+
+            string key = part[..separator];
+            string value = part[(separator + 1)..];
+            if (key == "page" && int.TryParse(value, out int page) && page > 0)
+            {
+                labels.Add($"当前第 {page} 页");
+            }
+            else if (key == "phase")
+            {
+                phase = value switch
+                {
+                    "layout-detection" => "版面检测",
+                    "reading-order" => "确定阅读顺序",
+                    "region-ocr" => "分区识别",
+                    "direct-ocr" => "模型识别",
+                    _ => null
+                };
+            }
+            else if (key is "pages" or "inputs" or "units")
+            {
+                string[] counts = value.Split('/');
+                if (counts.Length == 2 && int.TryParse(counts[0], out int completed) &&
+                    int.TryParse(counts[1], out int total) && completed >= 0 && total > 0 && completed <= total)
+                {
+                    string? label = key switch
+                    {
+                        "pages" => $"{completed}/{total} 页",
+                        "inputs" => $"输入 {completed}/{total}",
+                        "units" when phase is not null => $"{phase} {completed}/{total}",
+                        _ => null
+                    };
+                    if (label is not null)
+                    {
+                        labels.Add(label);
+                    }
+                }
             }
         }
 
-        return null;
+        return labels.Count == 0 ? null : string.Join(" · ", labels);
     }
 
     private string FormatWaitingDetail(string? providerStatus, DateTimeOffset now)
@@ -1514,10 +2395,49 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         return (bytes / (1024.0 * 1024.0)).ToString("F1");
     }
 
-    private string BuildMetaText(OcrQueueTask task, DateTimeOffset? finishedAt)
+    /// <summary>
+    /// Meta line: task identity + physical scope on the first line; the actual engine, recorded
+    /// source and the scheduling lane (priority) as three separate fields on the second; the
+    /// bound run and its durable outcome (adoption/index truth) plus finish time on the third.
+    /// </summary>
+    private string BuildMetaText(DateTimeOffset? finishedAt, OcrQueueOutcome? outcome)
     {
-        string meta = $"任务 {ShortTaskId} · {KindText} · {PriorityText} · {task.PageIds.Count} 页";
-        return finishedAt is null ? meta : $"{meta} · 完成于 {finishedAt.Value.ToLocalTime():g}";
+        string identity = $"任务 {ShortTaskId} · {KindText} · {ScopeText}";
+        string provenance = $"引擎 {EngineId} · 来源 {SourceText} · 优先级 {PriorityText}";
+        List<string> tail = [];
+        if (RunIdShort is not null)
+        {
+            tail.Add($"运行 {RunIdShort}");
+        }
+
+        if (outcome is not null)
+        {
+            if (outcome.Committed)
+            {
+                tail.Add($"已采纳 {outcome.CommittedPageCount} 页");
+            }
+
+            if (outcome.IndexState is { } indexState)
+            {
+                tail.Add(indexState switch
+                {
+                    "indexed" => "索引已更新",
+                    "superseded" => "索引已被取代",
+                    "not_indexed" => "未建索引",
+                    "failed" => "索引失败",
+                    _ => $"索引 {indexState}"
+                });
+            }
+        }
+
+        if (finishedAt is { } finished)
+        {
+            tail.Add($"完成于 {finished.ToLocalTime():g}");
+        }
+
+        return tail.Count == 0
+            ? $"{identity}\n{provenance}"
+            : $"{identity}\n{provenance}\n{string.Join(" · ", tail)}";
     }
 
     private static (double Floor, double Ceiling) StageBand(string stage)
@@ -1525,6 +2445,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         return stage switch
         {
             OcrTaskStage.Preparing => (0, 5),
+            OcrTaskStage.ParsingTextLayer => (0, 5),
             OcrTaskStage.Recognizing => (0, 85),
             OcrTaskStage.Uploading => (5, 30),
             OcrTaskStage.WaitingCloud => (30, 80),
@@ -1541,6 +2462,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         return stage switch
         {
             OcrTaskStage.Preparing => "准备中",
+            OcrTaskStage.ParsingTextLayer => "解析 PDF 文本层",
             OcrTaskStage.Recognizing => "逐页识别",
             OcrTaskStage.Uploading => "上传",
             OcrTaskStage.WaitingCloud => "等待云端",

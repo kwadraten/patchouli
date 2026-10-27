@@ -12,11 +12,15 @@
     <Style Selector="TextBlock.StateBadge.failed">
       <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
     </Style>
+    <Style Selector="Border.CardTile.Focused">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+    </Style>
   </UserControl.Styles>
 
   <UserControl.Resources>
     <DataTemplate x:Key="TaskRowTemplate" x:DataType="vm:OcrQueueTaskViewModel">
-      <Border Classes="CardTile" Margin="0,0,0,8">
+      <Border Classes="CardTile" Margin="0,0,0,8" Classes.Focused="{Binding IsFocused}">
         <StackPanel Spacing="8">
 
           <!-- 标题 + 状态徽标 + 操作 -->
@@ -64,7 +68,7 @@
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <StackPanel Spacing="2">
               <TextBlock Text="{Binding StageText}" FontSize="12"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
               <TextBlock Text="{Binding ErrorText}" FontSize="12" Foreground="{DynamicResource ErrorBrush}"
                          TextWrapping="Wrap" IsVisible="{Binding HasError}" />
             </StackPanel>

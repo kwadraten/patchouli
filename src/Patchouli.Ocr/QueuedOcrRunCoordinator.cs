@@ -1,6 +1,7 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Ocr;
 
@@ -12,13 +13,15 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
 {
     private readonly IOcrRunEngine _engine;
     private readonly Func<string>? _multimodalProviderId;
+    private readonly IOcrEngineCatalog? _engineCatalog;
 
     public QueuedOcrRunCoordinator(IOcrQueueScheduler queue, IOcrRunEngine engine,
-        Func<string>? multimodalProviderId = null)
+        Func<string>? multimodalProviderId = null, IOcrEngineCatalog? engineCatalog = null)
     {
         Queue = queue;
         _engine = engine;
         _multimodalProviderId = multimodalProviderId;
+        _engineCatalog = engineCatalog;
         _engine.CommitCompleted += (_, args) => CommitCompleted?.Invoke(this, args);
     }
 
@@ -37,8 +40,32 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         string priority,
         CancellationToken cancellationToken = default)
     {
-        Result<OcrQueueTask> queued = await Queue.EnqueueDocumentAsync(
-            documentInstanceId, presetId, pageIds, engineId, adapterKind, providerId, priority, cancellationToken);
+        // Freeze the preset version at accept time: the task must execute the version that was
+        // current when it was accepted even if the preset changes while it waits.
+        Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
+        if (version.IsFailure)
+        {
+            return Result<OcrQueueTask>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        // The caller's routing identity must agree with the frozen version; scheduling under one
+        // engine's resource lane while executing another would corrupt queue classification.
+        // Rather than silently switching the caller's choices, disagreements fail closed.
+        (string expectedAdapter, string? expectedProvider) =
+            await RoutingForAsync(version.Value, cancellationToken);
+        if (engineId != version.Value.EngineId || adapterKind != expectedAdapter ||
+            (providerId is not null && providerId != expectedProvider))
+        {
+            return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidArgument,
+                $"OCR routing '{engineId}/{adapterKind}/{providerId ?? "-"}' does not match the " +
+                $"frozen preset version '{version.Value.EngineId}/{expectedAdapter}/{expectedProvider ?? "-"}'.");
+        }
+
+        Result<OcrQueueTask> queued = await Queue.EnqueueAsync(
+            new OcrQueueTaskRequest(documentInstanceId, presetId, pageIds, OcrQueueTaskKind.Document,
+                version.Value.EngineId, expectedAdapter, providerId ?? expectedProvider, priority,
+                PresetVersionId: version.Value.PresetVersionId),
+            cancellationToken);
         if (queued.IsSuccess)
         {
             await Queue.StartAsync(cancellationToken);
@@ -71,9 +98,13 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
+        (string adapter, string? provider) = await RoutingForAsync(version.Value, cancellationToken);
         return await EnqueueAndAwaitAsync(
-            queue => queue.EnqueueDocumentAsync(documentInstanceId, presetId, pages.Value, version.Value.EngineId,
-                AdapterKindFor(version.Value), ProviderIdFor(version.Value), OcrQueuePriority.UserStartedDocument,
+            queue => queue.EnqueueAsync(
+                new OcrQueueTaskRequest(documentInstanceId, presetId, pages.Value, OcrQueueTaskKind.Document,
+                    version.Value.EngineId, adapter, provider,
+                    OcrQueuePriority.UserStartedDocument, PresetVersionId: version.Value.PresetVersionId,
+                    Source: OcrQueueSource.UiDocument),
                 cancellationToken),
             cancellationToken);
     }
@@ -91,11 +122,13 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
+        (string adapter, string? provider) = await RoutingForAsync(version.Value, cancellationToken);
         return await EnqueueAndAwaitAsync(
             queue => queue.EnqueueAsync(
-                new OcrQueueTaskRequest(documentInstanceId, presetId, pageIds, OcrQueueTaskKind.MockPages,
-                    version.Value.EngineId, AdapterKindFor(version.Value), ProviderIdFor(version.Value),
-                    PriorityFor(pageIds)),
+                new OcrQueueTaskRequest(documentInstanceId, presetId, pageIds, OcrQueueTaskKind.Pages,
+                    version.Value.EngineId, adapter, provider,
+                    PriorityFor(pageIds), PresetVersionId: version.Value.PresetVersionId,
+                    Source: OcrQueueSource.UiPages),
                 cancellationToken),
             cancellationToken);
     }
@@ -113,10 +146,15 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
+        (string adapter, string? provider) = await RoutingForAsync(version.Value, cancellationToken);
         return await EnqueueAndAwaitAsync(
-            queue => queue.EnqueueRegionAsync(documentInstanceId, presetId, pageId, regionBBox,
-                version.Value.EngineId, AdapterKindFor(version.Value), ProviderIdFor(version.Value),
-                OcrQueuePriority.InteractiveCurrentPage, cancellationToken),
+            queue => queue.EnqueueAsync(
+                new OcrQueueTaskRequest(documentInstanceId, presetId, [pageId], OcrQueueTaskKind.Region,
+                    version.Value.EngineId, adapter, provider,
+                    OcrQueuePriority.InteractiveCurrentPage, RegionBBox: regionBBox,
+                    CommitOnCompletion: false, PresetVersionId: version.Value.PresetVersionId,
+                    Source: OcrQueueSource.UiRegion),
+                cancellationToken),
             cancellationToken);
     }
 
@@ -130,10 +168,13 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
+        (string adapter, string? provider) = await RoutingForAsync(version.Value, cancellationToken);
         return await EnqueueAndAwaitAsync(queue => queue.EnqueueAsync(
-                new OcrQueueTaskRequest(documentInstanceId, presetId, [pageId], OcrQueueTaskKind.MockPages,
-                    version.Value.EngineId, AdapterKindFor(version.Value), ProviderIdFor(version.Value),
-                    OcrQueuePriority.InteractiveCurrentPage, CommitOnCompletion: false), cancellationToken),
+                new OcrQueueTaskRequest(documentInstanceId, presetId, [pageId], OcrQueueTaskKind.Pages,
+                    version.Value.EngineId, adapter, provider,
+                    OcrQueuePriority.InteractiveCurrentPage, CommitOnCompletion: false,
+                    PresetVersionId: version.Value.PresetVersionId, Source: OcrQueueSource.UiWorking),
+                cancellationToken),
             cancellationToken);
     }
 
@@ -150,35 +191,10 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         CancellationToken cancellationToken = default)
     {
         // Region candidates are ephemeral: the engine persists no run for them, so there is no
-        // status to track and queueing is not required for status correctness.
-        return _engine.RecognizeRegionCandidateAsync(documentInstanceId, presetId, pageId, regionBBox,
-            cancellationToken);
-    }
-
-    public async Task<Result<OcrRun>> RunPresetOnImagePageAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        PageId pageId,
-        string imagePath,
-        CancellationToken cancellationToken = default)
-    {
-        return await EnqueueAndAwaitAsync(
-            queue => queue.EnqueueImagePageAsync(documentInstanceId, presetId, pageId, imagePath,
-                OcrQueuePriority.InteractiveCurrentPage, cancellationToken),
-            cancellationToken);
-    }
-
-    public async Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        PageId pageId,
-        int dpi = 200,
-        CancellationToken cancellationToken = default)
-    {
-        return await EnqueueAndAwaitAsync(
-            queue => queue.EnqueueRenderedPdfPageAsync(documentInstanceId, presetId, pageId, dpi,
-                OcrQueuePriority.InteractiveCurrentPage, cancellationToken),
-            cancellationToken);
+        // status to track and queueing is not required for status correctness. The facade still
+        // owns a real background boundary for synchronous adapters and post-HTTP parsing.
+        return Task.Run(() => _engine.RecognizeRegionCandidateAsync(documentInstanceId, presetId, pageId,
+            regionBBox, cancellationToken), cancellationToken);
     }
 
     public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
@@ -290,13 +306,107 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             : OcrQueuePriority.InteractiveSelectedPages;
     }
 
-    private static string AdapterKindFor(OcrPresetVersion version)
+    /// <summary>
+    /// Queue lane resolution from frozen inputs only: the registered engine definition supplies
+    /// the adapter kind, and the provider identity comes from the frozen configuration or the
+    /// definition's declared default — there is no per-engine routing switch. MinerU's intrinsic
+    /// cloud provider remains the one built-in exception inside <see cref="OcrQueueRouting"/>.
+    /// </summary>
+    private async Task<(string AdapterKind, string? ProviderId)> RoutingForAsync(
+        OcrPresetVersion version, CancellationToken cancellationToken)
     {
-        return OcrQueueRouting.ForEngine(version.EngineId).AdapterKind;
+        OcrEngineDefinition? definition = null;
+        if (_engineCatalog is not null)
+        {
+            Result<OcrEngineDefinition> resolved =
+                await _engineCatalog.GetDefinitionAsync(version.EngineId, cancellationToken);
+            if (resolved.IsSuccess)
+            {
+                definition = resolved.Value;
+            }
+        }
+
+        return OcrQueueRouting.ForEngine(version.EngineId, definition, ResolveProvider(version, definition));
     }
 
-    private string? ProviderIdFor(OcrPresetVersion version)
+    private string? ResolveProvider(OcrPresetVersion version, OcrEngineDefinition? definition)
     {
-        return OcrQueueRouting.ForEngine(version.EngineId, _multimodalProviderId?.Invoke()).ProviderId;
+        string? provider = ReadProviderKey(version.ParametersJson);
+        if (provider is null && definition?.DefaultConfig is { } defaults)
+        {
+            if (!defaults.TryGetValue("provider", out provider))
+            {
+                defaults.TryGetValue("llm-provider", out provider);
+            }
+        }
+
+        // A cloud engine that needs credentials but names no provider falls back to the
+        // configured LLM provider identity — still configuration-derived, not engine-id-driven.
+        if (provider is null && definition is { RequiresCredential: true, AdapterKind: "cloud_api" })
+        {
+            provider = _multimodalProviderId?.Invoke();
+        }
+
+        return provider;
+    }
+
+    /// <summary>Reads a pinned provider id out of the frozen preset parameters envelope.</summary>
+    private static string? ReadProviderKey(string parametersJson)
+    {
+        if (string.IsNullOrWhiteSpace(parametersJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using System.Text.Json.JsonDocument document =
+                System.Text.Json.JsonDocument.Parse(parametersJson);
+            System.Text.Json.JsonElement root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            foreach (string key in new[] { "provider", "llm-provider", "llmProvider" })
+            {
+                if (root.TryGetProperty(key, out System.Text.Json.JsonElement value) &&
+                    value.ValueKind == System.Text.Json.JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    return value.GetString();
+                }
+            }
+
+            foreach (string envelope in new[] { "_extension", "extension", "_llm", "llm" })
+            {
+                if (!root.TryGetProperty(envelope, out System.Text.Json.JsonElement section) ||
+                    section.ValueKind != System.Text.Json.JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                System.Text.Json.JsonElement values =
+                    section.TryGetProperty("values", out System.Text.Json.JsonElement nested) &&
+                    nested.ValueKind == System.Text.Json.JsonValueKind.Object
+                        ? nested
+                        : section;
+                foreach (string key in new[] { "provider", "llm-provider", "llmProvider" })
+                {
+                    if (values.TryGetProperty(key, out System.Text.Json.JsonElement value) &&
+                        value.ValueKind == System.Text.Json.JsonValueKind.String &&
+                        !string.IsNullOrWhiteSpace(value.GetString()))
+                    {
+                        return value.GetString();
+                    }
+                }
+            }
+
+            return null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 }

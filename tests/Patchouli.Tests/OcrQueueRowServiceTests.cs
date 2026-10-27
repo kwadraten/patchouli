@@ -9,7 +9,6 @@ using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
-using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Ocr;
 
@@ -47,9 +46,8 @@ public sealed class OcrQueueRowServiceTests
 
     private static async Task<TestContext> CreateContextAsync()
     {
-        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateMigratedAsync();
         FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
-        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         LibraryIdentityService library = new(database.ConnectionFactory, clock);
         Result<LibraryMetadata> createdLibrary = await library.CreateLibraryAsync("Queue Rows");
         return new TestContext(

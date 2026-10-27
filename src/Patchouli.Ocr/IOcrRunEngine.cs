@@ -43,6 +43,48 @@ public interface IOcrRunEngine : IOcrRunCoordinator
     }
 
     /// <summary>
+    ///     Executes one frozen OCR request accepted by the queue: <paramref name="request"/> carries
+    ///     the accepted page set, the optional region input, and the pinned preset version, while
+    ///     <paramref name="execution"/> identifies the invoking queue attempt and receives the
+    ///     created run's binding notification before model execution or page progress begins.
+    ///     Engines that do not override the unified entry cannot honor a pinned version or the
+    ///     binding context, so the default fails closed for those requests; the legacy per-scope
+    ///     dispatch is kept only for demonstrably unpinned, context-free calls.
+    /// </summary>
+    Task<Result<OcrRun>> ExecuteAsync(
+        OcrRunExecutionRequest request,
+        OcrRunExecutionContext? execution = null,
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
+    {
+        if (request.PresetVersionId is not null || execution is not null)
+        {
+            return Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
+                "This OCR engine cannot execute pinned preset versions or report run bindings."));
+        }
+
+        return request.Scope switch
+        {
+            OcrRunExecutionScope.Document => RunPresetOnDocumentAsync(request.DocumentInstanceId,
+                request.PresetId, cancellationToken, progress),
+            OcrRunExecutionScope.Pages when request.WorkingDraft => request.PageIds.Count == 1
+                ? RunWorkingOnPageAsync(request.DocumentInstanceId, request.PresetId, request.PageIds[0],
+                    cancellationToken)
+                : Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                    "Working-draft OCR runs on exactly one physical page.")),
+            OcrRunExecutionScope.Pages => RunPresetOnPagesAsync(request.DocumentInstanceId,
+                request.PresetId, request.PageIds, cancellationToken, progress),
+            OcrRunExecutionScope.Region => request is { PageIds.Count: 1, RegionBBox: { } region }
+                ? RunPresetOnRegionAsync(request.DocumentInstanceId, request.PresetId, request.PageIds[0],
+                    region, cancellationToken)
+                : Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                    "Region OCR requires exactly one physical page and a normalized region.")),
+            _ => Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Unsupported OCR execution scope."))
+        };
+    }
+
+    /// <summary>
     ///     Preflight check for one resolved preset version against a document: registered engine,
     ///     preset validity, model/credential availability, and source-file presence. Failures must be
     ///     sanitized (no local paths, credentials, or raw exception text).

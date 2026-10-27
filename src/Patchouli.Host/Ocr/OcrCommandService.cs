@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
 
@@ -30,6 +31,7 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
     private readonly OcrPresetDefaults _defaults;
     private readonly IOcrAdapterRegistry _adapters;
     private readonly Func<string> _defaultDocumentEngineId;
+    private readonly Func<CancellationToken, Task<Result<OcrPresetId?>>>? _defaultDocumentPreset;
 
     // Atomic check-and-enqueue boundary for request_id idempotency: fingerprint comparison and
     // enqueue must share one synchronization region, so concurrent identical submissions mint a
@@ -43,7 +45,8 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
         IOcrPresetService presets,
         OcrPresetDefaults defaults,
         IOcrAdapterRegistry adapters,
-        Func<string> defaultDocumentEngineId)
+        Func<string> defaultDocumentEngineId,
+        Func<CancellationToken, Task<Result<OcrPresetId?>>>? defaultDocumentPreset = null)
     {
         _queue = queue;
         _engine = engine;
@@ -51,6 +54,7 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
         _defaults = defaults;
         _adapters = adapters;
         _defaultDocumentEngineId = defaultDocumentEngineId;
+        _defaultDocumentPreset = defaultDocumentPreset;
     }
 
     public async Task<Result<McpOcrCommandResult>> StartAsync(McpOcrStartRequest request,
@@ -82,8 +86,17 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
         string engineSelector = string.IsNullOrWhiteSpace(request.Engine)
             ? "default"
             : request.Engine.Trim().ToLowerInvariant();
+        string presetSelector = NormalizeSelector(request.Preset);
+        string presetVersionSelector = NormalizeSelector(request.PresetVersion);
+        if (presetVersionSelector.Length > 0 && presetSelector.Length == 0)
+        {
+            return Result<McpOcrCommandResult>.Failure(AppErrorCodes.InvalidArgument,
+                "preset_version requires the preset argument.");
+        }
+
         string fingerprint = string.Join('|',
-            request.DocumentInstanceId.ToString(), engineSelector, canonicalPages.Value);
+            request.DocumentInstanceId.ToString(), engineSelector, canonicalPages.Value,
+            presetSelector, presetVersionSelector);
 
         await _requestGate.WaitAsync(cancellationToken);
         try
@@ -126,30 +139,74 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
     private async Task<Result<McpOcrCommandResult>> StartFreshAsync(McpOcrStartRequest request,
         CancellationToken cancellationToken)
     {
-        Result<string> engineSelection = ResolveEngineId(request.Engine);
-        if (engineSelection.IsFailure)
+        Result<OcrPresetVersion> version;
+        OcrPresetId presetId;
+        if (!string.IsNullOrWhiteSpace(request.Preset))
         {
-            return Result<McpOcrCommandResult>.Failure(engineSelection.ErrorCode!, engineSelection.ErrorMessage!);
+            // Explicit selection: the stored preset id decides the engine; a non-default engine
+            // argument must agree, and an explicit version must belong to the selected preset.
+            Result<(OcrPresetId PresetId, OcrPresetVersion Version)> explicitSelection =
+                await ResolveExplicitPresetAsync(request, cancellationToken);
+            if (explicitSelection.IsFailure)
+            {
+                return Result<McpOcrCommandResult>.Failure(explicitSelection.ErrorCode!,
+                    explicitSelection.ErrorMessage!);
+            }
+
+            presetId = explicitSelection.Value.PresetId;
+            version = Result<OcrPresetVersion>.Success(explicitSelection.Value.Version);
+        }
+        else
+        {
+            Result<OcrPresetId?> stored = request.Engine.Trim().Equals("default", StringComparison.OrdinalIgnoreCase) &&
+                                          _defaultDocumentPreset is not null
+                ? await _defaultDocumentPreset(cancellationToken)
+                : Result<OcrPresetId?>.Success(null);
+            if (stored.IsFailure)
+            {
+                return Result<McpOcrCommandResult>.Failure(stored.ErrorCode!, stored.ErrorMessage!);
+            }
+
+            if (stored.Value is { } selectedPreset)
+            {
+                presetId = selectedPreset;
+                version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
+            }
+            else
+            {
+                Result<string> engineSelection = ResolveEngineId(request.Engine);
+                if (engineSelection.IsFailure)
+                {
+                    return Result<McpOcrCommandResult>.Failure(engineSelection.ErrorCode!,
+                        engineSelection.ErrorMessage!);
+                }
+
+                Result<OcrPresetId> resolvedPreset = await ResolvePresetAsync(engineSelection.Value, cancellationToken);
+                if (resolvedPreset.IsFailure)
+                {
+                    return Result<McpOcrCommandResult>.Failure(resolvedPreset.ErrorCode!, resolvedPreset.ErrorMessage!);
+                }
+
+                presetId = resolvedPreset.Value;
+                version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
+            }
         }
 
-        string engineId = engineSelection.Value;
-        if (_adapters.GetAdapter(engineId) is null)
-        {
-            return Result<McpOcrCommandResult>.Failure(AppErrorCodes.NotFound,
-                $"OCR engine '{engineId}' is not available on this host.");
-        }
-
-        Result<OcrPresetId> presetId = await ResolvePresetAsync(engineId, cancellationToken);
-        if (presetId.IsFailure)
-        {
-            return Result<McpOcrCommandResult>.Failure(presetId.ErrorCode!, presetId.ErrorMessage!);
-        }
-
-        Result<OcrPresetVersion> version =
-            await _engine.ResolvePresetVersionAsync(presetId.Value, cancellationToken);
         if (version.IsFailure)
         {
             return Result<McpOcrCommandResult>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        string engineId = version.Value.EngineId;
+        // Capability comes from registry metadata, not the legacy adapter registry — custom
+        // native/extension engines have no registered adapter but still resolve + pin through
+        // the catalog. Branch-aware readiness below decides what the pinned version needs.
+        Result<OcrEngineDefinition> definition =
+            await _defaults.GetEngineDefinitionAsync(engineId, cancellationToken);
+        if (definition.IsFailure)
+        {
+            return Result<McpOcrCommandResult>.Failure(AppErrorCodes.NotFound,
+                $"OCR engine '{engineId}' is not available on this host.");
         }
 
         Result<IReadOnlyList<PageId>> allPages =
@@ -165,7 +222,7 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
                 "The document has no physical pages to OCR.");
         }
 
-        // Selected-page tasks always take the MockPages kind, which executes
+        // Selected-page tasks always take the Pages kind, which executes
         // RunPresetOnPagesAsync — never the Document branch that ignores the page list.
         Result<IReadOnlyList<PageId>> selected = SelectPages(request.Pages, allPages.Value);
         if (selected.IsFailure)
@@ -180,17 +237,18 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
             return Result<McpOcrCommandResult>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
         }
 
-        (string AdapterKind, string? ProviderId) routing = _defaults.QueueRoutingFor(engineId);
+        (string AdapterKind, string? ProviderId) routing = _defaults.QueueRoutingFor(engineId, definition.Value);
         OcrQueueTaskRequest taskRequest = new(
             request.DocumentInstanceId,
-            presetId.Value,
+            presetId,
             selected.Value,
-            OcrQueueTaskKind.MockPages,
+            OcrQueueTaskKind.Pages,
             engineId,
             routing.AdapterKind,
             routing.ProviderId,
             OcrQueuePriority.UserStartedDocument,
-            PresetVersionId: version.Value.PresetVersionId);
+            PresetVersionId: version.Value.PresetVersionId,
+            Source: OcrQueueSource.Mcp);
         Result<OcrQueueTask> queued = await _queue.EnqueueAsync(taskRequest, cancellationToken);
         if (queued.IsFailure)
         {
@@ -268,7 +326,7 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
             }
 
             if (!task.Value.CommitOnCompletion || task.Value.TaskKind is not
-                    (OcrQueueTaskKind.Document or OcrQueueTaskKind.MockPages))
+                    (OcrQueueTaskKind.Document or OcrQueueTaskKind.Pages))
             {
                 return Result<McpOcrCommandResult>.Failure(AppErrorCodes.UnsupportedOperation,
                     "Public OCR retry supports document and selected-page tasks that commit on completion.");
@@ -290,11 +348,17 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
                     "The task's OCR preset or engine no longer matches its execution version.");
             }
 
-            Result ready = await _engine.CheckRunReadinessAsync(
-                task.Value.DocumentInstanceId, version.Value, cancellationToken);
-            if (ready.IsFailure)
+            // A completed recognition run can resume adoption/indexing without its old engine,
+            // source file, credentials or weights. Revalidate durable coverage, not just UI counts.
+            bool resumeRecognition = await CanResumeRecognitionAsync(task.Value, version.Value, cancellationToken);
+            if (!resumeRecognition)
             {
-                return Result<McpOcrCommandResult>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
+                Result ready = await _engine.CheckRunReadinessAsync(
+                    task.Value.DocumentInstanceId, version.Value, cancellationToken);
+                if (ready.IsFailure)
+                {
+                    return Result<McpOcrCommandResult>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
+                }
             }
 
             Result<OcrQueueTask> retried = await _queue.RetryTaskWithVersionAsync(taskId,
@@ -347,6 +411,35 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
             : await _engine.ResolvePresetVersionAsync(task.PresetId, cancellationToken);
     }
 
+    private async Task<bool> CanResumeRecognitionAsync(OcrQueueTask task, OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        if (task.RunId is not { } runId || task.FailedPageCount != 0 ||
+            task.PageIds.Count == 0 || task.CompletedPageCount < task.PageIds.Count ||
+            task.PresetVersionId != version.PresetVersionId)
+        {
+            return false;
+        }
+
+        Result<OcrRun> run = await _engine.GetRunAsync(runId, cancellationToken);
+        if (run.IsFailure || run.Value.DocumentInstanceId != task.DocumentInstanceId ||
+            run.Value.PresetId != task.PresetId || run.Value.PresetVersionId != version.PresetVersionId ||
+            run.Value.EngineId != task.EngineId ||
+            run.Value.State is not (OcrRunState.Completed or OcrRunState.CompletedWithErrors))
+        {
+            return false;
+        }
+
+        Result<IReadOnlyList<OcrPageResult>> pages = await _engine.ListPageResultsAsync(runId, cancellationToken);
+        if (pages.IsFailure || pages.Value.Any(page => page.State != OcrPageResultState.Succeeded))
+        {
+            return false;
+        }
+
+        HashSet<PageId> recognized = pages.Value.Select(page => page.PageId).ToHashSet();
+        return task.PageIds.All(recognized.Contains);
+    }
+
     private async Task<McpOcrCommandResult> BuildResultAsync(OcrQueueTask task, bool reused,
         CancellationToken cancellationToken)
     {
@@ -376,7 +469,8 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
         CancellationToken cancellationToken)
     {
         // The user's existing active preset for the engine wins; only create the managed
-        // default preset when the engine has none yet.
+        // default preset when the engine has none yet. Implicit resolution ONLY — explicit
+        // selections go through ResolveExplicitPresetAsync and never fall back here.
         Result<OcrPreset?> active = await _presets.FindActivePresetByEngineIdAsync(engineId, cancellationToken);
         if (active.IsFailure)
         {
@@ -386,6 +480,88 @@ public sealed partial class OcrCommandService : IMcpOcrCommandApi
         return active.Value is not null
             ? Result<OcrPresetId>.Success(active.Value.PresetId)
             : await _defaults.EnsurePresetAsync(engineId, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Resolves an explicit <c>preset</c>/<c>preset_version</c> selector pair: the stored id is
+    ///     validated against the active library (missing, archived, and cross-library ids fail with
+    ///     actionable errors — never a same-engine fallback), a pinned version must belong to the
+    ///     selected preset, and a non-default engine argument must agree with the resolved engine.
+    /// </summary>
+    private async Task<Result<(OcrPresetId, OcrPresetVersion)>> ResolveExplicitPresetAsync(
+        McpOcrStartRequest request, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(request.Preset!.Trim(), out Guid presetGuid))
+        {
+            return Result<(OcrPresetId, OcrPresetVersion)>.Failure(AppErrorCodes.InvalidArgument,
+                $"The preset selector '{request.Preset}' is not a preset UUID.");
+        }
+
+        OcrPresetId presetId = new(presetGuid);
+        Result<OcrPreset> preset = await _presets.ResolveSelectionAsync(presetId, cancellationToken);
+        if (preset.IsFailure)
+        {
+            return Result<(OcrPresetId, OcrPresetVersion)>.Failure(preset.ErrorCode!, preset.ErrorMessage!);
+        }
+
+        Result<OcrPresetVersion> version;
+        if (!string.IsNullOrWhiteSpace(request.PresetVersion))
+        {
+            if (!Guid.TryParse(request.PresetVersion.Trim(), out Guid versionGuid))
+            {
+                return Result<(OcrPresetId, OcrPresetVersion)>.Failure(AppErrorCodes.InvalidArgument,
+                    $"The preset_version selector '{request.PresetVersion}' is not a version UUID.");
+            }
+
+            version = await _presets.GetPresetVersionAsync(new OcrPresetVersionId(versionGuid),
+                cancellationToken);
+            if (version.IsSuccess && version.Value.PresetId != presetId)
+            {
+                return Result<(OcrPresetId, OcrPresetVersion)>.Failure(AppErrorCodes.Conflict,
+                    "The pinned preset_version does not belong to the selected preset.");
+            }
+        }
+        else
+        {
+            version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
+        }
+
+        if (version.IsFailure)
+        {
+            return Result<(OcrPresetId, OcrPresetVersion)>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Engine) &&
+            !string.Equals(request.Engine.Trim(), "default", StringComparison.OrdinalIgnoreCase))
+        {
+            Result<string> engineSelection = ResolveEngineId(request.Engine);
+            if (engineSelection.IsFailure)
+            {
+                return Result<(OcrPresetId, OcrPresetVersion)>.Failure(engineSelection.ErrorCode!,
+                    engineSelection.ErrorMessage!);
+            }
+
+            if (!string.Equals(engineSelection.Value, version.Value.EngineId, StringComparison.Ordinal))
+            {
+                return Result<(OcrPresetId, OcrPresetVersion)>.Failure(AppErrorCodes.Conflict,
+                    $"The engine selector '{engineSelection.Value}' conflicts with preset " +
+                    $"'{preset.Value.Name}' running engine '{version.Value.EngineId}'.");
+            }
+        }
+
+        return Result<(OcrPresetId, OcrPresetVersion)>.Success((presetId, version.Value));
+    }
+
+    private static string NormalizeSelector(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = value.Trim();
+        // Canonicalize UUID selectors so case/format variants fingerprint identically.
+        return Guid.TryParse(trimmed, out Guid guid) ? guid.ToString("D") : trimmed.ToLowerInvariant();
     }
 
     private Result<string> ResolveEngineId(string? engine)

@@ -12,17 +12,27 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
     private readonly ISearchUnitBuilder? _searchUnits;
     private readonly ISearchIndexRebuilder? _searchIndex;
     private readonly IHostActivityTracker? _activityTracker;
+    private readonly OcrEngineLeaseRegistry? _engineLeases;
 
     public OcrQueueTaskExecutor(IOcrRunEngine engine, ISearchUnitBuilder? searchUnits = null,
-        ISearchIndexRebuilder? searchIndex = null, IHostActivityTracker? activityTracker = null)
+        ISearchIndexRebuilder? searchIndex = null, IHostActivityTracker? activityTracker = null,
+        OcrEngineLeaseRegistry? engineLeases = null)
     {
         _engine = engine;
         _searchUnits = searchUnits;
         _searchIndex = searchIndex;
         _activityTracker = activityTracker;
+        _engineLeases = engineLeases;
     }
 
-    public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+    public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+        IProgress<OcrTaskProgressReport>? progress = null)
+    {
+        return ExecuteAsync(task, null, cancellationToken, progress);
+    }
+
+    public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task,
+        OcrRunExecutionContext? execution, CancellationToken cancellationToken,
         IProgress<OcrTaskProgressReport>? progress = null)
     {
         using IActivityScope? activity = _activityTracker?.BeginScope(
@@ -32,7 +42,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             $"ocr:{task.TaskId}");
         IProgress<OcrTaskStageProgress>? stageProgress = progress is null && activity is null
             ? null
-            : new StageProgressForwarder(task.TaskId, progress, activity);
+            : new StageProgressForwarder(task.TaskId, task.AttemptCount, progress, activity);
         bool isMock = task.EngineId == OcrEngineIds.Mock;
         if (isMock)
         {
@@ -54,13 +64,20 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             if (task.RunId is not null)
             {
                 Result<OcrRun> existingRun = await _engine.GetRunAsync(task.RunId.Value, cancellationToken);
+                // Retained recognition must belong to this attempt's frozen version and already
+                // cover every requested page with a succeeded result; a different version or
+                // partial coverage re-runs recognition rather than adopting the wrong output.
                 if (existingRun.IsSuccess &&
-                    existingRun.Value.State is OcrRunState.Completed or OcrRunState.CompletedWithErrors)
+                    existingRun.Value.State is OcrRunState.Completed or OcrRunState.CompletedWithErrors &&
+                    (task.PresetVersionId is null ||
+                     existingRun.Value.PresetVersionId == task.PresetVersionId))
                 {
                     Result<IReadOnlyList<OcrPageResult>> existingPages =
                         await _engine.ListPageResultsAsync(existingRun.Value.OcrRunId, cancellationToken);
                     if (existingPages.IsSuccess &&
-                        existingPages.Value.All(p => p.State == OcrPageResultState.Succeeded))
+                        existingPages.Value.All(p => p.State == OcrPageResultState.Succeeded) &&
+                        task.PageIds.All(page =>
+                            existingPages.Value.Any(p => p.PageId == page)))
                     {
                         run = existingRun;
                     }
@@ -69,30 +86,24 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
 
             if (run is null)
             {
-                run = task.TaskKind switch
+                // Every invocation goes through the unified frozen-request entry; engines that
+                // cannot honor a pinned version or the execution context fail closed there rather
+                // than silently running the wrong shape.
+                OcrRunExecutionRequest? request = CreateExecutionRequest(task);
+                if (request is not null)
                 {
-                    OcrQueueTaskKind.Document when task.PresetVersionId is { } pinned =>
-                        await _engine.RunPresetOnPagesWithVersionAsync(task.DocumentInstanceId, task.PresetId,
-                            task.PageIds, pinned, cancellationToken, stageProgress),
-                    OcrQueueTaskKind.Document => await _engine.RunPresetOnDocumentAsync(task.DocumentInstanceId,
-                        task.PresetId, cancellationToken, stageProgress),
-                    OcrQueueTaskKind.MockPages when !task.CommitOnCompletion && task.PageIds.Count == 1 =>
-                        await _engine.RunWorkingOnPageAsync(task.DocumentInstanceId, task.PresetId,
-                            task.PageIds.Single(), cancellationToken),
-                    OcrQueueTaskKind.MockPages when task.PresetVersionId is { } pinned =>
-                        await _engine.RunPresetOnPagesWithVersionAsync(task.DocumentInstanceId, task.PresetId,
-                            task.PageIds, pinned, cancellationToken, stageProgress),
-                    OcrQueueTaskKind.MockPages => await _engine.RunPresetOnPagesAsync(task.DocumentInstanceId,
-                        task.PresetId, task.PageIds, cancellationToken, stageProgress),
-                    OcrQueueTaskKind.ImagePage => await _engine.RunPresetOnImagePageAsync(task.DocumentInstanceId,
-                        task.PresetId, task.PageIds.Single(), task.ImagePath!, cancellationToken),
-                    OcrQueueTaskKind.RenderedPdfPage => await _engine.RunPresetOnRenderedPdfPageAsync(
-                        task.DocumentInstanceId, task.PresetId, task.PageIds.Single(), task.Dpi ?? 200,
-                        cancellationToken),
-                    OcrQueueTaskKind.Region => await _engine.RunPresetOnRegionAsync(task.DocumentInstanceId,
-                        task.PresetId, task.PageIds.Single(), task.RegionBBox!.Value, cancellationToken),
-                    _ => null
-                };
+                    // A pinned task must find its acceptance-time lease; executing an
+                    // extension engine without it would run an unpinned code path.
+                    if (task.PresetVersionId is not null && _engineLeases is not null &&
+                        _engineLeases.Get(task.TaskId) is null)
+                    {
+                        return new OcrQueueExecutionResult(false, false, "engine_generation_unavailable",
+                            "The OCR engine generation pinned at queue acceptance is no longer held.");
+                    }
+
+                    run = await _engine.ExecuteAsync(request, execution, cancellationToken,
+                        stageProgress);
+                }
             }
 
             if (run is null)
@@ -186,15 +197,33 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
         }
     }
 
+    private OcrRunExecutionRequest? CreateExecutionRequest(OcrQueueTask task)
+    {
+        string? scope = task.TaskKind switch
+        {
+            OcrQueueTaskKind.Document => OcrRunExecutionScope.Document,
+            OcrQueueTaskKind.Pages => OcrRunExecutionScope.Pages,
+            OcrQueueTaskKind.Region => OcrRunExecutionScope.Region,
+            _ => null
+        };
+        return scope is null
+            ? null
+            : new OcrRunExecutionRequest(task.DocumentInstanceId, task.PresetId, task.PageIds, scope,
+                task.PresetVersionId, task.RegionBBox, !task.CommitOnCompletion,
+                _engineLeases?.Get(task.TaskId));
+    }
+
     private sealed class StageProgressForwarder(
         OcrQueueTaskId taskId,
+        int attempt,
         IProgress<OcrTaskProgressReport>? inner,
         IActivityScope? activity)
         : IProgress<OcrTaskStageProgress>
     {
         public void Report(OcrTaskStageProgress value)
         {
-            inner?.Report(new OcrTaskProgressReport(taskId, value.Stage, value.Fraction, value.Detail));
+            inner?.Report(new OcrTaskProgressReport(taskId, value.Stage, value.Fraction, value.Detail,
+                attempt));
             string detail = value.Fraction is { } fraction
                 ? $"{value.Stage} {fraction:P0}"
                 : value.Stage.ToString();

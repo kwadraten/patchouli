@@ -79,11 +79,6 @@ public sealed class OcrQueueSchedulerTests
         OcrQueueScheduler scheduler = Create(out _);
         (await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
             OcrQueuePriority.UserStartedDocument)).Value.State.Should().Be(OcrQueueTaskState.Queued);
-        (await scheduler.EnqueueImagePageAsync(DocumentInstanceId.New(), OcrPresetId.New(), PageId.New(),
-                "/tmp/image.png", OcrQueuePriority.UserStartedDocument)).Value.TaskKind.Should()
-            .Be(OcrQueueTaskKind.ImagePage);
-        (await scheduler.EnqueueRenderedPdfPageAsync(DocumentInstanceId.New(), OcrPresetId.New(), PageId.New(), 200,
-            OcrQueuePriority.UserStartedDocument)).Value.TaskKind.Should().Be(OcrQueueTaskKind.RenderedPdfPage);
     }
 
     [Fact]
@@ -237,7 +232,7 @@ public sealed class OcrQueueSchedulerTests
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
         OcrQueueTaskRequest request = new(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
             OcrQueueTaskKind.Region, "engine", OcrAdapterKind.LocalLibrary, "provider", OcrQueuePriority.Maintenance,
-            "image.png", 300, 5, new NormalizedBBox(0.1, 0.2, 0.3, 0.4), false);
+            5, new NormalizedBBox(0.1, 0.2, 0.3, 0.4), false);
         Result<OcrQueueTask> original = await scheduler.EnqueueAsync(request);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
@@ -257,8 +252,6 @@ public sealed class OcrQueueSchedulerTests
         retried.Value.EngineId.Should().Be(original.Value.EngineId);
         retried.Value.AdapterKind.Should().Be(original.Value.AdapterKind);
         retried.Value.ProviderId.Should().Be(original.Value.ProviderId);
-        retried.Value.ImagePath.Should().Be(original.Value.ImagePath);
-        retried.Value.Dpi.Should().Be(original.Value.Dpi);
         retried.Value.RegionBBox.Should().Be(original.Value.RegionBBox);
         retried.Value.CommitOnCompletion.Should().BeFalse();
     }
@@ -315,29 +308,59 @@ public sealed class OcrQueueSchedulerTests
     }
 
     [Fact]
-    public void ReportProgress_throttles_per_task_not_globally()
+    public async Task ReportProgress_throttles_per_task_not_globally()
     {
-        OcrQueueScheduler scheduler = Create(out _);
+        FakeExecutor executor = new() { Block = true };
+        OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor,
+            new OcrQueueLimits(4, 4, 4, 4, 4));
         List<OcrQueueChangedEventArgs> events = [];
         scheduler.Changed += (_, e) => events.Add(e);
 
-        OcrQueueTaskId taskA = OcrQueueTaskId.New();
-        OcrQueueTaskId taskB = OcrQueueTaskId.New();
+        Result<OcrQueueTask> taskA = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        Result<OcrQueueTask> taskB = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await WaitForAsync(() => executor.Executed.Length == 2);
+        events.Clear();
 
         System.Reflection.MethodInfo onProgress = typeof(OcrQueueScheduler).GetMethod(
             "OnProgress",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
 
-        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskA, OcrTaskStage.Recognizing, 0.1, null)]);
+        // Progress is attempt-owned: unknown task ids and unstamped reports are dropped.
+        onProgress.Invoke(scheduler, [
+            new OcrTaskProgressReport(OcrQueueTaskId.New(),
+                OcrTaskStage.Recognizing, 0.1, null, 0)
+        ]);
+        onProgress.Invoke(scheduler, [
+            new OcrTaskProgressReport(taskA.Value.TaskId,
+                OcrTaskStage.Recognizing, 0.1, null)
+        ]);
+        events.Should().BeEmpty();
+
+        onProgress.Invoke(scheduler, [
+            new OcrTaskProgressReport(taskA.Value.TaskId,
+                OcrTaskStage.Recognizing, 0.1, null, 0)
+        ]);
         events.Should().HaveCount(1);
 
         // Immediate subsequent report for Task A is throttled (<200ms)
-        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskA, OcrTaskStage.Recognizing, 0.2, null)]);
+        onProgress.Invoke(scheduler, [
+            new OcrTaskProgressReport(taskA.Value.TaskId,
+                OcrTaskStage.Recognizing, 0.2, null, 0)
+        ]);
         events.Should().HaveCount(1);
 
         // Report for Task B is NOT throttled by Task A
-        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskB, OcrTaskStage.Recognizing, 0.1, null)]);
+        onProgress.Invoke(scheduler, [
+            new OcrTaskProgressReport(taskB.Value.TaskId,
+                OcrTaskStage.Recognizing, 0.1, null, 0)
+        ]);
         events.Should().HaveCount(2);
+
+        executor.Release();
+        await scheduler.WaitForIdleAsync();
     }
 
     [Fact]
@@ -555,8 +578,8 @@ public sealed class OcrQueueSchedulerTests
                 "PDF renderer timed out.")
         };
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
-        Result<OcrQueueTask> task = await scheduler.EnqueueRenderedPdfPageAsync(DocumentInstanceId.New(),
-            OcrPresetId.New(), PageId.New(), 100, OcrQueuePriority.UserStartedDocument);
+        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
         OcrQueueTask updated = (await scheduler.GetTaskAsync(task.Value.TaskId)).Value;
@@ -571,17 +594,16 @@ public sealed class OcrQueueSchedulerTests
         RecordingCoordinator coordinator = new();
         OcrQueueTaskExecutor executor = new(coordinator);
         using CancellationTokenSource cts = new();
-        foreach (string kind in new[]
-                     { OcrQueueTaskKind.MockPages, OcrQueueTaskKind.ImagePage, OcrQueueTaskKind.RenderedPdfPage })
+        foreach (string kind in new[] { OcrQueueTaskKind.Pages, OcrQueueTaskKind.Region })
         {
             OcrQueueTask task = new(OcrQueueTaskId.New(), LibraryId.New(), DocumentInstanceId.New(), OcrPresetId.New(),
                 [PageId.New()], kind, "engine", OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Queued, 0, 3, null, null, null, null,
-                "/tmp/input.png", 150);
+                RegionBBox: new NormalizedBBox(0.1, 0.1, 0.5, 0.5));
             (await executor.ExecuteAsync(task, cts.Token)).Succeeded.Should().BeFalse();
         }
 
-        coordinator.Calls.Should().Equal("mock", "image", "rendered");
+        coordinator.Calls.Should().Equal("mock", "region");
         coordinator.Token.Should().Be(cts.Token);
     }
 
@@ -592,9 +614,9 @@ public sealed class OcrQueueSchedulerTests
         OcrQueueTaskExecutor executor = new(coordinator);
         OcrQueueExecutionResult result = await executor.ExecuteAsync(
             new OcrQueueTask(OcrQueueTaskId.New(), LibraryId.New(), coordinator.DocumentId, coordinator.PresetId,
-                [coordinator.PageId], OcrQueueTaskKind.ImagePage, OcrEngineIds.Mock, OcrAdapterKind.Mock, null,
+                [coordinator.PageId], OcrQueueTaskKind.Pages, OcrEngineIds.Mock, OcrAdapterKind.Mock, null,
                 OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-                OcrQueueTaskState.Queued, 0, 3, null, null, null, null, "/tmp/input.png", null), default);
+                OcrQueueTaskState.Queued, 0, 3, null, null, null, null), default);
         result.Succeeded.Should().BeFalse();
         result.ErrorCode.Should().Be("empty_ocr_output");
     }
@@ -789,18 +811,6 @@ public sealed class OcrQueueSchedulerTests
             return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "test"));
         }
 
-        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            string path, CancellationToken c = default)
-        {
-            return Fail("image", c);
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            int dpi = 200, CancellationToken c = default)
-        {
-            return Fail("rendered", c);
-        }
-
         public Task<Result> CancelRunAsync(OcrRunId r, CancellationToken c = default)
         {
             return Task.FromResult(Result.Success());
@@ -901,18 +911,6 @@ public sealed class OcrQueueSchedulerTests
             PageId page, NormalizedBBox bbox, CancellationToken c = default)
         {
             return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "test"));
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            string path, CancellationToken c = default)
-        {
-            return Task.FromResult(Run());
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            int dpi = 200, CancellationToken c = default)
-        {
-            return Task.FromResult(Run());
         }
 
         public Task<Result<IReadOnlyList<OcrPageResult>>> ListPageResultsAsync(OcrRunId r,

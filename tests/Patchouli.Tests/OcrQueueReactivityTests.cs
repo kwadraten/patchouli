@@ -118,6 +118,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
             (await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
                 OcrQueuePriority.UserStartedDocument)).IsSuccess.Should().BeTrue();
             OcrQueueViewModel queue = main.OcrQueue;
+            queue.StartObserving();
             await queue.RefreshAsync();
             TranslationService translations = new();
             TranslationRunStatus running = Translation();
@@ -203,17 +204,18 @@ public sealed class OcrQueueReactivityTests : IDisposable
             HostServices services = await main.ServicesAsync();
             ItemMetadata item = (await services.Items.CreateItemAsync("document", "Translation source")).Value;
             DocumentInstance document = (await services.Documents.AttachDocumentInstanceAsync(item.ItemId, null,
-                Core.Documents.DocumentInstanceType.PrimaryScan)).Value;
+                DocumentInstanceType.PrimaryScan)).Value;
             await services.Pages.CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
                 Core.Layout.CoordinateBasis.NormalizedPage, null, null, "test", null);
             OcrQueueViewModel queue = main.OcrQueue;
+            queue.StartObserving();
             await queue.RefreshAsync();
             await queue.PauseGlobalCommand.ExecuteAsync();
             TranslationRunStatus run =
                 (await services.TranslationRuns.StartAsync(
                     new TranslationRunStartRequest(document.DocumentInstanceId, []))).Value;
             run.IsPaused.Should().BeTrue();
-            await queue.RefreshAsync();
+            await WaitForQueueAsync(queue, () => queue.ActiveTaskRows.Count == 1);
             queue.ActiveTaskRows.Single().SupportsPause.Should().BeTrue();
             OcrQueuePage page = new() { DataContext = queue };
             Window window = new() { Width = 1440, Height = 600, Content = page };
@@ -234,6 +236,9 @@ public sealed class OcrQueueReactivityTests : IDisposable
                 window.Close();
             }
 
+            // Closing the window detaches the page and suspends the queue observer; re-arm it so
+            // the refreshes below run real snapshot cycles instead of collapsing to dirty marks.
+            queue.StartObserving();
             queue.SelectedTaskType = "OCR";
             await queue.StopCommand.ExecuteAsync();
             await queue.ResumeGlobalCommand.ExecuteAsync();
@@ -244,7 +249,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
             (await services.TranslationRuns.GetAsync(run.RunId)).Value.IsPaused.Should()
                 .BeTrue("global pause survives start");
             await services.TranslationRuns.CancelAsync(run.RunId);
-            await queue.RefreshAsync();
+            await WaitForQueueAsync(queue, () => queue.FinishedTaskRows.Count == 1);
             queue.SelectedTaskType = "OCR";
             queue.HasFinishedTasks.Should().BeTrue("global actions cover hidden task types");
             await queue.ClearFinishedCommand.ExecuteAsync();
@@ -252,6 +257,25 @@ public sealed class OcrQueueReactivityTests : IDisposable
             queue.FinishedTaskRows.Should().BeEmpty();
             return 0;
         }, CancellationToken.None);
+    }
+
+    private static async Task WaitForQueueAsync(OcrQueueViewModel queue, Func<bool> condition)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            // RefreshAsync collapses into a dirty mark while a poll cycle is in flight, so a
+            // single await is not a happens-before edge for the apply; pump and retry.
+            await queue.RefreshAsync();
+            Dispatcher.UIThread.RunJobs();
+            if (DateTimeOffset.UtcNow > deadline)
+            {
+                condition().Should().BeTrue("the queue projection did not reach the expected state");
+                return;
+            }
+
+            await Task.Delay(20);
+        }
     }
 
     private sealed class FakeClipboard : IClipboardService
@@ -306,8 +330,6 @@ public sealed class OcrQueueReactivityTests : IDisposable
             null,
             lastError is not null ? "err_test" : null,
             lastError,
-            null,
-            null,
             null);
     }
 
@@ -508,17 +530,18 @@ public sealed class OcrQueueReactivityTests : IDisposable
             TimeSpan throttle = TimeSpan.FromMilliseconds(50);
             OcrQueueViewModel queue = new(main, timingScheduler, ImmediateScheduler.Instance, throttle);
             queue.ObserveQueue(scheduler);
+            // The page starts suspended: events only mark dirty until the page becomes visible.
+            queue.StartObserving();
 
             int collectionChangedCount = 0;
-            queue.ActiveTaskRows.CollectionChanged += (_, _) => Interlocked.Increment(ref collectionChangedCount);
-
-            TaskCompletionSource<int> activeTaskCountChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            queue.PropertyChanged += (_, e) =>
+            // Resolved from the last CollectionChanged handler: when it runs, every earlier
+            // subscriber (the VM's count/header bindings and the counter above) has completed,
+            // so post-await assertions observe fully-applied state instead of racing mid-dispatch.
+            TaskCompletionSource<int> applyDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            queue.ActiveTaskRows.CollectionChanged += (_, _) =>
             {
-                if (e.PropertyName == nameof(OcrQueueViewModel.ActiveTaskCount) && queue.ActiveTaskCount > 0)
-                {
-                    activeTaskCountChanged.TrySetResult(queue.ActiveTaskCount);
-                }
+                Interlocked.Increment(ref collectionChangedCount);
+                applyDone.TrySetResult(queue.ActiveTaskRows.Count);
             };
 
             // Burst: trigger queue Changed event 5 times rapidly
@@ -531,14 +554,14 @@ public sealed class OcrQueueReactivityTests : IDisposable
 
             // Before buffer window expires, refresh has not executed
             timingScheduler.AdvanceBy(throttle.Ticks - 1);
-            activeTaskCountChanged.Task.IsCompleted.Should().BeFalse();
+            applyDone.Task.IsCompleted.Should().BeFalse();
             queue.ActiveTaskCount.Should().Be(0);
             queue.HasActiveTasks.Should().BeFalse();
             collectionChangedCount.Should().Be(0);
 
             // Advance past buffer window -> single coalesced refresh executes
             timingScheduler.AdvanceBy(10);
-            int count = await activeTaskCountChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            int count = await applyDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             count.Should().Be(1);
             queue.ActiveTaskCount.Should().Be(1);
@@ -554,43 +577,50 @@ public sealed class OcrQueueReactivityTests : IDisposable
     [Fact]
     public async Task Refresh_applies_task_pause_scope_to_task_view_model_is_paused()
     {
-        string path = _settings.CreateDatabasePath("ui-ocr-task-pause");
-        MainWindowViewModel main = WithRuntimeDatabasePath(CreateMainWindow(), path);
-        await main.OpenDatabaseCommand.ExecuteAsync();
-        await main.Library.CreateCommand.ExecuteAsync();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            string path = _settings.CreateDatabasePath("ui-ocr-task-pause");
+            await using MainWindowViewModel main = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
 
-        HostServices services = await main.ServicesAsync();
-        IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
-        await scheduler.PauseAsync(OcrPauseScope.Global);
+            HostServices services = await main.ServicesAsync();
+            IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+            await scheduler.PauseAsync(OcrPauseScope.Global);
 
-        Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
-            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-        enqueued.IsSuccess.Should().BeTrue();
+            Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
+                DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+            enqueued.IsSuccess.Should().BeTrue();
 
-        OcrQueueViewModel queue = main.OcrQueue;
-        await queue.RefreshAsync();
+            OcrQueueViewModel queue = main.OcrQueue;
+            // RefreshAsync is suspended-only-dirty until the page arms observation.
+            queue.StartObserving();
+            await queue.RefreshAsync();
 
-        queue.ActiveTaskRows.Should().ContainSingle();
-        OcrQueueTaskViewModel row = queue.ActiveTaskRows[0];
-        row.IsPaused.Should().BeFalse();
-        row.PauseCommand.CanExecute(null).Should().BeTrue();
-        row.ResumeCommand.CanExecute(null).Should().BeFalse();
+            queue.ActiveTaskRows.Should().ContainSingle();
+            OcrQueueTaskViewModel row = queue.ActiveTaskRows[0];
+            row.IsPaused.Should().BeFalse();
+            row.PauseCommand.CanExecute(null).Should().BeTrue();
+            row.ResumeCommand.CanExecute(null).Should().BeFalse();
 
-        // Pause the task via scheduler
-        await scheduler.PauseAsync(OcrPauseScope.Task, row.TaskId);
-        await queue.RefreshAsync();
+            // Pause the task via scheduler
+            await scheduler.PauseAsync(OcrPauseScope.Task, row.TaskId);
+            await queue.RefreshAsync();
 
-        row.IsPaused.Should().BeTrue();
-        row.PauseCommand.CanExecute(null).Should().BeFalse();
-        row.ResumeCommand.CanExecute(null).Should().BeTrue();
+            row.IsPaused.Should().BeTrue();
+            row.PauseCommand.CanExecute(null).Should().BeFalse();
+            row.ResumeCommand.CanExecute(null).Should().BeTrue();
 
-        // Resume the task via scheduler
-        await scheduler.ResumeAsync(OcrPauseScope.Task, row.TaskId);
-        await queue.RefreshAsync();
+            // Resume the task via scheduler
+            await scheduler.ResumeAsync(OcrPauseScope.Task, row.TaskId);
+            await queue.RefreshAsync();
 
-        row.IsPaused.Should().BeFalse();
-        row.PauseCommand.CanExecute(null).Should().BeTrue();
-        row.ResumeCommand.CanExecute(null).Should().BeFalse();
+            row.IsPaused.Should().BeFalse();
+            row.PauseCommand.CanExecute(null).Should().BeTrue();
+            row.ResumeCommand.CanExecute(null).Should().BeFalse();
+            return 0;
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -626,29 +656,35 @@ public sealed class OcrQueueReactivityTests : IDisposable
     [Fact]
     public async Task Refresh_supports_multiple_tasks_with_same_document_instance_id_without_throwing()
     {
-        string path = _settings.CreateDatabasePath("ui-ocr-multi-tasks-same-doc");
-        MainWindowViewModel main = WithRuntimeDatabasePath(CreateMainWindow(), path);
-        await main.OpenDatabaseCommand.ExecuteAsync();
-        await main.Library.CreateCommand.ExecuteAsync();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            string path = _settings.CreateDatabasePath("ui-ocr-multi-tasks-same-doc");
+            await using MainWindowViewModel main = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
 
-        HostServices services = await main.ServicesAsync();
-        IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
-        await scheduler.PauseAsync(OcrPauseScope.Global);
+            HostServices services = await main.ServicesAsync();
+            IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+            await scheduler.PauseAsync(OcrPauseScope.Global);
 
-        DocumentInstanceId docId = DocumentInstanceId.New();
-        Result<OcrQueueTask> task1 = await scheduler.EnqueueMockPagesAsync(
-            docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-        Result<OcrQueueTask> task2 = await scheduler.EnqueueMockPagesAsync(
-            docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+            DocumentInstanceId docId = DocumentInstanceId.New();
+            Result<OcrQueueTask> task1 = await scheduler.EnqueueMockPagesAsync(
+                docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+            Result<OcrQueueTask> task2 = await scheduler.EnqueueMockPagesAsync(
+                docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
-        task1.IsSuccess.Should().BeTrue();
-        task2.IsSuccess.Should().BeTrue();
+            task1.IsSuccess.Should().BeTrue();
+            task2.IsSuccess.Should().BeTrue();
 
-        OcrQueueViewModel queue = main.OcrQueue;
-        Func<Task> act = () => queue.RefreshAsync();
-        await act.Should().NotThrowAsync();
+            OcrQueueViewModel queue = main.OcrQueue;
+            queue.StartObserving();
+            Func<Task> act = () => queue.RefreshAsync();
+            await act.Should().NotThrowAsync();
 
-        queue.ActiveTaskRows.Should().HaveCount(2);
+            queue.ActiveTaskRows.Should().HaveCount(2);
+            return 0;
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -692,5 +728,52 @@ public sealed class OcrQueueReactivityTests : IDisposable
         OcrTaskProgressReport indexingStage = new(runningTask.TaskId, OcrTaskStage.Indexing, 0.5, null);
         vm.Update(runningTask, "Doc", null, indexingStage, null, now);
         vm.StageText.Should().Be("更新索引");
+    }
+
+    [Fact]
+    [Trait("Category", "ui")]
+    public async Task Task_page_updates_bound_percentage_and_page_region_stage_details()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<int>(async () =>
+        {
+            await using MainWindowViewModel main = CreateMainWindow();
+            OcrQueueTask task = CreateTask();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            OcrQueueTaskViewModel row = new(task, "Live progress", main.OcrQueue, null, null, null, now);
+            main.OcrQueue.AddOcrRowForTesting(row);
+            OcrQueuePage page = new() { DataContext = main.OcrQueue };
+            Window window = new() { Width = 1440, Height = 900, Content = page };
+            window.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                row.Update(task, "Live progress", null,
+                    new OcrTaskProgressReport(task.TaskId, OcrTaskStage.Recognizing, 0.5,
+                        "pages:1/4;page:7;inputs:0/1;phase:region-ocr;units:3/8"), null, now);
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                row.StageText.Should().Be("逐页识别 · 1/4 页 · 当前第 7 页 · 输入 0/1 · 分区识别 3/8");
+                page.GetVisualDescendants().OfType<TextBlock>().Should()
+                    .Contain(text => text.Text == row.StageText).And
+                    .Contain(text => text.Text == row.ProgressPercentText);
+                page.GetVisualDescendants().OfType<ProgressBar>().Should().ContainSingle()
+                    .Which.Value.Should().Be(42.5);
+
+                row.Update(task, "Live progress", null,
+                    new OcrTaskProgressReport(task.TaskId, OcrTaskStage.ParsingTextLayer, 0.5, "pages:2/4"), null, now);
+                row.StageText.Should().Be("解析 PDF 文本层 · 2/4 页");
+                row.Update(task, "Live progress", null,
+                    new OcrTaskProgressReport(task.TaskId, OcrTaskStage.Importing, 0.5, "pages:2/4"), null, now);
+                row.StageText.Should().Be("导入数据库 · 2/4 页");
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
+        }, CancellationToken.None);
     }
 }
