@@ -434,7 +434,7 @@ public sealed class OcrQueueRefreshBoundaryTests(AvaloniaSharedSessionFixture he
             ocrRow.DocumentTitle.Should().Be("Queue dogfood book");
             ocrRow.MetaText.Should().Contain($"引擎 {OcrEngineIds.NdlLite}")
                 .And.Contain("来源 界面·页面")
-                .And.Contain("优先级 用户启动");
+                .And.Contain("优先级 手动提交");
             queue.ActiveTaskRows.Should().Contain(row => row.IsTranslation);
             queue.ActiveTaskRows.Should().Contain(row => row.IsMetadata);
         }, CancellationToken.None);

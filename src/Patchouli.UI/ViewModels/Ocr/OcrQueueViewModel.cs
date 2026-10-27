@@ -2055,7 +2055,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
     {
         OcrQueuePriority.InteractiveCurrentPage => "当前页",
         OcrQueuePriority.InteractiveSelectedPages => "选中页",
-        OcrQueuePriority.UserStartedDocument => "用户启动",
+        OcrQueuePriority.UserStartedDocument => "手动提交",
         OcrQueuePriority.BackgroundRetry => "后台重试",
         OcrQueuePriority.BatchCollection => "批量任务",
         OcrQueuePriority.Maintenance => "维护",

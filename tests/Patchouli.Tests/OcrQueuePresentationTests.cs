@@ -75,7 +75,7 @@ public sealed class OcrQueuePresentationTests : IDisposable
         row.Source.Should().Be(OcrQueueSource.Mcp);
         row.MetaText.Should().Contain($"引擎 {OcrEngineIds.RapidOcr}");
         row.MetaText.Should().Contain("来源 MCP");
-        row.MetaText.Should().Contain("优先级 用户启动");
+        row.MetaText.Should().Contain("优先级 手动提交");
     }
 
     [Fact]
