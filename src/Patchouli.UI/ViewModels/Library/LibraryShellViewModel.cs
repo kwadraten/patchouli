@@ -2838,7 +2838,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
     }
 
-    private static void ScheduleFileAssetGc(HostServices services, IReadOnlyList<FileAssetId> fileAssetIds)
+    /// <summary>
+    /// Fire-and-forget FileAsset GC scheduling shared by item purge and document removal:
+    /// both keep the FileAsset records and hand every payload-referenced asset id here.
+    /// </summary>
+    internal static void ScheduleFileAssetGc(HostServices services, IReadOnlyList<FileAssetId> fileAssetIds)
     {
 #pragma warning disable CS4014
         Task.Run(async () =>

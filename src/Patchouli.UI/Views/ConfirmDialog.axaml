@@ -23,7 +23,7 @@
       <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
         <Button Content="取消" Command="{Binding CancelCommand}" />
         <Button Content="{Binding DiscardText}" Command="{Binding DiscardCommand}"
-                IsVisible="{Binding HasDiscard}" Classes="Danger" />
+                IsVisible="{Binding HasDiscard}" Classes.Danger="{Binding DiscardDanger}" />
         <Button Content="{Binding ConfirmText}" Command="{Binding ConfirmCommand}"
                 Classes.Primary="{Binding ConfirmPrimary}" Classes.Danger="{Binding ConfirmDanger}" />
       </StackPanel>

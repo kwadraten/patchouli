@@ -76,7 +76,11 @@ public sealed class ItemPurgeUiBoundaryTests(AvaloniaSharedSessionFixture headle
             File.Exists(fixture.OriginalPath).Should().BeTrue("purge never deletes the user-owned PDF");
             long uiEntries = UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite) - before;
             uiEntries.Should().Be(0);
-            fixture.Main.Shell.Items.Should().NotContain(item => item.ItemId == originalItemId);
+            // The command's own refresh may be superseded by the buffered revision-stream
+            // refresh; whichever publishes last removes the row. Wait for that convergence
+            // instead of asserting the racy instant right after the command completes.
+            await WaitUntilAsync(() =>
+                !fixture.Main.Shell.Items.Any(item => item.ItemId == originalItemId));
             await WriteHeartbeatEvidenceAsync("blocked-substitutes", new
             {
                 ReportHeartbeat = reportHeartbeat, DeleteHeartbeat = deleteHeartbeat, UiSqliteEntries = uiEntries

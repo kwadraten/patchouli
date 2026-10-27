@@ -70,6 +70,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private IReadOnlyList<DocumentBox> _loadedBoxes = [];
     private IReadOnlyList<Page> _pages = [];
 
+    // The document this workspace was loaded for. The library row's DocumentInstanceId is
+    // rewritten when the instance is removed and a sibling is promoted, so revision matching
+    // must keep tracking the captured id to notice the deletion.
+    private DocumentInstanceId? _loadedDocumentInstanceId;
+
     private readonly Dictionary<DocumentBoxId, (int PageIndex, DocumentBoxId HeadBoxId)>
         _crossPageContinuationSources = [];
 
@@ -2210,6 +2215,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         PageIndex = 0;
         _lastNavigationDirection = 0;
         _renderGeneration++;
+        _loadedDocumentInstanceId = TryGetDocumentInstanceId(out DocumentInstanceId openedId)
+            ? openedId
+            : null;
         await RenderCurrentPageAsync();
         await EnsureChapterMapLoadedAsync();
     }
@@ -2264,6 +2272,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _chapterMapSubscription?.Dispose();
         _chapterMapSubscription = null;
         _chapterMapRevisions = null;
+        _loadedDocumentInstanceId = null;
         Status = "选择题录后可预览 PDF。";
     }
 
@@ -2861,16 +2870,25 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task ReleaseDocumentSessionAsync()
     {
+        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            return;
+        }
+
+        await ReleaseDocumentSessionAsync(DocumentInstanceId.Parse(Item.DocumentInstanceId));
+    }
+
+    /// <summary>
+    /// Releases the render session for an explicit document. The row's DocumentInstanceId may
+    /// already have been rewritten to a promoted sibling when a removal is being handled, so
+    /// the deleted-workspace teardown passes its captured id here instead.
+    /// </summary>
+    private async Task ReleaseDocumentSessionAsync(DocumentInstanceId documentId)
+    {
         try
         {
-            if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
-            {
-                return;
-            }
-
             if (_documentServices is { } services)
             {
-                DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
                 await Task.Run(() => services.PageRenders.ReleaseDocumentSessionAsync(documentId));
             }
         }
@@ -3573,7 +3591,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private void OnLibraryChangeSet(LibraryChangeSet changeSet)
     {
-        if (!TryGetDocumentInstanceId(out DocumentInstanceId documentId) ||
+        DocumentInstanceId? openDocument = _loadedDocumentInstanceId
+                                           ?? (TryGetDocumentInstanceId(out DocumentInstanceId liveId) ? liveId : null);
+        if (openDocument is not { } documentId ||
             !changeSet.DocumentInstanceIds.Contains(documentId))
         {
             return;
@@ -3582,7 +3602,30 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         // Reload navigation preserving the current page, tab, and chapter expansion. The load
         // marshals its UI updates back to the UI thread itself.
         Dispatcher.UIThread.InvokeAsync(() =>
-            LoadChapterMapAsync().Observe(nameof(PdfWorkspaceViewModel), "chapter-map-reload"));
+            ReloadAfterLibraryChangeAsync(documentId)
+                .Observe(nameof(PdfWorkspaceViewModel), "document-change-reload"));
+    }
+
+    /// <summary>
+    /// A document removal publishes the same change-set shape as a content update. When the
+    /// instance this workspace was loaded for is gone, the open tab must stop using it: clear
+    /// the rendered payload and surface the deletion instead of silently rendering a promoted
+    /// sibling or a stale page list.
+    /// </summary>
+    private async Task ReloadAfterLibraryChangeAsync(DocumentInstanceId documentId)
+    {
+        HostServices services = await _main.ServicesAsync();
+        Result<DocumentInstance> instance =
+            await Task.Run(() => services.Documents.GetDocumentInstanceAsync(documentId));
+        if (instance.IsFailure && instance.ErrorCode == AppErrorCodes.NotFound)
+        {
+            await ReleaseDocumentSessionAsync(documentId);
+            Clear();
+            Status = "该文档已被删除。";
+            return;
+        }
+
+        await LoadChapterMapAsync();
     }
 
     private async Task LoadChapterMapAsync()

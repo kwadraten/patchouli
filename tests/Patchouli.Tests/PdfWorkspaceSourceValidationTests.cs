@@ -613,6 +613,45 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             .And.Contain("ClearSourceValidation");
     }
 
+    [Fact]
+    public async Task Removing_the_open_document_clears_the_workspace_and_marks_it_deleted()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await DispatchAndShutdownAsync(session, async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-doc-removed"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            HostServices services = await vm.ServicesAsync();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+            await workspace.LoadAsync();
+            workspace.PageCount.Should().BeGreaterThan(0);
+            DocumentInstanceId documentId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
+
+            Result<DocumentInstanceRemoval> removed =
+                await services.Documents.RemoveDocumentInstanceAsync(
+                    ItemId.Parse(item.ItemId), documentId);
+            removed.IsSuccess.Should().BeTrue(removed.ErrorMessage);
+
+            // The library-revision subscription tears the workspace down on the UI thread.
+            await WaitUntilAsync(() => workspace.Status == "该文档已被删除。");
+            workspace.PageCount.Should().Be(0);
+            workspace.Image.Should().BeNull();
+            workspace.IsEditMode.Should().BeFalse();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        while (!condition())
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
     private MainWindowViewModel CreateMainWindow(string databasePath)
     {
         return _mainWindow = new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path)

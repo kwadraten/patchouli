@@ -302,7 +302,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         }
     }
 
-    public async Task<Result> RemoveDocumentInstanceAsync(
+    public async Task<Result<DocumentInstanceRemoval>> RemoveDocumentInstanceAsync(
         ItemId itemId,
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
@@ -321,7 +321,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
             if (itemExists == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(AppErrorCodes.NotFound, "Item was not found.");
+                return Result<DocumentInstanceRemoval>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
             DocumentInstanceRow? existing = await connection.QuerySingleOrDefaultAsync<DocumentInstanceRow>(
@@ -336,9 +336,38 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
             if (existing is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(AppErrorCodes.InvalidState,
+                return Result<DocumentInstanceRemoval>.Failure(AppErrorCodes.InvalidState,
                     "Document instance does not belong to the item.");
             }
+
+            string[] documentIds = [documentInstanceId.ToString()];
+            string[] pageIds = await DocumentPayloadCleanup.ListPageIdsAsync(
+                connection, transaction, documentIds, cancellationToken);
+
+            // A queued or running OCR run would keep writing payload for the instance after it
+            // is gone; the caller must cancel or finish it first. Translation runs are volatile
+            // host state and are refused at the host/UI boundary instead.
+            int activeOcrCount = await DocumentPayloadCleanup.CountActiveOcrRunsAsync(
+                connection, transaction, documentIds, cancellationToken);
+            if (activeOcrCount > 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<DocumentInstanceRemoval>.Failure(
+                    AppErrorCodes.InvalidState,
+                    "Cannot remove a document instance while OCR runs are pending or running.");
+            }
+
+            FileAssetId[] fileAssetIds = await DocumentPayloadCleanup.ListReferencedFileAssetIdsAsync(
+                connection, transaction, documentIds, cancellationToken);
+
+            await DocumentPayloadCleanup.EnsureFtsCacheReadyAsync(
+                connection, transaction, cancellationToken);
+            await DocumentPayloadCleanup.DeleteOcrHistoryAsync(
+                connection, transaction, documentIds, cancellationToken);
+            await DocumentPayloadCleanup.DeleteSearchIndexAsync(
+                connection, transaction, documentIds, pageIds, cancellationToken);
+            await DocumentPayloadCleanup.DeleteDocumentHistoryAsync(
+                connection, transaction, documentIds, pageIds, cancellationToken);
 
             await connection.ExecuteAsync(
                 """
@@ -387,12 +416,12 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+                return Result<DocumentInstanceRemoval>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
             }
 
             await transaction.CommitAsync(cancellationToken);
             PublishRevision(revision.Value);
-            return Result.Success();
+            return Result<DocumentInstanceRemoval>.Success(new DocumentInstanceRemoval(fileAssetIds));
         }
         catch (OperationCanceledException)
         {
@@ -401,7 +430,8 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.document-instance"))
         {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<DocumentInstanceRemoval>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 

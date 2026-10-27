@@ -1,3 +1,4 @@
+using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
@@ -5,7 +6,9 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.UI;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
 using Patchouli.Host.Composition;
 
@@ -203,7 +206,8 @@ public sealed class ItemEditorStagingTests : IDisposable
         string path = TempDbPath("remove-file");
         try
         {
-            MainWindowViewModel main = await OpenMainAsync(path);
+            ConfirmQueueDialogs dialogs = new();
+            MainWindowViewModel main = await OpenMainAsync(path, dialogs);
             HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging file removal"));
@@ -231,6 +235,165 @@ public sealed class ItemEditorStagingTests : IDisposable
             await main.ItemEditor.SaveCommand.ExecuteAsync();
             (await services.Documents.ListDocumentInstancesForItemAsync(created.Value.ItemId)).Value
                 .Should().BeEmpty();
+            // Two mark-time confirmations plus the save-time re-confirmation.
+            dialogs.Confirmations.Should().HaveCount(3);
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Linked_file_remove_requires_a_dangerous_confirmation()
+    {
+        string path = TempDbPath("remove-confirm");
+        try
+        {
+            ConfirmQueueDialogs dialogs = new(ConfirmDialogResult.Cancel);
+            MainWindowViewModel main = await OpenMainAsync(path, dialogs);
+            HostServices services = await main.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(
+                new CreateItemRequest("book", "Confirm removal"));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            Result<DocumentInstance> attached =
+                await services.Documents.AttachDocumentInstanceAsync(
+                    created.Value.ItemId,
+                    null,
+                    DocumentInstanceType.PrimaryScan,
+                    "scan.pdf",
+                    true);
+            attached.IsSuccess.Should().BeTrue(attached.ErrorMessage);
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+
+            await main.ItemEditor.LinkedFiles.Single().RemoveCommand.ExecuteAsync();
+
+            dialogs.Confirmations.Should().ContainSingle();
+            ConfirmDialogViewModel confirmation = dialogs.Confirmations.Single();
+            confirmation.ConfirmDanger.Should().BeTrue();
+            confirmation.Message.Should().Contain("永久删除").And.Contain("原始文件不会被删除")
+                .And.Contain("合并");
+            // Cancelling the mark-time confirmation stages nothing at all.
+            main.ItemEditor.LinkedFiles.Should().ContainSingle();
+            main.ItemEditor.HasUnsavedChanges.Should().BeFalse();
+            (await services.Documents.ListDocumentInstancesForItemAsync(created.Value.ItemId)).Value
+                .Should().ContainSingle();
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Save_with_staged_removal_confirms_again_and_cancelling_writes_nothing()
+    {
+        string path = TempDbPath("remove-save-cancel");
+        try
+        {
+            ConfirmQueueDialogs dialogs = new(ConfirmDialogResult.Confirm, ConfirmDialogResult.Cancel);
+            MainWindowViewModel main = await OpenMainAsync(path, dialogs);
+            HostServices services = await main.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(
+                new CreateItemRequest("book", "Cancel save"));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            await services.Documents.AttachDocumentInstanceAsync(
+                created.Value.ItemId,
+                null,
+                DocumentInstanceType.PrimaryScan,
+                "scan.pdf",
+                true);
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+            await main.ItemEditor.LinkedFiles.Single().RemoveCommand.ExecuteAsync();
+            main.ItemEditor.Title = "Edited but unsaved";
+
+            await main.ItemEditor.SaveCommand.ExecuteAsync();
+
+            dialogs.Confirmations.Should().HaveCount(2);
+            dialogs.Confirmations[1].ConfirmDanger.Should().BeTrue();
+            dialogs.Confirmations[1].Message.Should().Contain("永久删除").And.Contain("保留文档");
+            // A declined destructive confirmation writes nothing: no deletion and no metadata save.
+            (await services.Documents.ListDocumentInstancesForItemAsync(created.Value.ItemId)).Value
+                .Should().ContainSingle();
+            (await services.Items.GetItemAsync(created.Value.ItemId)).Value.Title.Should().Be("Cancel save");
+            main.ItemEditor.Status.Should().Contain("删除未执行");
+            main.ItemEditor.HasUnsavedChanges.Should().BeTrue();
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Save_with_staged_removal_keep_documents_choice_unstages_and_saves_the_rest()
+    {
+        string path = TempDbPath("remove-save-keep");
+        try
+        {
+            ConfirmQueueDialogs dialogs = new(ConfirmDialogResult.Confirm, ConfirmDialogResult.Discard);
+            MainWindowViewModel main = await OpenMainAsync(path, dialogs);
+            HostServices services = await main.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(
+                new CreateItemRequest("book", "Keep documents"));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            await services.Documents.AttachDocumentInstanceAsync(
+                created.Value.ItemId,
+                null,
+                DocumentInstanceType.PrimaryScan,
+                "scan.pdf",
+                true);
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+            await main.ItemEditor.LinkedFiles.Single().RemoveCommand.ExecuteAsync();
+            main.ItemEditor.Title = "Kept title";
+
+            await main.ItemEditor.SaveCommand.ExecuteAsync();
+
+            dialogs.Confirmations.Should().HaveCount(2);
+            // "保留文档" unstages only the marks: the document survives and the save proceeds.
+            (await services.Documents.ListDocumentInstancesForItemAsync(created.Value.ItemId)).Value
+                .Should().ContainSingle();
+            (await services.Items.GetItemAsync(created.Value.ItemId)).Value.Title.Should().Be("Kept title");
+            main.ItemEditor.LinkedFiles.Should().ContainSingle();
+            main.ItemEditor.Status.Should().Contain("已保存");
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Save_with_staged_removal_reports_a_readable_reason_when_ocr_is_running()
+    {
+        string path = TempDbPath("remove-ocr-busy");
+        try
+        {
+            ConfirmQueueDialogs dialogs = new();
+            MainWindowViewModel main = await OpenMainAsync(path, dialogs);
+            HostServices services = await main.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(
+                new CreateItemRequest("book", "OCR busy"));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            Result<DocumentInstance> attached = await services.Documents.AttachDocumentInstanceAsync(
+                created.Value.ItemId,
+                null,
+                DocumentInstanceType.PrimaryScan,
+                "scan.pdf",
+                true);
+            attached.IsSuccess.Should().BeTrue(attached.ErrorMessage);
+            await InsertPendingOcrRunAsync(services, attached.Value.DocumentInstanceId);
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+            await main.ItemEditor.LinkedFiles.Single().RemoveCommand.ExecuteAsync();
+
+            await main.ItemEditor.SaveCommand.ExecuteAsync();
+
+            // The staged mark survives the refused save and the failure names a reason a
+            // person can act on instead of a raw database error.
+            main.ItemEditor.Status.Should().Contain("部分暂存操作失败").And.Contain("OCR");
+            main.ItemEditor.HasUnsavedChanges.Should().BeTrue();
+            (await services.Documents.ListDocumentInstancesForItemAsync(created.Value.ItemId)).Value
+                .Should().ContainSingle();
         }
         finally
         {
@@ -355,9 +518,12 @@ public sealed class ItemEditorStagingTests : IDisposable
         _settings.Dispose();
     }
 
-    private async Task<MainWindowViewModel> OpenMainAsync(string path)
+    private async Task<MainWindowViewModel> OpenMainAsync(string path, IDialogService? dialogs = null)
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
+        MainWindowViewModel main = new(dialogs: dialogs, settingsPath: _settings.Path)
+        {
+            RuntimeDatabasePath = path
+        };
         await main.OpenDatabaseCommand.ExecuteAsync();
         await main.Library.CreateCommand.ExecuteAsync();
         return main;
@@ -366,6 +532,34 @@ public sealed class ItemEditorStagingTests : IDisposable
     private static string TempDbPath(string tag)
     {
         return Path.Combine(Path.GetTempPath(), $"item-editor-staging-{tag}-{Guid.NewGuid():N}.sqlite");
+    }
+
+    private static async Task InsertPendingOcrRunAsync(HostServices services, DocumentInstanceId documentId)
+    {
+        string presetId = OcrPresetId.New().ToString();
+        string presetVersionId = OcrPresetVersionId.New().ToString();
+        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            """
+            insert into ocr_presets (preset_id, library_id, name, description, archived, current_version_id, created_at, updated_at)
+            values (@PresetId, (select library_id from library_metadata limit 1), 'Test', 'Test', 0, @PresetVersionId, @Now, @Now);
+
+            insert into ocr_preset_versions (preset_version_id, preset_id, engine_id, model_id, parameters_json, apply_on_success, created_at)
+            values (@PresetVersionId, @PresetId, 'mock', 'mock-default', '{}', 0, @Now);
+
+            insert into ocr_runs (ocr_run_id, document_instance_id, preset_id, preset_version_id, engine_id, model_id, parameters_snapshot_json, state, created_at, updated_at)
+            values (@RunId, @DocumentId, @PresetId, @PresetVersionId, 'mock', 'mock-default', '{}', @Pending, @Now, @Now);
+            """,
+            new
+            {
+                PresetId = presetId,
+                PresetVersionId = presetVersionId,
+                RunId = OcrRunId.New().ToString(),
+                DocumentId = documentId.ToString(),
+                Pending = Ocr.OcrRunState.Pending,
+                Now = DateTimeOffset.UtcNow.ToString("O")
+            });
     }
 
     private static void CleanupDb(string path)
@@ -387,6 +581,36 @@ public sealed class ItemEditorStagingTests : IDisposable
                 Thread.Sleep(50);
                 SqliteConnection.ClearAllPools();
             }
+        }
+    }
+
+    /// <summary>
+    /// Records every <see cref="ConfirmDialogViewModel"/> and answers them in queued order;
+    /// an exhausted queue keeps confirming so a test only lists the choices it cares about.
+    /// </summary>
+    private sealed class ConfirmQueueDialogs(params ConfirmDialogResult[] choices) : IDialogService
+    {
+        private readonly Queue<ConfirmDialogResult> _choices = new(choices);
+
+        public List<ConfirmDialogViewModel> Confirmations { get; } = [];
+
+        public Task ShowDialogAsync(object viewModel)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+        {
+            if (viewModel is ConfirmDialogViewModel confirm)
+            {
+                Confirmations.Add(confirm);
+                ConfirmDialogResult choice = _choices.Count > 0
+                    ? _choices.Dequeue()
+                    : ConfirmDialogResult.Confirm;
+                return Task.FromResult((TResult?)(object?)choice);
+            }
+
+            return Task.FromResult(default(TResult?));
         }
     }
 }

@@ -9,11 +9,10 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Core.Search;
 using Patchouli.Ocr;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
-using Patchouli.Infrastructure.Search;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Snapshots;
 
 namespace Patchouli.Infrastructure.Bibliography;
@@ -319,29 +318,11 @@ public sealed class ItemPurgeService : IItemPurgeService
                 new { ItemIds = itemIdStrings },
                 transaction)).ToArray();
 
-            string[] pageIds = documentIds.Length == 0
-                ? []
-                : (await connection.QueryAsync<string>(
-                    "select page_id from pages where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction)).ToArray();
+            string[] pageIds = await DocumentPayloadCleanup.ListPageIdsAsync(
+                connection, transaction, documentIds, cancellationToken);
 
-            int activeOcrCount = documentIds.Length == 0
-                ? 0
-                : await connection.ExecuteScalarAsync<int>(
-                    """
-                    select count(1)
-                    from ocr_runs
-                    where document_instance_id in @DocumentIds
-                      and state in (@Pending, @Running);
-                    """,
-                    new
-                    {
-                        DocumentIds = documentIds,
-                        Pending = OcrRunState.Pending,
-                        Running = OcrRunState.Running
-                    },
-                    transaction);
+            int activeOcrCount = await DocumentPayloadCleanup.CountActiveOcrRunsAsync(
+                connection, transaction, documentIds, cancellationToken);
             if (activeOcrCount > 0)
             {
                 return Result.Failure(
@@ -355,96 +336,27 @@ public sealed class ItemPurgeService : IItemPurgeService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 long ftsStarted = StartPhase(progress, "fts_prepare", "正在准备全文索引缓存...");
-                bool rebuilt = await SearchFtsCacheWriter.EnsureReadyAsync(connection, transaction, cancellationToken);
+                bool rebuilt = await DocumentPayloadCleanup.EnsureFtsCacheReadyAsync(
+                    connection, transaction, cancellationToken);
                 await FinishPhaseAsync(progress, "fts_prepare", rebuilt ? "全文索引缓存已重建。" : "全文索引缓存已就绪，无需重建。", ftsStarted,
                     rebuilt);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 long ocrStarted = StartPhase(progress, "ocr_history_delete", "正在删除 OCR 识别和采纳记录...");
-
-                await connection.ExecuteAsync(
-                    """
-                    delete from ocr_candidate_adoptions
-                    where document_instance_id in @DocumentIds
-                       or ocr_run_id in (
-                           select ocr_run_id from ocr_runs where document_instance_id in @DocumentIds);
-                    """,
-                    new { DocumentIds = documentIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    """
-                    delete from ocr_page_results
-                    where ocr_run_id in (
-                        select ocr_run_id from ocr_runs where document_instance_id in @DocumentIds);
-                    """,
-                    new { DocumentIds = documentIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from ocr_runs where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
+                await DocumentPayloadCleanup.DeleteOcrHistoryAsync(
+                    connection, transaction, documentIds, cancellationToken);
                 await FinishPhaseAsync(progress, "ocr_history_delete", "OCR 识别和采纳记录已清理。", ocrStarted);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 long ftsDeleteStarted = StartPhase(progress, "fts_delete", "正在清理全文索引和搜索单元...");
-                await SearchFtsCacheWriter.DeleteForDocumentInstancesAsync(
-                    connection, transaction, documentIds, cancellationToken);
-
-                await connection.ExecuteAsync(
-                    "delete from search_index_status where (scope_type = @DocumentScope and scope_id in @DocumentIds) or (scope_type = @PageScope and scope_id in @PageIds);",
-                    new
-                    {
-                        DocumentScope = SearchIndexScopeType.DocumentInstance,
-                        PageScope = SearchIndexScopeType.Page,
-                        DocumentIds = documentIds,
-                        PageIds = pageIds
-                    },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from search_units where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
+                await DocumentPayloadCleanup.DeleteSearchIndexAsync(
+                    connection, transaction, documentIds, pageIds, cancellationToken);
                 await FinishPhaseAsync(progress, "fts_delete", "全文索引和搜索单元已清理。", ftsDeleteStarted);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 long historyStarted = StartPhase(progress, "document_history_delete", "正在删除页面、译文、框树和修订历史...");
-                await connection.ExecuteAsync(
-                    "delete from document_commit_pages where commit_id in (select commit_id from document_commits where document_instance_id in @DocumentIds) or page_id in @PageIds;",
-                    new { DocumentIds = documentIds, PageIds = pageIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from document_commits where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from translation_boxes where page_id in @PageIds;",
-                    new { PageIds = pageIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from page_translations where page_id in @PageIds;",
-                    new { PageIds = pageIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from document_boxes where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from document_tree_revisions where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
-
-                await connection.ExecuteAsync(
-                    "delete from pages where document_instance_id in @DocumentIds;",
-                    new { DocumentIds = documentIds },
-                    transaction);
+                await DocumentPayloadCleanup.DeleteDocumentHistoryAsync(
+                    connection, transaction, documentIds, pageIds, cancellationToken);
                 await FinishPhaseAsync(progress, "document_history_delete", "页面及正文历史已清理。", historyStarted);
             }
 

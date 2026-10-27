@@ -545,7 +545,7 @@ public sealed class BibliographicCoreTests
                 null,
                 DocumentInstanceType.AlternateScan);
 
-        Result removed = await context.DocumentInstanceService.RemoveDocumentInstanceAsync(
+        Result<DocumentInstanceRemoval> removed = await context.DocumentInstanceService.RemoveDocumentInstanceAsync(
             item.Value.ItemId,
             first.Value.DocumentInstanceId);
         Result<IReadOnlyList<DocumentInstance>> instances =

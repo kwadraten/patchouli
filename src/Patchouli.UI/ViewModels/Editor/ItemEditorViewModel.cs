@@ -8,6 +8,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Core.Translation;
 using System.Collections.Specialized;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -205,7 +206,8 @@ public sealed class LinkedDocumentInstanceItemViewModel : ViewModelBase
         IsPrimary = document.IsPrimary;
         SetPrimaryCommand = new AsyncCommand(() => setPrimary(DocumentInstanceId));
         RemoveCommand = new AsyncCommand(() => remove(DocumentInstanceId));
-        RemoveLabel = "移除";
+        // The button deletes the document instance payload on save, not just the link.
+        RemoveLabel = "删除文档";
     }
 
     /// <summary>A staged file registration shown in the linked-files card until the item is saved.</summary>
@@ -1322,6 +1324,32 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         List<string> stagedOperationFailures = [];
+        if (_pendingDocumentRemovals.Count > 0)
+        {
+            // The marks may have been staged long before this save, so re-confirm immediately
+            // before any write: cancelling must not produce a single write, while keeping the
+            // documents unstages only the removal marks and saves the rest.
+            ConfirmDialogResult? removalChoice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+                new ConfirmDialogViewModel(
+                    "确认删除文档",
+                    $"保存题录将永久删除 {_pendingDocumentRemovals.Count} 个已标记移除的文档及其全部页面、OCR 文本、译文、修订与提交历史和检索数据，无法撤销。\n\n原始文件不会被删除。若想把文件转移给其他题录请改用题录合并；若想保留这些文档请选择“保留文档”。",
+                    "永久删除",
+                    "保留文档",
+                    true,
+                    false));
+            switch (removalChoice)
+            {
+                case ConfirmDialogResult.Confirm:
+                    break;
+                case ConfirmDialogResult.Discard:
+                    _pendingDocumentRemovals.Clear();
+                    break;
+                default:
+                    Status = "已取消保存，文档删除未执行。";
+                    return;
+            }
+        }
+
         if (_itemId is null)
         {
             CreateItemRequest request = new(
@@ -1960,22 +1988,33 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task StageDocumentRemovalAsync(DocumentInstanceId documentInstanceId)
     {
-        if (_itemId is null)
+        if (_itemId is null || _pendingDocumentRemovals.Contains(documentInstanceId))
         {
             return;
         }
 
-        if (!_pendingDocumentRemovals.Contains(documentInstanceId))
+        LinkedDocumentInstanceItemViewModel? linked =
+            LinkedFiles.FirstOrDefault(file => file.DocumentInstanceId == documentInstanceId);
+        string displayName = linked?.DisplayName ?? documentInstanceId.ToString();
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "标记移除文档",
+                $"确定要标记移除“{displayName}”吗？\n\n保存题录时，该文档的全部页面、OCR 文本、译文、修订与提交历史以及检索数据将被永久删除，无法撤销。原始文件不会被删除，可以再次关联（将生成新的文档实例）并重新识别。\n\n如果只想把文件转移给另一个题录，请取消后使用题录合并。",
+                "标记移除",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
         {
-            _pendingDocumentRemovals.Add(documentInstanceId);
+            return;
         }
+
+        _pendingDocumentRemovals.Add(documentInstanceId);
 
         if (_pendingPrimaryDocumentId == documentInstanceId)
         {
             _pendingPrimaryDocumentId = null;
         }
 
-        Status = "关联文件已标记移除，保存题录时生效；放弃更改可恢复。";
+        Status = "文档已标记移除，保存题录时永久删除其全部内容；放弃更改可恢复。";
         Raise(nameof(Status));
         _main.Report(Status);
         await RefreshLinkedFilesAsync();
@@ -2680,10 +2719,22 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
         if (removals.Length > 0)
         {
             DocumentRemovalBatch removed = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions("移除关联文件", "正在永久删除文档页面树及其历史...", true),
+                new ModalOperationOptions("删除文档", "正在永久删除文档页面树及其全部历史...", true),
                 async context =>
                 {
-                    List<(DocumentInstanceId Id, Result Result)> outcomes = [];
+                    // Translation runs are volatile host state: one still running would keep
+                    // writing page_translations for a document that is about to disappear.
+                    HashSet<DocumentInstanceId> translationBusy = [];
+                    Result<IReadOnlyList<TranslationRunStatus>> translationRuns =
+                        await services.TranslationRuns.ListAsync(context.CancellationToken);
+                    if (translationRuns.IsSuccess)
+                    {
+                        translationBusy.UnionWith(translationRuns.Value
+                            .Where(run => run.State == TranslationRunLifecycle.Running)
+                            .Select(run => run.DocumentInstanceId));
+                    }
+
+                    List<(DocumentInstanceId Id, Result<DocumentInstanceRemoval> Result)> outcomes = [];
                     bool cancelled = false;
                     foreach (DocumentInstanceId documentId in removals)
                     {
@@ -2695,10 +2746,13 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
 
                         try
                         {
-                            Result result = await services.Documents.RemoveDocumentInstanceAsync(itemId, documentId,
-                                context.CancellationToken);
+                            Result<DocumentInstanceRemoval> result = translationBusy.Contains(documentId)
+                                ? Result<DocumentInstanceRemoval>.Failure(AppErrorCodes.InvalidState,
+                                    "该文档存在正在运行的翻译任务，请先取消或等待其完成。")
+                                : await services.Documents.RemoveDocumentInstanceAsync(itemId, documentId,
+                                    context.CancellationToken);
                             outcomes.Add((documentId, result));
-                            await context.ReportAsync(outcomes.Count, removals.Length, "正在移除关联文件...");
+                            await context.ReportAsync(outcomes.Count, removals.Length, "正在删除文档...");
                         }
                         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
                         {
@@ -2714,7 +2768,19 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
                 return failures;
             }
 
-            foreach ((DocumentInstanceId id, Result result) in removed.Outcomes)
+            FileAssetId[] removedFileAssetIds = removed.Outcomes
+                .Where(outcome => outcome.Result.IsSuccess)
+                .SelectMany(outcome => outcome.Result.Value.FileAssetIds)
+                .Distinct()
+                .ToArray();
+            if (removedFileAssetIds.Length > 0)
+            {
+                // Removal keeps the original FileAsset records; schedule them as GC candidates
+                // exactly like permanent item purge does.
+                LibraryShellViewModel.ScheduleFileAssetGc(services, removedFileAssetIds);
+            }
+
+            foreach ((DocumentInstanceId id, Result<DocumentInstanceRemoval> result) in removed.Outcomes)
             {
                 if (result.IsSuccess)
                 {
@@ -2722,13 +2788,13 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
                 }
                 else
                 {
-                    failures.Add($"移除关联文件：{result.ErrorMessage}");
+                    failures.Add($"删除文档：{result.ErrorMessage}");
                 }
             }
 
             if (removed.IsCancelled)
             {
-                failures.Add("移除关联文件已取消，未完成的移除仍保留为待保存更改。");
+                failures.Add("删除文档已取消，未完成的移除仍保留为待保存更改。");
             }
         }
 
@@ -2791,7 +2857,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
     }
 
     private sealed record DocumentRemovalBatch(
-        IReadOnlyList<(DocumentInstanceId Id, Result Result)> Outcomes,
+        IReadOnlyList<(DocumentInstanceId Id, Result<DocumentInstanceRemoval> Result)> Outcomes,
         bool IsCancelled) : IOperationOutcome
     {
         public bool IsSuccess => !IsCancelled && Outcomes.All(outcome => outcome.Result.IsSuccess);

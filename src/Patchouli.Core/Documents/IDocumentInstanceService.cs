@@ -26,7 +26,15 @@ public interface IDocumentInstanceService
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Result> RemoveDocumentInstanceAsync(
+    /// <summary>
+    /// Permanently deletes the document instance and its entire payload: pages, page maps,
+    /// document boxes, committed and working tree revisions, document commits, page
+    /// translations, OCR runs/results/adoptions, search units and FTS cache entries. The
+    /// source FileAsset is never deleted; the returned removal lists it for GC candidate
+    /// scheduling. Refuses <see cref="AppErrorCodes.InvalidState"/> while OCR runs are
+    /// pending or running for the instance.
+    /// </summary>
+    Task<Result<DocumentInstanceRemoval>> RemoveDocumentInstanceAsync(
         ItemId itemId,
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
