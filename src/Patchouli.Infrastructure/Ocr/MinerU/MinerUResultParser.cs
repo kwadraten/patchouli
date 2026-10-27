@@ -69,7 +69,7 @@ internal sealed class MinerUResultParser
             : new MinerUContentListPage(1, 1000, 1000, []);
         (OcrPageCandidate pageCandidate, IReadOnlyList<OcrDiagnostic> diagnostics) =
             new MinerUDocumentTreeCandidateMapper().MapImagePage(
-                contentPage, page, prepared.ImageContext.RegionBBox);
+                contentPage, page, prepared.ImageContext.RegionBBox, contentList.Value.ContinuationSemantics);
         return Result<OcrDocumentTreeCandidate>.Success(
             new OcrDocumentTreeCandidate([pageCandidate], diagnostics));
     }
@@ -83,6 +83,18 @@ internal sealed class MinerUResultParser
             if (middleJson is not null)
             {
                 return Result<MinerUContentListDocument>.Success(MinerUMiddleJsonParser.Parse(middleJson));
+            }
+
+            // v3 layout.json 是中间产物：para_blocks 的 lines_deleted 显式标记与
+            // preproc_blocks 的各框原文足以落地 v4 模型，优先于信息更少的 content_list 投影。
+            string? layoutJson = reader.ReadFileContent("layout.json");
+            if (layoutJson is not null)
+            {
+                MinerUContentListDocument? layout = MinerULayoutJsonParser.Parse(layoutJson);
+                if (layout is not null)
+                {
+                    return Result<MinerUContentListDocument>.Success(layout);
+                }
             }
 
             string? contentListJson = reader.ReadFileContent("_content_list_v2.json")

@@ -475,7 +475,7 @@ public sealed class MinerUDocumentTreeTests
     }
 
     [Fact]
-    public async Task Importer_stages_typed_boxes_suppresses_auxiliary_and_builds_gfm_table()
+    public async Task Importer_stages_typed_boxes_suppresses_auxiliary_and_builds_html_table()
     {
         await using Context context = await Context.CreateAsync();
         string zip = CreateZip("_content_list_v2.json", """
@@ -504,8 +504,485 @@ public sealed class MinerUDocumentTreeTests
                 DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Should().Contain(box => box.BoxType == DocumentBoxType.Title && box.HeadingLevel == 2);
             boxes.Should().Contain(box => box.BoxType == DocumentBoxType.Header && box.Suppressed);
-            boxes.Single(box => box.BoxType == DocumentBoxType.Table).Payload.Should().BeOfType<TableBoxPayload>()
-                .Which.Markdown.Should().Contain("| Name | Value |").And.Contain("| Pages | 12 |");
+            TableBoxPayload table = boxes.Single(box => box.BoxType == DocumentBoxType.Table).Payload
+                .Should().BeOfType<TableBoxPayload>().Subject;
+            table.ContentFormat.Should().Be(TableContentFormat.Html);
+            table.Markdown.Should().BeEmpty();
+            table.Html.Should().Be(
+                "<table><tr><td>Name</td><td>Value</td></tr><tr><td>Pages</td><td>12</td></tr></table>");
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_converts_v3_spanned_table_cells_once_to_authoritative_html()
+    {
+        // 回归：v3 content_list 的含合并格单元格网格此前因无法表示为 GFM 而整体拒绝导入；
+        // 现在在边界一次转换为权威 HTML（v4 存储模型），不再绕道 GFM。
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          {"type":"table","page_idx":0,"bbox":[0,200,800,500],"cells":[
+                                                            {"row_index":0,"col_index":0,"row_span":2,"is_header":true,"text":"Merged"},
+                                                            {"row_index":0,"col_index":1,"col_span":2,"is_header":true,"text":"Period"},
+                                                            {"row_index":1,"col_index":1,"text":"2024"},
+                                                            {"row_index":1,"col_index":2,"text":"2025"},
+                                                            {"row_index":2,"col_index":0,"text":"Sales <north>"},
+                                                            {"row_index":2,"col_index":1,"text":"10"},
+                                                            {"row_index":2,"col_index":2,"text":"line one\nline two"}
+                                                          ]}
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            DocumentTreeRevisionId revision =
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single());
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(revision)).Value;
+            TableBoxPayload table = boxes.Should().ContainSingle().Which.Payload.Should()
+                .BeOfType<TableBoxPayload>().Subject;
+            table.ContentFormat.Should().Be(TableContentFormat.Html);
+            table.Html.Should().Be(
+                "<table><tr><th rowspan=\"2\">Merged</th><th colspan=\"2\">Period</th></tr>" +
+                "<tr><td>2024</td><td>2025</td></tr>" +
+                "<tr><td>Sales &lt;north&gt;</td><td>10</td><td>line one<br/>line two</td></tr></table>");
+            (await context.Trees.CommitWorkingRevisionAsync(revision)).IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_converts_a_v3_gfm_table_field_once_to_authoritative_html()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          {"type":"table","page_idx":0,"bbox":[0,200,800,500],
+                                                           "table_body":"| Name | Value |\n| --- | --- |\n| Pages | 12 |"}
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
+            TableBoxPayload table = boxes.Should().ContainSingle().Which.Payload.Should()
+                .BeOfType<TableBoxPayload>().Subject;
+            table.ContentFormat.Should().Be(TableContentFormat.Html);
+            TableContentAdapter.TryGetHtml(table, out string html).Should().BeTrue();
+            html.Should().Contain("<th>Name</th>").And.Contain("<td>12</td>");
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_keeps_a_contentless_v3_table_as_a_placeholder_warning()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          {"type":"table","page_idx":0,"bbox":[0,200,800,500]}
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("table_content_unavailable");
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
+            boxes.Should().ContainSingle().Which.Payload.Should().Be(new TableBoxPayload("[Table]"));
+            (await context.Trees.CommitWorkingRevisionAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single())))
+                .IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_accepts_a_v3_document_with_spanned_tables_continuations_and_image_text()
+    {
+        // 回归（issue #29 报告场景）：云端 v3 产物中不可表示为 GFM 的表格曾以
+        // table_not_representable_as_gfm 整体拒绝提交，连同全部推断接续一起丢失。
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Full paragraph text kept in the first box."}]},"bbox":[100,550,900,650]},
+                                                            {"type":"image","content":{"image_source":{"path":"images/stone.jpg"}},"bbox":[379,60,641,460]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"embedded"}]},"bbox":[501,106,547,210]},
+                                                            {"type":"table","bbox":[100,700,900,900],"cells":[
+                                                              {"row_index":0,"col_index":0,"row_span":2,"text":"Merged"},
+                                                              {"row_index":0,"col_index":1,"text":"A"},
+                                                              {"row_index":1,"col_index":1,"text":"B"}
+                                                            ]}
+                                                          ],
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[]},"bbox":[100,100,900,300]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"A new paragraph."}]},"bbox":[100,400,900,600]}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("paragraph_continuation_linked")
+                .And.Contain("image_embedded_text_merged");
+
+            IReadOnlyList<DocumentBox> pageOne = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[0]))).Value;
+            DocumentBox head = pageOne.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("Full paragraph"));
+            TableBoxPayload table = pageOne.Single(box => box.BoxType == DocumentBoxType.Table).Payload
+                .Should().BeOfType<TableBoxPayload>().Subject;
+            table.ContentFormat.Should().Be(TableContentFormat.Html);
+            table.Html.Should().Contain("rowspan=\"2\"").And.Contain("Merged");
+
+            IReadOnlyList<DocumentBox> pageTwo = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1]))).Value;
+            DocumentBox follower = pageTwo.Single(box =>
+                box.Payload is TextBoxPayload text && string.IsNullOrWhiteSpace(text.Markdown));
+            follower.ContinuesFromBoxId.Should().Be(head.BoxId);
+            follower.ContinuationState.Should().Be(DocumentContinuationState.LegacyUnrecovered);
+
+            foreach (string revisionId in result.Value.WorkingTreeRevisionIds)
+            {
+                (await context.Trees.CommitWorkingRevisionAsync(DocumentTreeRevisionId.Parse(revisionId)))
+                    .IsSuccess.Should().BeTrue();
+            }
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Layout_json_adapter_recovers_each_box_text_and_links_continuations_explicitly()
+    {
+        // v3 中间产物：para_blocks 已合并（后框 lines_deleted 且 lines 为空、全文并入首框），
+        // preproc_blocks 保留各框合并前原文。适配后三框各存本框文字并显式链接成跨页链，
+        // 与 v4 continues_prev 同构，不经空框推断、不标 legacy_unrecovered。
+        await using Context context = await Context.CreateAsync();
+        const string layoutJson = """
+                                  {
+                                    "pdf_info": [
+                                      {
+                                        "page_idx": 0, "page_size": [544, 743],
+                                        "preproc_blocks": [
+                                          {"index": 9, "type": "text", "bbox": [40, 20, 500, 40],
+                                           "lines": [{"spans": [{"type": "text", "content": "Standalone paragraph."}]}]},
+                                          {"index": 1, "type": "text", "bbox": [40, 50, 500, 70],
+                                           "lines": [{"spans": [{"type": "text", "content": "Head own text."}]}]},
+                                          {"index": 2, "type": "text", "bbox": [40, 80, 500, 100],
+                                           "lines": [{"spans": [{"type": "text", "content": "Follower own text."}]}]}
+                                        ],
+                                        "para_blocks": [
+                                          {"index": 9, "type": "text", "bbox": [40, 20, 500, 40],
+                                           "lines": [{"spans": [{"type": "text", "content": "Standalone paragraph."}]}]},
+                                          {"index": 1, "type": "text", "bbox": [40, 50, 500, 70],
+                                           "lines": [{"spans": [{"type": "text", "content": "Head own text. Follower own text. Page-two own text."}]}]},
+                                          {"index": 2, "type": "text", "bbox": [40, 80, 500, 100],
+                                           "lines": [], "lines_deleted": true}
+                                        ],
+                                        "discarded_blocks": [
+                                          {"index": 20, "type": "header", "bbox": [40, 10, 500, 30],
+                                           "lines": [{"spans": [{"type": "text", "content": "Running head"}]}]}
+                                        ]
+                                      },
+                                      {
+                                        "page_idx": 1, "page_size": [544, 743],
+                                        "preproc_blocks": [
+                                          {"index": 4, "type": "text", "bbox": [40, 40, 500, 60],
+                                           "lines": [{"spans": [{"type": "text", "content": "Page-two own text."}]}]}
+                                        ],
+                                        "para_blocks": [
+                                          {"index": 4, "type": "text", "bbox": [40, 40, 500, 60],
+                                           "lines": [], "lines_deleted": true}
+                                        ]
+                                      }
+                                    ],
+                                    "_version_name": "3.4.4", "_backend": "pipeline"
+                                  }
+                                  """;
+        string zip = CreateZip(("layout.json", layoutJson),
+            ("_content_list_v2.json", "[[{\"type\":\"paragraph\",\"content\":{\"paragraph_content\":[]}}]]"));
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("continuation_linked");
+
+            IReadOnlyList<DocumentBox> pageOne = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[0]))).Value;
+            DocumentBox head = pageOne.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("Head own"));
+            head.Payload.Should().Be(new TextBoxPayload("Head own text."));
+            DocumentBox follower = pageOne.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("Follower own"));
+            follower.ContinuesFromBoxId.Should().Be(head.BoxId);
+            follower.ContinuationState.Should().BeNull("preproc_blocks 已恢复本框原文");
+            pageOne.Single(box => box.Payload is TextBoxPayload t && t.Markdown.StartsWith("Standalone"))
+                .ContinuesFromBoxId.Should().BeNull();
+            DocumentBox header = pageOne.Single(box => box.BoxType == DocumentBoxType.Header);
+            header.Suppressed.Should().BeTrue();
+
+            IReadOnlyList<DocumentBox> pageTwo = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1]))).Value;
+            DocumentBox crossPage = pageTwo.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("Page-two own"));
+            crossPage.ContinuesFromBoxId.Should().Be(follower.BoxId);
+            crossPage.ContinuationState.Should().BeNull();
+
+            foreach (string revisionId in result.Value.WorkingTreeRevisionIds)
+            {
+                (await context.Trees.CommitWorkingRevisionAsync(DocumentTreeRevisionId.Parse(revisionId)))
+                    .IsSuccess.Should().BeTrue();
+            }
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Layout_json_table_html_annotations_and_merged_table_continuation()
+    {
+        await using Context context = await Context.CreateAsync();
+        const string layoutJson = """
+                                  {
+                                    "pdf_info": [
+                                      {
+                                        "page_idx": 0, "page_size": [544, 743],
+                                        "preproc_blocks": [
+                                          {"index": 1, "type": "table", "bbox": [40, 100, 500, 300], "blocks": [
+                                            {"type": "table_body", "index": 2,
+                                             "lines": [{"spans": [{"type": "table", "html": "<table><tr><td>head rows</td></tr></table>"}]}]},
+                                            {"type": "table_caption", "index": 3,
+                                             "lines": [{"spans": [{"type": "text", "content": "Table 1."}]}]}
+                                          ]}
+                                        ],
+                                        "para_blocks": [
+                                          {"index": 1, "type": "table", "bbox": [40, 100, 500, 300], "blocks": [
+                                            {"type": "table_body", "index": 2,
+                                             "lines": [{"spans": [{"type": "table", "html": "<table><tr><td>head rows</td></tr><tr><td>tail rows</td></tr></table>"}]}]},
+                                            {"type": "table_caption", "index": 3,
+                                             "lines": [{"spans": [{"type": "text", "content": "Table 1."}]}]}
+                                          ]}
+                                        ]
+                                      },
+                                      {
+                                        "page_idx": 1, "page_size": [544, 743],
+                                        "preproc_blocks": [
+                                          {"index": 4, "type": "table", "bbox": [40, 40, 500, 160], "blocks": [
+                                            {"type": "table_body", "index": 5,
+                                             "lines": [{"spans": [{"type": "table", "html": "<table><tr><td>tail rows</td></tr></table>"}]}]}
+                                          ]}
+                                        ],
+                                        "para_blocks": [
+                                          {"index": 4, "type": "table", "bbox": [40, 40, 500, 160], "blocks": [
+                                            {"type": "table_body", "index": 5, "lines": [], "lines_deleted": true}
+                                          ]}
+                                        ]
+                                      }
+                                    ],
+                                    "_version_name": "3.4.4", "_backend": "pipeline"
+                                  }
+                                  """;
+        string zip = CreateZip("layout.json", layoutJson);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+
+            IReadOnlyList<DocumentBox> pageOne = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[0]))).Value;
+            DocumentBox headTable = pageOne.Single(box => box.BoxType == DocumentBoxType.Table);
+            TableBoxPayload head = headTable.Payload.Should().BeOfType<TableBoxPayload>().Subject;
+            head.ContentFormat.Should().Be(TableContentFormat.Html);
+            head.Html.Should().Be("<table><tr><td>head rows</td></tr></table>",
+                "首框表格只保留 preproc 记录的自有行，不吞并后框片段");
+            head.Annotations.Should().ContainSingle()
+                .Which.Should().Be(new DocumentAnnotation("table_caption", "Table 1."));
+
+            IReadOnlyList<DocumentBox> pageTwo = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1]))).Value;
+            DocumentBox tailTable = pageTwo.Single(box => box.BoxType == DocumentBoxType.Table);
+            TableBoxPayload tail = tailTable.Payload.Should().BeOfType<TableBoxPayload>().Subject;
+            tail.Html.Should().Be("<table><tr><td>tail rows</td></tr></table>");
+            tailTable.ContinuesFromBoxId.Should().Be(headTable.BoxId);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Layout_json_table_body_without_structure_degrades_to_placeholder_warning()
+    {
+        await using Context context = await Context.CreateAsync();
+        const string layoutJson = """
+                                  {
+                                    "pdf_info": [
+                                      {
+                                        "page_idx": 0, "page_size": [544, 743],
+                                        "preproc_blocks": [
+                                          {"index": 1, "type": "table", "bbox": [40, 100, 500, 300], "blocks": [
+                                            {"type": "table_body", "index": 2, "lines": []}
+                                          ]}
+                                        ],
+                                        "para_blocks": [
+                                          {"index": 1, "type": "table", "bbox": [40, 100, 500, 300], "blocks": [
+                                            {"type": "table_body", "index": 2, "lines": []}
+                                          ]}
+                                        ]
+                                      }
+                                    ],
+                                    "_version_name": "3.4.4", "_backend": "pipeline"
+                                  }
+                                  """;
+        string zip = CreateZip("layout.json", layoutJson);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("table_content_unavailable");
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
+            boxes.Should().ContainSingle().Which.Payload.Should().Be(new TableBoxPayload("[Table]"));
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_content_list_with_continues_prev_marker_links_explicitly_instead_of_dropping_it()
+    {
+        // 兼容产物中若已写入 continues_prev（上游未来或自托管变体），标记按显式关系消费：
+        // 非空标记框接续最近的同类合格框且不标 legacy_unrecovered，不再被静默丢弃。
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"First paragraph."}]},"bbox":[100,100,900,200]},
+                                                            {"type":"paragraph","continues_prev":true,"content":{"paragraph_content":[{"type":"text","content":"continuing text"}]},"bbox":[100,300,900,400]}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("continuation_linked");
+
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
+            DocumentBox head = boxes.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("First"));
+            DocumentBox follower = boxes.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown.StartsWith("continuing"));
+            follower.ContinuesFromBoxId.Should().Be(head.BoxId);
+            follower.ContinuationState.Should().BeNull();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Import_failure_message_lists_only_commit_blocking_diagnostics()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"image","content":{"image_source":{"path":"images/x.jpg"}},"bbox":[379,60,641,460]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"embedded"}]},"bbox":[501,106,547,210]},
+                                                            {"type":"table","bbox":[100,700,900,900],"content":{"html":"<table><script>evil()</script><tr><td>x</td></tr></table>"}}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeFalse();
+            result.ErrorMessage.Should().Contain("table_html_rejected")
+                .And.NotContain("image_embedded_text_merged",
+                    "非阻断诊断不得混入 'diagnostics that block commit' 失败明细");
         }
         finally
         {
@@ -911,10 +1388,21 @@ public sealed class MinerUDocumentTreeTests
 
     private static string CreateZip(string entryName, string content)
     {
+        return CreateZip((entryName, content));
+    }
+
+    private static string CreateZip(params (string EntryName, string Content)[] entries)
+    {
         string path = Path.Combine(Path.GetTempPath(), $"mineru-box-{Guid.NewGuid():N}.zip");
-        using ZipArchive archive = ZipFile.Open(path, ZipArchiveMode.Create);
-        using StreamWriter writer = new(archive.CreateEntry(entryName).Open());
-        writer.Write(content);
+        using (ZipArchive archive = ZipFile.Open(path, ZipArchiveMode.Create))
+        {
+            foreach ((string entryName, string content) in entries)
+            {
+                using StreamWriter writer = new(archive.CreateEntry(entryName).Open());
+                writer.Write(content);
+            }
+        }
+
         return path;
     }
 

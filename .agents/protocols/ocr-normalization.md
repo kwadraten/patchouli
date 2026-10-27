@@ -37,9 +37,19 @@ stores its string content separately from typed inline spans.
 ## Application boundary
 
 `MinerUResultParser` already prefers `middle_json.json` and checks the actual
-`docvortex.middle` 2.0 discriminator through `MinerUMiddleJsonParser`. Older
-content-list artifacts are compatibility inputs. Their internal adapter records
-are not a second provider-defined document model.
+`docvortex.middle` 2.0 discriminator through `MinerUMiddleJsonParser`. The current
+cloud service still returns v3 pipeline artifacts, so `layout.json` is the
+preferred compatibility input and is adapted by `MinerULayoutJsonParser`:
+`preproc_blocks` restores each physical box's own pre-merge text, `lines_deleted`
+markers become explicit `continues_prev` links (including cross-page table merges
+whose child blocks carry the flag), `table_body` span HTML becomes the
+authoritative table payload, `table_caption`/`table_footnote` become typed
+annotations, and `discarded_blocks` are imported as suppressed boxes. A deleted
+follower whose own text cannot be recovered degrades to `legacy_unrecovered`;
+the adapter never invents local text. The older `_content_list_v2.json` /
+`_content_list.json` artifacts remain the last-resort compatibility inputs
+through `MinerUContentListParser`; their adapter records are not a second
+provider-defined document model.
 
 Text-only OCR engines produce only text blocks, geometry, order and confidence;
 normalization must not infer tables or formulas that those engines did not identify.
@@ -67,8 +77,12 @@ stores its string result as the table block's content. Patchouli accepts safe ta
 as an authoritative table payload. A spatial-text projection is kept in the in-memory
 candidate with an `unsupported_table_spatial_text` blocking diagnostic; it is not
 converted into a guessed grid or accepted automatically. Legacy content-list tables
-whose cells cannot be represented losslessly as GFM likewise retain a blocking
-diagnostic and placeholder rather than being adopted as if complete.
+convert once at the boundary into the same authoritative HTML model: cell grids
+(including row/column spans and incomplete grids) are emitted directly as restricted
+HTML rather than judged against GFM, and a GFM pipe table found in a table field is
+converted once through the safe Markdown pipeline. Conversions never round-trip through
+a second representation, and a table block with no cells, HTML, or text degrades to a
+non-blocking `[Table]` placeholder warning instead of rejecting the document.
 
 Middle JSON `superscript` and `subscript` spans use the existing Markdig `^` and `~`
 syntax. The current safe Markdown pipeline has no underline representation and disables

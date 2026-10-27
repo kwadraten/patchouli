@@ -48,9 +48,13 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                     page.PageId, out DocumentTreeRevisionId expectedParent)
                     ? expectedParent
                     : null;
+            HashSet<DocumentBoxId> declaredIds = page.Boxes
+                .Where(box => box.PreassignedBoxId is not null)
+                .Select(box => box.PreassignedBoxId!.Value).ToHashSet();
             DocumentBoxId[] logicalParentIds = page.Boxes
                 .Where(box => box.ParentLogicalPageBoxId is not null)
                 .Select(box => box.ParentLogicalPageBoxId!.Value)
+                .Where(parentId => !declaredIds.Contains(parentId))
                 .Distinct()
                 .ToArray();
             if (logicalParentIds.Length > 0)
@@ -107,12 +111,13 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 box.BoxType,
                 box.SubType,
                 box.BBox,
-                EscapeTextPayload(box.Payload),
+                box.Payload is null ? null : EscapeTextPayload(box.Payload),
                 box.HeadingLevel,
                 box.CodeLanguage,
                 box.Confidence,
                 box.Suppressed,
-                box.ContinuesFromBoxId)));
+                box.ContinuesFromBoxId,
+                box.ContinuationState)));
             Result<DocumentTreeRevision> working = await _trees.BeginWorkingRevisionAsync(
                 request.DocumentInstanceId,
                 page.PageId,

@@ -950,20 +950,6 @@ public sealed class MinerUPageRegionRunTests
                 cancellationToken);
         }
 
-        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default)
-        {
-            return _engine.RunPresetOnImagePageAsync(documentInstanceId, presetId, pageId, imagePath,
-                cancellationToken);
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default)
-        {
-            return _engine.RunPresetOnRenderedPdfPageAsync(documentInstanceId, presetId, pageId, dpi,
-                cancellationToken);
-        }
-
         public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
         {
             return _engine.CancelRunAsync(runId, cancellationToken);

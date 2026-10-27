@@ -59,7 +59,9 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
         Result candidateValidation = candidate.Validate();
         if (candidateValidation.IsFailure)
         {
-            string details = string.Join("; ", candidate.Diagnostics.Select(diagnostic => diagnostic.Code));
+            string details = string.Join("; ", candidate.Diagnostics
+                .Where(diagnostic => diagnostic.BlocksCommit)
+                .Select(diagnostic => diagnostic.Code));
             return Result<MinerUImportResult>.Failure(
                 candidateValidation.ErrorCode!,
                 string.IsNullOrWhiteSpace(details)

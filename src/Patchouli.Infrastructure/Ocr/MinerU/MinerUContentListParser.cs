@@ -28,7 +28,10 @@ internal sealed record MinerUContentBlock(
     string? TableHtml = null,
     string? SubType = null,
     string? CodeLanguage = null,
-    IReadOnlyList<Patchouli.Core.Documents.DocumentAnnotation>? Annotations = null);
+    IReadOnlyList<Patchouli.Core.Documents.DocumentAnnotation>? Annotations = null,
+    [property: JsonPropertyName("continues_prev")]
+    bool? ContinuesPrev = null,
+    string? ContinuationState = null);
 
 internal sealed record MinerUTableCell(
     [property: JsonPropertyName("row_index")]
@@ -44,8 +47,20 @@ internal sealed record MinerUTableCell(
     [property: JsonPropertyName("text")] string? Text,
     [property: JsonPropertyName("bbox")] double[]? Bbox);
 
+/// <summary>
+/// 产物协议决定接续语义：Middle JSON 2.0（MinerU v4）携带显式 <c>continues_prev</c> 标记，
+/// 走标准路径；旧版 content_list（v3 及更早）只有「首框全文、后框为空」的合并产物，
+/// 只能经弃用的兼容推断路径导入。其他 OCR 引擎归一化出的候选文档一律按显式语义处理。
+/// </summary>
+internal enum MinerUContinuationSemantics
+{
+    Explicit,
+    LegacyInferred
+}
+
 internal sealed record MinerUContentListDocument(
-    [property: JsonPropertyName("pages")] IReadOnlyList<MinerUContentListPage> Pages);
+    [property: JsonPropertyName("pages")] IReadOnlyList<MinerUContentListPage> Pages,
+    MinerUContinuationSemantics ContinuationSemantics = MinerUContinuationSemantics.Explicit);
 
 internal sealed class MinerUContentListParser
 {
@@ -96,7 +111,7 @@ internal sealed class MinerUContentListParser
                 GetDouble(page, "height") ?? 1000,
                 ParseBlocks(page, "blocks", index) ?? [],
                 ParseBlocks(page, "discarded_blocks", index)))
-            .ToArray());
+            .ToArray(), MinerUContinuationSemantics.LegacyInferred);
     }
 
     private static IReadOnlyList<MinerUContentBlock>? ParseBlocks(JsonElement page, string propertyName, int pageIndex)
@@ -142,7 +157,7 @@ internal sealed class MinerUContentListParser
                 pair.Key + 1,
                 1000,
                 1000,
-                pair.Value)).ToArray());
+                pair.Value)).ToArray(), MinerUContinuationSemantics.LegacyInferred);
     }
 
     private static void AddFlatItem(
@@ -194,7 +209,8 @@ internal sealed class MinerUContentListParser
             item.TryGetProperty("annotations", out JsonElement annotations)
                 ? JsonSerializer.Deserialize<Patchouli.Core.Documents.DocumentAnnotation[]>(annotations.GetRawText(),
                     new JsonSerializerOptions(JsonSerializerDefaults.Web))
-                : null));
+                : null,
+            GetBool(item, "continues_prev")));
     }
 
     private static string? GetText(JsonElement item)
