@@ -131,6 +131,9 @@ public sealed record McpOcrTaskStatusProjection(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("engine_id")]
     string EngineId,
+    [property: JsonPropertyName("source")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Source,
     [property: JsonPropertyName("page_count")]
     int PageCount,
     [property: JsonPropertyName("page_progress")]

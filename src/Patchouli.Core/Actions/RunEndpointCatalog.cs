@@ -54,7 +54,7 @@ public static class RunEndpointCatalog
         return
         [
             new ActionDescriptor(Uri("ocr"), "start", ["Document"], JsonSerializer.Deserialize<JsonElement>(
-                    """{"type":"object","additionalProperties":false,"properties":{"pages":{"type":"string","minLength":1},"engine":{"type":"string","minLength":1}}}"""),
+                    """{"type":"object","additionalProperties":false,"properties":{"pages":{"type":"string","minLength":1},"engine":{"type":"string","minLength":1},"preset":{"type":"string","minLength":1},"preset_version":{"type":"string","minLength":1}}}"""),
                 ocrResult, "started", ["ocr", "write_text", "rebuild_index", "engine_network"], ["runs/ocr:send"]),
             new ActionDescriptor(Uri("ocr"), "cancel", ["RunOcrStatus"], empty, ocrResult, "completed", ["cancel_ocr"],
                 ["runs/ocr:send"]),

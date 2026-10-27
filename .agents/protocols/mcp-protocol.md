@@ -48,6 +48,24 @@ structure; payloads wrap existing Markdown, LaTeX, code, or descriptions. Suppre
 including page footnotes, are included. Only image-formula page-region geometry is exposed; local paths, media asset locations,
 and secrets are not exposed. XML processing disables DTDs and external entities.
 
+Continuation (MinerU v4 `continues_prev`) is expressed as independent box metadata, never
+mixed into payload text. A box that continues an earlier box carries
+`continues_from="<source box id>"` — the stable box identity, valid for same-page,
+cross-page, and chained continuations; element adjacency is never the relation. When the
+source box's page can be resolved through the read revision's commit ancestry or an
+unambiguous stable page identity in the document's committed history, the box also
+carries `continues_from_page="<one-based page index>"` so a cross-page target can be
+located even when the read range excludes the source page. Each box's payload always holds
+only its own text. A legacy continuation whose per-box text was never recovered (old
+empty-box inference, migrated by schema migration 054) additionally carries
+`continuation_state="legacy_unrecovered"`; its payload stays empty and the source box's
+full text is not duplicated into it. Continuation metadata is read-only through page XML:
+`put` payloads must repeat `continues_from` and `continuation_state` exactly as read —
+omitting or altering them is rejected rather than silently dropping or rewriting the
+relation. Relations are created, corrected, and removed only in the PDF workbench
+(`IDocumentTreeEditor.SetContinuationAsync`), which validates self-reference, cycles,
+cross-document targets, and eligible box-type combinations.
+
 Versioned HTML tables use `<payload format="html-table-v1">` containing XML-escaped
 restricted HTML text, not nested XML payload elements. Their stored payload identifies
 `contentFormat: "html"` and `contentFormatVersion: 1`; `html` holds the only editable
@@ -504,7 +522,7 @@ patchouli.send { "endpoint": "runs/ocr/control", "action": "start", "target": "t
 
 endpoint 是类似 Unix socket 的虚拟消息接收地址，target 是被操作的资源。MCP 必须显式提供 endpoint/action/target/args，args 为对象；request_id 是可选外层字段，不能放入 args。CLI 用三个位置参数和按同一端点 Schema 转换的 --pages、--engine、--target-language、--force true/false 等平铺选项；复杂值可用 --args JSON。平铺选项与 JSON 的重复字段或冲突、未知/重复字段、错误类型均拒绝，不静默覆盖。CLI 无领域参数时生成 `{}`。
 
-原生领域端点为 `patchouli://runs/ocr/control`、`patchouli://runs/translation/control` 与 `patchouli://runs/metadata/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
+原生领域端点为 `patchouli://runs/ocr/control`、`patchouli://runs/translation/control` 与 `patchouli://runs/metadata/control`。find 领域目录可发现当前有 send 授权且服务可用的 control；fetch control 返回 `{ endpoint, domain, messages, implementations }`，messages 按 action 排序，各项包含 action、target_types、input_schema、result_schema、execution_mode、side_effects、required_capabilities。implementations 实时枚举该域可用的内部实现（来自宿主真实注册表而非静态表）：OCR 域为适配器引擎列表（含字面量 `default` 别名条目与当前配置默认引擎的 `is_default` 标记），翻译域为翻译扩展列表（当前设置引擎标记 `is_default`），元数据域为来源列表（id、名称、`identifier_schemes`、声明默认启用状态）；内置包恒列出，第三方包在首次激活后出现；宿主未接目录服务时省略该字段，目录读取失败时 fetch 明确失败而不返回缺失列表的描述。描述不能截断为成功 Schema。未授权端点不可发现，直接 fetch 也拒绝；状态读取另按既有 find/fetch 权限。
 
 start 的合法 target 是 DocumentInstance 文档目录；cancel/retry 是同领域实例目录或其 status 定位形式。端点动作仅在本领域解释，不公开 ocr.start 等组合动词；错误目标、跨领域实例、非法 UUID 在进入执行前拒绝。轻量注册表只校验和分发，执行复用宿主服务，不新增通用调度器、持久邮箱或工作流。
 
@@ -544,9 +562,11 @@ CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路
 
 ## 9 `view`（源图像读取）
 
-`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048}`（`max_edge` 默认 2048）。
+`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048, "boxes": true}`（`max_edge` 默认 2048；`boxes` 默认 false）。
 
 - 目标：一页 URI 返回整页源图像；box/证据 URI 返回带小边距的 bbox 裁剪；翻译页/box 返回对应源文档图像；目录 URI 必须指定页面。一次调用一个目标、一张图；v1 不接受任意坐标输入。
+- 无框树页面：页面尚无已提交 revision 时，整页 URI 仍返回整页源图像（与 PDF 工作台直接显示页面图的人机对等），canonical URI 不带 `rev` 锁定；box 目标此时明确以目标不存在失败。显式指定不存在的 revision 仍是过期 revision 失败，绝不替换。
+- `boxes: true` 时，页面全部 box 以序号描边叠加在返回图像上；序号按页面 XML 文档顺序（先序、兄弟链顺序）编号，即第 n 号就是 fetch 到的页面 XML 中第 n 个 `<box>` 元素，文本元数据的 `boxes` 字段给出序号→box id 对照。裁剪视图只绘制与裁剪范围相交的 box，序号保持全页稳定编号；无框树页面该字段为空数组。
 - 图像来自原始 PDF，不从 OCR 文本重渲染，不做桌面导航，不触发 OCR，不修改正文。
 - 未指定 revision 时锁定为本次调用实际使用的 revision；历史 box 使用其自身 revision 的 bbox；源缺失/变化、目标缺失、坐标过期一律显式失败，绝不悄悄替换为最新 revision、其他页面或未校验来源。
 - **几何例外**：裁剪范围使用页面归一化坐标（可复现）；这是 `view` 对"不暴露几何"旧约束的显式例外（见 ADR `0045`）。
@@ -555,7 +575,7 @@ CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路
 - `view` 检查目标域权限；翻译源图像同时检查源文本域。
 - 外部 Agent 与 MCP 客户端的推荐对照流程：`fetch`（文本+版本）→ `view`（同 revision/box 源图像）→ `put`（带原 `source_revision`）；版本变化走正常 revision 冲突。图像以 MCP 原生 ImageContent 返回，由客户端自行提供给它自己的模型；Patchouli 不保存会话媒体区，也不伪造无视觉能力客户端的对照结果。
 
-CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
+CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同；`--boxes` 对应 `boxes: true`）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
 
 ## 10 OCR Actions（通过 send 调用）
 
@@ -577,18 +597,20 @@ CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调�
     - `target`（必需）：`patchouli://texts/{document-id}/` 或 `texts/{document-id}/`。
     - `pages`（可选）：物理页码范围（1-based，如 `"1,3-5"`）。省略表示全文档。
     - `engine`（可选）：指定引擎名称（如 `"rapidocr"`、`"mock"`）或 `"default"`（由当前宿主配置的默认引擎解析）。不能传空字符串。
+    - `preset`（可选）：显式选择当前书库的 Preset UUID；不能传空字符串。未知、已归档或不属于当前书库的 Preset 明确失败，不改选同引擎的其他预设。若同时指定非 `default` 的 `engine`，必须与所选版本的引擎一致。
+    - `preset_version`（可选）：固定该 Preset 的某个不可变版本 UUID，必须同时提供 `preset`，且版本确实属于它。省略时在受理时固定所选 Preset 的当前版本；后续编辑不改变已受理任务。
     - 外层 `request_id`（可选）：客户端生成的原子幂等去重 key。
   - 授权：必须同时开启 `patchouli.send` 工具开关并具备 `runs/ocr × send` 显式权限。
 - **`cancel`**：取消一个未完成的 OCR 任务。
   - 参数：
     - `target`（必需）：`patchouli://runs/ocr/{task-id}/status` 或 `patchouli://runs/ocr/{task-id}/`。
-  - args 必须为 `{}`，禁止携带 `pages` 或 `engine`（否则返回 `INVALID_ARGUMENT`）。
+  - args 必须为 `{}`，禁止携带 `pages`、`engine`、`preset` 或 `preset_version`（否则返回 `INVALID_ARGUMENT`）。
   - 授权：必须同时开启 `patchouli.send` 工具开关并具备 `runs/ocr × send` 显式权限。
 - **`retry`**：重试一个 failed、blocked 或 cancelled 的 OCR 任务。公开重试限于会提交正文的全文/选页任务；旧区域、图像或 working-only 任务返回 UNAVAILABLE。已有识别 run 沿用该 run 的实际版本与结果；未识别任务在重试受理时固定版本。
   - 参数：
     - `target`（必需）：`patchouli://runs/ocr/{task-id}/status` 或 `patchouli://runs/ocr/{task-id}/`。
     - 外层 `request_id`（可选）：客户端生成的原子幂等去重 key。
-  - 禁止携带 `pages` 或 `engine`（否则返回 `INVALID_ARGUMENT`）。
+  - 禁止携带 `pages`、`engine`、`preset` 或 `preset_version`（否则返回 `INVALID_ARGUMENT`）；显式按新配置重新识别应发起新的 `start`，不能冒充原任务的采纳／索引重试。
   - 授权：必须同时开启 `patchouli.send` 工具开关并具备 `runs/ocr × send` 显式权限。
 
 ### 10.2 响应契约与生命周期
@@ -608,7 +630,7 @@ CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调�
   2. **提议与提交（Commit / Adoption）**：将识别候选树原子写入数据库；事务内校验当前页面 revision 与是否存在未提交手写草稿（Manual Draft）或更新的提交版本；若有冲突返回 `REVISION_CONFLICT`（code 5）并保留手写修改，绝不静默覆盖。
   3. **全文索引（Indexing）**：更新 FTS 检索索引。若索引步骤异常但 DB 提交已成功，公开状态必须忠实反映已提交的正文事实，不能报告虚假丢失。
 - **原子幂等性（Idempotency）**：
-  - 相同 `request_id` 且归一化参数相同（文档、页码范围、引擎）的并发或重放请求，宿主在同步边界内去重并返回原始任务（`reused: true`），不产生多余队列项；若输入参数发生变动，返回冲突错误。
+   - 相同 `request_id` 且归一化参数相同（文档、页码范围、引擎、显式 Preset／版本选择）的并发或重放请求，宿主在同步边界内去重并返回原始任务（`reused: true`），不产生多余队列项；若输入参数发生变动，返回冲突错误。省略的默认选择保持原始受理语义，不能因当前配置变动而把重放改成新任务。
 - **错误脱敏与安全性**：
   - 任务状态查询与错误诊断一律经过白名单脱敏（`McpOutputSanitizer`），绝不暴露宿主本地文件路径、凭证或未过滤异常堆栈。
 
@@ -623,6 +645,8 @@ CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同）调�
 
 | 字段 | 语义 |
 |---|---|
+| `task_kind` | 执行范围：`document`、`pages`、`region`；页面任务不再用 `mock_pages`。编辑会话中的页面草稿由 `pages` + `commit_on_completion=false` 承载，`working_page`、`image_page`、`rendered_pdf_page` 已移除。公开 `start`／`retry` 仍只开放其契约规定的范围。 |
+| `source` | 实际触发来源（如 `mcp`、`ui-document`、`ui-pages`、`ui-region`、`ui-working`、`batch`、`retry`、`unknown`），与调度优先级分离。`UserStartedDocument` 优先级不代表人类触发。 |
 | `recognition_state` | 对应持久化 OCR run 的状态；未取得 run 时省略。 |
 | `committed` | 该 run 是否已有候选采纳记录；即使任务随后失败也可为 `true`。 |
 | `committed_page_count` | 历史上成功采纳的页面数，不由队列终态推断。 |
@@ -696,7 +720,7 @@ CLI                                             MCP
 patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
 patchouli-cli add <PATH> [--kind pdf|csl]       patchouli.add { path, kind }
-patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge? }
+patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge?, boxes? }
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
 patchouli-cli put <URI> --boxes-from <PATH>|--boxes-stdin
                                                 patchouli.put { uri, source_revision, translation_version?, boxes }

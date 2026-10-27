@@ -40,6 +40,25 @@ public sealed class McpOcrProtocolIndependentTests
         harness.Calls.Should().Equal("start");
     }
 
+    [Fact]
+    public async Task Start_passes_preset_selectors_and_preserves_receipt_identity()
+    {
+        Harness harness = new();
+        string preset = "44444444-4444-4444-4444-444444444444";
+        string presetVersion = "55555555-5555-5555-5555-555555555555";
+        string response = await harness.Call("start", DocumentUri,
+            new { preset, preset_version = presetVersion }, "preset-request");
+        IsError(response).Should().BeFalse(response);
+        harness.LastStart.Should().Be(new McpOcrStartRequest(
+            DocumentInstanceId.Parse(DocumentId), null, "default", "preset-request", preset,
+            presetVersion));
+        using JsonDocument envelope = Envelope(response);
+        JsonElement receipt = envelope.RootElement.GetProperty("entries")[0].GetProperty("result");
+        receipt.GetProperty("preset_id").GetString().Should().Be("preset-fixture");
+        receipt.GetProperty("preset_version_id").GetString().Should()
+            .Be("33333333-3333-3333-3333-333333333333");
+    }
+
     [Theory]
     [InlineData("cancel", "completed")]
     [InlineData("retry", "started")]
@@ -83,7 +102,9 @@ public sealed class McpOcrProtocolIndependentTests
     [InlineData("start", "{\"engine\":\"\"}")]
     [InlineData("start", "{\"engine\":\"mock\",\"engine\":\"rapidocr\"}")]
     [InlineData("start", "{\"request_id\":\"nested\"}")]
-    [InlineData("start", "{\"preset\":\"p\"}")]
+    [InlineData("start", "{\"preset\":\"\"}")]
+    [InlineData("start", "{\"preset_version\":\"\"}")]
+    [InlineData("start", "{\"preset\":2}")]
     [InlineData("cancel", "{\"pages\":\"1\"}")]
     [InlineData("retry", "{\"engine\":\"mock\"}")]
     [InlineData("start", "null")]

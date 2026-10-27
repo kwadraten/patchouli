@@ -508,7 +508,7 @@ public sealed class McpRunsAndSendTests
         public void SetTask(string taskId, string state, int succeeded = 0, int total = 0)
         {
             _tasks[taskId] = new McpOcrTaskStatusProjection(taskId, "Item", "document-ocr", state, "engine",
-                total, new McpOcrPageProgress(succeeded, 0, 0, total), null);
+                null, total, new McpOcrPageProgress(succeeded, 0, 0, total), null);
         }
 
         public Task<Result<IReadOnlyList<McpOcrTaskStatusProjection>>> ListTasksAsync(

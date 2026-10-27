@@ -59,6 +59,7 @@ public sealed class McpHostOcrRunsApi(
             row.TaskKind,
             row.State,
             row.EngineId,
+            row.Task.Source,
             row.PageCount,
             row.PageProgress is { } progress
                 ? new McpOcrPageProgress(progress.Succeeded, progress.Failed, progress.Processing, progress.Total)
