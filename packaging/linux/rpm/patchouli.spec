@@ -50,6 +50,10 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Wed Oct 28 2026 kwadraten <schild0van0man@duck.com> - 0.3.15-1
+- Add composed OCR presets, task-level extension engines and native PDF text-layer providers
+- Fix MinerU compatibility, page coordinates, UI responsiveness and guarded document deletion
+
 * Sat Oct 24 2026 kwadraten <schild0van0man@duck.com> - 0.3.14-1
 - Add compiled FSX extensions, managed Agent Skills and live MCP implementation catalogs
 - Preserve explicit OCR continuations and fix translation, metadata parsing and table editing

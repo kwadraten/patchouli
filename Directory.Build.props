@@ -5,9 +5,9 @@
         <Nullable>enable</Nullable>
         <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
         <LangVersion>latest</LangVersion>
-        <Version>0.3.14</Version>
-        <AssemblyVersion>0.3.14.0</AssemblyVersion>
-        <FileVersion>0.3.14.0</FileVersion>
+        <Version>0.3.15</Version>
+        <AssemblyVersion>0.3.15.0</AssemblyVersion>
+        <FileVersion>0.3.15.0</FileVersion>
         <Product>Patchouli.NET</Product>
         <Title>Patchouli.NET</Title>
         <AssemblyTitle>Patchouli.NET</AssemblyTitle>

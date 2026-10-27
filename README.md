@@ -13,7 +13,7 @@
 
 ## 下载与更新日志
 
-当前版本：**0.3.14**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon，以及 Linux deb、rpm、AppImage 和 Flatpak 安装包。
+当前版本：**0.3.15**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64、macOS Apple Silicon，以及 Linux deb、rpm、AppImage 和 Flatpak 安装包。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
@@ -48,8 +48,6 @@
 - [x] 显式处理端点：通过 `send` 控制 OCR、翻译及元数据补全，`runs/*/control` 实时列出可选实现，并提供任务状态查询；`add` 仅负责入库，不自动启动 OCR。
 - [x] 文献加工与任务队列：统一展示 OCR 和全文翻译任务，支持类型筛选与任务控制，两类任务可并行执行。
 - [x] 应用更新：自动或手动检查 GitHub Releases，支持下载校验、安装前确认及不支持内置安装时的手动更新提示。
-
-接续消费仍有保守边界：复杂或不兼容的 Markdown/表格保留原结构并报告诊断，跨页译文导出暂按页保留并明确提示；后续验收见 [#29](https://github.com/kwadraten/patchouli/issues/29)。
 
 ## 开发指南
 
