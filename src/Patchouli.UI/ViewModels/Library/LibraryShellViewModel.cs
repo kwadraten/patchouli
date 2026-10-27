@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -26,6 +27,7 @@ using Patchouli.Host;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Import;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -56,6 +58,9 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     private int _filterSelectionGeneration;
     private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
+    private CancellationTokenSource? _purgeCancellation;
+    private AsyncOperationLifetime? _purgeWorkLifetime;
+    internal Func<IItemPurgeService, IItemPurgeService>? ItemPurgeDecorator { get; set; }
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
@@ -296,7 +301,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             }
             catch (Exception reportException)
             {
-                System.Diagnostics.Debug.WriteLine(
+                Debug.WriteLine(
                     $"Sidebar event reportError callback failed: {reportException}");
             }
         }
@@ -2637,42 +2642,178 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
+        // The original selection, not whatever is selected after the report/dialog awaits, owns
+        // the request. A dictionary makes title matching linear even for a very large batch.
+        Dictionary<ItemId, string> titles = SelectedItems.DistinctBy(item => item.ItemId)
+            .ToDictionary(item => ItemId.Parse(item.ItemId), item => item.Title);
+        ItemId[] itemIds = titles.Keys.ToArray();
+        int generation = _main.LibraryGeneration;
         HostServices services = await _main.ServicesAsync();
-        Result<IReadOnlyList<ItemPurgeDependencyReport>> reportResult =
-            await services.PurgeItems.BuildPurgeReportsAsync(
-                SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray());
-        if (reportResult.IsFailure)
-        {
-            _main.ReportError($"无法生成删除报告：{reportResult.ErrorMessage}");
-            return;
-        }
-
-        IReadOnlyList<ItemPurgeDependencyReport> reports = reportResult.Value;
-
-        if (reports.Any(report => report.HasActiveOcr))
-        {
-            _main.ReportError("无法永久删除：选中题录存在活动 OCR 任务。");
-            return;
-        }
-
-        PurgeConfirmDialogViewModel dialog = new(
-            reports.Select(report => SelectedItems.Single(item => item.ItemId == report.ItemId.ToString()).Title)
-                .ToArray(),
-            reports);
-        bool? confirmed = await _main.Dialogs.ShowDialogAsync<bool?>(dialog);
-        if (confirmed != true)
+        if (!_main.IsCurrentLibraryContext(services, generation))
         {
             return;
         }
 
-        Result result = await services.PurgeItems.PurgeItemsAsync(reports.Select(report => report.ItemId).ToArray());
-        if (!result.IsSuccess)
+        IItemPurgeService purge = ItemPurgeDecorator?.Invoke(services.PurgeItems) ?? services.PurgeItems;
+        using CancellationTokenSource cancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(services.LifetimeToken);
+        CancellationToken token = cancellation.Token;
+        AsyncOperationLifetime work = new();
+        _purgeCancellation = cancellation;
+        _purgeWorkLifetime = work;
+        try
         {
-            _main.ReportError($"永久删除失败：{result.ErrorMessage}");
-            return;
-        }
+            _main.Report("正在生成永久删除依赖报告...");
+            Result<IReadOnlyList<ItemPurgeDependencyReport>> reportResult = await Task.Run(async () =>
+            {
+                using IDisposable? lease = work.TryEnter();
+                if (lease is null)
+                {
+                    throw new OperationCanceledException(token);
+                }
 
-        ScheduleFileAssetGc(services, reports.SelectMany(report => report.FileAssetIds).Distinct().ToArray());
+                token.ThrowIfCancellationRequested();
+                return await purge.BuildPurgeReportsAsync(itemIds, token);
+            });
+            if (!_main.IsCurrentLibraryContext(services, generation) || token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (reportResult.IsFailure)
+            {
+                _main.ReportError($"无法生成删除报告：{reportResult.ErrorMessage}");
+                return;
+            }
+
+            long uiStarted = Stopwatch.GetTimestamp();
+            IReadOnlyList<ItemPurgeDependencyReport> reports = reportResult.Value;
+            if (reports.Count != itemIds.Length ||
+                reports.Select(report => report.ItemId).Distinct().Count() != itemIds.Length ||
+                reports.Any(report => !titles.ContainsKey(report.ItemId)))
+            {
+                _main.ReportError("无法永久删除：依赖报告与原始选择不一致。");
+                return;
+            }
+
+            if (reports.Any(report => report.HasActiveOcr))
+            {
+                _main.ReportError("无法永久删除：选中题录存在活动 OCR 任务。");
+                return;
+            }
+
+            using PurgeConfirmDialogViewModel dialog = new(reports.Select(report => titles[report.ItemId]).ToArray(),
+                reports);
+            await _main.LogOperationAsync("item-purge-phase", string.Create(CultureInfo.InvariantCulture,
+                $"phase=ui_prepare; elapsed_ms={Stopwatch.GetElapsedTime(uiStarted).TotalMilliseconds:F3}"));
+            if (!_main.IsCurrentLibraryContext(services, generation) || token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            bool? confirmed = await _main.Dialogs.ShowDialogAsync<bool?>(dialog);
+            if (confirmed != true || !_main.IsCurrentLibraryContext(services, generation) ||
+                token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            Result result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("永久删除题录", "正在永久删除选中题录、页面树及全部正文历史...", true),
+                async context =>
+                {
+                    using IDisposable? lease = work.TryEnter();
+                    if (lease is null)
+                    {
+                        throw new OperationCanceledException(token);
+                    }
+
+                    using CancellationTokenSource linked =
+                        CancellationTokenSource.CreateLinkedTokenSource(token, context.CancellationToken);
+                    return await purge.PurgeItemsAsync(itemIds, linked.Token, new PurgeModalProgress(context));
+                }, token);
+            if (!_main.IsCurrentLibraryContext(services, generation) || token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (result.IsFailure)
+            {
+                _main.ReportError($"永久删除失败：{result.ErrorMessage}");
+                return;
+            }
+
+            long uiUpdateStarted = Stopwatch.GetTimestamp();
+            ScheduleFileAssetGc(services, reports.SelectMany(report => report.FileAssetIds).Distinct().ToArray());
+            try
+            {
+                // Include the real list projection in the UI timing, not just the status text.
+                // The revision stream may already have refreshed it while the result dialog was
+                // awaiting acknowledgment; this also provides a completion barrier for the command.
+                using IDisposable? lease = work.TryEnter();
+                if (lease is null)
+                {
+                    throw new OperationCanceledException(token);
+                }
+
+                await RefreshItemsCoreAsync(token);
+                if (_main.IsCurrentLibraryContext(services, generation) && !token.IsCancellationRequested)
+                {
+                    _main.Report($"已永久删除 {itemIds.Length} 个题录；原始文件保留。");
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                UnexpectedExceptions.Sink.Report(exception, "item-purge-ui-refresh");
+                if (_main.IsCurrentLibraryContext(services, generation) && !token.IsCancellationRequested)
+                {
+                    _main.ReportError($"题录已永久删除，但列表刷新失败：{exception.Message}");
+                }
+            }
+            finally
+            {
+                await _main.LogOperationAsync("item-purge-phase", string.Create(CultureInfo.InvariantCulture,
+                    $"phase=ui_update; elapsed_ms={Stopwatch.GetElapsedTime(uiUpdateStarted).TotalMilliseconds:F3}"));
+            }
+        }
+        catch (OperationCanceledException exception) when (token.IsCancellationRequested ||
+                                                           exception.CancellationToken.IsCancellationRequested)
+        {
+            if (_main.IsCurrentLibraryContext(services, generation))
+            {
+                _main.Report("永久删除已取消。");
+            }
+        }
+        finally
+        {
+            await work.DisposeAsync();
+            if (ReferenceEquals(_purgeWorkLifetime, work))
+            {
+                _purgeWorkLifetime = null;
+                _purgeCancellation = null;
+            }
+        }
+    }
+
+    internal async Task CancelAndDrainItemPurgeAsync()
+    {
+        _purgeCancellation?.Cancel();
+        if (_purgeWorkLifetime is { } work)
+        {
+            await work.DisposeAsync();
+        }
+    }
+
+    private sealed class PurgeModalProgress(ModalOperationContext context) : IProgress<ItemPurgeProgress>
+    {
+        public void Report(ItemPurgeProgress update)
+        {
+            string? detail = update.IsCompleted
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"{update.Phase}: {update.ElapsedMilliseconds:F3} ms; FTS 重建={update.FtsCacheRebuilt}; SQLite={update.SqliteErrorCode}")
+                : null;
+            context.Report(null, null, update.Message, detail);
+        }
     }
 
     private async Task RestoreSelectedItemsAsync()
@@ -2778,6 +2919,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
     public async ValueTask DisposeAsync()
     {
+        await CancelAndDrainItemPurgeAsync();
         Dispose();
         // Rx cancellation and latest-wins completion signals do not mean SQLite work that
         // already reached the thread pool has returned its connection. Drain it before the

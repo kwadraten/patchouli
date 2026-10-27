@@ -1,8 +1,11 @@
 ﻿using System.Data.Common;
+using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
@@ -25,27 +28,31 @@ public sealed class ItemPurgeService : IItemPurgeService
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly ISnapshotSyncBindingStore? _snapshotBindings;
     private readonly ILibraryRevisionService? _revisions;
+    private readonly IAppLogger? _logger;
 
     public ItemPurgeService(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
         ILibraryIdentityService libraryIdentityService,
         ISnapshotSyncBindingStore? snapshotBindings = null,
-        ILibraryRevisionService? revisions = null)
+        ILibraryRevisionService? revisions = null,
+        IAppLogger? logger = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _libraryIdentityService = libraryIdentityService;
         _snapshotBindings = snapshotBindings;
         _revisions = revisions;
+        _logger = logger;
     }
 
     public async Task<Result<ItemPurgeDependencyReport>> BuildPurgeReportAsync(
         ItemId itemId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null)
     {
         Result<IReadOnlyList<ItemPurgeDependencyReport>> reports =
-            await BuildPurgeReportsAsync([itemId], cancellationToken);
+            await BuildPurgeReportsAsync([itemId], cancellationToken, progress);
         return reports.IsSuccess
             ? Result<ItemPurgeDependencyReport>.Success(reports.Value[0])
             : Result<ItemPurgeDependencyReport>.Failure(
@@ -54,13 +61,30 @@ public sealed class ItemPurgeService : IItemPurgeService
 
     public async Task<Result<IReadOnlyList<ItemPurgeDependencyReport>>> BuildPurgeReportsAsync(
         IReadOnlyList<ItemId> itemIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null)
     {
+        long started = StartPhase(progress, "report_total", "正在生成永久删除依赖报告...");
+        try
+        {
+            return await BuildPurgeReportsCoreAsync(itemIds, cancellationToken, progress);
+        }
+        finally
+        {
+            await FinishPhaseAsync(progress, "report_total", "依赖报告读取已结束。", started);
+        }
+    }
+
+    private async Task<Result<IReadOnlyList<ItemPurgeDependencyReport>>> BuildPurgeReportsCoreAsync(
+        IReadOnlyList<ItemId> itemIds, CancellationToken cancellationToken, IProgress<ItemPurgeProgress>? progress)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (itemIds.Count == 0)
         {
             return Result<IReadOnlyList<ItemPurgeDependencyReport>>.Success([]);
         }
 
+        long databaseStarted = StartPhase(progress, "report_database", "正在读取题录与文档依赖...");
         Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
@@ -80,6 +104,7 @@ public sealed class ItemPurgeService : IItemPurgeService
             List<PurgeFileAssetRow> fileAssetRows = [];
             foreach (string[] itemBatch in itemIdStrings.Chunk(ReportQueryBatchSize))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 trashCount += await connection.ExecuteScalarAsync<int>(
                     """
                     select count(1)
@@ -148,6 +173,7 @@ public sealed class ItemPurgeService : IItemPurgeService
             HashSet<string> workingDocuments = new(StringComparer.Ordinal);
             foreach (string[] documentBatch in allDocumentIds.Chunk(ReportQueryBatchSize))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 activeOcrDocuments.UnionWith(await connection.QueryAsync<string>(
                     "select distinct document_instance_id from ocr_runs where document_instance_id in @DocumentIds and state in (@Pending, @Running);",
                     new
@@ -170,8 +196,18 @@ public sealed class ItemPurgeService : IItemPurgeService
                     new { DocumentIds = documentBatch, Working = "working" }));
             }
 
-            IReadOnlyDictionary<string, IReadOnlyList<string>> shardIdsByItem =
-                await FindSnapshotShardIdsAsync(itemIdStrings, cancellationToken);
+            await FinishPhaseAsync(progress, "report_database", "题录与文档依赖已读取。", databaseStarted);
+            long snapshotStarted = StartPhase(progress, "snapshot_scan", "正在检查快照分片依赖...");
+            IReadOnlyDictionary<string, IReadOnlyList<string>> shardIdsByItem;
+            try
+            {
+                shardIdsByItem = await FindSnapshotShardIdsAsync(itemIdStrings, cancellationToken);
+            }
+            finally
+            {
+                await FinishPhaseAsync(progress, "snapshot_scan", "快照依赖检查已结束。", snapshotStarted);
+            }
+
             Dictionary<string, ItemPurgeDependencyReport> reportsByItem = new(StringComparer.Ordinal);
             foreach (ItemId itemId in distinctIds)
             {
@@ -210,8 +246,24 @@ public sealed class ItemPurgeService : IItemPurgeService
 
     public async Task<Result> PurgeItemsAsync(
         IReadOnlyList<ItemId> itemIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null)
     {
+        long started = StartPhase(progress, "purge_total", "正在永久删除题录及页面历史...");
+        try
+        {
+            return await PurgeItemsCoreAsync(itemIds, cancellationToken, progress);
+        }
+        finally
+        {
+            await FinishPhaseAsync(progress, "purge_total", "永久删除事务已结束。", started);
+        }
+    }
+
+    private async Task<Result> PurgeItemsCoreAsync(IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken, IProgress<ItemPurgeProgress>? progress)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (itemIds.Count == 0)
         {
             return Result.Success();
@@ -228,10 +280,13 @@ public sealed class ItemPurgeService : IItemPurgeService
 
         try
         {
-            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            using IDisposable writeLease = await EnterWriteWithTimingAsync(cancellationToken, progress);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction =
+                await BeginTransactionWithTimingAsync(connection, cancellationToken, progress);
+            cancellationToken.ThrowIfCancellationRequested();
+            long validationStarted = StartPhase(progress, "validation", "正在重新检查回收站和活动 OCR 状态...");
 
             int trashCount = await connection.ExecuteScalarAsync<int>(
                 """
@@ -294,9 +349,18 @@ public sealed class ItemPurgeService : IItemPurgeService
                     "Cannot purge items while OCR runs are pending or running.");
             }
 
+            await FinishPhaseAsync(progress, "validation", "删除范围和活动任务检查已完成。", validationStarted);
+
             if (documentIds.Length > 0)
             {
-                await SearchFtsCacheWriter.EnsureReadyAsync(connection, transaction, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                long ftsStarted = StartPhase(progress, "fts_prepare", "正在准备全文索引缓存...");
+                bool rebuilt = await SearchFtsCacheWriter.EnsureReadyAsync(connection, transaction, cancellationToken);
+                await FinishPhaseAsync(progress, "fts_prepare", rebuilt ? "全文索引缓存已重建。" : "全文索引缓存已就绪，无需重建。", ftsStarted,
+                    rebuilt);
+
+                cancellationToken.ThrowIfCancellationRequested();
+                long ocrStarted = StartPhase(progress, "ocr_history_delete", "正在删除 OCR 识别和采纳记录...");
 
                 await connection.ExecuteAsync(
                     """
@@ -321,7 +385,10 @@ public sealed class ItemPurgeService : IItemPurgeService
                     "delete from ocr_runs where document_instance_id in @DocumentIds;",
                     new { DocumentIds = documentIds },
                     transaction);
+                await FinishPhaseAsync(progress, "ocr_history_delete", "OCR 识别和采纳记录已清理。", ocrStarted);
 
+                cancellationToken.ThrowIfCancellationRequested();
+                long ftsDeleteStarted = StartPhase(progress, "fts_delete", "正在清理全文索引和搜索单元...");
                 await SearchFtsCacheWriter.DeleteForDocumentInstancesAsync(
                     connection, transaction, documentIds, cancellationToken);
 
@@ -340,7 +407,10 @@ public sealed class ItemPurgeService : IItemPurgeService
                     "delete from search_units where document_instance_id in @DocumentIds;",
                     new { DocumentIds = documentIds },
                     transaction);
+                await FinishPhaseAsync(progress, "fts_delete", "全文索引和搜索单元已清理。", ftsDeleteStarted);
 
+                cancellationToken.ThrowIfCancellationRequested();
+                long historyStarted = StartPhase(progress, "document_history_delete", "正在删除页面、译文、框树和修订历史...");
                 await connection.ExecuteAsync(
                     "delete from document_commit_pages where commit_id in (select commit_id from document_commits where document_instance_id in @DocumentIds) or page_id in @PageIds;",
                     new { DocumentIds = documentIds, PageIds = pageIds },
@@ -375,8 +445,11 @@ public sealed class ItemPurgeService : IItemPurgeService
                     "delete from pages where document_instance_id in @DocumentIds;",
                     new { DocumentIds = documentIds },
                     transaction);
+                await FinishPhaseAsync(progress, "document_history_delete", "页面及正文历史已清理。", historyStarted);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+            long itemStarted = StartPhase(progress, "item_delete", "正在删除题录附属信息并登记清除记录...");
             await connection.ExecuteAsync(
                 "delete from document_instances where item_id in @ItemIds;",
                 new { ItemIds = itemIdStrings },
@@ -447,7 +520,12 @@ public sealed class ItemPurgeService : IItemPurgeService
                 return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
             }
 
+            await FinishPhaseAsync(progress, "item_delete", "题录和清除记录已更新。", itemStarted);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            long commitStarted = StartPhase(progress, "commit", "正在提交整批永久删除事务...");
             await transaction.CommitAsync(cancellationToken);
+            await FinishPhaseAsync(progress, "commit", "整批永久删除已提交。", commitStarted);
             PublishRevision(revision.Value);
 
             return Result.Success();
@@ -460,6 +538,89 @@ public sealed class ItemPurgeService : IItemPurgeService
                                               "infrastructure.item-purge"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    private async Task<IDisposable> EnterWriteWithTimingAsync(CancellationToken cancellationToken,
+        IProgress<ItemPurgeProgress>? progress)
+    {
+        long started = StartPhase(progress, "write_lease_wait", "正在等待书库写入许可...");
+        try
+        {
+            return await _connectionFactory.EnterWriteAsync(cancellationToken);
+        }
+        finally
+        {
+            await FinishPhaseAsync(progress, "write_lease_wait", "书库写入许可等待已结束。", started);
+        }
+    }
+
+    private async Task<DbTransaction> BeginTransactionWithTimingAsync(SqliteConnection connection,
+        CancellationToken cancellationToken, IProgress<ItemPurgeProgress>? progress)
+    {
+        // Microsoft.Data.Sqlite's non-deferred transaction acquires the SQLite write lock here.
+        // Keep native lock acquisition (including busy waiting) separate from payload SQL timings.
+        long started = StartPhase(progress, "sqlite_write_lock", "正在获取 SQLite 写入锁并开启事务...");
+        int? errorCode = null;
+        try
+        {
+            return await connection.BeginTransactionAsync(cancellationToken);
+        }
+        catch (SqliteException exception)
+        {
+            errorCode = exception.SqliteErrorCode;
+            throw;
+        }
+        finally
+        {
+            await FinishPhaseAsync(progress, "sqlite_write_lock", "SQLite 写入锁获取阶段已结束。", started,
+                sqliteErrorCode: errorCode);
+        }
+    }
+
+    private static long StartPhase(IProgress<ItemPurgeProgress>? progress, string phase, string message)
+    {
+        ReportSafely(progress, new ItemPurgeProgress(phase, message));
+        return Stopwatch.GetTimestamp();
+    }
+
+    private async Task FinishPhaseAsync(IProgress<ItemPurgeProgress>? progress, string phase, string message,
+        long started, bool? ftsCacheRebuilt = null, int? sqliteErrorCode = null)
+    {
+        double milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        ReportSafely(progress,
+            new ItemPurgeProgress(phase, message, true, milliseconds, ftsCacheRebuilt, sqliteErrorCode));
+        if (_logger is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _logger.LogAsync("item-purge-phase", string.Create(CultureInfo.InvariantCulture,
+                $"phase={phase}; elapsed_ms={milliseconds:F3}; fts_rebuilt={ftsCacheRebuilt}; sqlite_error={sqliteErrorCode}"));
+        }
+        catch (Exception exception) when (exception is OperationCanceledException ||
+                                          UnexpectedExceptionReporter.ReportCatch(exception, "item-purge-diagnostics",
+                                              phase))
+        {
+            // Diagnostic cancellation/failure must not replace the transaction's outcome.
+            return;
+        }
+    }
+
+    private static void ReportSafely(IProgress<ItemPurgeProgress>? progress, ItemPurgeProgress update)
+    {
+        try
+        {
+            progress?.Report(update);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException ||
+                                          UnexpectedExceptionReporter.ReportCatch(exception, "item-purge-progress",
+                                              update.Phase))
+        {
+            // Reporting must not turn a committed deletion into a business failure.
+            return;
         }
     }
 
@@ -514,6 +675,7 @@ public sealed class ItemPurgeService : IItemPurgeService
 
             foreach (SnapshotShard shard in manifest.Shards)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string shardPath = Path.Combine(syncRoot, shard.FileName);
                 if (!SnapshotPublisher.IsPathInside(shardPath, syncRoot) || !File.Exists(shardPath))
                 {
@@ -521,7 +683,7 @@ public sealed class ItemPurgeService : IItemPurgeService
                 }
 
                 await using SqliteConnection shardConnection =
-                    new(SnapshotPublisher.BuildConnectionString(shardPath, SqliteOpenMode.ReadOnly));
+                    SqliteConnectionFactory.CreateUnpooledReadConnection(shardPath);
                 await shardConnection.OpenAsync(cancellationToken);
                 if (!await SnapshotPublisher.TableExistsAsync(shardConnection, "items"))
                 {

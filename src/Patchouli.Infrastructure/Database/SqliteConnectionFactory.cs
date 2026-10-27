@@ -125,6 +125,14 @@ public class SqliteConnectionFactory
         return new SqliteConnection(connectionString);
     }
 
+    /// <summary>A scoped immutable-file read, sharing the same configuration/affinity hook without retaining a file pool.</summary>
+    public static SqliteConnection CreateUnpooledReadConnection(string databasePath)
+    {
+        SqliteConnectionFactory factory = new(databasePath);
+        return factory.CreateConfiguredConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly, false),
+            true);
+    }
+
     private SqliteConnection CreateConfiguredConnection(string connectionString, bool readOnly)
     {
         SqliteConnection connection = CreateConnection(connectionString);

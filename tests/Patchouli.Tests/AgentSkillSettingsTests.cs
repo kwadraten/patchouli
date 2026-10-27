@@ -25,15 +25,13 @@ public sealed class AgentSkillSettingsTests(AvaloniaSharedSessionFixture headles
             Directory.CreateDirectory(managedSkill);
             await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
             using AgentIntegrationSettingsViewModel section = new(main, skills);
-            await section.LoadAsync();
+            // This is a user-level filesystem workflow, not a real-machine executable-discovery
+            // integration test. LoadAsync starts that unrelated pipeline and initializes a Host.
+            await section.RefreshSkillsAsync();
             section.Enabled = false;
-            for (int attempt = 0; section.HasActiveOperation && attempt < 500; attempt++)
-            {
-                await Task.Delay(10);
-            }
-
             section.HasActiveOperation.Should()
-                .BeFalse("detection failure without a library must not hold the skill action gate");
+                .BeFalse("refreshing user-level skills does not start executable discovery");
+            main.HasOpenRuntimeDatabase.Should().BeFalse();
             AgentIntegrationRowViewModel row = section.Agents.Single(agent => agent.Entry.Id == "opencode");
 
             row.SkillActionText.Should().Be("注入");
@@ -69,6 +67,7 @@ public sealed class AgentSkillSettingsTests(AvaloniaSharedSessionFixture headles
             await section.RefreshSkillsAsync();
             row.SkillActionText.Should().Be("注入", "external removal is reflected by a disk refresh");
             section.IsDirty.Should().Be(dirtyBeforeSkillActions);
+            main.HasOpenRuntimeDatabase.Should().BeFalse("user-level skill actions never require a Library Host");
             return true;
         }, CancellationToken.None);
     }

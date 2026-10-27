@@ -11,7 +11,8 @@ internal static class SearchFtsCacheWriter
     private const int BatchSize = 500;
     private const int CurrentCacheVersion = 1;
 
-    internal static async Task EnsureReadyAsync(
+    /// <returns>True only when this call rebuilt the cache; false for an already-ready cache.</returns>
+    internal static async Task<bool> EnsureReadyAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken)
@@ -44,7 +45,7 @@ internal static class SearchFtsCacheWriter
             {
                 if (hasMappedRows)
                 {
-                    return;
+                    return false;
                 }
 
                 bool hasCurrentUnits = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
@@ -54,12 +55,13 @@ internal static class SearchFtsCacheWriter
                     cancellationToken: cancellationToken));
                 if (!hasCurrentUnits)
                 {
-                    return;
+                    return false;
                 }
             }
         }
 
         await RebuildAllAsync(connection, transaction, cancellationToken);
+        return true;
     }
 
     internal static async Task RebuildAllAsync(

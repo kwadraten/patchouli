@@ -2098,6 +2098,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private async Task ShutdownCoreAsync()
     {
         Interlocked.Exchange(ref _librarySwitchInProgress, 1);
+        await Shell.CancelAndDrainItemPurgeAsync();
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())
         {
@@ -2252,6 +2253,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _searchEvidenceViewModel?.DetachLibraryContext();
         _ocrQueueViewModel?.DetachLibraryContext();
         _snapshot?.DetachLibraryContext();
+        await Shell.CancelAndDrainItemPurgeAsync();
         foreach (ItemEditorViewModel editor in Layout.Tabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>()
                      .ToArray())
         {

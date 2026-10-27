@@ -1,7 +1,10 @@
 using Dapper;
+using System.Collections.Concurrent;
+using System.Data.Common;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -259,6 +262,249 @@ public sealed class ItemPurgeServiceTests
         (await c.CountForItem("item_dates", itemId)).Should().Be(0);
         (await c.Count("items")).Should().Be(1);
         (await c.Count("item_purge_records")).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Scaled_history_purge_profiles_ready_and_recovery_FTS_paths_without_losing_atomicity(
+        bool rebuildCache)
+    {
+        await using Ctx c = await Ctx.Create();
+        List<ItemId> ids = [];
+        DocumentTreeService trees = BoxTreeTestData.CreateService(c.Database.ConnectionFactory, c.Clock);
+        SearchIndexRebuilder index = new(c.Database.ConnectionFactory, c.Clock);
+        SearchUnitBuilder units = new(c.Database.ConnectionFactory, c.Clock);
+        for (int item = 0; item < 8; item++)
+        {
+            ids.Add(await c.InsertTrashedItemWithPayloadAsync());
+            for (int history = 0; history < 3; history++)
+            {
+                DocumentBoxSeed[] boxes = Enumerable.Range(0, 200).Select(ordinal => new DocumentBoxSeed(
+                    null, null, ordinal, DocumentBoxType.Text, null,
+                    new NormalizedBBox(.04 + ordinal % 8 * .115, .04 + ordinal / 8 * .036, .1, .03),
+                    new TextBoxPayload($"History {history}, paragraph {ordinal}."))).ToArray();
+                DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(c.DocumentInstanceId,
+                    c.PageId, boxes, DocumentTreeRevisionSource.Import)).Value;
+                (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).IsSuccess.Should().BeTrue();
+            }
+
+            (await units.RebuildForDocumentInstanceAsync(c.DocumentInstanceId)).IsSuccess.Should().BeTrue();
+            (await index.RebuildFtsForDocumentInstanceAsync(c.DocumentInstanceId)).IsSuccess.Should().BeTrue();
+        }
+
+        (await index.EnsureCacheAsync()).IsSuccess.Should().BeTrue();
+        if (rebuildCache)
+        {
+            await using SqliteConnection connection = c.Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("delete from fts_cache_state;");
+        }
+
+        (await c.Count("document_boxes")).Should().BeGreaterThan(4000);
+        (await c.Count("search_units")).Should().BeGreaterThan(1000);
+        RecordingPurgeProgress progress = new();
+        long before = await c.RevisionAsync();
+        int events = 0;
+        c.Revisions.ChangeCommitted += (_, _) => Interlocked.Increment(ref events);
+        Result<IReadOnlyList<ItemPurgeDependencyReport>> reports =
+            await c.Purge.BuildPurgeReportsAsync(ids, progress: progress);
+        reports.IsSuccess.Should().BeTrue(reports.ErrorMessage);
+
+        Result result = await c.Purge.PurgeItemsAsync(ids, progress: progress);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        foreach (string table in new[]
+                 {
+                     "items", "document_instances", "pages", "document_tree_revisions", "document_boxes",
+                     "search_units", "search_units_fts", "fts_row_map"
+                 })
+        {
+            (await c.Count(table)).Should().Be(0, table + " payload belongs to the purged batch");
+        }
+
+        (await c.ForeignKeyViolationCount()).Should().Be(0);
+        (await c.Count("item_purge_records")).Should().Be(ids.Count);
+        (await c.RevisionAsync()).Should().Be(before + 1);
+        events.Should().Be(1);
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+        ItemPurgeProgress[] measured = progress.Updates.Where(update => update.IsCompleted).ToArray();
+        measured.Single(update => update.Phase == "fts_prepare").FtsCacheRebuilt.Should().Be(rebuildCache);
+        measured.Select(update => update.Phase).Should().Contain(new[]
+        {
+            "report_total", "snapshot_scan", "write_lease_wait", "sqlite_write_lock", "fts_prepare",
+            "fts_delete", "document_history_delete", "commit", "purge_total"
+        });
+        measured.Should().OnlyContain(update => update.ElapsedMilliseconds >= 0);
+        await WritePhaseEvidenceAsync(rebuildCache ? "fts-recovery" : "fts-ready", progress.Updates);
+    }
+
+    [Fact]
+    public async Task Cancellation_after_FTS_mutation_rolls_back_the_whole_batch_and_revision()
+    {
+        await using Ctx c = await Ctx.Create();
+        ItemId[] ids = [await c.InsertTrashedItemWithPayloadAsync(), await c.InsertTrashedItemWithPayloadAsync()];
+        long before = await c.RevisionAsync();
+        int boxes = await c.Count("document_boxes");
+        using CancellationTokenSource cancellation = new();
+        Action requestCancellation = cancellation.Cancel;
+        RecordingPurgeProgress progress = new(update =>
+        {
+            if (update.Phase == "fts_delete" && update.IsCompleted)
+            {
+                requestCancellation();
+            }
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            c.Purge.PurgeItemsAsync(ids, cancellation.Token, progress));
+
+        (await c.Count("items")).Should().Be(2);
+        (await c.Count("document_boxes")).Should().Be(boxes);
+        (await c.Count("search_units_fts")).Should().Be(2);
+        (await c.Count("item_purge_records")).Should().Be(0);
+        (await c.RevisionAsync()).Should().Be(before);
+        progress.Updates.Should().NotContain(update => update.Phase == "commit" && update.IsCompleted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Repository_lease_wait_and_native_SQLite_write_lock_wait_are_measured_separately(bool nativeLock)
+    {
+        await using Ctx c = await Ctx.Create();
+        ItemId id = await c.InsertTrashedItemWithPayloadAsync();
+        ItemPurgeService purge = c.Purge;
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        string expectedPhase = nativeLock ? "sqlite_write_lock" : "write_lease_wait";
+        RecordingPurgeProgress progress = new(update =>
+        {
+            if (update.Phase == expectedPhase && !update.IsCompleted)
+            {
+                started.TrySetResult();
+            }
+        });
+        IDisposable? lease = null;
+        SqliteConnection? connection = null;
+        DbTransaction? transaction = null;
+        Task<Result>? pending = null;
+        try
+        {
+            if (nativeLock)
+            {
+                connection = c.Database.ConnectionFactory.CreateConnection();
+                await connection.OpenAsync();
+                transaction = await connection.BeginTransactionAsync();
+            }
+            else
+            {
+                lease = await c.Database.ConnectionFactory.EnterWriteAsync();
+            }
+
+            pending = Task.Run(() => purge.PurgeItemsAsync([id], progress: progress));
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(250);
+            pending.IsCompleted.Should().BeFalse();
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync();
+                await transaction.DisposeAsync();
+                transaction = null;
+            }
+
+            lease?.Dispose();
+            lease = null;
+            (await pending.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess.Should().BeTrue();
+            progress.Updates.Single(update => update.Phase == expectedPhase && update.IsCompleted)
+                .ElapsedMilliseconds.Should().BeGreaterThan(150);
+            await WritePhaseEvidenceAsync(expectedPhase, progress.Updates);
+        }
+        finally
+        {
+            if (transaction is not null)
+            {
+                await transaction.DisposeAsync();
+            }
+
+            if (connection is not null)
+            {
+                await connection.DisposeAsync();
+            }
+
+            lease?.Dispose();
+            if (pending is not null)
+            {
+                await pending;
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Diagnostic_failure_or_cancellation_cannot_change_report_or_committed_purge_outcomes(
+        bool diagnosticCancellation)
+    {
+        await using Ctx c = await Ctx.Create();
+        ItemId id = await c.InsertTrashedItemWithPayloadAsync();
+        ThrowingDiagnostics diagnostics = new(diagnosticCancellation);
+        ItemPurgeService purge = new(c.Database.ConnectionFactory, c.Clock, c.Library,
+            revisions: c.Revisions, logger: diagnostics);
+
+        (await purge.BuildPurgeReportAsync(id, progress: diagnostics)).IsSuccess.Should().BeTrue();
+        (await purge.PurgeItemsAsync([id], progress: diagnostics)).IsSuccess.Should().BeTrue();
+
+        diagnostics.LogCalls.Should().BeGreaterThan(0);
+        diagnostics.ProgressCalls.Should().BeGreaterThan(0);
+        (await c.Count("items")).Should().Be(0);
+        (await c.Count("item_purge_records")).Should().Be(1);
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+    }
+
+    private sealed class ThrowingDiagnostics(bool cancellation) : IAppLogger, IProgress<ItemPurgeProgress>
+    {
+        public int LogCalls { get; private set; }
+        public int ProgressCalls { get; private set; }
+
+        public Task LogAsync(string operation, string message)
+        {
+            LogCalls++;
+            return Task.FromException(CreateFailure());
+        }
+
+        public void Report(ItemPurgeProgress value)
+        {
+            ProgressCalls++;
+            throw CreateFailure();
+        }
+
+        private Exception CreateFailure()
+        {
+            return cancellation
+                ? new OperationCanceledException("injected diagnostic cancellation")
+                : new IOException("injected diagnostic failure");
+        }
+    }
+
+    private static async Task WritePhaseEvidenceAsync(string scenario, IEnumerable<ItemPurgeProgress> progress)
+    {
+        string root = Path.Combine(Testing.RepositoryTestEnvironment.TemporaryRoot, "test-evidence", "item-purge");
+        Directory.CreateDirectory(root);
+        string json = System.Text.Json.JsonSerializer.Serialize(progress.ToArray());
+        Performance.ReportPrivacy.AssertSafe(json);
+        await File.WriteAllTextAsync(Path.Combine(root, scenario + "-" + Guid.NewGuid().ToString("N") + ".json"), json);
+    }
+
+    private sealed class RecordingPurgeProgress(Action<ItemPurgeProgress>? callback = null)
+        : IProgress<ItemPurgeProgress>
+    {
+        public ConcurrentQueue<ItemPurgeProgress> Updates { get; } = new();
+
+        public void Report(ItemPurgeProgress value)
+        {
+            Updates.Enqueue(value);
+            callback?.Invoke(value);
+        }
     }
 
     private sealed class Ctx : IAsyncDisposable

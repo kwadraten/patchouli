@@ -186,6 +186,16 @@ runs in the background even when no dialog can be shown. Soft Item changes (tras
 and tag/collection changes remain non-modal. This execution boundary complements, rather than
 replaces, ADR `0033`'s notification/scheduling model.
 
+Permanent Item purge freezes selected ids/titles before background dependency inspection. Only the
+confirmed delete uses foreground modal blocking; switching/closing a Library cancels admission and
+drains actual report/delete work before releasing its Host. A confirmation displays at most twenty
+titles and dependency rows while retaining complete totals and the full deletion scope. Purge phase
+diagnostics separately measure report/snapshot inspection, repository write-lease waiting, SQLite
+write-lock/transaction acquisition, FTS readiness (including whether recovery rebuilt it), FTS and
+document-history deletion, commit and UI projection. These records contain stages, durations and
+SQLite error codes, not paths, ids or document contents. Batch deletion remains one transaction and
+one LibraryRevision; original source files are never deleted by this operation.
+
 ## Document ownership and remaining implementation gaps
 
 Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in protocols/, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.

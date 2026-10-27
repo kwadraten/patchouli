@@ -24,40 +24,48 @@
 
       <Border Grid.Row="1" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
               Padding="8" MaxHeight="160">
-        <ScrollViewer>
-          <ItemsControl ItemsSource="{Binding Titles}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="x:String">
-                <TextBlock Text="{Binding}" FontSize="13" Margin="0,2" TextTrimming="CharacterEllipsis" />
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
-        </ScrollViewer>
+        <Grid RowDefinitions="*,Auto">
+          <ScrollViewer Grid.Row="0">
+            <ItemsControl ItemsSource="{Binding DisplayedTitles}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="x:String">
+                  <TextBlock Text="{Binding}" FontSize="13" Margin="0,2" TextTrimming="CharacterEllipsis" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+          <TextBlock Grid.Row="1" Text="{Binding PreviewLimitMessage}" IsVisible="{Binding HasHiddenPreviewItems}"
+                     TextWrapping="Wrap" FontSize="12" Margin="0,6,0,0" />
+        </Grid>
       </Border>
 
       <StackPanel Grid.Row="2" Orientation="Vertical" Spacing="4"
                   IsVisible="{Binding IsDetailsVisible}">
         <TextBlock Text="依赖详情" FontSize="12" FontWeight="SemiBold"
                    Foreground="{DynamicResource OnSurfaceBrush}" />
-        <ItemsControl ItemsSource="{Binding Reports}">
-          <ItemsControl.ItemTemplate>
-            <DataTemplate x:DataType="bib:ItemPurgeDependencyReport">
-              <StackPanel Orientation="Vertical" Spacing="2" Margin="0,4">
-                <TextBlock Text="{Binding ItemId}" FontSize="12" FontWeight="SemiBold" />
-                <TextBlock FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}">
-                  <TextBlock.Text>
-                    <MultiBinding StringFormat="{}{0} 个快照分片 | 活动 OCR: {1} | OCR 候选: {2} | 工作版本: {3}">
-                      <Binding Path="SnapshotCount" />
-                      <Binding Path="HasActiveOcr" />
-                      <Binding Path="HasOcrCandidates" />
-                      <Binding Path="HasWorking" />
-                    </MultiBinding>
-                  </TextBlock.Text>
-                </TextBlock>
-              </StackPanel>
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
+        <TextBlock Text="{Binding DependencySummaryMessage}" FontSize="12" TextWrapping="Wrap"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <ScrollViewer MaxHeight="220">
+          <ItemsControl ItemsSource="{Binding DisplayedReports}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="bib:ItemPurgeDependencyReport">
+                <StackPanel Orientation="Vertical" Spacing="2" Margin="0,4">
+                  <TextBlock Text="{Binding ItemId}" FontSize="12" FontWeight="SemiBold" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}">
+                    <TextBlock.Text>
+                      <MultiBinding StringFormat="{}{0} 个快照分片 | 活动 OCR: {1} | OCR 候选: {2} | 工作版本: {3}">
+                        <Binding Path="SnapshotCount" />
+                        <Binding Path="HasActiveOcr" />
+                        <Binding Path="HasOcrCandidates" />
+                        <Binding Path="HasWorking" />
+                      </MultiBinding>
+                    </TextBlock.Text>
+                  </TextBlock>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
       </StackPanel>
 
       <Grid Grid.Row="3" ColumnDefinitions="*,Auto">

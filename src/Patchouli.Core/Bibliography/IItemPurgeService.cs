@@ -10,7 +10,8 @@ public interface IItemPurgeService
     /// </summary>
     Task<Result<ItemPurgeDependencyReport>> BuildPurgeReportAsync(
         ItemId itemId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null);
 
     /// <summary>
     /// Builds dependency reports for several items. Implementations can share snapshot inspection
@@ -18,12 +19,13 @@ public interface IItemPurgeService
     /// </summary>
     async Task<Result<IReadOnlyList<ItemPurgeDependencyReport>>> BuildPurgeReportsAsync(
         IReadOnlyList<ItemId> itemIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null)
     {
         List<ItemPurgeDependencyReport> reports = new(itemIds.Count);
         foreach (ItemId itemId in itemIds)
         {
-            Result<ItemPurgeDependencyReport> report = await BuildPurgeReportAsync(itemId, cancellationToken);
+            Result<ItemPurgeDependencyReport> report = await BuildPurgeReportAsync(itemId, cancellationToken, progress);
             if (report.IsFailure)
             {
                 return Result<IReadOnlyList<ItemPurgeDependencyReport>>.Failure(
@@ -37,11 +39,12 @@ public interface IItemPurgeService
     }
 
     /// <summary>
-    /// Permanently deletes the payload for the specified items. Evidence references are preserved
-    /// but marked as <see cref="Evidence.EvidenceRecordStatus.Purged"/>. A single library revision
-    /// is published after the transaction commits.
+    /// Permanently deletes the specified items and their document payload. Versioned evidence then
+    /// resolves as not found; original source files remain untouched. A single library revision
+    /// is published after the whole batch commits.
     /// </summary>
     Task<Result> PurgeItemsAsync(
         IReadOnlyList<ItemId> itemIds,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<ItemPurgeProgress>? progress = null);
 }

@@ -379,7 +379,8 @@ public sealed class HostServices
             activityTracker,
             LifetimeToken);
         PurgeItems =
-            new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions);
+            new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions,
+                logger);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
         PdfMetadataReader pdfMetadata = new(pdfiumEngine);
         PdfMetadata = pdfMetadata;
