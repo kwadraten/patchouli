@@ -46,7 +46,7 @@ public sealed class PdfCrossPageContinuationViewModel
         Continuation = continuation;
         Left = continuation.Left;
         Top = Math.Max(continuation.Top - 22, 0);
-        Label = $"续接自第 {sourcePageNumber} 页";
+        Label = $"接续自第 {sourcePageNumber} 页";
     }
 
     public PdfBBoxViewModel Continuation { get; }

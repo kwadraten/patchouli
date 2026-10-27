@@ -7,7 +7,12 @@ public sealed record CompiledMarkdown(
     string Markdown,
     IReadOnlyList<MarkdownSourceMapEntry> SourceMap,
     IReadOnlyList<MarkdownDiagnostic> Diagnostics,
-    MarkdownDocumentModel? Document = null);
+    MarkdownDocumentModel? Document = null)
+{
+    public IReadOnlyList<MarkdownContinuation> Continuations { get; init; } = [];
+}
+
+public sealed record MarkdownContinuation(DocumentBoxId BoxId, DocumentBoxId FromBoxId);
 
 public sealed record MarkdownSourceMapEntry(
     DocumentBoxId BoxId,

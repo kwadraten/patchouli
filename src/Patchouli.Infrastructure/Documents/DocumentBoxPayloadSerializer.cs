@@ -9,7 +9,7 @@ internal static class DocumentBoxPayloadSerializer
 
     public static string? Serialize(DocumentBoxPayload? payload)
     {
-        return payload switch
+        return StorageText.NormalizeInvalidCodePoints(payload switch
         {
             null => null,
             TextBoxPayload value => JsonSerializer.Serialize(value, Options),
@@ -20,7 +20,7 @@ internal static class DocumentBoxPayloadSerializer
             CodeBoxPayload value => JsonSerializer.Serialize(value, Options),
             MediaBoxPayload value => JsonSerializer.Serialize(value, Options),
             _ => throw new InvalidOperationException($"Unsupported document box payload: {payload.GetType().Name}")
-        };
+        });
     }
 
     public static DocumentBoxPayload? Deserialize(string boxType, string? subType, string? json)

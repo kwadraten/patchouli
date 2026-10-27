@@ -180,6 +180,22 @@ public interface IDocumentTreeEditor
         bool suppressed,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 建立、纠正或解除一个框的接续（<c>continues_prev</c>）关系。<paramref name="sourceBoxId"/>
+    /// 为 null 表示解除。源框可以位于本文档的其他物理页（跨页接续）。校验与导入共用
+    /// <see cref="DocumentContinuationRules"/>：同类型正文框、自引用禁止、接续链不得成环、
+    /// 源框必须属于同一文档的当前树。建立或解除关系不搬移、不清空、不复制任何框的文字。
+    /// </summary>
+    Task<Result> SetContinuationAsync(
+        PageEditSessionId sessionId,
+        DocumentBoxId boxId,
+        DocumentBoxId? sourceBoxId,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+            "Continuation editing is not supported by this service."));
+    }
+
     Task<Result> DeleteBoxAsync(
         PageEditSessionId sessionId,
         DocumentBoxId boxId,

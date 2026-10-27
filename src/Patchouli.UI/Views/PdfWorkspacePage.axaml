@@ -24,7 +24,10 @@
          DataContext is the PdfBBoxViewModel of the control the flyout is attached to. -->
     <MenuFlyout x:Key="BBoxContextMenu" x:DataType="vm:PdfBBoxViewModel">
       <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
-      <MenuItem Header="跳转到续接源框" Command="{Binding JumpToContinuationSourceCommand}"
+      <MenuItem Header="跳转到接续源框" Command="{Binding JumpToContinuationSourceCommand}"
+                IsVisible="{Binding IsContinuation}" />
+      <MenuItem Header="建立/更改接续…" Command="{Binding BeginSetContinuationCommand}" />
+      <MenuItem Header="解除接续" Command="{Binding ClearContinuationCommand}"
                 IsVisible="{Binding IsContinuation}" />
       <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}"
                 IsVisible="{Binding Workspace.IsSingleSelection}" />
@@ -783,7 +786,7 @@
             </Grid>
 
             <!-- Edit mode: Box tree -->
-            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
+            <Grid RowDefinitions="Auto,*,Auto,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
               <Border Classes="SidebarHeader">
                 <Grid ColumnDefinitions="*,Auto">
                   <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -826,8 +829,14 @@
                               <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF"
                                          FontWeight="Bold" />
                             </Border>
-                            <TextBlock Grid.Column="3" Text="{Binding Summary}" FontSize="13"
-                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            <StackPanel Grid.Column="3" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding Summary}" FontSize="13"
+                                         TextTrimming="CharacterEllipsis" />
+                              <TextBlock Text="{Binding ContinuationSourceLabel}" FontSize="11"
+                                         IsVisible="{Binding HasContinuationHint}"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                         TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
                             <TextBlock Grid.Column="4" Text="已排除" FontSize="11" VerticalAlignment="Center"
                                        IsVisible="{Binding IsSuppressed}"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
@@ -841,7 +850,28 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                            IsVisible="{Binding HasNoBoundingBoxes}" />
               </Grid>
+              <!-- 接续源框挑选面板：候选为全书同类型合法框（含跨页），选择只写关系不搬文字。 -->
               <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
+                      Padding="14,10" IsVisible="{Binding IsPickingContinuationSource}">
+                <StackPanel Spacing="6">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="选择接续源框" FontSize="12" FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="取消" Command="{Binding CancelContinuationPickCommand}"
+                            Background="Transparent" FontSize="12" />
+                  </Grid>
+                  <ItemsControl ItemsSource="{Binding ContinuationSourceCandidates}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ContinuationSourceCandidate">
+                        <Button Content="{Binding Display}" Command="{Binding ChooseCommand}"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                                Background="Transparent" FontSize="12" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+              <Border Grid.Row="3" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
                       Padding="14,10">
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                   <Button Content="放弃更改" Command="{Binding CancelEditModeCommand}"

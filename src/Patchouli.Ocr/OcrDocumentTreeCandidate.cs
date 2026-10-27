@@ -50,7 +50,7 @@ public sealed record OcrDocumentTreeCandidate(
                 return Result.Failure(AppErrorCodes.ValidationFailed, "Invalid document box subtype.");
             }
 
-            if (box.Payload is null)
+            if (box.Payload is null && box.BoxType != DocumentBoxType.LogicalPage)
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR leaf boxes require typed payload.");
             }
@@ -72,7 +72,7 @@ public sealed record OcrBoxCandidate(
     string BoxType,
     string? SubType,
     int SourceOrder,
-    DocumentBoxPayload Payload,
+    DocumentBoxPayload? Payload,
     NormalizedBBox BBox,
     int? HeadingLevel,
     double? Confidence,
@@ -80,7 +80,9 @@ public sealed record OcrBoxCandidate(
     DocumentBoxId? ParentLogicalPageBoxId = null,
     DocumentBoxId? PreassignedBoxId = null,
     DocumentBoxId? ContinuesFromBoxId = null,
-    string? CodeLanguage = null);
+    string? CodeLanguage = null,
+    bool ContinuesPrev = false,
+    string? ContinuationState = null);
 
 public sealed record OcrDiagnostic(
     string Code,

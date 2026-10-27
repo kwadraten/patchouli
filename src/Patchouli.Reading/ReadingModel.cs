@@ -81,6 +81,19 @@ public sealed record ReadingBlock(
     ReadingImageRegion? Image = null,
     int PageIndex = -1)
 {
+    /// <summary>Physical source fragments represented by a logical continuation block.</summary>
+    public IReadOnlyList<ReadingBlockSegment>? Segments { get; init; }
+
+    /// <summary>Immediate explicit predecessor for this fragment, when it continues another box.</summary>
+    public DocumentBoxId? ContinuesFromBoxId { get; init; }
+
+    /// <summary>All physical source boxes represented by this block.</summary>
+    public IReadOnlyList<DocumentBoxId>? SourceBoxIds { get; init; }
+
+    /// <summary>Why an explicit continuation was retained as physical fragments instead of being
+    /// flattened into a logical block (for example, an unsafe table/list structure).</summary>
+    public string? ContinuationDiagnostic { get; init; }
+
     /// <summary>Kind of the muted placeholder shown where a translation block is missing. It is
     /// never a source-text fallback: an untranslated block reads as 未翻译, not as its source.</summary>
     public const string UntranslatedKind = "untranslated";
@@ -99,6 +112,9 @@ public sealed record ReadingBlock(
         return new ReadingBlock(null, "paragraph", 0, string.Empty, PageIndex: pageIndex);
     }
 }
+
+/// <summary>Plain-text range contributed by one physical page/box in a logical reading block.</summary>
+public sealed record ReadingBlockSegment(int Start, int Length, int PageIndex, DocumentBoxId BoxId);
 
 /// <summary>Immutable snapshot of one column's readable content, in reading order.</summary>
 public sealed record ReadingScene(IReadOnlyList<ReadingBlock> Blocks)

@@ -26,6 +26,7 @@ using Patchouli.UI.Controls;
 using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host;
 using Patchouli.Host.Composition;
 using Patchouli.Reading;
 
@@ -497,7 +498,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     [ObservableProperty] public partial string MergeText { get; set; } = string.Empty;
 
-    public string OcrPresetStatusText => "页面与区域 OCR 使用各自配置的引擎；多模态 OCR 按设置使用本地版面模型或直接识别。";
+    public string OcrPresetStatusText => "使用当前文献库的工作页 OCR 预设；在 设置 → OCR 预设编排 中配置。";
 
     [ObservableProperty] public partial string SplitFirstText { get; set; } = string.Empty;
 
@@ -980,11 +981,20 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         };
     }
 
+    /// <summary>
+    ///     Document/page enqueue preset resolution: the stored per-library/per-scope selection wins;
+    ///     without one the legacy engine-setting default is ensured. Missing/archived/cross-library
+    ///     stored ids surface an actionable error instead of silently picking another preset.
+    /// </summary>
     private async Task<OcrPresetId?> ResolveOcrPresetIdAsync(OcrScope scope)
     {
         string engineId = _main.AppOptions.OcrEngines.EngineFor(scope);
-        Result<OcrPresetId> preset =
-            await (await _main.ImportOrchestratorAsync()).EnsurePresetForEngineAsync(engineId);
+        HostServices services = await _main.ServicesAsync();
+        // Selection reads SQLite + a sidecar file — run off the dispatcher; apply only
+        // the Status message below on the UI context.
+        Result<OcrPresetId> preset = await Task.Run(() => services.OcrSelections
+            .ResolveForScopeAsync(
+                scope, ct => services.OcrDefaults.EnsurePresetAsync(engineId, ct)));
         if (preset.IsFailure)
         {
             Status = $"OCR preset 不可用：{preset.ErrorMessage}";
@@ -994,11 +1004,70 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         return preset.Value;
     }
 
-    private async Task RunOcrModalAsync(string title, string initialStatus, Func<Task<Result>> operation)
+    // Issue #43: interactive OCR keeps its modal blocking dialog but never executes business
+    // work on the UI dispatcher. Callers capture immutable inputs, services and context
+    // generations on the UI thread. A registered thread-pool task begins business work only
+    // after the runner supplies its modal context, even if the runner invokes delegates inline.
+    // Results are applied here on the UI thread only while the captured context is still current.
+    private async Task RunOcrModalAsync<TWork>(
+        string title,
+        string initialStatus,
+        Func<ModalOperationContext, Task<Result<TWork>>> operation,
+        Action<Result<TWork>> apply,
+        CancellationToken cancellationToken)
     {
-        await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions(title, initialStatus),
-            async _ => await Dispatcher.UIThread.InvokeAsync(operation));
+        if (_interactiveOcrTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        // Publish the actual work task before displaying the dialog. Shutdown waits for this
+        // task, not for a dialog acknowledgement, even if a native call ignores cancellation.
+        TaskCompletionSource<ModalOperationContext> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<Result<TWork>> work = Task.Run(async () =>
+        {
+            ModalOperationContext context = await ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            Result<TWork> result = await operation(context).ConfigureAwait(false);
+            context.CancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }, cancellationToken);
+        _interactiveOcrTask = work;
+        try
+        {
+            Result<TWork> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions(title, initialStatus),
+                context =>
+                {
+                    ready.TrySetResult(context);
+                    return work;
+                }, cancellationToken);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                apply(result);
+            }
+        }
+        finally
+        {
+            // A runner that fails before invoking its delegate must not leave a waiting worker.
+            ready.TrySetCanceled();
+            if (work.IsCompleted && ReferenceEquals(_interactiveOcrTask, work))
+            {
+                _interactiveOcrTask = null;
+            }
+        }
+    }
+
+    // A late interactive-OCR completion or cancellation must not write into a newer page,
+    // library or draft: the captured services instance, library generation, render
+    // generation, page and edit session must all still be the live ones.
+    private bool IsCurrentOcrApplyContext(HostServices services, int libraryGeneration, int renderGeneration,
+        PageId pageId, PageEditSessionId? editSessionId, DocumentTreeRevisionId? draftRevisionId)
+    {
+        return _main.IsCurrentLibraryContext(services, libraryGeneration) &&
+               renderGeneration == _renderGeneration &&
+               _currentPageId == pageId &&
+               EditSessionId == editSessionId &&
+               _draftRevisionId == draftRevisionId;
     }
 
     private async Task RunPendingOcrPrefillAsync()
@@ -1009,48 +1078,77 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Region);
-        if (presetId is null)
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        PageId pageId = _currentPageId.Value;
+        NormalizedBBox region = PendingBBox.Value;
+        string engineId = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Region);
+        int libraryGeneration = _main.LibraryGeneration;
+        int renderGeneration = _renderGeneration;
+        PageEditSessionId? editSessionId = EditSessionId;
+        DocumentTreeRevisionId? draftRevisionId = _draftRevisionId;
+        CancellationToken workspaceToken = _workspaceCancellation.Token;
+        HostServices services = await _main.ServicesAsync();
+        if (!IsCurrentOcrApplyContext(services, libraryGeneration, renderGeneration, pageId, editSessionId,
+                draftRevisionId) || PendingBBox != region)
         {
             return;
         }
 
-        await RunOcrModalAsync("局部 OCR 预填", "正在识别所选区域...", async () =>
-        {
-            Result<OcrRegionCandidate> candidate = await (await _main.ServicesAsync()).Ocr
-                .RecognizeRegionCandidateAsync(
-                    DocumentInstanceId.Parse(Item.DocumentInstanceId), presetId.Value, _currentPageId.Value,
-                    PendingBBox.Value);
-            if (candidate.IsFailure)
+        await RunOcrModalAsync("局部 OCR 预填", "正在识别所选区域...",
+            async context =>
             {
-                Status = $"局部 OCR 预填失败：{candidate.ErrorMessage}";
-                return Result.Failure(candidate.ErrorCode!, candidate.ErrorMessage!);
-            }
+                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    context.CancellationToken, workspaceToken);
+                Result<OcrPresetId> preset = await services.OcrSelections
+                    .ResolveForScopeAsync(OcrScope.Region,
+                        ct => services.OcrDefaults.EnsurePresetAsync(engineId, ct), linked.Token);
+                if (preset.IsFailure)
+                {
+                    return Result<OcrRegionCandidate>.Failure(preset.ErrorCode!,
+                        $"OCR preset 不可用：{preset.ErrorMessage}");
+                }
 
-            NewBoxType = candidate.Value.BoxType;
-            NewBoxText = PayloadTextFor(new DocumentBox(
-                _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
-                DocumentBoxId.New(),
-                DocumentInstanceId.Parse(Item.DocumentInstanceId),
-                candidate.Value.PageId,
-                null,
-                null,
-                candidate.Value.BoxType,
-                null,
-                candidate.Value.BBox,
-                candidate.Value.Payload,
-                candidate.Value.HeadingLevel,
-                null,
-                candidate.Value.Confidence,
-                false)) ?? string.Empty;
-            if (candidate.Value.HeadingLevel is { } level)
+                return await services.Ocr.RecognizeRegionCandidateAsync(
+                    documentId, preset.Value, pageId, region, linked.Token);
+            },
+            result =>
             {
-                NewHeadingLevel = level;
-            }
+                if (!IsCurrentOcrApplyContext(services, libraryGeneration, renderGeneration, pageId,
+                        editSessionId, draftRevisionId) || PendingBBox != region)
+                {
+                    return;
+                }
 
-            Status = "OCR 预填完成；确认或修改内容后插入草稿。";
-            return Result.Success();
-        });
+                if (result.IsFailure)
+                {
+                    Status = $"局部 OCR 预填失败：{result.ErrorMessage}";
+                    return;
+                }
+
+                OcrRegionCandidate candidate = result.Value;
+                NewBoxType = candidate.BoxType;
+                NewBoxText = PayloadTextFor(new DocumentBox(
+                    _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
+                    DocumentBoxId.New(),
+                    documentId,
+                    candidate.PageId,
+                    null,
+                    null,
+                    candidate.BoxType,
+                    null,
+                    candidate.BBox,
+                    candidate.Payload,
+                    candidate.HeadingLevel,
+                    null,
+                    candidate.Confidence,
+                    false)) ?? string.Empty;
+                if (candidate.HeadingLevel is { } level)
+                {
+                    NewHeadingLevel = level;
+                }
+
+                Status = "OCR 预填完成；确认或修改内容后插入草稿。";
+            }, workspaceToken);
     }
 
     private async Task SplitSelectedAsync()
@@ -1119,48 +1217,78 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Region);
-        if (presetId is null)
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        PageId pageId = _currentPageId.Value;
+        DocumentBox targetBox = source;
+        string engineId = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Region);
+        int libraryGeneration = _main.LibraryGeneration;
+        int renderGeneration = _renderGeneration;
+        PageEditSessionId? editSessionId = EditSessionId;
+        DocumentTreeRevisionId? draftRevisionId = _draftRevisionId;
+        CancellationToken workspaceToken = _workspaceCancellation.Token;
+        HostServices services = await _main.ServicesAsync();
+        if (!IsCurrentOcrApplyContext(services, libraryGeneration, renderGeneration, pageId, editSessionId,
+                draftRevisionId))
         {
             return;
         }
 
-        await RunOcrModalAsync("局部 OCR", "正在识别所选边界框区域...", async () =>
-        {
-            Result<OcrRegionCandidate> candidate = await (await _main.ServicesAsync()).Ocr
-                .RecognizeRegionCandidateAsync(
-                    DocumentInstanceId.Parse(Item.DocumentInstanceId), presetId.Value, _currentPageId.Value,
-                    source.BBox);
-            if (candidate.IsFailure)
+        await RunOcrModalAsync("局部 OCR", "正在识别所选边界框区域...",
+            async context =>
             {
-                Status = $"局部 OCR 失败：{candidate.ErrorMessage}";
-                return Result.Failure(candidate.ErrorCode!, candidate.ErrorMessage!);
-            }
+                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                    context.CancellationToken, workspaceToken);
+                Result<OcrPresetId> preset = await services.OcrSelections
+                    .ResolveForScopeAsync(OcrScope.Region,
+                        ct => services.OcrDefaults.EnsurePresetAsync(engineId, ct), linked.Token);
+                if (preset.IsFailure)
+                {
+                    return Result<OcrRegionCandidate>.Failure(preset.ErrorCode!,
+                        $"OCR preset 不可用：{preset.ErrorMessage}");
+                }
 
-            LocalOcrCandidate = candidate.Value;
-            _localOcrTargetBoxId = source.BoxId;
-            LocalOcrSourceText = PayloadTextFor(source) ?? string.Empty;
-            CandidateBoxes.Clear();
-            CandidateBoxes.Add(new PdfBBoxViewModel(_main, this, new DocumentBox(
-                _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
-                DocumentBoxId.New(),
-                DocumentInstanceId.Parse(Item.DocumentInstanceId),
-                candidate.Value.PageId,
-                null,
-                null,
-                candidate.Value.BoxType,
-                null,
-                candidate.Value.BBox,
-                candidate.Value.Payload,
-                candidate.Value.HeadingLevel,
-                null,
-                candidate.Value.Confidence,
-                false), WidthPixels, HeightPixels, true));
+                return await services.Ocr.RecognizeRegionCandidateAsync(
+                    documentId, preset.Value, pageId, targetBox.BBox, linked.Token);
+            },
+            result =>
+            {
+                if (!IsCurrentOcrApplyContext(services, libraryGeneration, renderGeneration, pageId,
+                        editSessionId, draftRevisionId))
+                {
+                    return;
+                }
 
-            Status = "局部 OCR 候选结果已生成；这是一个短生命周期的完整内容差异，不会写入识别记录或工作版本。";
-            return Result.Success();
-        });
-        if (LocalOcrCandidate is not null && _localOcrTargetBoxId is { } targetId &&
+                if (result.IsFailure)
+                {
+                    Status = $"局部 OCR 失败：{result.ErrorMessage}";
+                    return;
+                }
+
+                OcrRegionCandidate candidate = result.Value;
+                LocalOcrCandidate = candidate;
+                _localOcrTargetBoxId = targetBox.BoxId;
+                LocalOcrSourceText = PayloadTextFor(targetBox) ?? string.Empty;
+                CandidateBoxes.Clear();
+                CandidateBoxes.Add(new PdfBBoxViewModel(_main, this, new DocumentBox(
+                    _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
+                    DocumentBoxId.New(),
+                    documentId,
+                    candidate.PageId,
+                    null,
+                    null,
+                    candidate.BoxType,
+                    null,
+                    candidate.BBox,
+                    candidate.Payload,
+                    candidate.HeadingLevel,
+                    null,
+                    candidate.Confidence,
+                    false), WidthPixels, HeightPixels, true));
+
+                Status = "局部 OCR 候选结果已生成；这是一个短生命周期的完整内容差异，不会写入识别记录或工作版本。";
+            }, workspaceToken);
+        if (IsCurrentOcrApplyContext(services, libraryGeneration, renderGeneration, pageId, editSessionId,
+                draftRevisionId) && LocalOcrCandidate is not null && _localOcrTargetBoxId is { } targetId &&
             BoundingBoxes.FirstOrDefault(box => box.BoxId == targetId) is { } target)
         {
             await OpenBoxEditorAsync(target);
@@ -1279,6 +1407,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private HostServices? _editServices;
     private HostServices? _documentServices;
     private CancellationTokenSource _workspaceCancellation = new();
+    private Task? _interactiveOcrTask;
     private Task? _pageEditOcrTask;
 
     private Task RunPageEditOcrAsync(bool requireLogicalPages)
@@ -1970,6 +2099,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _workspaceCancellation.Cancel();
         _prefetchSubject.OnNext(default);
         ExitBookReading();
+        if (_interactiveOcrTask is { } interactiveOcr)
+        {
+            try
+            {
+                await interactiveOcr;
+            }
+            catch (OperationCanceledException) when (_workspaceCancellation.IsCancellationRequested)
+            {
+            }
+        }
+
         if (_pageEditOcrTask is not null)
         {
             try
@@ -2620,7 +2760,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         List<PdfBBoxViewModel> unresolved = [];
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
-            box.ContinuationHeadText = null;
             box.ContinuationSourceLabel = null;
             if (box.ContinuesFromBoxId is not { } headId)
             {
@@ -2629,7 +2768,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             if (byId.TryGetValue(headId, out PdfBBoxViewModel? head))
             {
-                box.ContinuationHeadText = head.Text;
+                box.ContinuationSourceLabel = ContinuationHint(box, "接续自本页源框");
                 ContinuationLinks.Add(new PdfContinuationLinkViewModel(head, box));
             }
             else
@@ -2668,8 +2807,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                         continue;
                     }
 
-                    box.ContinuationHeadText = PdfBBoxViewModel.PayloadText(head.Payload);
-                    box.ContinuationSourceLabel = $"续接自第 {pageIndex + 1} 页";
+                    box.ContinuationSourceLabel =
+                        ContinuationHint(box, $"接续自第 {pageIndex + 1} 页");
                     _crossPageContinuationSources[box.BoxId] = (pageIndex, head.BoxId);
                     CrossPageContinuationMarkers.Add(
                         new PdfCrossPageContinuationViewModel(box, pageIndex + 1));
@@ -2693,20 +2832,20 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         if (local is not null)
         {
             SelectedBox = local;
-            Status = "已选中同页的续接源框。";
+            Status = "已选中同页的接续源框。";
             return;
         }
 
         if (IsEditMode)
         {
-            Status = "请先提交或放弃当前页面草稿，再跳转到续接源框。";
+            Status = "请先提交或放弃当前页面草稿，再跳转到接续源框。";
             return;
         }
 
         if (!_crossPageContinuationSources.TryGetValue(
                 box.BoxId, out (int PageIndex, DocumentBoxId HeadBoxId) target))
         {
-            Status = "未能定位续接源框。";
+            Status = "未能定位接续源框。";
             return;
         }
 
@@ -2797,15 +2936,169 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    internal void RefreshContinuationDependents(DocumentBoxId headBoxId, string? headText)
+    // 接续关系提示：来源说明之外，旧版未恢复接续必须如实标注文字仍在源框，
+    // 不能让空框看起来像已有局部文字。
+    private static string ContinuationHint(PdfBBoxViewModel box, string sourceDescription)
     {
-        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        return box.IsLegacyContinuation
+            ? $"{sourceDescription}；旧版接续，文字尚未分配（全文在源框）"
+            : sourceDescription;
+    }
+
+    /// <summary>正在为其挑选接续源框的框；为空表示未处于挑选状态。</summary>
+    [ObservableProperty]
+    public partial PdfBBoxViewModel? ContinuationPickFollower { get; private set; }
+
+    partial void OnContinuationPickFollowerChanged(PdfBBoxViewModel? value)
+    {
+        Raise(nameof(IsPickingContinuationSource));
+    }
+
+    public bool IsPickingContinuationSource => ContinuationPickFollower is not null;
+
+    /// <summary>挑选期间可作为接续源框的候选（全书合法同类型框，含页码与文字预览）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<ContinuationSourceCandidate>
+        ContinuationSourceCandidates { get; } = new();
+
+    /// <summary>
+    /// 进入接续源框挑选：候选范围与服务端阅读顺序约束一致——只有排在目标框
+    /// 之前的同类型适用框（text/ref_text/list/table 且同类型、未抑制）。
+    /// 更早的页以各页当前已提交修订为准；当前页改以已加载的草稿框为准
+    /// （草稿中新建的框可选、已删除的框不出现、类型按草稿编辑后的值过滤），
+    /// 且只保留阅读序中更早的框；更晚的页整体不列。
+    /// 其余合法性（循环等）由 DocumentTreeEditor.SetContinuationAsync 统一校验。
+    /// </summary>
+    internal async Task BeginContinuationPickAsync(PdfBBoxViewModel follower)
+    {
+        if (ContinuationPickFollower == follower)
         {
-            if (box.ContinuesFromBoxId == headBoxId)
+            CancelContinuationPick();
+            return;
+        }
+
+        ContinuationPickFollower = follower;
+        ContinuationSourceCandidates.Clear();
+        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            Status = "当前文档缺少实例标识，无法建立接续。";
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        for (int pageIndex = 0; pageIndex < PageIndex && pageIndex < _pages.Count; pageIndex++)
+        {
+            Result<DocumentTreeRevision> revision = await services.DocumentTrees
+                .GetCurrentRevisionAsync(documentInstanceId, _pages[pageIndex].PageId);
+            if (revision.IsFailure)
             {
-                box.ContinuationHeadText = headText;
+                continue;
+            }
+
+            IReadOnlyList<DocumentBox> boxes = await LoadBoxesAsync(revision.Value.TreeRevisionId);
+            foreach (DocumentBox candidate in boxes)
+            {
+                if (candidate.BoxId == follower.BoxId || candidate.Suppressed ||
+                    !DocumentContinuationRules.CanContinue(follower.BoxType, candidate.BoxType))
+                {
+                    continue;
+                }
+
+                AddContinuationCandidate(pageIndex + 1, candidate.BoxId,
+                    PdfBBoxViewModel.PayloadText(candidate.Payload), false);
             }
         }
+
+        // 当前页口径与别页不同：直接取已加载的草稿框（BoundingBoxes 反映草稿的
+        // 增删与类型编辑），不再回读已提交修订，避免草稿新框不可选、已删框可选
+        // 后被服务端拒绝、按旧类型过滤三类不一致。
+        foreach (PdfBBoxViewModel candidate in BoundingBoxes)
+        {
+            if (candidate.BoxId == follower.BoxId || candidate.IsSuppressed ||
+                candidate.ReadingOrder >= follower.ReadingOrder ||
+                !DocumentContinuationRules.CanContinue(follower.BoxType, candidate.BoxType))
+            {
+                continue;
+            }
+
+            AddContinuationCandidate(PageIndex + 1, candidate.BoxId, candidate.Text, true);
+        }
+
+        Status = ContinuationSourceCandidates.Count == 0
+            ? "没有可作为接续源框的同类型框。"
+            : "请选择接续源框（接续只记录关系，不会搬移任何框的文字）。";
+    }
+
+    private void AddContinuationCandidate(
+        int pageNumber, DocumentBoxId boxId, string? previewText, bool isCurrentPage)
+    {
+        string preview = previewText?.Trim() ?? string.Empty;
+        if (preview.Length > 40)
+        {
+            preview = preview[..40] + "…";
+        }
+
+        ContinuationSourceCandidate entry = new(pageNumber, boxId, preview, isCurrentPage);
+        entry.ChooseCommand = new AsyncCommand(() => ChooseContinuationSourceAsync(entry));
+        ContinuationSourceCandidates.Add(entry);
+    }
+
+    internal void CancelContinuationPick()
+    {
+        ContinuationPickFollower = null;
+        ContinuationSourceCandidates.Clear();
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public AsyncCommand CancelContinuationPickCommand => _cancelContinuationPickCommand ??=
+        new AsyncCommand(() =>
+        {
+            CancelContinuationPick();
+            return Task.CompletedTask;
+        });
+
+    private AsyncCommand? _cancelContinuationPickCommand;
+
+    internal async Task ChooseContinuationSourceAsync(ContinuationSourceCandidate candidate)
+    {
+        PdfBBoxViewModel? follower = ContinuationPickFollower;
+        PageEditSessionId? sessionId = EditSessionId;
+        if (follower is null || sessionId is null)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, follower.BoxId, candidate.BoxId);
+        CancelContinuationPick();
+        if (result.IsFailure)
+        {
+            Status = $"建立接续失败: {result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "接续已写入页面草稿；提交后才会生成新版本。";
+    }
+
+    internal async Task ClearContinuationAsync(PdfBBoxViewModel box)
+    {
+        PageEditSessionId? sessionId = EditSessionId;
+        if (sessionId is null)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, box.BoxId, null);
+        if (result.IsFailure)
+        {
+            Status = $"解除接续失败: {result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "接续已解除（未改动任何框的文字）；提交后才会生成新版本。";
     }
 
     internal async Task RefreshBoxesAsync()
@@ -4044,4 +4337,16 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return Task.FromResult<IImage?>(currentImage());
         }
     }
+}
+
+/// <summary>接续源框候选：页码（一基）、框 ID、本框文字预览与选择命令。</summary>
+public sealed record ContinuationSourceCandidate(
+    int PageNumber,
+    DocumentBoxId BoxId,
+    string Preview,
+    bool IsCurrentPage)
+{
+    public AsyncCommand ChooseCommand { get; set; } = null!;
+
+    public string Display => $"第 {PageNumber} 页{(IsCurrentPage ? "（本页）" : string.Empty)} · {Preview}";
 }

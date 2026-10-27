@@ -68,7 +68,41 @@ public sealed record DocumentBox(
     string? CodeLanguage,
     double? Confidence,
     bool Suppressed,
-    DocumentBoxId? ContinuesFromBoxId = null);
+    DocumentBoxId? ContinuesFromBoxId = null,
+    string? ContinuationState = null);
+
+/// <summary>
+/// 接续关系的兼容状态。标准接续（MinerU v4 <c>continues_prev</c> 显式关系或工作台人工建立）
+/// 不带状态值；只有旧版 MinerU 空框推断产生、且本框文字未恢复的接续才标记为
+/// <see cref="LegacyUnrecovered"/>，表示全文仍保留在源框、本框尚无自己的文字。
+/// </summary>
+public static class DocumentContinuationState
+{
+    public const string LegacyUnrecovered = "legacy_unrecovered";
+
+    public static bool IsKnown(string? value)
+    {
+        return value is null or LegacyUnrecovered;
+    }
+}
+
+/// <summary>
+/// 接续（<c>continues_prev</c>）的统一合法性约束：只有正文类物理框可以接续，
+/// 且后框必须与源框同类型。导入、工作台编辑与 XML 往返共用同一套规则。
+/// </summary>
+public static class DocumentContinuationRules
+{
+    public static bool IsEligibleBoxType(string boxType)
+    {
+        return boxType is DocumentBoxType.Text or DocumentBoxType.RefText or DocumentBoxType.List
+            or DocumentBoxType.Table;
+    }
+
+    public static bool CanContinue(string followerBoxType, string sourceBoxType)
+    {
+        return IsEligibleBoxType(followerBoxType) && followerBoxType == sourceBoxType;
+    }
+}
 
 public abstract record DocumentBoxPayload
 {
@@ -242,7 +276,8 @@ public sealed record DocumentBoxSeed(
     string? CodeLanguage = null,
     double? Confidence = null,
     bool Suppressed = false,
-    DocumentBoxId? ContinuesFromBoxId = null);
+    DocumentBoxId? ContinuesFromBoxId = null,
+    string? ContinuationState = null);
 
 /// <summary>
 /// A document-wide commit that groups one committed revision per page.
