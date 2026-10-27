@@ -15,7 +15,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.13");
+        BuildInfo.Version.Should().Be("0.3.14");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -119,7 +119,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.13").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.14").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -133,7 +133,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.13");
+        BuildInfo.Version.Should().Be("0.3.14");
     }
 
     [Fact]
@@ -151,8 +151,23 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.13").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.14").And.NotContain("0.3.5");
         }
+    }
+
+    [Fact]
+    public void Release_readme_and_changelog_describe_the_current_delivered_version()
+    {
+        string readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
+        string changelog = File.ReadAllText(TestPaths.FromRepositoryRoot("Changelog.md"));
+
+        readme.Should().Contain($"当前版本：**{BuildInfo.Version}**")
+            .And.Contain("./scripts/run-tests.ps1 -Suite Full")
+            .And.NotContain("“设置 → 更新设置”可控制启动时自动检查更新")
+            .And.NotContain("下一版：[MCP / CLI 显式 OCR 任务入口]");
+        changelog.Should().Contain($"## {BuildInfo.Version}")
+            .And.Contain("patchouli.extensions/3")
+            .And.NotContain("向外部 Agent 自动安装、更新与清理将在后续版本提供");
     }
 
     [Fact]
@@ -162,6 +177,71 @@ public sealed class AlphaPackagingTests
         script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
             .Contain("plutil -lint").And.Contain("codesign --force --sign - \"$app_dir\"").And
             .Contain("codesign --verify --deep --strict").And.NotContain("--deep --sign");
+    }
+
+    [Fact]
+    public void All_package_publish_commands_disable_shared_output_concurrency()
+    {
+        string[] scripts =
+        [
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-linux.sh"))
+        ];
+        List<string> commands = [];
+
+        foreach (string script in scripts)
+        {
+            string[] lines = script.Split('\n');
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].TrimStart().StartsWith("dotnet publish ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                List<string> command = [lines[i]];
+                while (command[^1].TrimEnd().EndsWith('`') || command[^1].TrimEnd().EndsWith('\\'))
+                {
+                    command.Add(lines[++i]);
+                }
+
+                commands.Add(string.Join(" ", command));
+            }
+        }
+
+        commands.Should().HaveCount(6);
+        commands.Count(command => command.Contains("Patchouli.UI.csproj", StringComparison.Ordinal))
+            .Should().Be(3);
+        commands.Count(command => command.Contains("Patchouli.Cli.csproj", StringComparison.Ordinal))
+            .Should().Be(3);
+        foreach (string command in commands)
+        {
+            command.Should().Contain("-m:1").And.Contain("-p:BuildInParallel=false")
+                .And.Contain("-p:UseSharedCompilation=false");
+        }
+    }
+
+    [Fact]
+    public void Package_smoke_workflow_is_read_only_and_runs_production_packagers()
+    {
+        string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "package-smoke.yml"));
+
+        workflow.Should().Contain("pull_request:").And.Contain("contents: read")
+            .And.Contain("scripts/package-windows.ps1").And.Contain("-Smoke")
+            .And.Contain("runs-on: macos-14")
+            .And.Contain("VERSION=\"$PACKAGE_VERSION\" bash scripts/package-macos.sh osx-arm64")
+            .And.Contain(
+                "bash scripts/verify-macos-dmg.sh \".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg\"")
+            .And.Contain(".github/workflows/release.yml")
+            .And.Contain("scripts/verify-macos-dmg.sh")
+            .And.Contain("scripts/Patchouli.ExtensionSchemas/**")
+            .And.Contain("sidecar/Patchouli.Extensions.Compiler/**")
+            .And.Contain("src/Patchouli.Extensions*/**")
+            .And.Contain("codesign --verify --deep --strict")
+            .And.Contain("actions/checkout@v7").And.Contain("actions/setup-dotnet@v6")
+            .And.Contain("actions/upload-artifact@v7").And.NotContain("gh release")
+            .And.NotContain("tags:").And.NotContain("contents: write");
     }
 
     [Fact]
@@ -255,7 +335,7 @@ public sealed class AlphaPackagingTests
 
         readme.Should().Contain("sidecar/biblatex-helper")
             .And.Contain("typst/biblatex 0.12.0")
-            .And.Contain("cargo build --release --manifest-path sidecar/biblatex-helper/Cargo.toml")
+            .And.Contain("cargo build --release --locked --manifest-path sidecar/biblatex-helper/Cargo.toml")
             .And.NotContain("sidecar/patchouli-shell-sidecar")
             .And.NotContain("Bashkit 0.14.4");
     }
@@ -357,7 +437,24 @@ public sealed class AlphaPackagingTests
             ("SkiaSharp", "MIT", "https://github.com/mono/SkiaSharp"),
             ("Microsoft.ML.OnnxRuntime", "MIT", "https://github.com/microsoft/onnxruntime"),
             ("OpenccNetLib", "MIT", "https://github.com/laisuk/OpenccNet"),
-            ("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid")
+            ("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid"),
+            ("AvaloniaRichEditor", "MIT", "https://github.com/centwon/AvaloniaRichEditor"),
+            ("LiveMarkdown.Avalonia", "Apache-2.0", "https://github.com/DearVa/LiveMarkdown.Avalonia"),
+            ("LiveMarkdown.Avalonia.Mermaid", "Apache-2.0", "https://github.com/DearVa/LiveMarkdown.Avalonia"),
+            ("Iciclecreek.Avalonia.Terminal", "MIT", "https://github.com/tomlm/Iciclecreek.Avalonia.Terminal"),
+            ("Porta.Pty", "MIT", "https://github.com/tomlm/Porta.Pty"),
+            ("FSharp.Core", "MIT", "https://github.com/dotnet/fsharp"),
+            ("FSharp.Compiler.Service", "MIT", "https://github.com/dotnet/fsharp"),
+            ("System.Reflection.MetadataLoadContext", "MIT", "https://github.com/dotnet/runtime"),
+            ("LLMTornado", "MIT", "https://github.com/lofcz/LlmTornado"),
+            ("Blake3.NET", "BSD-2-Clause", "https://github.com/xoofx/Blake3.NET"),
+            ("BLAKE3", "CC0 / Apache-2.0", "https://github.com/BLAKE3-team/BLAKE3"),
+            ("SourceGear.sqlite3", "Public Domain", "https://github.com/sourcegear/sqlite-builds"),
+            ("Skia", "BSD-3-Clause", "https://github.com/google/skia"),
+            ("HtmlAgilityPack", "MIT", "https://github.com/zzzprojects/html-agility-pack"),
+            ("YamlDotNet", "MIT", "https://github.com/aaubry/YamlDotNet"),
+            ("PaddleOCR / PP-DocLayoutV3", "Apache-2.0", "https://github.com/PaddlePaddle/PaddleOCR"),
+            ("DocLayout-YOLO", "AGPL-3.0", "https://github.com/opendatalab/DocLayout-YOLO")
         ];
 
         foreach ((string name, string license, string url) in expected)
@@ -365,6 +462,10 @@ public sealed class AlphaPackagingTests
             about.ThirdPartyLibraries.Should().Contain(library =>
                 library.Name == name && library.License == license && library.Url == url);
         }
+
+        about.ThirdPartyLibraries.Select(library => library.Name).Should().OnlyHaveUniqueItems();
+        about.ThirdPartyLibraries.Should()
+            .OnlyContain(library => library.Url.StartsWith("https://", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -487,6 +588,7 @@ public sealed class AlphaPackagingTests
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-appservices-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         string path = Path.Combine(root, "runtime.sqlite");
+        HostServices? services = null;
         try
         {
             AppRuntimeOptions runtime = PatchouliAppSettings.Default().Runtime with
@@ -494,19 +596,27 @@ public sealed class AlphaPackagingTests
                 RuntimeDatabasePath = path, DefaultSyncRoot = Path.Combine(root, "sync"),
                 DefaultStagingRoot = Path.Combine(root, "staging"), LogDirectory = Path.Combine(root, "logs")
             };
-            HostServices services =
-                await HostServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
-            // MCP OCR start and the settings engine catalog both enumerate this registry, so an
-            // adapter absent here can neither be listed nor started.
+            services = await HostServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime },
+                Path.Combine(root, "settings.json"), appPaths: new TestAppPaths(root));
+            // MinerU alone retains the built-in transport. Other product engines are real FSX
+            // packages discovered through the same runtime used for queue admission and MCP.
             services.OcrAdapters.ListCapabilities().Select(x => x.EngineId).Should()
-                .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten, OcrEngineIds.NdlLite,
-                    OcrEngineIds.RapidOcr)
-                .And.NotContain(OcrEngineIds.Mock).And.NotContain(OcrEngineIds.LocalPlaceholder);
+                .Equal(OcrEngineIds.MinerU);
+            services.OcrEngineRuntime.ListDefinitions().Select(definition => definition.EngineId).Should()
+                .BeEquivalentTo([
+                    OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten,
+                    OcrEngineIds.NdlLite, OcrEngineIds.RapidOcr
+                ]);
             services.OcrAdapters.GetAdapter(OcrEngineIds.Mock).Should().BeNull();
             services.OcrAdapters.GetAdapter(OcrEngineIds.LocalPlaceholder).Should().BeNull();
         }
         finally
         {
+            if (services is not null)
+            {
+                await services.ShutdownAsync();
+            }
+
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {

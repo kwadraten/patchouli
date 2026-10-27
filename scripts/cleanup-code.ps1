@@ -8,6 +8,7 @@ param(
     [string[]]$Include = @('src/**/*.cs', 'tests/**/*.cs', 'scripts/**/*.cs', 'src/**/*.axaml', 'tests/**/*.axaml'),
     [string]$ArtifactsPath = '.tmp/build/cleanup',
     [switch]$UseExistingBuild,
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [string]$CachesPath = '.tmp/build/cleanup-caches'
 )
 
@@ -39,14 +40,14 @@ if ($UseExistingBuild) {
     # Reuse normally built F# metadata; SDK artifacts output can leave InspectCode/CleanupCode
     # unable to resolve cross-language references. The caller must build before using this mode.
     $additionalArguments += '--no-build'
-    $additionalArguments += '--properties=PatchouliUseBuiltExtensionAssembly=true'
+    $additionalArguments += "--properties=Configuration=$Configuration;PatchouliUseBuiltExtensionAssembly=true"
 } elseif (-not [string]::IsNullOrWhiteSpace($ArtifactsPath)) {
     $resolvedArtifactsPath = [IO.Path]::GetFullPath((Join-Path $root $ArtifactsPath))
     $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
     if (-not $resolvedArtifactsPath.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Cleanup build outputs must be inside the repository .tmp directory.'
     }
-    $additionalArguments += "--properties=ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
+    $additionalArguments += "--properties=Configuration=$Configuration;ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
 }
 & jb cleanupcode (Join-Path $root 'Patchouli.sln') `
     --profile=$profile `

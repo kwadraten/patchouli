@@ -142,6 +142,25 @@ MCP/CLI parameters, runtime roots and regression obligations are in
 translation rationale is ADR `0049`, which supersedes ADR `0046`'s fixed orchestration.
 Code/contract delivery does not establish real-device end-to-end acceptance or full-scale performance budgets.
 
+## OCR extension execution foundation
+
+OCR extension invocations use the OCR-specific task-level `IOcrJob`; see
+[ADR 0054](adr/0054-task-level-ocr-extension-jobs.md) and the
+[extension contract](protocols/extension-contracts.md). Host-mediated lazy inputs, typed
+candidate settlement and generation leases do not give extensions authority over canonical
+text or replace Working Revision/adoption. Explicit extension staging uses this contract;
+the default queue's actual FSX engine migration remains #43 work, not delivered merely by the
+new interface. PDF text-layer Provider and image OCR Engine remain independent choices.
+
+The queue binds actual Runs to their task/attempt before model progress, carries the durable
+preset version for legacy tasks once known, and rejects foreign/stale attempt callbacks.
+Progress projection uses only explicit Run associations, including legitimate shared-Run
+adoption/index retries, and does not infer ownership from DocumentInstance identity.
+Ephemeral region recognition has a facade-owned background boundary; interactive callers keep
+the existing modal policy, capture/apply UI state with context guards, and drain real work on
+teardown rather than treating cancellation as completion. This does not establish that all
+UI database/refresh paths have been remediated; those remain #46 scope.
+
 ## UI Layer
 
 `src/Patchouli.UI` manages the desktop application state using a three-layer reactivity model ([ADR 0033](adr/0033-ui-reactivity-three-layer-model.md)):

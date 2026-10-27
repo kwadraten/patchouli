@@ -36,6 +36,41 @@ internal static class RepositoryTestEnvironment
         {
             throw new InvalidOperationException("The test process must use the repository .tmp directory.");
         }
+
+        SweepStaleTestDirectories();
+    }
+
+    /// <summary>
+    ///     Collectible-ALC file mappings and external indexers can outlive a test's bounded
+    ///     cleanup; once the owning process exits the handles are gone. Removing stale trees
+    ///     here keeps <c>.tmp/tests</c> from accumulating leftovers — only entries older than
+    ///     the grace window are touched so a concurrently running suite is never disturbed.
+    /// </summary>
+    private static void SweepStaleTestDirectories()
+    {
+        DateTimeOffset cutoff = DateTimeOffset.UtcNow - TimeSpan.FromHours(1);
+        foreach (string entry in Directory.EnumerateFileSystemEntries(TestRoot))
+        {
+            try
+            {
+                if (Directory.GetLastWriteTimeUtc(entry) < cutoff.UtcDateTime)
+                {
+                    if (Directory.Exists(entry))
+                    {
+                        Directory.Delete(entry, true);
+                    }
+                    else
+                    {
+                        File.Delete(entry);
+                    }
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                System.Diagnostics.Trace.TraceWarning(
+                    $"Stale test sweep skipped '{entry}': {error.Message}");
+            }
+        }
     }
 
     public static bool IsTemporaryPath(string path)

@@ -8,6 +8,7 @@ param(
     # script execution tests.
     [string[]]$Exclude = @('src/**/*.fs', 'tests/**/*.fs', 'src/**/*.fsx', 'tests/**/*.fsx'),
     [switch]$UseExistingBuild,
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [string]$CachesPath = '.tmp/build/inspection-caches'
 )
 
@@ -47,9 +48,9 @@ if ($UseExistingBuild) {
     # InspectCode cannot resolve F# project metadata reliably in SDK artifacts output. After a
     # normal build, use its resolved assemblies without triggering another solution build.
     $additionalArguments += '--no-build'
-    $additionalArguments += '--properties=PatchouliUseBuiltExtensionAssembly=true'
+    $additionalArguments += "--properties=Configuration=$Configuration;PatchouliUseBuiltExtensionAssembly=true"
 } else {
-    $additionalArguments += "--properties=ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
+    $additionalArguments += "--properties=Configuration=$Configuration;ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
 }
 & jb inspectcode (Join-Path $root 'Patchouli.sln') `
     --toolset-path=$msbuildPath `

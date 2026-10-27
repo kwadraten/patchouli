@@ -1,22 +1,40 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.3.13",
-    [switch]$Smoke
+    [string]$Version = "0.3.14",
+    [switch]$Smoke,
+    [string]$PublishDirectory = '',
+    [string]$InstallerDirectory = '',
+    [string]$OutputBaseName = '',
+    [string]$BuildLabel = ''
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$publishDir = Join-Path $root ".tmp\publish\$Runtime"
-$installerDir = Join-Path $root ".tmp\installer"
+$publishDir = if ($PublishDirectory) { [IO.Path]::GetFullPath((Join-Path $root $PublishDirectory)) } else { Join-Path $root ".tmp\publish\$Runtime" }
+$installerDir = if ($InstallerDirectory) { [IO.Path]::GetFullPath((Join-Path $root $InstallerDirectory)) } else { Join-Path $root ".tmp\installer" }
+$temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
+foreach ($outputPath in @($publishDir, $installerDir)) {
+    if (-not ([IO.Path]::GetFullPath($outputPath)).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Packaging outputs must be inside the repository .tmp directory.'
+    }
+}
+foreach ($label in @($OutputBaseName, $BuildLabel)) {
+    if ($label -and $label -notmatch '^[A-Za-z0-9._-]+$') {
+        throw 'Output/build labels may contain only ASCII letters, numbers, dots, underscores and hyphens.'
+    }
+}
 $productionAppId = "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
 $smokeAppId = "{{E3F7D819-616F-4A16-B65C-17C78FDE024E}"
 $appId = if ($Smoke) { $smokeAppId } else { $productionAppId }
-$outputBaseFilename = if ($Smoke) {
+$outputBaseFilename = if ($OutputBaseName) {
+    $OutputBaseName
+} elseif ($Smoke) {
     "Patchouli.NET-$Version-$Runtime-smoke-setup"
 } else {
     "Patchouli.NET-$Version-$Runtime-setup"
 }
+$buildProperties = if ($BuildLabel) { @("-p:InformationalVersion=$Version+$BuildLabel", '-p:IncludeSourceRevisionInInformationalVersion=false') } else { @() }
 $iscc = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe"
@@ -27,6 +45,9 @@ if (-not $iscc) {
 }
 
 if (Test-Path -LiteralPath $publishDir) {
+    if ($PublishDirectory) {
+        throw 'The explicit publish directory already exists. Choose a unique .tmp output to preserve existing work.'
+    }
     $resolvedPublishDir = [IO.Path]::GetFullPath($publishDir)
     $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
     if (-not $resolvedPublishDir.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -36,6 +57,7 @@ if (Test-Path -LiteralPath $publishDir) {
 }
 New-Item -ItemType Directory -Force -Path $publishDir, $installerDir | Out-Null
 dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
+    -m:1 `
     -c $Configuration `
     -r $Runtime `
     --self-contained true `
@@ -43,7 +65,9 @@ dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
     -p:PublishSingleFile=false `
     -p:DebugType=None `
     -p:DebugSymbols=false `
-    -o $publishDir
+    -p:BuildInParallel=false `
+    -p:UseSharedCompilation=false `
+    -o $publishDir @buildProperties
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
 foreach ($compilerFile in @('Patchouli.Extensions.Compiler.exe', 'Patchouli.Extensions.Compiler.dll',
@@ -71,13 +95,16 @@ if ($legacyPresent) {
 
 $cliDir = Join-Path $publishDir "cli"
 dotnet publish (Join-Path $root "src\Patchouli.Cli\Patchouli.Cli.csproj") `
+    -m:1 `
     -c $Configuration `
     -r $Runtime `
     --self-contained true `
     -p:Version=$Version `
     -p:DebugType=None `
     -p:DebugSymbols=false `
-    -o $cliDir
+    -p:BuildInParallel=false `
+    -p:UseSharedCompilation=false `
+    -o $cliDir @buildProperties
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish (CLI) failed with exit code $LASTEXITCODE." }
 $cliExe = Join-Path $cliDir "patchouli-cli.exe"
 if (-not (Test-Path -LiteralPath $cliExe)) {
@@ -103,4 +130,42 @@ if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE
 
 $installer = Join-Path $installerDir "$outputBaseFilename.exe"
 if (-not (Test-Path -LiteralPath $installer)) { throw "Installer was not created at '$installer'." }
+$sourceStatus = @(& git -C $root status --porcelain=v1) -join "`n"
+$gitInfo = [Diagnostics.ProcessStartInfo]::new()
+$gitInfo.FileName = (Get-Command git).Source
+$gitInfo.UseShellExecute = $false
+$gitInfo.RedirectStandardOutput = $true
+$gitInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+foreach ($argument in @('-C',$root,'ls-files','--cached','--others','--exclude-standard','-z')) { $gitInfo.ArgumentList.Add($argument) }
+$gitProcess = [Diagnostics.Process]::Start($gitInfo)
+try {
+    $sourceFiles = [string[]]$gitProcess.StandardOutput.ReadToEnd().Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)
+    $gitProcess.WaitForExit()
+    if ($gitProcess.ExitCode -ne 0) { throw 'Could not enumerate source inputs for the package manifest.' }
+} finally { $gitProcess.Dispose() }
+[Array]::Sort($sourceFiles, [StringComparer]::Ordinal)
+$sourceHashes = foreach ($sourceFile in $sourceFiles) {
+    $sourcePath = Join-Path $root $sourceFile
+    if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$sourceFile`:$sourceHash"
+    }
+}
+$sourceBytes = [Text.Encoding]::UTF8.GetBytes($sourceHashes -join "`n")
+$sourceFingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($sourceBytes)).ToLowerInvariant()
+$packageManifest = [ordered]@{
+    version = $Version
+    runtime = $Runtime
+    configuration = $Configuration
+    build_label = $BuildLabel
+    created_utc = [DateTime]::UtcNow.ToString('o')
+    source_head = ((& git -C $root rev-parse HEAD) -join '').Trim()
+    source_dirty = [bool]$sourceStatus
+    source_fingerprint = $sourceFingerprint
+    installer = $installer
+    installer_sha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    installer_bytes = (Get-Item -LiteralPath $installer).Length
+    installed_by_packaging_script = $false
+}
+$packageManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $installerDir "$outputBaseFilename.manifest.json") -Encoding utf8
 $installer

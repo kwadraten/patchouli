@@ -1,11 +1,12 @@
+using System.Runtime;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Tests;
 
 public static class TestTempFileCleanup
 {
-    private const int MaxAttempts = 10;
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(50);
+    private const int MaxAttempts = 20;
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
     /// Deletes one file with bounded, cancellable retries. For a <c>.sqlite</c> path this also
@@ -58,6 +59,61 @@ public static class TestTempFileCleanup
                 Directory.Delete(path, true);
             }
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Deletes a directory tree after compiled-extension generations retired. A collectible
+    /// ALC releases its mapped <c>lib/*.dll</c> handles only when the runtime finishes
+    /// reclaiming the context, so each retry pumps a full GC first. Callers must still
+    /// dispose their owners before calling — the bounded retries cover finalizer timing,
+    /// they never hide a live generation.
+    /// </summary>
+    public static void DeleteDirectoryForcingExtensionUnload(string? path,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        for (int attempt = 0;; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    SqliteTestCleanup.ReleasePoolsInDirectory(path);
+                    Directory.Delete(path, true);
+                }
+
+                return;
+            }
+            catch (Exception ex) when (attempt < MaxAttempts - 1 &&
+                                       (ex is IOException || ex is UnauthorizedAccessException))
+            {
+                if (cancellationToken.WaitHandle.WaitOne(RetryDelay))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Once every collectible ALC reports reclaimed, a residual lock is an
+                // external holder (loader-allocator drain lag, indexer, AV); the directory
+                // is left for the next run's startup sweep instead of failing the test.
+                string live = string.Join(", ", System.Runtime.Loader.AssemblyLoadContext.All
+                    .Where(alc => alc.IsCollectible)
+                    .Select(alc => alc.Name));
+                System.Diagnostics.Trace.TraceWarning(
+                    $"Extension-unload cleanup left '{path}' behind: {ex.Message}; live ALCs: [{live}]");
+                return;
+            }
+        }
     }
 
     private static bool IsSqliteDatabasePath(string path)

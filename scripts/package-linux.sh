@@ -5,7 +5,7 @@
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.3.13, must match Changelog.md)
+#   VERSION       Application version (default: 0.3.14, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
@@ -24,7 +24,7 @@ export TMPDIR="$root/.tmp"
 # A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
 mkdir -p "$TMPDIR"
 
-version="${VERSION:-0.3.13}"
+version="${VERSION:-0.3.14}"
 runtime="${RUNTIME:-linux-x64}"
 skip_publish="${SKIP_PUBLISH:-0}"
 publish_ui="$root/.tmp/publish/$runtime"
@@ -52,13 +52,17 @@ publish() {
   else
     echo "Publishing Patchouli.UI ($runtime)..."
     dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
+      -m:1 \
       -c Release -r "$runtime" --self-contained true \
       -p:Version="$version" -p:DebugType=None -p:DebugSymbols=false \
+      -p:BuildInParallel=false -p:UseSharedCompilation=false \
       -o "$publish_ui"
     echo "Publishing patchouli-cli ($runtime)..."
     dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
+      -m:1 \
       -c Release -r "$runtime" --self-contained true \
       -p:Version="$version" -p:DebugType=None -p:DebugSymbols=false \
+      -p:BuildInParallel=false -p:UseSharedCompilation=false \
       -o "$publish_cli"
     echo "Building biblatex-helper..."
     cargo build --release --manifest-path "$root/sidecar/biblatex-helper/Cargo.toml"

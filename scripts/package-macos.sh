@@ -8,7 +8,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.3.13}"
+version="${VERSION:-0.3.14}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/.tmp/publish/$runtime"
 app_dir="$root/.tmp/macos/Patchouli.NET.app"
@@ -40,6 +40,7 @@ clang -dynamiclib -framework Foundation \
 rm -rf "$publish_dir" "$app_dir"
 mkdir -p "$publish_dir" "$macos_dir" "$resources_dir" "$dmg_dir"
 dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
+  -m:1 \
   -c "$configuration" \
   -r "$runtime" \
   --self-contained true \
@@ -47,6 +48,8 @@ dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
   -p:PublishSingleFile=false \
   -p:DebugType=None \
   -p:DebugSymbols=false \
+  -p:BuildInParallel=false \
+  -p:UseSharedCompilation=false \
   -o "$publish_dir"
 
 cp -R "$publish_dir/." "$macos_dir/"
@@ -67,12 +70,15 @@ chmod +x "$macos_dir/biblatex-helper"
 cli_dir="$root/.tmp/cli-publish"
 rm -rf "$cli_dir"
 dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
+  -m:1 \
   -c "$configuration" \
   -r "$runtime" \
   --self-contained true \
   -p:Version="$version" \
   -p:DebugType=None \
   -p:DebugSymbols=false \
+  -p:BuildInParallel=false \
+  -p:UseSharedCompilation=false \
   -o "$cli_dir"
 cli_bin="$cli_dir/patchouli-cli"
 if [[ ! -x "$cli_bin" ]]; then
