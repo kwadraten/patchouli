@@ -189,6 +189,95 @@ public sealed class AgentLaunchServiceTests : IDisposable
             "OpenCode needs an explicit project config path");
         spec.Environment["EXTRA"].Should().Be("extra-value");
         spec.Environment.Should().NotContainKey("BLANK");
+        string temporaryDirectory = Path.Combine(_workspace.Directory, ".tmp");
+        spec.Environment["TEMP"].Should().Be(temporaryDirectory);
+        spec.Environment["TMP"].Should().Be(temporaryDirectory);
+        spec.Environment["TMPDIR"].Should().Be(temporaryDirectory);
+        Directory.Exists(temporaryDirectory).Should().BeTrue();
+        Directory.GetFileSystemEntries(temporaryDirectory).Should().BeEmpty("the write probe cleans up after itself");
+    }
+
+    [Theory]
+    [InlineData("opencode", "opencode.exe")]
+    [InlineData("opencode", "opencode.cmd")]
+    [InlineData("claude-acp", "claude.exe")]
+    public async Task Temporary_directory_overrides_are_verified_and_do_not_change_the_parent_environment(
+        string agentId, string fileName)
+    {
+        string executable = AddExistingFile($"tools/{fileName}");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.1.2");
+        AgentLaunchService service = CreateService();
+        AgentIntegrationAppSettings
+            settings = AgentIntegrationAppSettings.Default().WithCustomPath(agentId, executable);
+        string[] names = ["TEMP", "TMP", "TMPDIR"];
+        string?[] inherited = names.Select(Environment.GetEnvironmentVariable).ToArray();
+        Dictionary<string, string> overrides = new()
+        {
+            [OperatingSystem.IsWindows() ? "tEmP" : "TEMP"] = _directory.Combine("missing-temp"),
+            [OperatingSystem.IsWindows() ? "tMp" : "TMP"] = _directory.CreateFile("not-a-directory"),
+            [OperatingSystem.IsWindows() ? "tMpDiR" : "TMPDIR"] = "   "
+        };
+
+        Result<AgentLaunchSpec> result = await service.PrepareLaunchAsync(agentId, settings,
+            new AgentLaunchContext(Environment: overrides));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        string expected = Path.Combine(_workspace.Directory, ".tmp");
+        foreach (string name in names)
+        {
+            result.Value.Environment[name].Should().Be(expected);
+            result.Value.Environment.Keys.Count(key => key.Equals(name, StringComparison.OrdinalIgnoreCase))
+                .Should().Be(1, "Windows environment variable casing must not introduce duplicate overrides");
+        }
+
+        names.Select(Environment.GetEnvironmentVariable).Should().Equal(inherited);
+        overrides.Values.Should().NotContain(expected, "preparation must not mutate the caller's environment map");
+        Directory.GetFileSystemEntries(expected).Should().BeEmpty();
+        string probe = Path.Combine(expected, "child-probe");
+        await File.WriteAllTextAsync(probe, "writable");
+        (await File.ReadAllTextAsync(probe)).Should().Be("writable");
+        File.Delete(probe);
+    }
+
+    [Fact]
+    public async Task Repeated_launch_preparation_preserves_existing_agent_temporary_files()
+    {
+        string executable = AddExistingFile("tools/opencode.exe");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.1.2");
+        AgentLaunchService service = CreateService();
+        AgentIntegrationAppSettings settings =
+            AgentIntegrationAppSettings.Default().WithCustomPath("opencode", executable);
+        Result<AgentLaunchSpec> first = await service.PrepareLaunchAsync(settings);
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        string temporaryDirectory = first.Value.Environment["TEMP"];
+        string existing = Path.Combine(temporaryDirectory, "agent-owned.dll");
+        await File.WriteAllTextAsync(existing, "keep this file");
+
+        Result<AgentLaunchSpec> second = await service.PrepareLaunchAsync(settings);
+
+        second.IsSuccess.Should().BeTrue(second.ErrorMessage);
+        second.Value.Environment["TEMP"].Should().Be(temporaryDirectory);
+        (await File.ReadAllTextAsync(existing)).Should().Be("keep this file");
+        Directory.GetFileSystemEntries(temporaryDirectory).Should().Equal(existing);
+    }
+
+    [Fact]
+    public async Task An_unusable_temporary_directory_blocks_launch_with_an_actionable_error()
+    {
+        string executable = AddExistingFile("tools/opencode.exe");
+        _runner.Handler = _ => ScriptedProcessRunner.Output("2.1.2");
+        AgentLaunchService service = CreateService();
+        AgentIntegrationAppSettings settings =
+            AgentIntegrationAppSettings.Default().WithCustomPath("opencode", executable);
+        string obstruction = _directory.CreateFile("library/agent-workspace/.tmp", "not a directory");
+
+        Result<AgentLaunchSpec> result = await service.PrepareLaunchAsync(settings);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(AgentIntegrationErrorCodes.TemporaryDirectoryFailed);
+        result.ErrorMessage.Should().Contain("临时目录").And.Contain("权限").And.Contain("重试");
+        (await File.ReadAllTextAsync(obstruction)).Should().Be("not a directory");
+        Directory.Exists(_skillLocations.GetManagedDirectory("opencode", _workspace.Directory)).Should().BeFalse();
     }
 
     [Fact]

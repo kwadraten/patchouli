@@ -135,6 +135,16 @@ The launch environment additionally carries explicit `PATCHOULI_AGENT_ID`,
 `.cmd`/`.bat` npm shims are started through `cmd.exe` because the PTY cannot execute them
 directly.
 
+Every Agent launch explicitly sets `TEMP`, `TMP` and `TMPDIR` to
+`agent-workspace/.tmp/`, after any additional environment overrides. Preparation creates that
+directory and verifies file creation, reading, writing and cleanup before returning a launch
+spec; failures return `agent_temporary_directory_failed` with a workspace-permission diagnostic.
+This prevents polluted desktop-session temp paths from breaking native-library extraction in
+Bun-compiled agents (issue #41), for both native executables and npm shims. It changes only the
+child environment, not the desktop process, OS environment or user configuration. Existing
+Agent temporary files are preserved on relaunch; like the workspace, this directory is
+device-local and excluded from snapshots.
+
 ### Embedded terminal
 
 The Agent workspace page hosts a real PTY through `Porta.Pty` and renders it with

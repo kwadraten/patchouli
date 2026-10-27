@@ -103,6 +103,18 @@ public sealed class AgentLaunchService
                 $"无法创建 Agent 工作目录：{exception.Message}");
         }
 
+        string temporaryDirectory;
+        try
+        {
+            temporaryDirectory = EnsureTemporaryDirectory(workspace);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                              ArgumentException or NotSupportedException)
+        {
+            return Result<AgentLaunchSpec>.Failure(AgentIntegrationErrorCodes.TemporaryDirectoryFailed,
+                $"无法准备 Agent 临时目录，请检查工作区的读写权限后重试：{exception.Message}");
+        }
+
         Result skillPreparation = await _skills.PrepareWorkspaceAsync(entry.Id, _workspace, cancellationToken)
             .ConfigureAwait(false);
         if (skillPreparation.IsFailure)
@@ -111,7 +123,9 @@ public sealed class AgentLaunchService
                 $"无法准备 Agent 工作区中的 Patchouli Skill：{skillPreparation.ErrorMessage}。请检查工作区/目录权限后重试；用户级 Skill 目录存在时不会自动修复，可清除后再注入重置。");
         }
 
-        Dictionary<string, string> environment = new(StringComparer.Ordinal)
+        Dictionary<string, string> environment = new(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal)
         {
             ["PATCHOULI_AGENT_ID"] = entry.Id
         };
@@ -152,6 +166,13 @@ public sealed class AgentLaunchService
             }
         }
 
+        // Bun-compiled agents extract native libraries into the process temp directory. Never let an
+        // inherited or context-supplied unwritable TEMP/TMP/TMPDIR break either native or shim launches.
+        // Only the child environment changes; the desktop process and user settings stay untouched.
+        environment["TEMP"] = temporaryDirectory;
+        environment["TMP"] = temporaryDirectory;
+        environment["TMPDIR"] = temporaryDirectory;
+
         AgentLaunchSpec spec = new(
             entry.Id,
             entry.DisplayName,
@@ -163,6 +184,22 @@ public sealed class AgentLaunchService
             candidate.Version,
             context?.McpConfigPath);
         return Result<AgentLaunchSpec>.Success(spec);
+    }
+
+    private static string EnsureTemporaryDirectory(string workspace)
+    {
+        string directory = Directory.CreateDirectory(Path.Combine(workspace, ".tmp")).FullName;
+        string probePath = Path.Combine(directory, $".write-probe-{Guid.NewGuid():N}");
+        using FileStream probe = new(probePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
+            1, FileOptions.DeleteOnClose);
+        probe.WriteByte(0);
+        probe.Position = 0;
+        if (probe.ReadByte() != 0)
+        {
+            throw new IOException($"Agent 临时目录读写验证失败：{directory}");
+        }
+
+        return directory;
     }
 
     /// <summary>Windows npm shims are batch files and must be started through <c>cmd.exe</c>.</summary>

@@ -96,6 +96,7 @@
   "skip_allowlist": {
     "description": "Cases allowed to appear with outcome NotExecuted without failing the run's unexpected-skip check (matched by fully-qualified name). Conditional-skip cases not listed here make the run fail.",
     "cases": [
+      "Patchouli.Tests.AgentWorkspaceTerminalTests.Native_and_shim_launches_receive_the_verified_workspace_temporary_directory",
       "Patchouli.Tests.AgentWorkspaceTerminalTests.Presets_and_generic_document_references_paste_directly_without_submitting",
       "Patchouli.Tests.AgentWorkspaceTerminalTests.Switching_and_closing_require_confirmation_and_never_retain_a_background_process",
       "Patchouli.Tests.AgentWorkspaceTerminalTests.Declining_a_terminal_link_confirmation_writes_nothing_to_the_pty",

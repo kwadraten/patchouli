@@ -8,6 +8,8 @@ using Avalonia.Threading;
 using FluentAssertions;
 using Iciclecreek.Terminal;
 using Patchouli.Core.Agents;
+using Patchouli.Core.Results;
+using Patchouli.Host.Agents;
 using Patchouli.Host.Composition;
 using Patchouli.Terminal;
 using Patchouli.Testing;
@@ -23,6 +25,80 @@ namespace Patchouli.Tests;
 [Collection("RetainedTabUI")]
 public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture headless)
 {
+    [TerminalPtyFact]
+    public async Task Native_and_shim_launches_receive_the_verified_workspace_temporary_directory()
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(40));
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            using AgentTestDirectory directory = new();
+            string pwsh = DefaultShellResolver.FindOnPath(OperatingSystem.IsWindows() ? "pwsh.exe" : "pwsh")!;
+            string script = directory.CreateFile("check-temp.ps1", """
+                                                                   param([string]$Receipt)
+                                                                   $ErrorActionPreference = 'Stop'
+                                                                   $probe = [IO.Path]::GetTempFileName()
+                                                                   [IO.File]::Delete($probe)
+                                                                   $paths = @($env:TEMP, $env:TMP, $env:TMPDIR,
+                                                                       ([IO.Path]::GetTempPath().TrimEnd([IO.Path]::DirectorySeparatorChar)))
+                                                                   [IO.File]::WriteAllLines($Receipt, [string[]]$paths)
+                                                                   """);
+            string shim = directory.CreateFile("agent.cmd", $"@\"{pwsh}\" -NoLogo -NoProfile -File \"{script}\" %*");
+            FakeAgentPlatformEnvironment environment = new() { HomeDirectory = directory.Combine("home") };
+            FakeAgentWorkspaceLocator workspace = new() { Directory = directory.Combine("library", "agent-workspace") };
+            ScriptedProcessRunner runner = new() { Handler = _ => ScriptedProcessRunner.Output("2.1.2") };
+            AgentSkillLocations locations = new(environment.HomeDirectory, directory.Combine("state"),
+                new Dictionary<string, string>());
+            AgentLaunchService service = new(new AgentDetectionService(runner, environment), workspace,
+                new AgentSkillService(locations));
+            string[] executables = OperatingSystem.IsWindows() ? [pwsh, shim] : [pwsh];
+            foreach (string executable in executables)
+            {
+                environment.ExistingFiles.Add(executable);
+                string receipt = directory.Combine($"receipt-{Path.GetFileName(executable)}.txt");
+                Result<AgentLaunchSpec> prepared = await service.PrepareLaunchAsync(
+                    AgentIntegrationAppSettings.Default().WithCustomPath("opencode", executable),
+                    new AgentLaunchContext(Environment: new Dictionary<string, string>
+                    {
+                        ["TEMP"] = directory.Combine("missing-temp"),
+                        ["TMP"] = directory.Combine("missing-tmp"),
+                        ["TMPDIR"] = directory.Combine("missing-tmpdir")
+                    }), timeout.Token);
+                prepared.IsSuccess.Should().BeTrue(prepared.ErrorMessage);
+                AgentLaunchSpec spec = prepared.Value with
+                {
+                    Arguments = executable == pwsh ? ["-NoLogo", "-NoProfile", "-File", script, receipt] : [receipt]
+                };
+                TerminalSessionOptions options = (TerminalSessionOptions)typeof(AgentWorkspaceViewModel)
+                    .GetMethod("CreateTerminalOptions", BindingFlags.Static | BindingFlags.NonPublic)!
+                    .Invoke(null, [spec])!;
+                EnsureTerminalTheme();
+                using EmbeddedTerminal terminal = new();
+                Window window = new() { Content = terminal, Width = 900, Height = 600 };
+                try
+                {
+                    window.Show();
+                    window.UpdateLayout();
+                    Dispatcher.UIThread.RunJobs();
+                    await terminal.StartAsync(options, timeout.Token);
+                    (await terminal.WaitForExitAsync(TimeSpan.FromSeconds(10), timeout.Token)).Should().BeTrue();
+                    terminal.ExitCode.Should().Be(0);
+                    string expected = Path.Combine(workspace.Directory, ".tmp");
+                    (await File.ReadAllLinesAsync(receipt, timeout.Token)).Should()
+                        .Equal(expected, expected, expected, expected);
+                }
+                finally
+                {
+                    terminal.Stop();
+                    terminal.WaitForExit(TimeSpan.FromSeconds(5));
+                    window.Content = null;
+                    window.Close();
+                }
+            }
+
+            return true;
+        }, timeout.Token);
+    }
+
     [TerminalPtyFact]
     public async Task Presets_and_generic_document_references_paste_directly_without_submitting()
     {
@@ -304,13 +380,7 @@ public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture hea
     private static async Task StartReaderAsync(AgentWorkspaceViewModel workspace, string received,
         CancellationToken cancellationToken)
     {
-        // The terminal package caches theme registration globally, while Dispatch creates a new App.
-        Uri theme = new("avares://Iciclecreek.Avalonia.Terminal/Themes/Generic.axaml");
-        if (!Application.Current!.Styles.OfType<StyleInclude>().Any(style => style.Source == theme))
-        {
-            Application.Current.Styles.Insert(0, new StyleInclude(theme) { Source = theme });
-        }
-
+        EnsureTerminalTheme();
         Window window = (Window)TopLevel.GetTopLevel(workspace.Terminal!)!;
         window.Measure(new Size(window.Width, window.Height));
         window.Arrange(new Rect(0, 0, window.Width, window.Height));
@@ -339,6 +409,16 @@ public sealed class AgentWorkspaceTerminalTests(AvaloniaSharedSessionFixture hea
             .Should().Be($"{expected.Cols},{expected.Rows}", "launch must preserve the grid calculated by layout");
         workspace.OnPageAttached();
         await Dispatcher.UIThread.InvokeAsync(static () => { }, DispatcherPriority.Input);
+    }
+
+    private static void EnsureTerminalTheme()
+    {
+        // The terminal package caches theme registration globally, while Dispatch creates a new App.
+        Uri theme = new("avares://Iciclecreek.Avalonia.Terminal/Themes/Generic.axaml");
+        if (!Application.Current!.Styles.OfType<StyleInclude>().Any(style => style.Source == theme))
+        {
+            Application.Current.Styles.Insert(0, new StyleInclude(theme) { Source = theme });
+        }
     }
 
     /// <summary>

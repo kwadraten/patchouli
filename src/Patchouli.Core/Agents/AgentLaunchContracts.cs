@@ -9,6 +9,7 @@ public static class AgentIntegrationErrorCodes
     public const string NotInstalled = "agent_not_installed";
     public const string InvalidExecutable = "agent_invalid_executable";
     public const string WorkspaceFailed = "agent_workspace_failed";
+    public const string TemporaryDirectoryFailed = "agent_temporary_directory_failed";
 }
 
 /// <summary>
@@ -20,7 +21,10 @@ public static class AgentIntegrationErrorCodes
 /// <param name="McpEndpoint">Loopback MCP endpoint exported as <c>PATCHOULI_MCP_URL</c>.</param>
 /// <param name="McpToken">MCP bearer token exported as <c>PATCHOULI_MCP_TOKEN</c>.</param>
 /// <param name="McpConfigPath">Generated config file path exported as <c>PATCHOULI_MCP_CONFIG</c>.</param>
-/// <param name="Environment">Additional overrides; these win over generated values.</param>
+/// <param name="Environment">
+/// Additional overrides; these win over generated values except for TEMP, TMP and TMPDIR, which always
+/// point to the verified temporary directory inside the Agent workspace.
+/// </param>
 public sealed record AgentLaunchContext(
     string? LibraryId = null,
     Uri? McpEndpoint = null,
