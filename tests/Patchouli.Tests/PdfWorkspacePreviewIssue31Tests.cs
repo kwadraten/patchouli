@@ -1,11 +1,14 @@
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
+using Patchouli.Performance;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
@@ -22,17 +25,10 @@ namespace Patchouli.Tests;
 /// covered by the pre-existing
 /// <see cref="PdfWorkspaceSourceValidationTests.Rapid_page_flipping_discards_obsolete_renders_and_applies_latest"/>.)
 /// </summary>
-[Collection("Avalonia")]
-public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
+[Collection("RetainedTabUI")]
+public sealed class PdfWorkspacePreviewIssue31Tests(AvaloniaSharedSessionFixture headless) : IDisposable
 {
-    // One process-wide headless session, never disposed: in this environment
-    // HeadlessUnitTestSession.Dispose() can deadlock on session shutdown (verified
-    // with a minimal repro: StartNew + Dispatch + any post-await work + Dispose
-    // hangs, while the identical flow without Dispose completes). This mirrors the
-    // repository's own AvaloniaSharedSessionFixture pattern; per-test isolation is
-    // retained because every test drives its own MainWindowViewModel via Dispatch.
-    private static readonly HeadlessUnitTestSession SharedSession =
-        HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+    private HeadlessUnitTestSession SharedSession => headless.Session;
 
     private readonly TemporaryAppSettingsFile _settings = new();
     private MainWindowViewModel? _mainWindow;
@@ -374,7 +370,7 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
             // different box sets, and capture the real boxes per current revision.
             Host.Composition.HostServices services = await vm.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
-            IReadOnlyList<Core.Layout.Page> pages =
+            IReadOnlyList<Page> pages =
                 (await services.Pages.ListPagesAsync(documentInstanceId)).Value;
             await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
                 documentInstanceId, pages[0].PageId, "page zero box");
@@ -440,6 +436,43 @@ public sealed class PdfWorkspacePreviewIssue31Tests : IDisposable
                 "the stale generation must not replace the newer page's revision rows");
 
             await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Synchronous_tree_loading_keeps_the_shared_heartbeat_within_budget()
+    {
+        await DispatchAndShutdownAsync(SharedSession, async () =>
+        {
+            MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("slow-tree-heartbeat"));
+            await OpenImportedItemAsync(main, CreatePdfPath());
+            LibraryItemViewModel item = main.Shell.Items.Single();
+            await main.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)main.ActiveTab!.Content!;
+            Host.Composition.HostServices services = await main.ServicesAsync();
+            DocumentInstanceId documentId = DocumentInstanceId.Parse(item.DocumentInstanceId!);
+            IReadOnlyList<Page> pages = (await Task.Run(() => services.Pages.ListPagesAsync(documentId))).Value;
+            await Task.Run(() => BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
+                documentId, pages[1].PageId, "A committed page is needed to exercise the tree loader."));
+            int treeLoads = 0;
+            workspace.PageRenderPreviewHandler = (_, _) => Task.FromResult(SuccessLease(10));
+            workspace.DocumentBoxesLoadHandler = _ =>
+            {
+                Interlocked.Increment(ref treeLoads);
+                Dispatcher.UIThread.CheckAccess().Should().BeFalse();
+                Thread.Sleep(700);
+                return Task.FromResult<IReadOnlyList<DocumentBox>>([]);
+            };
+
+            UiHeartbeatMeasurement heartbeat =
+                await UiHeartbeatProbe.MeasureAsync(() => workspace.NextPageCommand.ExecuteAsync());
+
+            treeLoads.Should().Be(1, "the measurement must actually enter the blocking tree substitute");
+            heartbeat.Samples.Should().BeGreaterThanOrEqualTo(3);
+            heartbeat.MaximumGapMs.Should().BeLessThan(500);
+            workspace.PageIndex.Should().Be(1);
+            await ReleaseDocumentSessionAsync(main, item);
             return true;
         }, CancellationToken.None);
     }

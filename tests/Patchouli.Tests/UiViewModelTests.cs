@@ -2217,6 +2217,15 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                     vm.Shell.MinerUToken = "token";
                     await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
 
+                    // Exercise real document enqueue without local model/schema dependencies.
+                    // MinerU's built-in routing is deterministic here; the paused queue never calls HTTP.
+                    OcrPreset preset = (await Task.Run(() => services.OcrPresets.CreatePresetAsync(
+                            "Quick-fill test", null, OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true)))
+                        .Value;
+                    Result selectionSaved = await Task.Run(() => services.OcrSelections.SaveSelectionsAsync(
+                        new Dictionary<OcrScope, OcrPresetId?> { [OcrScope.Document] = preset.PresetId }));
+                    selectionSaved.IsSuccess.Should().BeTrue(selectionSaved.ErrorMessage);
+
                     await vm.Shell.QuickFillOcrCommand.ExecuteAsync();
                     vm.OcrQueue.StartObserving();
                     await vm.OcrQueue.RefreshAsync();

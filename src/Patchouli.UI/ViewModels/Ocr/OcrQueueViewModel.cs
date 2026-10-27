@@ -56,6 +56,9 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     private bool _snapshotInFlight;
     private bool _queueDisposed;
     private bool _isDetached;
+    private long _snapshotSequence;
+    private long _completedSnapshotSequence;
+    private TaskCompletionSource _snapshotCycleFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
     /// Test seam: wraps the freshly resolved row service before a snapshot reads it. Production
@@ -114,6 +117,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
             _refreshSuspended = false;
             _visibilityEpoch++;
+            if (_snapshotCycleFinished.Task.IsCompleted)
+            {
+                _snapshotCycleFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
         }
 
         _polling.Disposable = Observable.Interval(TimeSpan.FromSeconds(1), _timingScheduler)
@@ -137,6 +144,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _visibilityEpoch++;
             _scheduledRefresh.Disposable = null;
             _activeLoad?.Cancel();
+            _snapshotCycleFinished.TrySetResult();
         }
 
         _polling.Disposable = null;
@@ -236,13 +244,18 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                             return;
                         }
 
-                        Result<TranslationRunStatus> result = await service.CancelAsync(run.RunId);
+                        Result<TranslationRunStatus> result = await Task.Run(() => service.CancelAsync(run.RunId));
+                        if (_main.LibraryGeneration != generation)
+                        {
+                            return;
+                        }
+
                         if (result.IsFailure)
                         {
                             _main.ReportError($"取消翻译失败：{result.ErrorMessage}");
                         }
 
-                        await RefreshAsync();
+                        await RefreshAfterControlAsync();
                     }, controls is null ? null : () => ControlTranslationAsync(run.RunId, generation, controls, true),
                     controls is null ? null : () => ControlTranslationAsync(run.RunId, generation, controls, false),
                     controls is null ? null : () => RetryTranslationAsync(run.RunId, generation, controls));
@@ -264,13 +277,18 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result result = await controls.SetPausedAsync(paused, runId);
+        Result result = await Task.Run(() => controls.SetPausedAsync(paused, runId));
+        if (_main.LibraryGeneration != generation)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             _main.ReportError($"操作翻译任务失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task RetryTranslationAsync(Guid runId, int generation, ITranslationTaskControls controls)
@@ -280,7 +298,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result<TranslationRunStatus> result = await controls.RetryAsync(runId);
+        Result<TranslationRunStatus> result = await Task.Run(() => controls.RetryAsync(runId));
         if (_main.LibraryGeneration != generation)
         {
             return;
@@ -295,7 +313,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"重试翻译任务失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     internal void UpdateMetadataRuns(IReadOnlyList<MetadataBatchRunStatus> runs, IMetadataRunService service)
@@ -335,13 +353,18 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                             return;
                         }
 
-                        Result<MetadataBatchRunStatus> result = await service.CancelAsync(run.TaskId);
+                        Result<MetadataBatchRunStatus> result = await Task.Run(() => service.CancelAsync(run.TaskId));
+                        if (_main.LibraryGeneration != generation)
+                        {
+                            return;
+                        }
+
                         if (result.IsFailure)
                         {
                             _main.ReportError($"取消元数据任务失败：{result.ErrorMessage}");
                         }
 
-                        await RefreshAsync();
+                        await RefreshAfterControlAsync();
                     },
                     () => RetryMetadataAsync(run.TaskId, generation, service));
                 _metadataRuns.Add(run.TaskId, row);
@@ -361,7 +384,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result<MetadataBatchRunStatus> result = await service.RetryAsync(taskId);
+        Result<MetadataBatchRunStatus> result = await Task.Run(() => service.RetryAsync(taskId));
         if (_main.LibraryGeneration != generation)
         {
             return;
@@ -376,7 +399,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"重试元数据任务失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task ApplyTranslationControlAsync(Func<ITranslationTaskControls, Task<Result>> action)
@@ -384,7 +407,13 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         HostServices services = await _main.ServicesAsync();
         if (services.TranslationRuns is ITranslationTaskControls controls)
         {
-            Result result = await action(controls);
+            int generation = _main.LibraryGeneration;
+            Result result = await Task.Run(() => action(controls));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 _main.ReportError($"操作翻译任务失败：{result.ErrorMessage}");
@@ -620,14 +649,20 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private async Task EnqueueMockAsync()
     {
+        int generation = _main.LibraryGeneration;
         IOcrQueueScheduler? queue = await GetQueueAsync();
         if (queue is null)
         {
             return;
         }
 
-        Result<OcrQueueTask> result = await queue.EnqueueMockPagesAsync(
-            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        Result<OcrQueueTask> result = await Task.Run(() => queue.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument));
+        if (_main.LibraryGeneration != generation)
+        {
+            return;
+        }
+
         if (result.IsSuccess)
         {
             _main.Report("已加入模拟 OCR 任务。");
@@ -637,7 +672,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"加入模拟 OCR 任务失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task StartAsync()
@@ -648,10 +683,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        await queue.StartAsync();
+        await Task.Run(() => queue.StartAsync());
         await ApplyTranslationControlAsync(controls => controls.SetQueueRunningAsync(true));
         _main.Report("任务队列已启动。");
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task StopAsync()
@@ -662,10 +697,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        await queue.StopAsync();
+        await Task.Run(() => queue.StopAsync());
         await ApplyTranslationControlAsync(controls => controls.SetQueueRunningAsync(false));
         _main.Report("任务队列已停止。");
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task RetryFailedAsync()
@@ -676,7 +711,8 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result<IReadOnlyList<OcrQueueTask>> tasks = await queue.ListTasksAsync(new OcrQueueTaskFilter());
+        Result<IReadOnlyList<OcrQueueTask>>
+            tasks = await Task.Run(() => queue.ListTasksAsync(new OcrQueueTaskFilter()));
         if (tasks.IsFailure)
         {
             _main.ReportError($"读取失败 OCR 任务失败：{tasks.ErrorMessage}");
@@ -688,7 +724,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         foreach (OcrQueueTask task in tasks.Value.Where(task =>
                      task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
         {
-            Result<OcrQueueTask> result = await queue.RetryTaskAsync(task.TaskId);
+            Result<OcrQueueTask> result = await Task.Run(() => queue.RetryTaskAsync(task.TaskId));
             if (result.IsSuccess)
             {
                 retried++;
@@ -705,7 +741,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         {
             foreach (Guid id in _translations.Where(pair => pair.Value.CanRetry).Select(pair => pair.Key).ToArray())
             {
-                Result<TranslationRunStatus> result = await controls.RetryAsync(id);
+                Result<TranslationRunStatus> result = await Task.Run(() => controls.RetryAsync(id));
                 if (!_main.IsCurrentLibraryContext(services, generation))
                 {
                     return;
@@ -725,7 +761,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
         foreach (Guid id in _metadataRuns.Where(pair => pair.Value.CanRetry).Select(pair => pair.Key).ToArray())
         {
-            Result<MetadataBatchRunStatus> result = await services.MetadataRuns.RetryAsync(id);
+            Result<MetadataBatchRunStatus> result = await Task.Run(() => services.MetadataRuns.RetryAsync(id));
             if (!_main.IsCurrentLibraryContext(services, generation))
             {
                 return;
@@ -745,7 +781,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         _main.Report(failed == 0
             ? $"已重新加入 {retried} 个失败或阻塞的任务。"
             : $"重新加入失败或阻塞的任务：成功 {retried}，失败 {failed}。");
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     internal async Task RetryAsync(string taskId)
@@ -758,7 +794,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
         try
         {
-            Result<OcrQueueTask> result = await queue.RetryTaskAsync(OcrQueueTaskId.Parse(taskId));
+            Result<OcrQueueTask> result = await Task.Run(() => queue.RetryTaskAsync(OcrQueueTaskId.Parse(taskId)));
             if (result.IsSuccess)
             {
                 _main.Report("已重新加入 OCR 任务。");
@@ -773,7 +809,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"重试 OCR 任务失败：{exception.Message}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     private async Task ClearFinishedAsync()
@@ -798,7 +834,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         }
 
         _main.Report("已清空完成的任务。");
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     internal async Task PauseAsync(string scope, string? target = null)
@@ -809,7 +845,13 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result result = await queue.PauseAsync(scope, target);
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => queue.PauseAsync(scope, target));
+        if (_main.LibraryGeneration != generation)
+        {
+            return;
+        }
+
         if (result.IsSuccess && scope == OcrPauseScope.Global)
         {
             await ApplyTranslationControlAsync(controls => controls.SetPausedAsync(true));
@@ -824,7 +866,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"暂停失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     internal async Task ResumeAsync(string scope, string? target = null)
@@ -835,7 +877,13 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result result = await queue.ResumeAsync(scope, target);
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => queue.ResumeAsync(scope, target));
+        if (_main.LibraryGeneration != generation)
+        {
+            return;
+        }
+
         if (result.IsSuccess && scope == OcrPauseScope.Global)
         {
             await ApplyTranslationControlAsync(controls => controls.SetPausedAsync(false));
@@ -850,7 +898,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"恢复失败：{result.ErrorMessage}");
         }
 
-        await RefreshAsync();
+        await RefreshAfterControlAsync();
     }
 
     internal async Task CancelAsync(string taskId)
@@ -863,7 +911,13 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
         try
         {
-            Result result = await queue.CancelTaskAsync(OcrQueueTaskId.Parse(taskId));
+            int generation = _main.LibraryGeneration;
+            Result result = await Task.Run(() => queue.CancelTaskAsync(OcrQueueTaskId.Parse(taskId)));
+            if (_main.LibraryGeneration != generation)
+            {
+                return;
+            }
+
             if (result.IsSuccess)
             {
                 _main.Report("已请求取消任务。");
@@ -878,7 +932,33 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _main.ReportError($"取消任务失败：{ex.Message}");
         }
 
+        await RefreshAfterControlAsync();
+    }
+
+    private async Task RefreshAfterControlAsync()
+    {
+        long requested;
+        lock (_refreshGate)
+        {
+            requested = _snapshotSequence + 1;
+        }
+
         await RefreshAsync();
+        while (true)
+        {
+            Task finished;
+            lock (_refreshGate)
+            {
+                if (_queueDisposed || _refreshSuspended || _completedSnapshotSequence >= requested)
+                {
+                    return;
+                }
+
+                finished = _snapshotCycleFinished.Task;
+            }
+
+            await finished;
+        }
     }
 
     /// <summary>
@@ -1060,6 +1140,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
                     _isDetached = false;
                     _activeLoad = load;
+                    _snapshotSequence++;
                     return _visibilityEpoch;
                 }
             }).ConfigureAwait(false);
@@ -1142,6 +1223,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     private void CompleteSnapshotCycle(CancellationTokenSource? load)
     {
         bool scheduleNext;
+        TaskCompletionSource finished;
         lock (_refreshGate)
         {
             if (ReferenceEquals(_activeLoad, load))
@@ -1150,6 +1232,9 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             }
 
             load?.Dispose();
+            _completedSnapshotSequence = _snapshotSequence;
+            finished = _snapshotCycleFinished;
+            _snapshotCycleFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _snapshotInFlight = false;
             scheduleNext = _refreshDirty && !_refreshSuspended && !_queueDisposed;
             if (scheduleNext)
@@ -1159,6 +1244,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             }
         }
 
+        finished.TrySetResult();
         if (scheduleNext)
         {
             _scheduledRefresh.Disposable =

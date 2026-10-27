@@ -168,6 +168,24 @@ UI database/refresh paths have been remediated; those remain #46 scope.
 - **System.Reactive**: Handles time, async, collection, cross-object, and event relations.
 - **CommunityToolkit.Mvvm**: Handles mutable VM state and commands.
 
+Execution location is independent of reactivity: the UI thread applies state changes, but never
+executes SQLite work or OCR inference. Neither an `Async` suffix nor `ConfigureAwait(false)` moves
+synchronously completing work off the Dispatcher. Capture immutable inputs at the VM → Host
+boundary, explicitly offload service work, then validate the Library/session/render generation
+before applying a snapshot on the UI thread. OCR CPU work belongs behind the host execution
+boundary. Event-driven reloads obey the same rule; visibility gates and one in-flight load plus
+a dirty mark prevent refresh backlogs. `UiThreadExecutionGuard` records resource-boundary violations
+without throwing or changing business results; the shared 100 ms UI heartbeat also detects pure
+CPU stalls that do not open a database connection.
+
+Foreground blocking is not UI-thread execution. Operations that irreversibly delete a
+DocumentInstance's pages, Box Trees or revision history, and all existing blocking workflows,
+use `ModalOperationRunner` with a separate modal dialog: main-window interaction stays disabled,
+the running dialog cannot close, cancellation and progress remain responsive, and actual work
+runs in the background even when no dialog can be shown. Soft Item changes (trash/restore/merge)
+and tag/collection changes remain non-modal. This execution boundary complements, rather than
+replaces, ADR `0033`'s notification/scheduling model.
+
 ## Document ownership and remaining implementation gaps
 
 Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in protocols/, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.

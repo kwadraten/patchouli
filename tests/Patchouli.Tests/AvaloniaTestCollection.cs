@@ -42,7 +42,7 @@ namespace Patchouli.Tests;
 // per-class proof of zero contact with the roots above plus repeated-run evidence — not available
 // today. See tests/test-suites.json "r14_collection_audit" for the sanctioned experiment matrix.
 [CollectionDefinition("Avalonia", DisableParallelization = true)]
-public sealed class AvaloniaTestCollection;
+public sealed class AvaloniaTestCollection : ICollectionFixture<UiThreadExecutionGateFixture>;
 
 // The single shared headless session lives behind exactly ONE collection definition. Tests that
 // touch the same static Avalonia objects (markdown text decorations, retained tab chrome,
@@ -52,7 +52,8 @@ public sealed class AvaloniaTestCollection;
 // unchanged: every Dispatch still builds a fresh Application on that thread, and each case
 // creates/closes its own settings, view models, windows, hosts and databases.
 [CollectionDefinition("RetainedTabUI", DisableParallelization = true)]
-public sealed class RetainedTabUITestCollection : ICollectionFixture<AvaloniaSharedSessionFixture>;
+public sealed class RetainedTabUITestCollection : ICollectionFixture<AvaloniaSharedSessionFixture>,
+    ICollectionFixture<UiThreadExecutionGateFixture>;
 
 /// <summary>
 /// Owns the collection's one <see cref="HeadlessUnitTestSession"/> through explicit xunit

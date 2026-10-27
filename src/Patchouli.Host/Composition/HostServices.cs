@@ -91,6 +91,7 @@ public sealed class HostServices
         new(StringComparer.OrdinalIgnoreCase);
 
     private long _metadataLookupApplyGeneration;
+    private Task _metadataLookupApplyTask = Task.CompletedTask;
     private Task? _shutdownTask;
     private LlmAppSettings _llmSettings;
     private AgentIntegrationAppSettings _agentSettings;
@@ -684,8 +685,7 @@ public sealed class HostServices
                 if (AcceptSettingsCommitLocked("Sync", change.CommitSequence) &&
                     AcceptMetadataLookupDependencyLocked(change.CommitSequence))
                 {
-                    _ = ApplyCommittedMetadataLookupAsync(change.Snapshot,
-                        ++_metadataLookupApplyGeneration);
+                    ScheduleMetadataLookupApplyLocked(change.Snapshot);
                 }
             }
         }
@@ -721,8 +721,7 @@ public sealed class HostServices
             {
                 if (AcceptMetadataLookupDependencyLocked(change.CommitSequence))
                 {
-                    _ = ApplyCommittedMetadataLookupAsync(change.Snapshot,
-                        ++_metadataLookupApplyGeneration);
+                    ScheduleMetadataLookupApplyLocked(change.Snapshot);
                 }
             }
         }
@@ -808,6 +807,13 @@ public sealed class HostServices
         {
             _reportUnexpectedException(exception, "settings-commit", "apply-metadata-lookup");
         }
+    }
+
+    private void ScheduleMetadataLookupApplyLocked(PatchouliAppSettings settings)
+    {
+        long generation = ++_metadataLookupApplyGeneration;
+        Task apply = Task.Run(() => ApplyCommittedMetadataLookupAsync(settings, generation));
+        _metadataLookupApplyTask = Task.WhenAll(_metadataLookupApplyTask, apply);
     }
 
     private static IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -960,13 +966,13 @@ public sealed class HostServices
                                                   "import-residue-gc"))
             {
             }
+
+            startupProgress?.Report(StartupStage.StartingOcrQueue);
+            await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
+
+            startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
+            await services.ApplySyncedMetadataLookupAsync(settings);
         });
-
-        startupProgress?.Report(StartupStage.StartingOcrQueue);
-        await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
-
-        startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
-        await services.ApplySyncedMetadataLookupAsync(settings);
 
         try
         {
@@ -1018,6 +1024,13 @@ public sealed class HostServices
         }
 
         _lifetimeCancellation.Cancel();
+        Task metadataSettings;
+        lock (_settingsCommitGate)
+        {
+            metadataSettings = _metadataLookupApplyTask;
+        }
+
+        await metadataSettings.ConfigureAwait(false);
         ExtensionFiles.Dispose(); // Close admission and cancel desktop prompts/direct downloads.
         IOcrQueueScheduler ocrQueue = ((QueuedOcrRunCoordinator)Ocr).Queue;
         if (ocrQueue is IAsyncDisposable ownedOcrQueue)

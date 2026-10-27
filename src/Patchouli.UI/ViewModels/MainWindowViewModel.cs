@@ -187,13 +187,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     [ExcludeFromDerivedGeneration] public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
 
-    [ExcludeFromDerivedGeneration] public bool HasOpenRuntimeDatabase => _services is not null;
+    [ExcludeFromDerivedGeneration]
+    public bool HasOpenRuntimeDatabase => _services is not null && Volatile.Read(ref _librarySwitchInProgress) == 0;
+
+    private int _librarySwitchInProgress;
 
     [ExcludeFromDerivedGeneration] public int LibraryGeneration => Volatile.Read(ref _libraryGeneration);
 
     internal bool IsCurrentLibraryContext(HostServices services, int generation)
     {
-        return generation == LibraryGeneration && ReferenceEquals(services, _services);
+        return Volatile.Read(ref _librarySwitchInProgress) == 0 && generation == LibraryGeneration &&
+               ReferenceEquals(services, _services);
     }
 
     public IClipboardService Clipboard { get; }
@@ -623,7 +627,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         HostServices services = await ServicesAsync();
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        int generation = LibraryGeneration;
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return new SettingsSaveResult(false, AppErrorCodes.InvalidState, "书库已切换。", "library_identity", true);
+        }
+
         if (library.IsFailure)
         {
             return new SettingsSaveResult(false, library.ErrorCode, library.ErrorMessage, "library_identity", true);
@@ -635,12 +645,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         MetadataLookupAppSettings normalized = MetadataLookupAppSettings.MergeWithDefaults(metadataLookup.Sources);
-        return await services.LibrarySettingCoordinator.SaveEnabledAsync(
+        string deviceId = _settings.Sync.DeviceId;
+        TaskScheduler uiScheduler = SynchronizationContext.Current is null
+            ? TaskScheduler.Default
+            : TaskScheduler.FromCurrentSynchronizationContext();
+        return await Task.Run(() => services.LibrarySettingCoordinator.SaveEnabledAsync(
             LibrarySettingKeys.MetadataLookup,
             normalized,
-            _settings.Sync.DeviceId,
-            _ => UpdateAppOptionsAsync(_settings with { MetadataLookup = normalized }, "MetadataLookup"),
-            services.UpdateMetadataLookupPreferences);
+            deviceId,
+            ct => Task.Factory.StartNew(() => IsCurrentLibraryContext(services, generation)
+                ? UpdateAppOptionsAsync(_settings with { MetadataLookup = normalized }, "MetadataLookup")
+                : Task.FromResult(new SettingsSaveResult(false, AppErrorCodes.InvalidState, "书库已切换。",
+                    "library_identity", true)), ct, TaskCreationOptions.DenyChildAttach, uiScheduler).Unwrap(),
+            services.UpdateMetadataLookupPreferences));
     }
 
     private bool HasAnyMetadataLookupSyncEnabled()
@@ -657,7 +674,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         SyncAppSettings? syncOverride = null)
     {
         HostServices services = await ServicesAsync();
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        int generation = LibraryGeneration;
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return new SettingsSaveResult(false, AppErrorCodes.InvalidState, "书库已切换。", "library_identity", true);
+        }
+
         if (library.IsFailure)
         {
             return new SettingsSaveResult(false, library.ErrorCode, library.ErrorMessage, "library_identity", true);
@@ -682,30 +705,44 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     nextSync.SyncRootId, nextSync.DeviceId));
         binding ??= nextSync.CurrentSyncRootBinding(library.Value.LibraryId);
         binding ??= nextSync.EnsureCurrentSyncRootBinding(library.Value.LibraryId);
+        TaskScheduler uiScheduler = SynchronizationContext.Current is null
+            ? TaskScheduler.Default
+            : TaskScheduler.FromCurrentSynchronizationContext();
 
         if (enabled)
         {
             MetadataLookupAppSettings normalized =
                 MetadataLookupAppSettings.MergeWithDefaults(_settings.MetadataLookup.Sources);
-            return await services.LibrarySettingCoordinator.SaveEnabledAsync(
+            string deviceId = _settings.Sync.DeviceId;
+            return await Task.Run(() => services.LibrarySettingCoordinator.SaveEnabledAsync(
                 LibrarySettingKeys.MetadataLookup,
                 normalized,
-                _settings.Sync.DeviceId,
-                _ => UpdateSyncBindingAsync(nextSync, binding),
-                services.UpdateMetadataLookupPreferences);
+                deviceId,
+                ct => Task.Factory.StartNew(() => IsCurrentLibraryContext(services, generation)
+                    ? UpdateSyncBindingAsync(nextSync, binding)
+                    : Task.FromResult(new SettingsSaveResult(false, AppErrorCodes.InvalidState, "书库已切换。",
+                        "library_identity", true)), ct, TaskCreationOptions.DenyChildAttach, uiScheduler).Unwrap(),
+                services.UpdateMetadataLookupPreferences));
         }
 
-        return await services.LibrarySettingCoordinator.DisableAndMaterializeAsync<MetadataLookupAppSettings>(
-            LibrarySettingKeys.MetadataLookup,
-            currentlyEnabled,
-            _settings.MetadataLookup,
-            (materialized, cancellationToken) => UpdateSyncBindingAndMetadataLookupAsync(
-                nextSync,
-                binding,
-                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
-                cancellationToken),
-            materialized => services.UpdateMetadataLookupPreferences(
-                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources)));
+        MetadataLookupAppSettings fallback = _settings.MetadataLookup;
+        return await Task.Run(() =>
+            services.LibrarySettingCoordinator.DisableAndMaterializeAsync<MetadataLookupAppSettings>(
+                LibrarySettingKeys.MetadataLookup,
+                currentlyEnabled,
+                fallback,
+                (materialized, cancellationToken) => Task.Factory.StartNew(() =>
+                        IsCurrentLibraryContext(services, generation)
+                            ? UpdateSyncBindingAndMetadataLookupAsync(
+                                nextSync,
+                                binding,
+                                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
+                                cancellationToken)
+                            : Task.FromResult(new SettingsSaveResult(false, AppErrorCodes.InvalidState, "书库已切换。",
+                                "library_identity", true)), cancellationToken, TaskCreationOptions.DenyChildAttach,
+                    uiScheduler).Unwrap(),
+                materialized => services.UpdateMetadataLookupPreferences(
+                    MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources))));
     }
 
     private async Task PersistRuntimeDatabasePathIfEnabledAsync()
@@ -1213,6 +1250,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     public async Task<HostServices> ServicesAsync(bool startMcpServer = true)
     {
+        if (Volatile.Read(ref _librarySwitchInProgress) != 0)
+        {
+            throw new OperationCanceledException("书库正在关闭或切换，不能开始新的操作。");
+        }
+
         if (_services is not null)
         {
             EnsureLibraryChangeNotifications(_services);
@@ -1235,7 +1277,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             // Issue #15: sweep installer downloads left in temp (kept via
             // "稍后安装" or after a successful install) older than the
             // retention window. Best-effort; never throws.
-            UpdateDownloader.CleanupStaleDownloads();
+            await Task.Run(UpdateDownloader.CleanupStaleDownloads);
             if (_settingsStore.IsDirty)
             {
                 SettingsSaveResult pendingSettings = await _settingsStore.SaveImmediatelyAsync();
@@ -1268,7 +1310,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
             StartupLoadingStatus = "正在加载资料库内容…";
             startupActivity.UpdateDetail(StartupLoadingStatus);
-            Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+            Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
             if (library.IsFailure)
             {
                 await ShowInlineFirstRunAsync();
@@ -1279,7 +1321,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }
             else
             {
-                ExistingDatabaseSetup setup = await ExistingDatabaseSetupInspector.InspectAsync(RuntimeDatabasePath);
+                string databasePath = RuntimeDatabasePath;
+                ExistingDatabaseSetup setup =
+                    await Task.Run(() => ExistingDatabaseSetupInspector.InspectAsync(databasePath));
                 if (setup.CurrentStep == FirstRunStep.Complete && string.IsNullOrWhiteSpace(Shell.MinerUToken))
                 {
                     setup = setup with
@@ -1616,15 +1660,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task RefreshSyncedMetadataLookupAsync(HostServices services)
     {
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        int generation = LibraryGeneration;
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (library.IsFailure ||
             !_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
         {
             return;
         }
 
-        Result<MetadataLookupAppSettings?> synced = await services.GetSyncedMetadataLookupAsync();
-        if (synced.IsFailure || synced.Value is null)
+        Result<MetadataLookupAppSettings?> synced = await Task.Run(() => services.GetSyncedMetadataLookupAsync());
+        if (!IsCurrentLibraryContext(services, generation) || synced.IsFailure || synced.Value is null)
         {
             return;
         }
@@ -1647,7 +1697,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task RefreshQueryRewriteEnabledAsync(HostServices services)
     {
-        Result<SearchProfileSettings> settings = await services.SearchProfiles.GetSearchSettingsAsync();
+        int generation = LibraryGeneration;
+        Result<SearchProfileSettings> settings = await Task.Run(() => services.SearchProfiles.GetSearchSettingsAsync());
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (settings.IsFailure)
         {
             ApplyQueryRewriteEnabled(false);
@@ -1677,7 +1733,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         // The setter already reflects the user's latest choice. Reapplying a queued older
         // request here would overwrite newer input before Switch cancels that request.
-        Result saved = await services.SearchProfiles.SetRewriteEnabledAsync(enabled, cancellationToken);
+        Result saved = await Task.Run(() => services.SearchProfiles.SetRewriteEnabledAsync(enabled, cancellationToken),
+            cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (gen != LibraryGeneration)
         {
@@ -1731,21 +1788,35 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         try
         {
             HostServices services = await ServicesAsync();
-            Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
+            int generation = LibraryGeneration;
+            (Result<IReadOnlyList<FileSearchRoot>> roots, (FileSearchRoot Root, int Count)[] entries) =
+                await Task.Run(async () =>
+                {
+                    Result<IReadOnlyList<FileSearchRoot>> loadedRoots =
+                        await services.FileResolution.ListSearchRootsAsync();
+                    if (loadedRoots.IsFailure)
+                    {
+                        return (loadedRoots, Array.Empty<(FileSearchRoot Root, int Count)>());
+                    }
+
+                    Result<IReadOnlyList<string>> paths = await services.Files.ListOriginalPathsAsync();
+                    if (paths.IsFailure)
+                    {
+                        throw new InvalidOperationException(paths.ErrorMessage);
+                    }
+
+                    return (loadedRoots, loadedRoots.Value.Select(root =>
+                        (root, paths.Value.Count(path => IsPathUnderRoot(path, root.RootPath)))).ToArray());
+                });
+            if (!IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (roots.IsSuccess)
             {
-                Result<IReadOnlyList<string>> paths = await services.Files.ListOriginalPathsAsync();
-                if (paths.IsFailure)
+                foreach ((FileSearchRoot root, int fileCount) in entries)
                 {
-                    throw new InvalidOperationException(paths.ErrorMessage);
-                }
-
-                string[] filePaths = paths.Value.ToArray();
-
-                foreach (FileSearchRoot root in roots.Value)
-                {
-                    int fileCount = filePaths.Count(path => IsPathUnderRoot(path, root.RootPath));
-
                     FileSearchRoots.Add(new SidebarFileSearchRootViewModel(
                         root.RootPath,
                         root.IsAvailable,
@@ -1803,8 +1874,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }
             else
             {
-                result = await watcher.RescanFileSearchRootsAsync(completionMessage, cancellationToken, progress,
-                    trigger);
+                Progress<(int? Current, int? Total, string Label, string? Detail)> reports = new(update =>
+                    progress?.Invoke(update.Current, update.Total, update.Label, update.Detail));
+                result = await Task.Run(() => watcher.RescanFileSearchRootsAsync(completionMessage, cancellationToken,
+                    (current, total, label, detail) => ((IProgress<(int?, int?, string, string?)>)reports)
+                        .Report((current, total, label, detail)), trigger), cancellationToken);
             }
 
             // Follow-up creates watchers and background work; those must not inherit this
@@ -2023,10 +2097,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task ShutdownCoreAsync()
     {
+        Interlocked.Exchange(ref _librarySwitchInProgress, 1);
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())
         {
             await pdf.StopAsync();
+        }
+
+        foreach (ItemEditorViewModel editor in Layout.Tabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>()
+                     .ToArray())
+        {
+            await editor.DisposeAsync();
         }
 
         await StopFileSearchRootWatchersAsync();
@@ -2137,9 +2218,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        await _mcpHost.StopAsync(detail);
+        McpServerHost host = _mcpHost;
+        await Task.Run(() => host.StopAsync(detail));
         // Applying an explicit configuration must not silently substitute another port.
-        await _mcpHost.StartAsync();
+        await Task.Run(() => host.StartAsync());
         if (!_mcpHost.IsRunning)
         {
             throw new InvalidOperationException("MCP Server 未能重启。请检查状态栏中的错误详情。");
@@ -2163,12 +2245,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }
         }
 
+        Interlocked.Exchange(ref _librarySwitchInProgress, 1);
         Interlocked.Increment(ref _libraryGeneration);
         Raise(nameof(LibraryGeneration));
         DetachLibraryChangeNotifications();
         _searchEvidenceViewModel?.DetachLibraryContext();
         _ocrQueueViewModel?.DetachLibraryContext();
         _snapshot?.DetachLibraryContext();
+        foreach (ItemEditorViewModel editor in Layout.Tabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>()
+                     .ToArray())
+        {
+            await editor.DetachLibraryContextAsync();
+        }
+
         await StopMcpServerAsync(detail);
         await StopFileSearchRootWatchersAsync();
         StopLibraryRevisionMonitor();
@@ -2176,6 +2265,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         DetachHostServices();
         _services = null;
         await ReleaseRuntimeHostAsync();
+        Interlocked.Exchange(ref _librarySwitchInProgress, 0);
         _queryRewriteEnabledPersisted = false;
         ApplyQueryRewriteEnabled(false);
         _settingsViewModel?.NotifyLibraryContextChanged();
@@ -2193,16 +2283,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             throw new InvalidOperationException("MCP Server 主机不可用。");
         }
 
-        await _mcpHost.StartAsync();
+        McpServerHost host = _mcpHost;
+        await Task.Run(() => host.StartAsync());
         if (!_mcpHost.IsRunning)
         {
-            Result<McpServerSettings> configured = await services.McpSettings.GetSettingsAsync();
+            Result<McpServerSettings> configured = await Task.Run(() => services.McpSettings.GetSettingsAsync());
             if (configured.IsSuccess)
             {
-                await _mcpHost.StartAsync(configured.Value with
+                McpServerSettings settings = configured.Value with
                 {
                     Port = RuntimeHostCoordinator.ReserveEphemeralLoopbackPort()
-                });
+                };
+                await Task.Run(() => host.StartAsync(settings));
             }
         }
 
@@ -2219,7 +2311,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        int generation = LibraryGeneration;
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+        if (!IsCurrentLibraryContext(services, generation) || _runtimeHostLease is null)
+        {
+            return;
+        }
+
         if (library.IsSuccess)
         {
             // Set health endpoint identity BEFORE publishing the record.
@@ -2278,7 +2376,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         if (_services is not null)
         {
-            await _services.ShutdownAsync();
+            HostServices services = _services;
+            await Task.Run(services.ShutdownAsync);
         }
     }
 
@@ -2478,7 +2577,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
-        Result<OcrPresetId> preset = await orchestrator.EnsurePresetForEngineAsync(OcrEngineIds.MinerU);
+        Result<OcrPresetId> preset = await Task.Run(() => orchestrator.EnsurePresetForEngineAsync(OcrEngineIds.MinerU));
         if (preset.IsFailure)
         {
             ReportError(preset.ErrorMessage ?? "无法保存 OCR Preset。");
@@ -2504,7 +2603,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public async Task<string> GetPersistedMinerUTokenAsync()
     {
         HostServices services = await ServicesAsync();
-        Result<string> secret = await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU);
+        Result<string> secret =
+            await Task.Run(() => services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU));
         return secret.IsSuccess ? secret.Value : "";
     }
 
@@ -2517,8 +2617,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         HostServices services = await ServicesAsync();
         Result<ProviderCredentialMetadata> saved =
-            await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
-                token.Trim());
+            await Task.Run(() => services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
+                token.Trim()));
         if (saved.IsFailure)
         {
             Report(saved.ErrorMessage ?? "无法保存 MinerU API token。");
@@ -2736,7 +2836,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         HostServices services = await ServicesAsync();
         Result<FileHandlingBehaviorSettings> settings =
-            await services.FileHandlingBehaviorSettings.GetSettingsAsync();
+            await Task.Run(() => services.FileHandlingBehaviorSettings.GetSettingsAsync());
         if (settings.IsFailure)
         {
             ReportError(settings.ErrorMessage ?? "无法读取文件处理设置。");
@@ -2751,7 +2851,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         HostServices services = await ServicesAsync();
         Result<FileHandlingBehaviorSettings> saved =
-            await services.FileHandlingBehaviorSettings.SaveSettingsAsync(settings);
+            await Task.Run(() => services.FileHandlingBehaviorSettings.SaveSettingsAsync(settings));
         if (saved.IsFailure)
         {
             ReportError(saved.ErrorMessage ?? "无法保存文件处理设置。");
@@ -2776,7 +2876,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         HostServices services = await ServicesAsync();
-        Result removed = await services.Credentials.RemoveAsync(ProviderIds.MinerU);
+        Result removed = await Task.Run(() => services.Credentials.RemoveAsync(ProviderIds.MinerU));
         if (removed.IsFailure)
         {
             ReportError(removed.ErrorMessage ?? "无法移除 MinerU API token。");
@@ -3134,11 +3234,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        Result<EvidencePageText> resolved = await services.VersionedEvidenceReader.GetBoxTextAsync(
+        int generation = LibraryGeneration;
+        Result<EvidencePageText> resolved = await Task.Run(() => services.VersionedEvidenceReader.GetBoxTextAsync(
             DocumentInstanceId.Parse(target.ResourceId),
             pageIndex + 1,
             target.RevisionId,
-            target.BoxId);
+            target.BoxId));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (resolved.IsFailure)
         {
             ReportError($"证据解析失败：{resolved.ErrorMessage}");
@@ -3282,9 +3388,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public async Task<bool> ImportBiblatexTextIntoEditorAsync(string text, string? bibFileDirectory,
         ItemId? targetItemId)
     {
+        HostServices services = await ServicesAsync();
+        int generation = LibraryGeneration;
         LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
         Result<BiblatexImportApplyResult?> result =
-            await orchestrator.ImportBiblatexTextAsync(text, bibFileDirectory, targetItemId, CancellationToken.None);
+            await Task.Run(() =>
+                orchestrator.ImportBiblatexTextAsync(text, bibFileDirectory, targetItemId, services.LifetimeToken));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return false;
+        }
+
         if (result.IsFailure)
         {
             ReportError($"BibLaTeX 导入失败：{result.ErrorCode} {result.ErrorMessage}");
@@ -3321,9 +3435,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
+        HostServices services = await ServicesAsync();
+        int generation = LibraryGeneration;
         LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
         Result<BiblatexImportApplyResult?> result =
-            await orchestrator.ImportBiblatexFileAsync(path, CancellationToken.None);
+            await Task.Run(() => orchestrator.ImportBiblatexFileAsync(path, services.LifetimeToken));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Report($"BibLaTeX 批量导入失败：{result.ErrorCode} {result.ErrorMessage}");
@@ -3351,7 +3472,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         HostServices services = await ServicesAsync();
-        Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
+        int generation = LibraryGeneration;
+        Result<string> text = await Task.Run(() => services.BiblatexImport.ExportItemsAsync(ids));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (text.IsFailure)
         {
             Report($"BibLaTeX 导出失败：{text.ErrorCode} {text.ErrorMessage}");
@@ -3382,7 +3509,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         HostServices services = await ServicesAsync();
-        Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
+        int generation = LibraryGeneration;
+        Result<string> text = await Task.Run(() => services.BiblatexImport.ExportItemsAsync(ids));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (text.IsFailure)
         {
             Report($"BibLaTeX 复制失败：{text.ErrorCode} {text.ErrorMessage}");
@@ -3415,8 +3548,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
+        HostServices services = await ServicesAsync();
+        int generation = LibraryGeneration;
         Result<CslRenderResult> rendered =
-            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest(itemIds));
+            await Task.Run(() => services.CslRenderer.RenderAsync(new CslRenderRequest(itemIds)));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (rendered.IsFailure)
         {
             Report($"CSL 题录生成失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
@@ -3440,8 +3580,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
+        HostServices services = await ServicesAsync();
+        int generation = LibraryGeneration;
         Result<CslRenderResult> rendered =
-            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest(itemIds));
+            await Task.Run(() => services.CslRenderer.RenderAsync(new CslRenderRequest(itemIds)));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (rendered.IsFailure)
         {
             Report($"题录导出失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
@@ -3527,11 +3674,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         HostServices services = await ServicesAsync();
-        Result<EvidencePageText> markdown = await services.VersionedEvidenceReader.GetBoxTextAsync(
+        int generation = LibraryGeneration;
+        Result<EvidencePageText> markdown = await Task.Run(() => services.VersionedEvidenceReader.GetBoxTextAsync(
             DocumentInstanceId.Parse(target.ResourceId),
             (target.PageIndex ?? 0) + 1,
             target.RevisionId,
-            target.BoxId);
+            target.BoxId));
+        if (!IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (markdown.IsFailure)
         {
             string message = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";

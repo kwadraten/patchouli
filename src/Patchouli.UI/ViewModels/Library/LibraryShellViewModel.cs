@@ -1372,7 +1372,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result deleteResult = await services.Tags.RemoveTagAsync(tag.Name);
+        string name = tag.Name;
+        int generation = _main.LibraryGeneration;
+        Result deleteResult = await Task.Run(() => services.Tags.RemoveTagAsync(name));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!deleteResult.IsSuccess)
         {
             _main.ReportError($"移除标签失败：{deleteResult.ErrorMessage}");
@@ -1419,7 +1426,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result result = await services.Tags.RenameTagAsync(tag.Name, newName);
+        string name = tag.Name;
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Tags.RenameTagAsync(name, newName));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"重命名标签失败：{result.ErrorMessage}");
@@ -1461,7 +1475,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result result = await services.Tags.MergeTagsAsync(tag.Name, targetName);
+        string name = tag.Name;
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Tags.MergeTagsAsync(name, targetName));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"合并标签失败：{result.ErrorMessage}");
@@ -1486,7 +1507,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
         HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result result = await services.Tags.AddTagsToItemsAsync(itemIds, [normalized]);
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Tags.AddTagsToItemsAsync(itemIds, [normalized]));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"添加标签失败：{result.ErrorMessage}");
@@ -1514,9 +1541,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         HostServices services = await _main.ServicesAsync();
         ItemId sourceId = ItemId.Parse(source.ItemId);
         ItemId targetId = ItemId.Parse(target.ItemId);
+        int generation = _main.LibraryGeneration;
 
         Result<ItemMergePreview> previewResult =
-            await services.MergeItems.BuildMergePreviewAsync(sourceId, targetId);
+            await Task.Run(() => services.MergeItems.BuildMergePreviewAsync(sourceId, targetId));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (previewResult.IsFailure)
         {
             _main.ReportError($"无法预览合并：{previewResult.ErrorMessage}");
@@ -1526,19 +1559,26 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         ItemMergePreviewDialogViewModel dialog = new(
             previewResult.Value,
             async (swapSource, swapTarget, cancellationToken) =>
-                await services.MergeItems.BuildMergePreviewAsync(swapSource, swapTarget, cancellationToken));
+                await Task.Run(
+                    () => services.MergeItems.BuildMergePreviewAsync(swapSource, swapTarget, cancellationToken),
+                    cancellationToken));
 
         ItemMergeDialogResult? result = await _main.Dialogs.ShowDialogAsync<ItemMergeDialogResult?>(dialog);
-        if (result != ItemMergeDialogResult.Merge)
+        if (result != ItemMergeDialogResult.Merge || !_main.IsCurrentLibraryContext(services, generation))
         {
             return;
         }
 
-        Result mergeResult = await services.MergeItems.MergeAsync(
-            dialog.CurrentSourceItemId,
-            dialog.CurrentTargetItemId,
-            dialog.GetChoices(),
-            _main.ItemHasUnsavedEdits);
+        ItemId mergeSourceId = dialog.CurrentSourceItemId;
+        ItemId mergeTargetId = dialog.CurrentTargetItemId;
+        IReadOnlyList<MergeFieldChoice> choices = dialog.GetChoices();
+        HashSet<ItemId> unsaved = new[] { mergeSourceId, mergeTargetId }.Where(_main.ItemHasUnsavedEdits).ToHashSet();
+        Result mergeResult = await Task.Run(() =>
+            services.MergeItems.MergeAsync(mergeSourceId, mergeTargetId, choices, unsaved.Contains));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
 
         if (!mergeResult.IsSuccess)
         {
@@ -1570,7 +1610,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
         HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result clearResult = await services.Tags.SetTagsAsync(itemIds, Array.Empty<string>());
+        int generation = _main.LibraryGeneration;
+        Result clearResult = await Task.Run(() => services.Tags.SetTagsAsync(itemIds, Array.Empty<string>()));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!clearResult.IsSuccess)
         {
             _main.ReportError($"清空标签失败：{clearResult.ErrorMessage}");
@@ -1602,7 +1648,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result mergeResult = await services.Tags.MergeTagsAsync(normalizedSource, normalizedTarget);
+        int generation = _main.LibraryGeneration;
+        Result mergeResult = await Task.Run(() => services.Tags.MergeTagsAsync(normalizedSource, normalizedTarget));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!mergeResult.IsSuccess)
         {
             _main.ReportError($"合并标签失败：{mergeResult.ErrorMessage}");
@@ -1630,7 +1682,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<Collection> result = await services.Collections.CreateCollectionAsync(name);
+        int generation = _main.LibraryGeneration;
+        Result<Collection> result = await Task.Run(() => services.Collections.CreateCollectionAsync(name));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             _main.ReportError($"创建集合失败：{result.ErrorMessage}");
@@ -1653,7 +1711,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<Collection> result = await services.Collections.RenameCollectionAsync(collection.CollectionId, name);
+        int generation = _main.LibraryGeneration;
+        CollectionId collectionId = collection.CollectionId;
+        Result<Collection> result =
+            await Task.Run(() => services.Collections.RenameCollectionAsync(collectionId, name));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             _main.ReportError($"重命名集合失败：{result.ErrorMessage}");
@@ -1677,7 +1743,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result result = await services.Collections.DissolveCollectionAsync(collection.CollectionId);
+        int generation = _main.LibraryGeneration;
+        CollectionId collectionId = collection.CollectionId;
+        Result result = await Task.Run(() => services.Collections.DissolveCollectionAsync(collectionId));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"解散集合失败：{result.ErrorMessage}");
@@ -1711,7 +1784,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
         HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result result = await services.Collections.RemoveItemsAsync(collection.CollectionId, itemIds);
+        int generation = _main.LibraryGeneration;
+        CollectionId collectionId = collection.CollectionId;
+        Result result = await Task.Run(() => services.Collections.RemoveItemsAsync(collectionId, itemIds));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"从集合移除失败：{result.ErrorMessage}");
@@ -1732,7 +1812,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
         HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result result = await services.Collections.AddItemsAsync(collectionId, itemIds);
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Collections.AddItemsAsync(collectionId, itemIds));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"添加到集合失败：{result.ErrorMessage}");
@@ -1748,7 +1834,26 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     public async Task DetectDuplicatesAsync()
     {
         HostServices services = await _main.ServicesAsync();
-        IReadOnlyList<DuplicateItemPair> pairs = await services.DuplicateItemDetection.FindDuplicatesAsync();
+        int generation = _main.LibraryGeneration;
+        (IReadOnlyList<DuplicateItemPair> pairs, Dictionary<ItemId, string> titles) = await Task.Run(async () =>
+        {
+            IReadOnlyList<DuplicateItemPair> found = await services.DuplicateItemDetection.FindDuplicatesAsync();
+            ItemId[] ids = found.SelectMany(pair => new[] { pair.ItemIdA, pair.ItemIdB }).Distinct().ToArray();
+            Result<IReadOnlyList<LibraryItemRow>> rows = await services.LibraryItems.GetRowsByIdsAsync(ids);
+            Dictionary<ItemId, string> names = rows.IsSuccess
+                ? rows.Value.ToDictionary(row => row.ItemId, row => row.Title)
+                : new Dictionary<ItemId, string>();
+            foreach (ItemId id in ids)
+            {
+                names.TryAdd(id, id.ToString());
+            }
+
+            return (found, names);
+        });
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
 
         if (pairs.Count == 0)
         {
@@ -1760,38 +1865,27 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
-        Dictionary<ItemId, string> titles = new();
-        foreach (DuplicateItemPair pair in pairs)
-        {
-            await EnsureTitleAsync(pair.ItemIdA);
-            await EnsureTitleAsync(pair.ItemIdB);
-        }
-
         DuplicateItemsDialogViewModel dialog = new(
             pairs,
             titles,
             async pair => await ProcessDuplicatePairAsync(services, pair));
 
         await _main.Dialogs.ShowDialogAsync<DuplicateItemsDialogResult>(dialog);
-
-        async Task EnsureTitleAsync(ItemId itemId)
-        {
-            if (titles.ContainsKey(itemId))
-            {
-                return;
-            }
-
-            Result<ItemMetadata> item = await services.Items.GetItemAsync(itemId);
-            titles[itemId] = item.IsSuccess ? item.Value.Title : itemId.ToString();
-        }
     }
 
     private async Task<bool> ProcessDuplicatePairAsync(HostServices services, DuplicateItemPair pair)
     {
+        int generation = _main.LibraryGeneration;
         ItemId sourceId = pair.ItemIdA == pair.DefaultTargetItemId ? pair.ItemIdB : pair.ItemIdA;
         ItemId targetId = pair.DefaultTargetItemId;
 
-        Result<ItemMergePreview> preview = await services.MergeItems.BuildMergePreviewAsync(sourceId, targetId);
+        Result<ItemMergePreview> preview =
+            await Task.Run(() => services.MergeItems.BuildMergePreviewAsync(sourceId, targetId));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return false;
+        }
+
         if (preview.IsFailure)
         {
             _main.ReportError($"无法预览合并：{preview.ErrorMessage}");
@@ -1801,19 +1895,26 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         ItemMergePreviewDialogViewModel dialog = new(
             preview.Value,
             async (swapSource, swapTarget, cancellationToken) =>
-                await services.MergeItems.BuildMergePreviewAsync(swapSource, swapTarget, cancellationToken));
+                await Task.Run(
+                    () => services.MergeItems.BuildMergePreviewAsync(swapSource, swapTarget, cancellationToken),
+                    cancellationToken));
 
         ItemMergeDialogResult? result = await _main.Dialogs.ShowDialogAsync<ItemMergeDialogResult?>(dialog);
-        if (result != ItemMergeDialogResult.Merge)
+        if (result != ItemMergeDialogResult.Merge || !_main.IsCurrentLibraryContext(services, generation))
         {
             return false;
         }
 
-        Result mergeResult = await services.MergeItems.MergeAsync(
-            dialog.CurrentSourceItemId,
-            dialog.CurrentTargetItemId,
-            dialog.GetChoices(),
-            _main.ItemHasUnsavedEdits);
+        ItemId mergeSourceId = dialog.CurrentSourceItemId;
+        ItemId mergeTargetId = dialog.CurrentTargetItemId;
+        IReadOnlyList<MergeFieldChoice> choices = dialog.GetChoices();
+        HashSet<ItemId> unsaved = new[] { mergeSourceId, mergeTargetId }.Where(_main.ItemHasUnsavedEdits).ToHashSet();
+        Result mergeResult = await Task.Run(() =>
+            services.MergeItems.MergeAsync(mergeSourceId, mergeTargetId, choices, unsaved.Contains));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return false;
+        }
 
         if (!mergeResult.IsSuccess)
         {
@@ -2151,9 +2252,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     public async Task<LibraryItemViewModel?> ResolveDocumentItemAsync(string documentInstanceId)
     {
         HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(documentInstanceId);
         Result<DocumentNavigationRow?> result =
-            await services.LibraryItems.GetDocumentNavigationAsync(DocumentInstanceId.Parse(documentInstanceId));
-        if (result.IsFailure || result.Value is null)
+            await Task.Run(() => services.LibraryItems.GetDocumentNavigationAsync(documentId));
+        if (!_main.IsCurrentLibraryContext(services, generation) || result.IsFailure || result.Value is null)
         {
             return null;
         }
@@ -2164,7 +2267,16 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             string.Equals(candidate.ItemId, row.ItemId.ToString(), StringComparison.OrdinalIgnoreCase));
         if (item is null)
         {
-            return null;
+            Result<IReadOnlyList<LibraryItemRow>> resolved =
+                await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync([row.ItemId]));
+            if (!_main.IsCurrentLibraryContext(services, generation) || resolved.IsFailure || resolved.Value.Count == 0)
+            {
+                return null;
+            }
+
+            // Navigation can target an older item outside the loaded paging window. Do not insert
+            // that row into Items and corrupt its cursor/loaded-count invariants.
+            item = CreateItemViewModel(resolved.Value[0]);
         }
 
         if (string.Equals(item.DocumentInstanceId, row.DocumentInstanceId.ToString(),
@@ -2242,10 +2354,16 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
         IsBusy = true;
         Raise(nameof(InspectorStatus));
+        LibraryItemViewModel[] selected = items.ToArray();
+        OcrEnqueueItem[] enqueueItems = selected
+            .Select(item => new OcrEnqueueItem(item.Title, item.DocumentInstanceId, item.SourcePath, item.ItemId))
+            .ToArray();
+        string minerUToken = MinerUToken;
         try
         {
             string documentEngine = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Document);
             HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
             LibraryImportOrchestrator orchestrator = await _main.ImportOrchestratorAsync();
             // Issue #43: the per-library document-scope preset choice wins; without one the
             // legacy engine default is ensured. Stored ids are validated library-safely, so a
@@ -2254,22 +2372,29 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             Result<OcrPresetId> preset = await Task.Run(() => services.OcrSelections
                 .ResolveForScopeAsync(OcrScope.Document,
                     ct => services.OcrDefaults.EnsurePresetAsync(documentEngine, ct)));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (preset.IsFailure)
             {
                 _main.ReportError($"OCR preset 不可用：{preset.ErrorMessage}");
                 return;
             }
 
-            OcrEnqueueItem[] enqueueItems = items
-                .Select(item => new OcrEnqueueItem(item.Title, item.DocumentInstanceId, item.SourcePath))
-                .ToArray();
             Result<OcrEnqueueSummary> result =
                 await Task.Run(() => orchestrator.EnqueueOcrForItemsAsync(
                     enqueueItems,
                     preset.Value,
                     priority,
-                    MinerUToken,
+                    minerUToken,
                     CancellationToken.None));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 if (result.ErrorCode == LibraryImportOrchestrator.MinerUTokenRequiredErrorCode)
@@ -2284,11 +2409,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             }
 
             OcrEnqueueSummary summary = result.Value;
-            foreach (LibraryItemViewModel item in items)
+            Dictionary<string, OcrEnqueueFailure> failures = summary.Failures
+                .Where(failure => failure.ItemId is not null).DistinctBy(failure => failure.ItemId)
+                .ToDictionary(failure => failure.ItemId!, StringComparer.Ordinal);
+            foreach (LibraryItemViewModel item in selected)
             {
-                OcrEnqueueFailure? failure = summary.Failures.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Title, item.Title, StringComparison.Ordinal));
-                if (failure is not null)
+                if (failures.TryGetValue(item.ItemId, out OcrEnqueueFailure? failure))
                 {
                     _main.ReportError($"{item.Title} OCR 入队失败：{failure.Message}");
                 }
@@ -2489,9 +2615,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
-        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result result = await services.Items.DeleteItemsAsync(itemIds);
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Items.DeleteItemsAsync(itemIds));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"删除题录失败：{result.ErrorMessage}");
@@ -2550,9 +2682,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
-        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        Result result = await services.Items.RestoreItemsAsync(itemIds);
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.Items.RestoreItemsAsync(itemIds));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (!result.IsSuccess)
         {
             _main.ReportError($"还原题录失败：{result.ErrorMessage}");

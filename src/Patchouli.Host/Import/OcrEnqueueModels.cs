@@ -6,12 +6,14 @@ namespace Patchouli.Host.Import;
 public sealed record OcrEnqueueItem(
     string Title,
     string? DocumentInstanceId,
-    string? SourcePath);
+    string? SourcePath,
+    string? ItemId = null);
 
 /// <summary>A per-item OCR enqueue failure with the item title and reason.</summary>
 public sealed record OcrEnqueueFailure(
     string Title,
-    string Message);
+    string Message,
+    string? ItemId = null);
 
 /// <summary>Aggregate outcome of an OCR enqueue pass.</summary>
 public sealed record OcrEnqueueSummary(

@@ -179,7 +179,8 @@ public sealed class PdfWorkspaceLayoutTests
         xaml.Should().Contain("x:Name=\"PreviewScrollViewer\"");
         viewModel.Should().Contain("_previewSelectedBoxId = _selectedBox?.BoxId")
             .And.Contain("block.IsSelected = block.BoxId == _previewSelectedBoxId")
-            .And.Contain("ReadingScene = ReadingSceneBuilder.Build(")
+            .And.Contain("new PreviewSnapshot(ReadingSceneBuilder.Build(")
+            .And.Contain("ReadingScene = snapshot.Scene")
             .And.Contain("RunCurrentPageOcrCommand")
             .And.Contain("CopyMarkdownCommand")
             .And.Contain("LocalOcrSourceText")
@@ -224,10 +225,10 @@ public sealed class PdfWorkspaceLayoutTests
         string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
 
-        int start = viewModel.IndexOf("UpdateOverlapWarningsAsync(", StringComparison.Ordinal);
-        int end = viewModel.IndexOf("Raise(nameof(HasOverlapWarnings));", start, StringComparison.Ordinal);
-
+        int start = viewModel.IndexOf("Result<IReadOnlyList<DocumentBoxOverlap>> projected =",
+            StringComparison.Ordinal);
         start.Should().BeGreaterThanOrEqualTo(0);
+        int end = viewModel.IndexOf("return new PageContentSnapshot", start, StringComparison.Ordinal);
         end.Should().BeGreaterThan(start);
         string method = viewModel[start..end];
         method.Should().NotContain("PageRenders")

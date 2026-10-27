@@ -120,7 +120,14 @@ public sealed partial class CslLocalizationSettingsViewModel : SettingsSectionVi
         try
         {
             HostServices services = await _main.ServicesAsync();
-            Result<CslSettings> result = await services.CslStore.GetSettingsAsync(cancellationToken);
+            int generation = _main.LibraryGeneration;
+            Result<CslSettings> result = await Task.Run(() => services.CslStore.GetSettingsAsync(cancellationToken),
+                cancellationToken);
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 ReportSaveFailure(result.ErrorMessage ?? "无法读取题录本地化规则。");
@@ -178,7 +185,14 @@ public sealed partial class CslLocalizationSettingsViewModel : SettingsSectionVi
         try
         {
             HostServices services = await _main.ServicesAsync();
-            Result<CslSettings> result = await services.CslStore.SaveLocalizationAsync(localeSnapshot, snapshot);
+            int generation = _main.LibraryGeneration;
+            Result<CslSettings> result =
+                await Task.Run(() => services.CslStore.SaveLocalizationAsync(localeSnapshot, snapshot));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 ReportSaveFailure(result.ErrorMessage ?? "无法保存题录本地化规则。");

@@ -292,12 +292,15 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         bbox.IsSelected = true;
         SetProperty(workspace, nameof(workspace.IsEditMode), false);
         bbox.ShowHandles.Should().BeFalse();
+        bbox.HandleOwner.Should().BeNull();
 
         SetProperty(workspace, nameof(workspace.IsEditMode), true);
         bbox.ShowHandles.Should().BeTrue();
+        bbox.HandleOwner.Should().BeSameAs(bbox);
 
         SetProperty(workspace, nameof(workspace.IsEditMode), false);
         bbox.ShowHandles.Should().BeFalse();
+        bbox.HandleOwner.Should().BeNull();
     }
 
     [Fact]

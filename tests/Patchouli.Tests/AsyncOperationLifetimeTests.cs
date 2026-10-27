@@ -8,6 +8,20 @@ namespace Patchouli.Tests;
 public sealed class AsyncOperationLifetimeTests
 {
     [Fact]
+    public async Task Synchronous_operation_leases_are_drained_and_closed_admission_cannot_reopen()
+    {
+        AsyncOperationLifetime lifetime = new();
+        IDisposable lease = lifetime.TryEnter()!;
+        Task stopped = lifetime.DisposeAsync().AsTask();
+        Assert.False(stopped.IsCompleted);
+        Assert.Null(lifetime.TryEnter());
+        lease.Dispose();
+        lease.Dispose();
+        await stopped.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Null(lifetime.TryEnter());
+    }
+
+    [Fact]
     public async Task Drain_does_not_need_the_originating_synchronization_context_to_keep_pumping()
     {
         AsyncOperationLifetime lifetime = new();

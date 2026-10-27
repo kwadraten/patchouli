@@ -7,6 +7,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -43,6 +44,7 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
     private int _targetGeneration;
     private int _generation;
     private bool _closed;
+    private AsyncOperationLifetime _operations = new();
     private int _previewBatchDepth;
 
     public ChapterSidebarViewModel(Func<Task<ChapterSidebarServices>> services,
@@ -134,13 +136,20 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
 
     public async Task RefreshAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (!CanStartOperation || _document() is not { } id)
         {
             return;
         }
 
         int generation = _generation;
-        Result<ChapterEditingSnapshot> result = await (await _services()).Maps.GetChapterEditingSnapshotAsync(id);
+        ChapterSidebarServices services = await _services();
+        Result<ChapterEditingSnapshot> result = await Task.Run(() => services.Maps.GetChapterEditingSnapshotAsync(id));
         if (!IsCurrent(id, generation) || !CanStartOperation)
         {
             return;
@@ -246,6 +255,12 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
 
     private async Task LoadLogicalTargetsAsync(DocumentBoxId? preferred)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null)
+        {
+            return;
+        }
+
         int generation = ++_targetGeneration;
         IsLoadingTargets = true;
         try
@@ -274,18 +289,19 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
                 return;
             }
 
-            Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(id);
+            Result<IReadOnlyList<Page>> pages = await Task.Run(() => services.Pages.ListPagesAsync(id));
             Page? page = pages.IsSuccess ? pages.Value.FirstOrDefault(p => p.PageIndex == pdfPage - 1) : null;
             if (page is null || generation != _targetGeneration || !IsCurrent(id, documentGeneration))
             {
                 return;
             }
 
-            Result<DocumentTreeRevision> revision = await services.Trees.GetCurrentRevisionAsync(id, page.PageId);
+            Result<DocumentTreeRevision> revision =
+                await Task.Run(() => services.Trees.GetCurrentRevisionAsync(id, page.PageId));
             if (revision.IsSuccess)
             {
                 Result<IReadOnlyList<DocumentBox>> boxes =
-                    await services.Trees.ListBoxesAsync(revision.Value.TreeRevisionId);
+                    await Task.Run(() => services.Trees.ListBoxesAsync(revision.Value.TreeRevisionId));
                 if (generation != _targetGeneration || !IsCurrent(id, documentGeneration))
                 {
                     return;
@@ -568,6 +584,12 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
     private async Task<bool> SaveAsync(IReadOnlyList<ChapterNode> chapters,
         IReadOnlyList<ChapterPageRevisionExpectation>? versions = null)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null)
+        {
+            return false;
+        }
+
         if (IsBusy || _snapshot is null || _document() is not { } id)
         {
             return false;
@@ -584,8 +606,8 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
                 return false;
             }
 
-            Result<ChapterEditingSnapshot> result = await services.Maps.SaveChaptersAsync(id,
-                new ChapterSaveRequest(snapshot.VersionToken, chapters, versions));
+            ChapterSaveRequest request = new(snapshot.VersionToken, chapters, versions);
+            Result<ChapterEditingSnapshot> result = await Task.Run(() => services.Maps.SaveChaptersAsync(id, request));
             if (!IsCurrent(id, generation))
             {
                 return false;
@@ -615,13 +637,20 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
 
     private async Task ReloadBaselineAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (IsBusy || _document() is not { } id)
         {
             return;
         }
 
         int generation = _generation;
-        Result<ChapterEditingSnapshot> result = await (await _services()).Maps.GetChapterEditingSnapshotAsync(id);
+        ChapterSidebarServices services = await _services();
+        Result<ChapterEditingSnapshot> result = await Task.Run(() => services.Maps.GetChapterEditingSnapshotAsync(id));
         if (!IsCurrent(id, generation))
         {
             return;
@@ -641,6 +670,12 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
 
     private async Task ScanAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (!CanStartOperation || _document() is not { } id)
         {
             return;
@@ -995,10 +1030,22 @@ public sealed partial class ChapterSidebarViewModel : ViewModelBase
         Status = string.Empty;
     }
 
+    internal async Task DrainAsync()
+    {
+        Reset();
+        await _operations.DisposeAsync();
+    }
+
+    internal void ResumeAfterFailedClose()
+    {
+        _operations = new AsyncOperationLifetime();
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            _operations.Dispose();
             _closed = true;
             Reset();
         }

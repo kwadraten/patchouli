@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Avalonia.Threading;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels.Dialogs;
@@ -13,6 +14,7 @@ public sealed class ModalOperationContext
 {
     private readonly BlockingOperationDialogViewModel _viewModel;
     private readonly bool _dispatchToUi;
+    private readonly ConcurrentQueue<Action> _pendingUpdates = new();
 
     internal ModalOperationContext(BlockingOperationDialogViewModel viewModel, CancellationToken cancellationToken,
         bool dispatchToUi)
@@ -26,14 +28,21 @@ public sealed class ModalOperationContext
 
     public void Report(int? current, int? total, string label, string? detail = null)
     {
-        Dispatcher.UIThread.Post(() => ApplyProgress(current, total, label, detail));
+        if (_dispatchToUi)
+        {
+            Dispatcher.UIThread.Post(() => ApplyProgress(current, total, label, detail));
+        }
+        else
+        {
+            _pendingUpdates.Enqueue(() => ApplyProgress(current, total, label, detail));
+        }
     }
 
     public Task ReportAsync(int? current, int? total, string label, string? detail = null)
     {
         if (!_dispatchToUi)
         {
-            ApplyProgress(current, total, label, detail);
+            _pendingUpdates.Enqueue(() => ApplyProgress(current, total, label, detail));
             return Task.CompletedTask;
         }
 
@@ -44,11 +53,19 @@ public sealed class ModalOperationContext
     {
         if (!_dispatchToUi)
         {
-            _viewModel.AddLog(message);
+            _pendingUpdates.Enqueue(() => _viewModel.AddLog(message));
             return Task.CompletedTask;
         }
 
         return Dispatcher.UIThread.InvokeAsync(() => _viewModel.AddLog(message)).GetTask();
+    }
+
+    internal void ApplyPendingUpdates()
+    {
+        while (_pendingUpdates.TryDequeue(out Action? update))
+        {
+            update();
+        }
     }
 
     private void ApplyProgress(int? current, int? total, string label, string? detail)
@@ -104,19 +121,21 @@ public sealed class ModalOperationRunner : IModalOperationRunner
         viewModel.AddLog(options.InitialStatus);
 
         Task dialogTask = _dialogs.ShowDialogAsync(viewModel);
+        if (dialogTask.IsFaulted || dialogTask.IsCanceled)
+        {
+            await dialogTask; // A failed desktop dialog is not the intentional no-window fallback.
+        }
+
         if (!dialogTask.IsCompleted)
         {
             await Dispatcher.UIThread.InvokeAsync(() => { });
         }
 
+        ModalOperationContext context = new(viewModel, source.Token, !dialogTask.IsCompleted);
         try
         {
-            ModalOperationContext context = new(viewModel, source.Token, !dialogTask.IsCompleted);
-            T result = dialogTask.IsCompleted
-                ? await operation(context)
-                : await Task.Run(
-                    async () => await operation(context).ConfigureAwait(false),
-                    source.Token);
+            T result = await Task.Run(() => operation(context), source.Token);
+            context.ApplyPendingUpdates();
             if (result is IOperationOutcome { IsCancelled: true })
             {
                 viewModel.MarkCancelled();
@@ -135,12 +154,14 @@ public sealed class ModalOperationRunner : IModalOperationRunner
         }
         catch (OperationCanceledException) when (source.IsCancellationRequested)
         {
+            context.ApplyPendingUpdates();
             viewModel.MarkCancelled();
             await dialogTask;
             throw;
         }
         catch (Exception exception)
         {
+            context.ApplyPendingUpdates();
             viewModel.MarkFailed(exception.Message);
             await dialogTask;
             throw;

@@ -131,7 +131,15 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
         StatusText = "正在加载已安装样式...";
         HostServices services = await _main.ServicesAsync();
 
-        Result<CslSettings> settingsResult = await services.CslStore.GetSettingsAsync();
+        int generation = _main.LibraryGeneration;
+        (Result<CslSettings> settingsResult, Result<IReadOnlyList<CslStyle>> installedResult) =
+            await Task.Run(async () =>
+                (await services.CslStore.GetSettingsAsync(), await services.CslStore.ListInstalledStylesAsync()));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (settingsResult.IsSuccess)
         {
             _defaultStyleId = settingsResult.Value.DefaultStyleId;
@@ -142,7 +150,6 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
             return;
         }
 
-        Result<IReadOnlyList<CslStyle>> installedResult = await services.CslStore.ListInstalledStylesAsync();
         if (installedResult.IsSuccess)
         {
             InstalledStyles.Clear();
@@ -193,7 +200,7 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
         int searchVersion = ++_searchVersion;
         StatusText = $"正在刷新远程索引：{SelectedCatalogSource.DisplayName}...";
         HostServices services = await _main.ServicesAsync();
-        Result<IReadOnlyList<CslCatalogStyle>> refreshResult = await services.CslCatalog.RefreshAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> refreshResult = await Task.Run(() => services.CslCatalog.RefreshAsync());
         if (searchVersion != _searchVersion)
         {
             return;
@@ -214,8 +221,9 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
         int searchVersion = ++_searchVersion;
         StatusText = $"正在搜索远程样式：{SelectedCatalogSource.DisplayName}...";
         HostServices services = await _main.ServicesAsync();
+        string? query = string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery;
         Result<IReadOnlyList<CslCatalogStyle>> searchResult =
-            await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
+            await Task.Run(() => services.CslCatalog.SearchAsync(query));
 
         if (searchVersion != _searchVersion)
         {
@@ -243,7 +251,8 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
     {
         _searchVersion++;
         HostServices services = await _main.ServicesAsync();
-        Result result = services.CslCatalog.SetSource(source.SourceId);
+        string sourceId = source.SourceId;
+        Result result = await Task.Run(() => services.CslCatalog.SetSource(sourceId));
         if (result.IsFailure)
         {
             StatusText = result.ErrorMessage ?? "切换样式源失败。";
@@ -271,7 +280,12 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
                 $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
             string xml = await client.GetStringAsync(catalogStyle.SourceUrl);
             HostServices services = await _main.ServicesAsync();
-            Result<CslStyle> result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);
+            int generation = _main.LibraryGeneration;
+            Result<CslStyle> result = await Task.Run(() => services.CslStore.InstallStyleAsync(catalogStyle, xml));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
 
             if (result.IsSuccess)
             {
@@ -299,7 +313,13 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
     internal async Task SetDefaultStyleAsync(string styleId)
     {
         HostServices services = await _main.ServicesAsync();
-        Result<CslSettings> result = await services.CslStore.SaveDefaultStyleAsync(styleId);
+        int generation = _main.LibraryGeneration;
+        Result<CslSettings> result = await Task.Run(() => services.CslStore.SaveDefaultStyleAsync(styleId));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsSuccess)
         {
             _defaultStyleId = styleId;
@@ -320,7 +340,13 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
     internal async Task RemoveStyleAsync(string styleId)
     {
         HostServices services = await _main.ServicesAsync();
-        Result result = await services.CslStore.RemoveStyleAsync(styleId);
+        int generation = _main.LibraryGeneration;
+        Result result = await Task.Run(() => services.CslStore.RemoveStyleAsync(styleId));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsSuccess)
         {
             StatusText = "已移除样式。";

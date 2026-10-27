@@ -164,6 +164,7 @@ public static class UiPerfProbe
         string settingsPath,
         CancellationToken cancellationToken)
     {
+        long uiThreadStart = UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite);
         double frameworkCold = await MeasureFrameworkAsync(settingsPath, databasePath, cancellationToken);
         Trace(!options.Quiet, $"[ui-perf] framework cold {frameworkCold:0.##} ms");
         FirstRowsMeasurement firstRowsCold = await MeasureFirstRowsAsync(
@@ -187,7 +188,8 @@ public static class UiPerfProbe
                               $"samples (ui-thread db commands {uiThreadCommands})");
 
         return new UiPerfResult(true, frameworkCold, frameworkHot, firstRowsCold.FirstRowsMs,
-            firstRowsHot.FirstRowsMs, heartbeatMaxGap, heartbeatSamples, uiThreadCommands,
+            firstRowsHot.FirstRowsMs, heartbeatMaxGap, heartbeatSamples,
+            UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite) - uiThreadStart,
             firstRowsCold.RowCount, firstRowsCold.FirstBatchReadyMs, firstRowsHot.FirstBatchReadyMs,
             firstRowsCold.AllPagesDrainedMs, firstRowsHot.AllPagesDrainedMs);
     }
@@ -428,39 +430,23 @@ public static class UiPerfProbe
         PerfOptions options,
         CancellationToken cancellationToken)
     {
-        Dispatcher dispatcher = Dispatcher.UIThread;
-        List<long> ticks = new();
-        DispatcherTimer timer = new(DispatcherPriority.Normal)
-        {
-            Interval = TimeSpan.FromMilliseconds(HeartbeatTargetMs)
-        };
-        timer.Tick += (_, _) => ticks.Add(Stopwatch.GetTimestamp());
-        timer.Start();
-
-        CountingConnectionFactory heartbeatDatabase =
-            new(databasePath, () => SafeIsUiThread(dispatcher));
+        CountingConnectionFactory heartbeatDatabase = new(databasePath);
         DocumentTreeService treeService =
             new(heartbeatDatabase, new ProbeClock(), new MarkdigMarkdownEngine());
+        UiHeartbeatMeasurement heartbeat;
         try
         {
             long requestedBoxes = (long)options.Items * options.PagesPerItem * options.BoxesPerPage;
-            await Task.Run(() => CommitHeartbeatAsync(treeService, heartbeatDatabase, requestedBoxes,
-                cancellationToken), cancellationToken);
+            heartbeat = await UiHeartbeatProbe.MeasureAsync(() =>
+                Task.Run(() => CommitHeartbeatAsync(treeService, heartbeatDatabase, requestedBoxes,
+                    cancellationToken), cancellationToken), cancellationToken);
         }
         finally
         {
-            timer.Stop();
             heartbeatDatabase.ClearPools();
         }
 
-        long[] stamps = ticks.ToArray();
-        double maxGap = 0;
-        for (int index = 1; index < stamps.Length; index++)
-        {
-            maxGap = Math.Max(maxGap, (stamps[index] - stamps[index - 1]) * 1000.0 / Stopwatch.Frequency);
-        }
-
-        return (maxGap, stamps.Length, heartbeatDatabase.Counters.UiThreadCommands);
+        return (heartbeat.MaximumGapMs, heartbeat.Samples, heartbeatDatabase.Counters.UiThreadCommands);
     }
 
     /// <summary>
@@ -651,18 +637,6 @@ public static class UiPerfProbe
             // still reported instead of being swallowed silently.
             Trace(true, $"[ui-perf] view-model cleanup after failure threw " +
                         $"{disposeException.GetType().Name}: {disposeException.Message}");
-        }
-    }
-
-    private static bool SafeIsUiThread(Dispatcher dispatcher)
-    {
-        try
-        {
-            return dispatcher.CheckAccess();
-        }
-        catch
-        {
-            return false;
         }
     }
 

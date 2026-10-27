@@ -10,23 +10,14 @@ namespace Patchouli.Performance;
 /// </summary>
 public sealed class CountingConnectionFactory : SqliteConnectionFactory
 {
-    private readonly Func<bool>? _isUiThread;
-
     public CountingConnectionFactory(string databasePath) : base(databasePath)
     {
-    }
-
-    public CountingConnectionFactory(string databasePath, Func<bool> isUiThread) : base(databasePath)
-    {
-        _isUiThread = isUiThread;
     }
 
     public QueryCounters Counters { get; } = new();
 
     protected override SqliteConnection CreateConnection(string connectionString)
     {
-        return _isUiThread is null
-            ? new CountingSqliteConnection(connectionString, Counters)
-            : new CountingSqliteConnection(connectionString, Counters, _isUiThread);
+        return new CountingSqliteConnection(connectionString, Counters);
     }
 }

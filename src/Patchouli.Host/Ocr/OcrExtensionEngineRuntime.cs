@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
@@ -864,6 +865,7 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
         public async Task<Result<OcrDomainRunResult>> RunOcrJobAsync(OcrDomainJobRequest request,
             CancellationToken cancellationToken = default)
         {
+            UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
             if (IsBuiltIn || _run is null)
             {
                 return Result<OcrDomainRunResult>.Failure(AppErrorCodes.UnsupportedOperation,
@@ -948,6 +950,7 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
             DocumentTreeRevisionId revisionId, NormalizedBBox? region,
             string scope, CancellationToken cancellationToken)
         {
+            UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
             PdfTextLayerDefinition providerDefinition = _provider!.ProviderDefinition;
             if (_managedFiles is not null)
             {

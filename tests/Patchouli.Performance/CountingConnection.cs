@@ -14,24 +14,16 @@ namespace Patchouli.Performance;
 public sealed class CountingSqliteConnection : SqliteConnection
 {
     private readonly QueryCounters _counters;
-    private readonly Func<bool>? _isUiThread;
 
     public CountingSqliteConnection(string connectionString, QueryCounters counters) : base(connectionString)
     {
         _counters = counters;
     }
 
-    public CountingSqliteConnection(string connectionString, QueryCounters counters, Func<bool> isUiThread)
-        : base(connectionString)
-    {
-        _counters = counters;
-        _isUiThread = isUiThread;
-    }
-
     protected override DbCommand CreateDbCommand()
     {
         SqliteCommand inner = (SqliteCommand)base.CreateDbCommand();
-        return new CountingDbCommand(inner, _counters, _isUiThread);
+        return new CountingDbCommand(inner, _counters);
     }
 }
 
@@ -39,25 +31,11 @@ public sealed class CountingDbCommand : DbCommand
 {
     private readonly SqliteCommand _inner;
     private readonly QueryCounters _counters;
-    private readonly Func<bool>? _isUiThread;
 
-    public CountingDbCommand(SqliteCommand inner, QueryCounters counters) : this(inner, counters, null)
-    {
-    }
-
-    public CountingDbCommand(SqliteCommand inner, QueryCounters counters, Func<bool>? isUiThread)
+    public CountingDbCommand(SqliteCommand inner, QueryCounters counters)
     {
         _inner = inner;
         _counters = counters;
-        _isUiThread = isUiThread;
-    }
-
-    private void RecordExecutionContext()
-    {
-        if (_isUiThread is not null && _isUiThread())
-        {
-            _counters.RecordUiThreadCommand();
-        }
     }
 
     [AllowNull]
@@ -123,7 +101,6 @@ public sealed class CountingDbCommand : DbCommand
     protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
     {
         _counters.RecordStatement();
-        RecordExecutionContext();
         return new CountingDbDataReader(_inner.ExecuteReader(behavior), _counters);
     }
 
@@ -131,7 +108,6 @@ public sealed class CountingDbCommand : DbCommand
         CancellationToken cancellationToken)
     {
         _counters.RecordStatement();
-        RecordExecutionContext();
         DbDataReader reader = await _inner.ExecuteReaderAsync(behavior, cancellationToken);
         return new CountingDbDataReader(reader, _counters);
     }
@@ -140,7 +116,6 @@ public sealed class CountingDbCommand : DbCommand
     {
         _counters.RecordStatement();
         _counters.RecordWrite();
-        RecordExecutionContext();
         return _inner.ExecuteNonQuery();
     }
 
@@ -148,21 +123,18 @@ public sealed class CountingDbCommand : DbCommand
     {
         _counters.RecordStatement();
         _counters.RecordWrite();
-        RecordExecutionContext();
         return _inner.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public override object? ExecuteScalar()
     {
         _counters.RecordStatement();
-        RecordExecutionContext();
         return _inner.ExecuteScalar();
     }
 
     public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
     {
         _counters.RecordStatement();
-        RecordExecutionContext();
         return _inner.ExecuteScalarAsync(cancellationToken);
     }
 

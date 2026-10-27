@@ -15,7 +15,7 @@ public class DialogService : IDialogService
         _mappings[typeof(TViewModel)] = typeof(TView);
     }
 
-    private Window? GetMainWindow()
+    protected virtual Window? GetMainWindow()
     {
         if (Avalonia.Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {

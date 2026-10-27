@@ -330,23 +330,31 @@
                                 PointerMoved="OnBBoxPointerMoved"
                                 PointerReleased="OnBBoxPointerReleased"
                                 ContextRequested="OnBBoxContextRequested">
-                          <Panel IsVisible="{Binding ShowHandles}" IsHitTestVisible="False">
-                            <lucide:Lucide Icon="Move" Width="14" Height="14"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"
-                                           StrokeBrush="{Binding VisualBoxColor}" />
-                            <Ellipse Width="10" Height="10" Fill="White"
-                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                     HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-5" />
-                            <Ellipse Width="10" Height="10" Fill="White"
-                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="-5" />
-                            <Ellipse Width="10" Height="10" Fill="White"
-                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                     HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-5" />
-                            <Ellipse Width="10" Height="10" Fill="White"
-                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                     HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
-                          </Panel>
+                          <!-- Null content avoids creating six handle controls per unselected box. -->
+                          <ContentControl Content="{Binding HandleOwner}" IsHitTestVisible="False"
+                                          HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                            <ContentControl.ContentTemplate>
+                              <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                                <Panel>
+                                  <lucide:Lucide Icon="Move" Width="14" Height="14"
+                                                 HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                 StrokeBrush="{Binding VisualBoxColor}" />
+                                  <Ellipse Width="10" Height="10" Fill="White"
+                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                           HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-5" />
+                                  <Ellipse Width="10" Height="10" Fill="White"
+                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                           HorizontalAlignment="Right" VerticalAlignment="Top" Margin="-5" />
+                                  <Ellipse Width="10" Height="10" Fill="White"
+                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                           HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-5" />
+                                  <Ellipse Width="10" Height="10" Fill="White"
+                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
+                                </Panel>
+                              </DataTemplate>
+                            </ContentControl.ContentTemplate>
+                          </ContentControl>
                         </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>

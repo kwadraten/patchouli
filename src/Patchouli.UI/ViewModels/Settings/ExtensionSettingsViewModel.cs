@@ -109,6 +109,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
     public void CancelPendingLoad()
     {
+        Interlocked.Increment(ref _selectionVersion);
+        Interlocked.Increment(ref _loadGeneration);
         _loadCancellation?.Cancel();
     }
 
@@ -251,9 +253,10 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             _loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             CancellationToken token = _loadCancellation.Token;
             HostServices services = await _main.ServicesAsync();
+            int libraryGeneration = _main.LibraryGeneration;
 
             if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested ||
-                !ReferenceEquals(services, await _main.ServicesAsync()))
+                !_main.IsCurrentLibraryContext(services, libraryGeneration))
             {
                 return;
             }
@@ -262,7 +265,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             IExtensionManager manager = services.TranslationExtensions.Manager;
             _manager = manager;
             Result<IReadOnlyList<ProviderCredentialMetadata>> credentials =
-                await services.Credentials.ListAsync(token);
+                await Task.Run(() => services.Credentials.ListAsync(token), token);
             if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
             {
                 return;
@@ -273,53 +276,52 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
                     .Select(item => item.ProviderId).ToArray()
                 : [];
             string? selected = SelectedExtension?.Id;
-            List<ExtensionListItem> discovered = [];
-            foreach (ExtensionGenerationInfo generation in manager.List().Where(item => item.IsActive))
+            List<ExtensionListItem> loadedExtensions = await Task.Run(async () =>
             {
-                ExtensionPackageSnapshot activeSource = await ReadDisplaySourceAsync(manager,
-                    services.TranslationExtensions.BundledPackageSnapshots, generation.Id, token);
-                if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
+                List<ExtensionListItem> discovered = [];
+                foreach (ExtensionGenerationInfo generation in manager.List().Where(item => item.IsActive))
                 {
-                    return;
+                    ExtensionPackageSnapshot activeSource = await ReadDisplaySourceAsync(manager,
+                        services.TranslationExtensions.BundledPackageSnapshots, generation.Id, token);
+                    token.ThrowIfCancellationRequested();
+
+                    discovered.Add(CreateListItem(activeSource, generation.Fingerprint, true));
                 }
 
-                discovered.Add(CreateListItem(activeSource, generation.Fingerprint, true));
-            }
-
-            HashSet<string> listed = discovered.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-            foreach (string id in services.TranslationExtensions.ListWorkingPackages()
-                         .Where(id => !listed.Contains(id)))
-            {
-                ExtensionPackageSnapshot working = await ReadDisplaySourceAsync(manager,
-                    services.TranslationExtensions.BundledPackageSnapshots, id, token);
-                if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested)
+                HashSet<string> listed = discovered.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+                foreach (string id in services.TranslationExtensions.ListWorkingPackages()
+                             .Where(id => !listed.Contains(id)))
                 {
-                    return;
+                    ExtensionPackageSnapshot working = await ReadDisplaySourceAsync(manager,
+                        services.TranslationExtensions.BundledPackageSnapshots, id, token);
+                    token.ThrowIfCancellationRequested();
+
+                    discovered.Add(CreateListItem(working, working.Fingerprint, false));
                 }
 
-                discovered.Add(CreateListItem(working, working.Fingerprint, false));
-            }
-
-            // Bundled packages that were never activated are still listed so their configuration and
-            // source can be inspected and repaired (a failed activation persists the editable source).
-            foreach (ExtensionPackageSnapshot bundled in services.TranslationExtensions.BundledPackageSnapshots)
-            {
-                if (listed.Contains(bundled.Id) || discovered.Any(item => item.Id == bundled.Id))
+                // Bundled packages that were never activated are still listed so their configuration and
+                // source can be inspected and repaired (a failed activation persists the editable source).
+                foreach (ExtensionPackageSnapshot bundled in services.TranslationExtensions.BundledPackageSnapshots)
                 {
-                    continue;
+                    if (listed.Contains(bundled.Id) || discovered.Any(item => item.Id == bundled.Id))
+                    {
+                        continue;
+                    }
+
+                    discovered.Add(CreateListItem(bundled, bundled.Fingerprint, false));
                 }
 
-                discovered.Add(CreateListItem(bundled, bundled.Fingerprint, false));
-            }
+                return discovered;
+            }, token);
 
             if (loadGeneration != Volatile.Read(ref _loadGeneration) || token.IsCancellationRequested ||
-                !ReferenceEquals(services, await _main.ServicesAsync()))
+                !_main.IsCurrentLibraryContext(services, libraryGeneration))
             {
                 return;
             }
 
             Extensions.Clear();
-            foreach (ExtensionListItem item in discovered)
+            foreach (ExtensionListItem item in loadedExtensions)
             {
                 Extensions.Add(item);
             }
@@ -400,19 +402,23 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        ExtensionPackageSnapshot source = await ReadDisplaySourceAsync(manager,
-            services.TranslationExtensions.BundledPackageSnapshots, item.Id, cancellationToken);
-        ExtensionConfigSnapshot config = await manager.ReadConfigAsync(item.Id, cancellationToken);
-        // One-time migration: an ocr.multimodal component that has never been configured inherits
-        // the legacy host-owned OCR settings so explicit user choices survive the settings move.
+        int libraryGeneration = _main.LibraryGeneration;
         LlmAppSettings legacyOcrSettings = _main.AppOptions.Llm;
-        config = await Task.Run(
-            () => OcrMultimodalLegacySeed.EnsureSeededAsync(manager, item.Id, config,
-                legacyOcrSettings, services.OcrStorage, cancellationToken),
-            cancellationToken);
+        (ExtensionPackageSnapshot source, ExtensionConfigSnapshot config,
+            ExtensionConfigurationDescription description) = await Task.Run(async () =>
+        {
+            ExtensionPackageSnapshot loaded = await ReadDisplaySourceAsync(manager,
+                services.TranslationExtensions.BundledPackageSnapshots, item.Id, cancellationToken);
+            ExtensionConfigSnapshot configured = await manager.ReadConfigAsync(item.Id, cancellationToken);
+            configured = await OcrMultimodalLegacySeed.EnsureSeededAsync(manager, item.Id, configured,
+                legacyOcrSettings, services.OcrStorage, cancellationToken);
+            ExtensionConfigurationDescription described =
+                await services.TranslationExtensions.GetConfigurationDescriptionAsync(item.Id, cancellationToken);
+            return (loaded, configured, described);
+        }, cancellationToken);
         if (version != Volatile.Read(ref _selectionVersion)
             || !ReferenceEquals(services, _services) || !ReferenceEquals(manager, _manager)
-            || !ReferenceEquals(services, await _main.ServicesAsync()))
+            || !_main.IsCurrentLibraryContext(services, libraryGeneration))
         {
             return;
         }
@@ -429,13 +435,6 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         SelectedSourceFile = null;
         SelectedSourceFile = SourceFiles.Contains("main.fsx") ? "main.fsx" : SourceFiles.FirstOrDefault();
-        ExtensionConfigurationDescription description =
-            await services.TranslationExtensions.GetConfigurationDescriptionAsync(item.Id, cancellationToken);
-        if (version != Volatile.Read(ref _selectionVersion) || !ReferenceEquals(services, await _main.ServicesAsync()))
-        {
-            return;
-        }
-
         IReadOnlyList<ConfigFieldDescriptor> descriptors = description.HasTrustedSchema ? description.Fields : [];
         IsConfigurationSchemaAvailable = description.HasTrustedSchema;
         string toolchainId = description.ToolchainIdentity is { Length: > 0 } identity
@@ -573,7 +572,9 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
         long version = Volatile.Read(ref _selectionVersion);
         ExtensionPackageSnapshot draft = Draft();
-        ExtensionCheckResult check = await _manager.CheckAsync(draft);
+        IExtensionManager manager = _manager;
+        HostServices services = _services;
+        ExtensionCheckResult check = await Task.Run(() => manager.CheckAsync(draft));
         if (version != Volatile.Read(ref _selectionVersion))
         {
             return;
@@ -594,7 +595,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        await _services.TranslationExtensions.SaveDraftAsync(draft);
+        await Task.Run(() => services.TranslationExtensions.SaveDraftAsync(draft));
         if (version != Volatile.Read(ref _selectionVersion))
         {
             return;
@@ -623,7 +624,9 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         if (_manager is not null && _source is not null)
         {
             long version = Volatile.Read(ref _selectionVersion);
-            ExtensionCheckResult check = await _manager.CheckAsync(Draft());
+            IExtensionManager manager = _manager;
+            ExtensionPackageSnapshot draft = Draft();
+            ExtensionCheckResult check = await Task.Run(() => manager.CheckAsync(draft));
             if (version != Volatile.Read(ref _selectionVersion))
             {
                 return;
@@ -651,7 +654,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         long version = Volatile.Read(ref _selectionVersion);
         ExtensionPackageSnapshot draft = Draft();
         HostServices services = await _main.ServicesAsync();
-        await services.TranslationExtensions.SaveDraftAsync(draft);
+        await Task.Run(() => services.TranslationExtensions.SaveDraftAsync(draft));
         if (version != Volatile.Read(ref _selectionVersion))
         {
             return;
@@ -672,10 +675,11 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         long version = Volatile.Read(ref _selectionVersion);
         ExtensionPackageSnapshot draft = Draft();
         HostServices services = await _main.ServicesAsync();
-        ExtensionCheckResult result = await services.TranslationExtensions.ActivateAsync(draft);
+        IExtensionManager manager = _manager;
+        ExtensionCheckResult result = await Task.Run(() => services.TranslationExtensions.ActivateAsync(draft));
         if (result.Succeeded)
         {
-            await _manager.SavePackageAsync(draft);
+            await Task.Run(() => manager.SavePackageAsync(draft));
         }
 
         if (version != Volatile.Read(ref _selectionVersion))
@@ -715,15 +719,29 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        ExtensionConfigSnapshot current = await _manager.ReadConfigAsync(_source.Id);
-        Dictionary<string, string> values = new(current.Values, StringComparer.Ordinal);
-        foreach (ExtensionConfigFieldViewModel field in Fields)
+        IExtensionManager manager = _manager;
+        string sourceId = _source.Id;
+        long selectionVersion = _selectionVersion;
+        long baselineRevision = _configRevision;
+        Dictionary<string, string> edited = Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value);
+        long revision = await Task.Run(async () =>
         {
-            values[field.Descriptor.Key] = field.Value;
+            ExtensionConfigSnapshot current = await manager.ReadConfigAsync(sourceId);
+            Dictionary<string, string> values = new(current.Values, StringComparer.Ordinal);
+            foreach ((string key, string value) in edited)
+            {
+                values[key] = value;
+            }
+
+            long next = Math.Max(baselineRevision, current.Revision) + 1;
+            await manager.SaveConfigAsync(sourceId, new ExtensionConfigSnapshot(values, next));
+            return next;
+        });
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
         }
 
-        long revision = Math.Max(_configRevision, current.Revision) + 1;
-        await _manager.SaveConfigAsync(_source.Id, new ExtensionConfigSnapshot(values, revision));
         _configRevision = revision;
         ConfigurationRevisionText = revision.ToString(CultureInfo.InvariantCulture);
         LastError = null;
@@ -748,9 +766,14 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
 
         ExtensionPackageSnapshot copy;
+        IExtensionManager manager = _manager;
+        string sourceId = _source.Id;
+        ExtensionPackageSnapshot draft = Draft();
+        long selectionVersion = _selectionVersion;
+        Dictionary<string, string> edited = Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value);
         try
         {
-            copy = ExtensionEntryMetadata.RewriteId(Draft(), id);
+            copy = await Task.Run(() => ExtensionEntryMetadata.RewriteId(draft, id));
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
                                               or ExtensionMetadataException)
@@ -760,17 +783,31 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
             return;
         }
 
-        await _manager.SavePackageAsync(copy);
-        ExtensionConfigSnapshot original = await _manager.ReadConfigAsync(_source.Id);
-        Dictionary<string, string> copiedValues = new(original.Values, StringComparer.Ordinal);
-        foreach (ExtensionConfigFieldViewModel field in Fields)
+        await Task.Run(async () =>
         {
-            copiedValues[field.Descriptor.Key] = field.Value;
+            await manager.SavePackageAsync(copy);
+            ExtensionConfigSnapshot original = await manager.ReadConfigAsync(sourceId);
+            Dictionary<string, string> copiedValues = new(original.Values, StringComparer.Ordinal);
+            foreach ((string key, string value) in edited)
+            {
+                copiedValues[key] = value;
+            }
+
+            await manager.SaveConfigAsync(id, new ExtensionConfigSnapshot(copiedValues, 1));
+        });
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
         }
 
-        await _manager.SaveConfigAsync(id, new ExtensionConfigSnapshot(copiedValues, 1));
         HostServices services = await _main.ServicesAsync();
-        ShowDiagnostics(await services.TranslationExtensions.ActivateAsync(copy));
+        ExtensionCheckResult activated = await Task.Run(() => services.TranslationExtensions.ActivateAsync(copy));
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
+        }
+
+        ShowDiagnostics(activated);
         await LoadAsync();
         SelectedExtension = Extensions.FirstOrDefault(item => item.Id == id);
         await _selectionLoadTask;
@@ -784,8 +821,17 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
 
         HostServices services = await _main.ServicesAsync();
-        TranslationPageResult result = await services.TranslationExtensions.TestAsync(
-            SelectedExtension.Id, SampleText, _main.AppOptions.Llm.Translation.TargetLanguage);
+        string id = SelectedExtension.Id;
+        string text = SampleText;
+        string language = _main.AppOptions.Llm.Translation.TargetLanguage;
+        long selectionVersion = _selectionVersion;
+        TranslationPageResult result =
+            await Task.Run(() => services.TranslationExtensions.TestAsync(id, text, language));
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
+        }
+
         SampleResult = string.Join("\n", result.Outcomes.Select(item =>
             item.GetTranslatedText() ?? item.ErrorMessage ?? item.Kind.ToString()));
         Status = "样例请求已完成；未写入书库。";
@@ -799,7 +845,13 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
 
         HostServices services = await _main.ServicesAsync();
-        bool cleared = await services.TranslationExtensions.ClearDerivedStateAsync(selected.Id);
+        long selectionVersion = _selectionVersion;
+        bool cleared = await Task.Run(() => services.TranslationExtensions.ClearDerivedStateAsync(selected.Id));
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
+        }
+
         Status = cleared ? "派生缓存已清空；已提交译文保留。" : "此扩展没有可清理的派生缓存。";
     }
 
@@ -813,8 +865,17 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         HostServices services = await _main.ServicesAsync();
         ExtensionConfigSnapshot config = new(Fields.ToDictionary(field => field.Descriptor.Key, field => field.Value),
             _configRevision);
-        TranslationPageResult result = await services.TranslationExtensions.TestDraftAsync(Draft(), config,
-            SampleText, _main.AppOptions.Llm.Translation.TargetLanguage);
+        ExtensionPackageSnapshot draft = Draft();
+        string text = SampleText;
+        string language = _main.AppOptions.Llm.Translation.TargetLanguage;
+        long selectionVersion = _selectionVersion;
+        TranslationPageResult result = await Task.Run(() => services.TranslationExtensions.TestDraftAsync(draft, config,
+            text, language));
+        if (selectionVersion != _selectionVersion)
+        {
+            return;
+        }
+
         SampleResult = string.Join("\n",
             result.Outcomes.Select(item => item.GetTranslatedText() ?? item.ErrorMessage ?? item.Kind.ToString()));
         Status = "草稿样例契约测试完成；当前 Active、LKG 和书库内容均未变更。";
@@ -824,7 +885,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     {
         if (_manager is not null && SelectedExtension is { } selected)
         {
-            await _manager.PromoteLastKnownGoodAsync(selected.Id);
+            IExtensionManager manager = _manager;
+            await Task.Run(() => manager.PromoteLastKnownGoodAsync(selected.Id));
             Status = "已将当前运行版本确认为可用恢复版本。";
         }
     }
@@ -834,7 +896,13 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         if (_manager is not null && SelectedExtension is { } selected)
         {
             HostServices services = await _main.ServicesAsync();
-            bool restored = await services.TranslationExtensions.RollbackAsync(selected.Id);
+            long selectionVersion = _selectionVersion;
+            bool restored = await Task.Run(() => services.TranslationExtensions.RollbackAsync(selected.Id));
+            if (selectionVersion != _selectionVersion)
+            {
+                return;
+            }
+
             Status = restored ? "运行版本已回滚；工作源码与书库内容保留。" : "没有兼容的可用恢复版本。";
         }
     }

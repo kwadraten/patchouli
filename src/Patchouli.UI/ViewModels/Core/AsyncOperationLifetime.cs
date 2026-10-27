@@ -10,6 +10,24 @@ internal sealed class AsyncOperationLifetime : IDisposable, IAsyncDisposable
     private bool _stopped;
     private TaskCompletionSource? _drained;
 
+    public IDisposable? TryEnter()
+    {
+        lock (_gate)
+        {
+            if (_stopped)
+            {
+                return null;
+            }
+
+            if (_active++ == 0)
+            {
+                _drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        return new OperationLease(this);
+    }
+
     public Task RunAsync(Func<Task> operation)
     {
         lock (_gate)
@@ -38,13 +56,28 @@ internal sealed class AsyncOperationLifetime : IDisposable, IAsyncDisposable
         }
         finally
         {
-            lock (_gate)
+            CompleteOperation();
+        }
+    }
+
+    private void CompleteOperation()
+    {
+        lock (_gate)
+        {
+            if (--_active == 0)
             {
-                if (--_active == 0)
-                {
-                    _drained!.TrySetResult();
-                }
+                _drained!.TrySetResult();
             }
+        }
+    }
+
+    private sealed class OperationLease(AsyncOperationLifetime owner) : IDisposable
+    {
+        private AsyncOperationLifetime? _owner = owner;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.CompleteOperation();
         }
     }
 
@@ -75,6 +108,8 @@ internal sealed class AsyncOperationLifetime : IDisposable, IAsyncDisposable
         catch (TimeoutException exception) when (UnexpectedExceptionReporter.ReportCatch(
                                                      exception, "ui.operation-lifetime", "drain-timeout"))
         {
+            // Ownership must not be released while a timed-out write can still be running.
+            throw;
         }
     }
 }

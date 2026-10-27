@@ -604,7 +604,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     private async Task<AgentLaunchContext> CreateLaunchContextAsync(HostServices services)
     {
         string? libraryId = null;
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
         if (library.IsSuccess)
         {
             libraryId = library.Value.LibraryId.ToString();
@@ -622,7 +622,7 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     /// </summary>
     private async Task ResolveMcpTokenAsync(HostServices services)
     {
-        Result<McpServerSettings> configured = await services.McpSettings.GetSettingsAsync();
+        Result<McpServerSettings> configured = await Task.Run(() => services.McpSettings.GetSettingsAsync());
         if (configured.IsSuccess && configured.Value.AuthRequired &&
             !string.IsNullOrWhiteSpace(configured.Value.Token))
         {
@@ -831,8 +831,15 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             // Client-side filtering over one ListRowsAsync snapshot: SearchRowsAsync returns an
             // empty result for an empty query, while the picker must show the whole library before
             // the user types. Filtering locally keeps typing instant and needs no repeated DB reads.
-            Result<IReadOnlyList<LibraryItemRow>> rows = await services.LibraryItems.ListRowsAsync(
-                cancellationToken: cancellation.Token);
+            int generation = _main.LibraryGeneration;
+            CancellationToken token = cancellation.Token;
+            Result<IReadOnlyList<LibraryItemRow>> rows = await Task.Run(() => services.LibraryItems.ListRowsAsync(
+                cancellationToken: token), token);
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (cancellation.IsCancellationRequested || _shutdown)
             {
                 return;

@@ -83,8 +83,15 @@ public sealed partial class PdfWorkspaceViewModel
             "译文" => TranslationExportMode.Translation,
             _ => TranslationExportMode.Bilingual
         };
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        int generation = _main.LibraryGeneration;
         Result<string> result =
-            await exporter.ExportMarkdownAsync(DocumentInstanceId.Parse(Item.DocumentInstanceId), mode);
+            await Task.Run(() => exporter.ExportMarkdownAsync(documentId, mode));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             _main.ReportError(result.ErrorMessage ?? "导出失败。");

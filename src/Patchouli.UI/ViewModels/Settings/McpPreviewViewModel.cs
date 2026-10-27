@@ -18,6 +18,7 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -37,8 +38,16 @@ public sealed class McpPreviewViewModel : ViewModelBase
         _main = m;
         SearchCommand = new AsyncCommand(async () =>
         {
+            string query = Query;
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
             Result<McpSearchLibraryResponse> r =
-                await (await _main.ServicesAsync()).Mcp.SearchLibraryAsync(new McpSearchLibraryRequest(Query));
+                await Task.Run(() => services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest(query)));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             Output = r.IsSuccess
                 ? JsonSerializer.Serialize(r.Value, new JsonSerializerOptions { WriteIndented = true })
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";

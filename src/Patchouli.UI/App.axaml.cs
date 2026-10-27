@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using Patchouli.Core.Diagnostics;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Services;
 using Patchouli.UI.Themes;
@@ -17,6 +18,10 @@ public sealed partial class App : Application
 
     public override void Initialize()
     {
+        // Never resolve UIThread from a worker: after headless teardown that getter can create a
+        // fresh dispatcher on the worker itself. Pin this App's dispatcher and reject retired Apps.
+        Dispatcher dispatcher = Dispatcher.UIThread;
+        UiThreadExecutionGuard.Configure(() => ReferenceEquals(Current, this) && dispatcher.CheckAccess());
         AvaloniaXamlLoader.Load(this);
     }
 

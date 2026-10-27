@@ -1,5 +1,6 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Diagnostics;
 
 namespace Patchouli.Infrastructure.Database;
 
@@ -134,6 +135,7 @@ public class SqliteConnectionFactory
                 return;
             }
 
+            UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Sqlite);
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText = readOnly
                 ? "pragma busy_timeout = 30000; pragma synchronous = normal; pragma query_only = on;"

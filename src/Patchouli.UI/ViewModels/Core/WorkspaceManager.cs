@@ -147,6 +147,11 @@ public sealed class WorkspaceManager
             return false;
         }
 
+        if (tab.Content is Editor.ItemEditorViewModel editor)
+        {
+            await editor.DisposeAsync();
+        }
+
         return Close(tabId);
     }
 

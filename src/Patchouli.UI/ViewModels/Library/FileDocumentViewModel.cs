@@ -60,7 +60,15 @@ public sealed partial class FileDocumentViewModel : ViewModelBase
         _main = main;
         RegisterCommand = new AsyncCommand(async () =>
         {
-            Result<FileAsset> r = await (await _main.ServicesAsync()).Files.RegisterFileAsync(FilePath);
+            string path = FilePath;
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<FileAsset> r = await Task.Run(() => services.Files.RegisterFileAsync(path));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (r.IsSuccess)
             {
                 FileAssetId = r.Value.FileAssetId.ToString();
@@ -78,9 +86,17 @@ public sealed partial class FileDocumentViewModel : ViewModelBase
             FileAssetId? f = string.IsNullOrWhiteSpace(FileAssetId)
                 ? (FileAssetId?)null
                 : Patchouli.Core.Ids.FileAssetId.Parse(FileAssetId);
-            Result<DocumentInstance> r =
-                await (await _main.ServicesAsync()).Documents.AttachDocumentInstanceAsync(
-                    Patchouli.Core.Ids.ItemId.Parse(ItemId), f, InstanceType);
+            ItemId itemId = Patchouli.Core.Ids.ItemId.Parse(ItemId);
+            string instanceType = InstanceType;
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<DocumentInstance> r = await Task.Run(() => services.Documents.AttachDocumentInstanceAsync(
+                itemId, f, instanceType));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (r.IsSuccess)
             {
                 RecentDocumentInstances.Add($"{r.Value.DocumentInstanceId} | {r.Value.InstanceType}");
@@ -98,9 +114,16 @@ public sealed partial class FileDocumentViewModel : ViewModelBase
     private async Task ResolveAsync()
     {
         HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
         FileAssetId fileAssetId = Patchouli.Core.Ids.FileAssetId.Parse(FileAssetId);
         Result<FileResolutionResult> result =
-            await services.FileResolution.ResolveFileAsync(fileAssetId, ResolveFilePurpose.MaintenanceScan);
+            await Task.Run(() =>
+                services.FileResolution.ResolveFileAsync(fileAssetId, ResolveFilePurpose.MaintenanceScan));
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (result.IsSuccess && result.Value.Conflicts.Count > 0)
         {
             ConflictDescriptor conflict = result.Value.Conflicts[0];

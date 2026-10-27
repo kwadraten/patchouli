@@ -46,6 +46,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         IReadOnlyList<int> Targets);
 
     private int _renderGeneration;
+    private AsyncOperationLifetime _operations = new();
+
+    internal IDisposable? EnterOperation()
+    {
+        return _operations.TryEnter();
+    }
 
     /// <summary>Test seam: when set, intercepts preview page rendering requests so tests can
     /// simulate slow renders, cancellation, and concurrency without PDFium.</summary>
@@ -401,6 +407,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     partial void OnIsEditModeChanged(bool value)
     {
+        if (!value)
+        {
+            TreeBoxes.Clear();
+        }
+
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
         ShowChaptersTabCommand?.NotifyCanExecuteChanged();
@@ -553,22 +564,31 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     public bool SelectionVisible => (IsDrawing || IsNewBoxPending) && SelectionWidth > 0 && SelectionHeight > 0;
 
-    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
+    private readonly SnapshotObservableCollection<PdfBBoxViewModel> _boundingBoxSnapshot = new();
+
+    [ExcludeFromDerivedGeneration]
+    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes => _boundingBoxSnapshot;
 
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> SelectedBoxes { get; } = new();
 
     public System.Collections.ObjectModel.ObservableCollection<SplitDraftBoxViewModel> SplitDraftBoxes { get; } =
         new();
 
-    public System.Collections.ObjectModel.ObservableCollection<MarkdownPreviewBlockViewModel> PreviewBlocks { get; } =
-        new();
+    private readonly SnapshotObservableCollection<MarkdownPreviewBlockViewModel> _previewBlockSnapshot = new();
+
+    [ExcludeFromDerivedGeneration]
+    public System.Collections.ObjectModel.ObservableCollection<MarkdownPreviewBlockViewModel> PreviewBlocks =>
+        _previewBlockSnapshot;
 
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> CandidateBoxes { get; } = new();
 
     public System.Collections.ObjectModel.ObservableCollection<PageRevisionViewModel> PageRevisions { get; } = new();
 
-    public System.Collections.ObjectModel.ObservableCollection<PdfOverlapMarkerViewModel> OverlapMarkers { get; } =
-        new();
+    private readonly SnapshotObservableCollection<PdfOverlapMarkerViewModel> _overlapMarkerSnapshot = new();
+
+    [ExcludeFromDerivedGeneration]
+    public System.Collections.ObjectModel.ObservableCollection<PdfOverlapMarkerViewModel> OverlapMarkers =>
+        _overlapMarkerSnapshot;
 
     public System.Collections.ObjectModel.ObservableCollection<PdfContinuationLinkViewModel>
         ContinuationLinks { get; } =
@@ -578,7 +598,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         CrossPageContinuationMarkers { get; } = new();
 
     // Visible rows of the edit-mode box tree: BoundingBoxes minus collapsed subtrees.
-    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> TreeBoxes { get; } = new();
+    private readonly SnapshotObservableCollection<PdfBBoxViewModel> _treeBoxSnapshot = new();
+
+    [ExcludeFromDerivedGeneration]
+    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> TreeBoxes => _treeBoxSnapshot;
 
     [ObservableProperty] public partial bool HasNoBoundingBoxes { get; private set; } = true;
     [ObservableProperty] public partial bool HasPageRevisions { get; private set; }
@@ -635,7 +658,15 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private void RebuildTreeBoxes()
     {
-        TreeBoxes.Clear();
+        // The edit tree has rich row templates. Do not realize an invisible second copy of every
+        // page box while the reader is only using the raster/Markdown surfaces.
+        if (!IsEditMode)
+        {
+            _treeBoxSnapshot.ReplaceWith([]);
+            return;
+        }
+
+        List<PdfBBoxViewModel> visible = [];
         int skipBelowDepth = -1;
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
@@ -645,12 +676,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             skipBelowDepth = -1;
-            TreeBoxes.Add(box);
+            visible.Add(box);
             if (box.HasChildren && !box.IsTreeExpanded)
             {
                 skipBelowDepth = box.Depth + 1;
             }
         }
+
+        _treeBoxSnapshot.ReplaceWith(visible);
     }
 
     public void ClearSelection()
@@ -912,6 +945,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task PersistDraftBoxAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || _draftRevisionId is null || _currentPageId is null)
         {
             return;
@@ -925,6 +964,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         DocumentBoxId? after = OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId is null))
             .LastOrDefault()?.BoxId;
         IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        PageEditSessionId sessionId = EditSessionId.Value;
+        NormalizedBBox bbox = PendingBBox.Value;
         Result<DocumentBox> result;
         if (NewBoxType == DocumentBoxType.LogicalPage)
         {
@@ -934,7 +975,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            result = await editor.InsertLogicalPageAsync(EditSessionId.Value, after, PendingBBox.Value);
+            result = await Task.Run(() => editor.InsertLogicalPageAsync(sessionId, after, bbox));
         }
         else
         {
@@ -944,14 +985,18 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            result = await editor.DrawAndInsertLeafAsync(
-                EditSessionId.Value,
-                new InsertLeafCommand(null, after, NewBoxType, null, PendingBBox.Value,
-                    CreatePayload(NewBoxType, NewBoxText),
-                    NewBoxType == DocumentBoxType.Title ? NewHeadingLevel : null,
-                    NewBoxType == DocumentBoxType.Code && !string.IsNullOrWhiteSpace(NewCodeLanguage)
-                        ? NewCodeLanguage.Trim()
-                        : null));
+            InsertLeafCommand command = new(null, after, NewBoxType, null, bbox,
+                CreatePayload(NewBoxType, NewBoxText),
+                NewBoxType == DocumentBoxType.Title ? NewHeadingLevel : null,
+                NewBoxType == DocumentBoxType.Code && !string.IsNullOrWhiteSpace(NewCodeLanguage)
+                    ? NewCodeLanguage.Trim()
+                    : null);
+            result = await Task.Run(() => editor.DrawAndInsertLeafAsync(sessionId, command));
+        }
+
+        if (EditSessionId != sessionId)
+        {
+            return;
         }
 
         if (result.IsFailure)
@@ -1178,6 +1223,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task ConfirmSplitAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || SplitSource is null || SplitFirstBBox is null || SplitSecondBBox is null ||
             string.IsNullOrWhiteSpace(SplitFirstText) || string.IsNullOrWhiteSpace(SplitSecondText))
         {
@@ -1185,12 +1236,18 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        PageEditSessionId sessionId = EditSessionId.Value;
+        SplitLeafCommand command = new(SplitSource.BoxId, SplitFirstBBox.Value,
+            CreatePayload(SplitSource.BoxType, SplitFirstText, SplitSource.Payload), SplitSecondBBox.Value,
+            CreatePayload(SplitSource.BoxType, SplitSecondText, SplitSource.Payload));
         Result<IReadOnlyList<DocumentBox>> result =
-            await (await _main.ServicesAsync()).DocumentTreeEditor.SplitLeafAsync(
-                EditSessionId.Value,
-                new SplitLeafCommand(SplitSource.BoxId, SplitFirstBBox.Value,
-                    CreatePayload(SplitSource.BoxType, SplitFirstText, SplitSource.Payload), SplitSecondBBox.Value,
-                    CreatePayload(SplitSource.BoxType, SplitSecondText, SplitSource.Payload)));
+            await Task.Run(() => services.DocumentTreeEditor.SplitLeafAsync(sessionId, command));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"拆分边界框失败：{result.ErrorMessage}";
@@ -1297,6 +1354,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task AcceptLocalOcrAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || _localOcrTargetBoxId is null || LocalOcrCandidate is null)
         {
             Status = "请先运行局部 OCR 并选择目标叶子边界框。";
@@ -1310,10 +1373,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.AcceptLocalOcrCandidateAsync(
-            EditSessionId.Value, target.BoxId,
-            new LocalOcrCandidate(LocalOcrCandidate.BoxType, LocalOcrCandidate.Payload,
-                LocalOcrCandidate.HeadingLevel));
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        PageEditSessionId sessionId = EditSessionId.Value;
+        LocalOcrCandidate candidate = new(LocalOcrCandidate.BoxType, LocalOcrCandidate.Payload,
+            LocalOcrCandidate.HeadingLevel);
+        Result result = await Task.Run(() => services.DocumentTreeEditor.AcceptLocalOcrCandidateAsync(
+            sessionId, target.BoxId, candidate));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"接受局部 OCR 候选结果失败：{result.ErrorMessage}";
@@ -1340,6 +1410,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task RunDocumentOcrAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
         {
             Status = "该题录没有可识别的文档实例。";
@@ -1354,7 +1430,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-        Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentId);
+        int generation = _renderGeneration;
+        OcrPresetId selectedPresetId = presetId.Value;
+        Result<IReadOnlyList<Page>> pages = await Task.Run(() => services.Pages.ListPagesAsync(documentId));
+        if (generation != _renderGeneration)
+        {
+            return;
+        }
+
         if (pages.IsFailure)
         {
             Status = $"读取物理页失败：{pages.ErrorMessage}";
@@ -1368,7 +1451,13 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        Result<OcrPresetVersion> version = await services.OcrPresets.GetCurrentVersionAsync(presetId.Value);
+        Result<OcrPresetVersion> version =
+            await Task.Run(() => services.OcrPresets.GetCurrentVersionAsync(selectedPresetId));
+        if (generation != _renderGeneration)
+        {
+            return;
+        }
+
         if (version.IsFailure)
         {
             Status = $"读取 OCR preset 版本失败：{version.ErrorMessage}";
@@ -1384,9 +1473,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         _main.OcrQueue.ObserveQueue(queue.Value);
         (string adapterKind, string? providerId) = services.OcrDefaults.QueueRoutingFor(version.Value.EngineId);
-        Result<OcrQueueTask> queued = await services.Ocr.QueueDocumentOcrAsync(
-            documentId, presetId.Value, pageIds, version.Value.EngineId, adapterKind, providerId,
-            OcrQueuePriority.UserStartedDocument);
+        Result<OcrQueueTask> queued = await Task.Run(() => services.Ocr.QueueDocumentOcrAsync(
+            documentId, selectedPresetId, pageIds, version.Value.EngineId, adapterKind, providerId,
+            OcrQueuePriority.UserStartedDocument));
+        if (generation != _renderGeneration)
+        {
+            return;
+        }
+
         if (queued.IsFailure)
         {
             Status = $"文档级 OCR 入队失败：{queued.ErrorMessage}";
@@ -1440,35 +1534,47 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        await _main.ModalOperations.RunAsync(
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
+        int renderGeneration = _renderGeneration;
+        CancellationToken workspaceToken = _workspaceCancellation.Token;
+        Result<PhysicalPageOcrResult> result = await _main.ModalOperations.RunAsync(
             new ModalOperationOptions("本页 OCR", "正在识别当前页面草稿...", true),
-            async context => await Dispatcher.UIThread.InvokeAsync(async () =>
+            async context =>
             {
-                HostServices services = _editServices ?? await _main.ServicesAsync();
                 using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-                    context.CancellationToken, _workspaceCancellation.Token);
-                Result<PhysicalPageOcrResult> result = await services.LogicalPageOcr.RunPageEditAsync(
+                    context.CancellationToken, workspaceToken);
+                return await services.LogicalPageOcr.RunPageEditAsync(
                     presetId.Value, sessionId, linked.Token);
-                if (result.IsFailure)
-                {
-                    Status = $"本页 OCR 失败：{result.ErrorMessage}";
-                    return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
-                }
+            });
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration) || renderGeneration != _renderGeneration ||
+            EditSessionId != sessionId)
+        {
+            return;
+        }
 
-                if (EditSessionId == sessionId && _draftRevisionId == result.Value.WorkingTreeRevisionId)
-                {
-                    ClearPendingBox();
-                    ClearSplit();
-                    ClearMerge();
-                    ClearLocalOcrCandidate();
-                    await RefreshBoxesAsync();
-                    Status = result.Value.UsedLogicalPages
-                        ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页更新页面草稿；保存后生效。"
-                        : "本页整页 OCR 已更新页面草稿；保存后生效。";
-                }
+        if (result.IsFailure)
+        {
+            Status = $"本页 OCR 失败：{result.ErrorMessage}";
+            return;
+        }
 
-                return Result.Success();
-            }));
+        if (_draftRevisionId == result.Value.WorkingTreeRevisionId)
+        {
+            ClearPendingBox();
+            ClearSplit();
+            ClearMerge();
+            ClearLocalOcrCandidate();
+            await RefreshBoxesAsync();
+            if (renderGeneration != _renderGeneration || EditSessionId != sessionId)
+            {
+                return;
+            }
+
+            Status = result.Value.UsedLogicalPages
+                ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页更新页面草稿；保存后生效。"
+                : "本页整页 OCR 已更新页面草稿；保存后生效。";
+        }
     }
 
     private static async Task<Result<LogicalDocumentOcrPagePlan>> CreatePageOcrPlanAsync(
@@ -1557,6 +1663,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task ConfirmMergeAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || PendingMergeBoxes.Length < 2 || string.IsNullOrWhiteSpace(MergeText))
         {
             Status = "合并结果必须提供非空内容。";
@@ -1564,11 +1676,18 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         DocumentBox selected = PendingMergeBoxes[0];
-        Result<DocumentBox> result = await (await _main.ServicesAsync()).DocumentTreeEditor.MergeLeavesAsync(
-            EditSessionId.Value,
-            new MergeLeavesCommand(PendingMergeBoxes.Select(box => box.BoxId).ToArray(), CreatePayload(
-                selected.BoxType, MergeText,
-                selected.Payload)));
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        PageEditSessionId sessionId = EditSessionId.Value;
+        MergeLeavesCommand command = new(PendingMergeBoxes.Select(box => box.BoxId).ToArray(), CreatePayload(
+            selected.BoxType, MergeText,
+            selected.Payload));
+        Result<DocumentBox> result =
+            await Task.Run(() => services.DocumentTreeEditor.MergeLeavesAsync(sessionId, command));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"合并边界框失败：{result.ErrorMessage}";
@@ -1588,6 +1707,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task DeleteSelectedAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (!IsEditMode || EditSessionId is not { } sessionId)
         {
             return;
@@ -1603,15 +1728,30 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
-        foreach (PdfBBoxViewModel target in targets)
+        DocumentBoxId[] boxIds = targets.Select(target => target.BoxId).ToArray();
+        Result deleted = await Task.Run(async () =>
         {
-            Result result = await editor.DeleteBoxAsync(sessionId, target.BoxId);
-            if (result.IsFailure)
+            foreach (DocumentBoxId boxId in boxIds)
             {
-                await RefreshBoxesAsync();
-                Status = $"删除边界框失败：{result.ErrorMessage}";
-                return;
+                Result result = await editor.DeleteBoxAsync(sessionId, boxId);
+                if (result.IsFailure)
+                {
+                    return result;
+                }
             }
+
+            return Result.Success();
+        });
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
+        if (deleted.IsFailure)
+        {
+            await RefreshBoxesAsync();
+            Status = $"删除边界框失败：{deleted.ErrorMessage}";
+            return;
         }
 
         await RefreshBoxesAsync();
@@ -1640,6 +1780,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task MoveSelectedAsync(bool down)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移动的边界框。";
@@ -1729,8 +1875,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 continue;
             }
 
-            Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
-                sessionId, new MoveBoxCommand(box.BoxId, parentId, after));
+            HostServices services = _editServices ?? await _main.ServicesAsync();
+            MoveBoxCommand command = new(box.BoxId, parentId, after);
+            Result result = await Task.Run(() => services.DocumentTreeEditor.MoveBoxAsync(sessionId, command));
+            if (EditSessionId != sessionId)
+            {
+                return moved;
+            }
+
             if (result.IsFailure)
             {
                 Status = $"移动边界框失败：{result.ErrorMessage}";
@@ -1747,6 +1899,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     internal async Task MoveBoxToAsync(PdfBBoxViewModel movingView, PdfBBoxViewModel targetView, bool insertBefore)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || movingView.BoxId == targetView.BoxId)
         {
             return;
@@ -1792,6 +1950,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        PageEditSessionId sessionId = EditSessionId.Value;
         foreach (PdfBBoxViewModel view in movingViews)
         {
             DocumentBox? moving = _loadedBoxes.FirstOrDefault(box => box.BoxId == view.BoxId);
@@ -1800,8 +1959,13 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 continue;
             }
 
-            Result result = await editor.MoveBoxAsync(
-                EditSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
+            MoveBoxCommand command = new(moving.BoxId, parent, after);
+            Result result = await Task.Run(() => editor.MoveBoxAsync(sessionId, command));
+            if (EditSessionId != sessionId)
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 Status = $"拖放移动失败：{result.ErrorMessage}";
@@ -1840,6 +2004,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // parent (move up/down, drag) or changes level as a whole group, never both at once.
     private async Task IndentSelectedAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移入的边界框。";
@@ -1885,11 +2055,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        PageEditSessionId sessionId = EditSessionId.Value;
         DocumentBoxId? after = LastSiblingForParent(newParent.BoxId)?.BoxId;
         foreach (DocumentBox box in selected)
         {
-            Result result = await editor.MoveBoxAsync(
-                EditSessionId.Value, new MoveBoxCommand(box.BoxId, newParent.BoxId, after));
+            MoveBoxCommand command = new(box.BoxId, newParent.BoxId, after);
+            Result result = await Task.Run(() => editor.MoveBoxAsync(sessionId, command));
+            if (EditSessionId != sessionId)
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 Status = $"移入边界框失败：{result.ErrorMessage}";
@@ -1905,6 +2081,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task OutdentSelectedAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移出的边界框。";
@@ -1937,11 +2119,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        PageEditSessionId sessionId = EditSessionId.Value;
         DocumentBoxId? after = parent.Value;
         foreach (DocumentBox box in selected)
         {
-            Result result = await editor.MoveBoxAsync(
-                EditSessionId.Value, new MoveBoxCommand(box.BoxId, parentBox.ParentBoxId, after));
+            MoveBoxCommand command = new(box.BoxId, parentBox.ParentBoxId, after);
+            Result result = await Task.Run(() => editor.MoveBoxAsync(sessionId, command));
+            if (EditSessionId != sessionId)
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 Status = $"移出边界框失败：{result.ErrorMessage}";
@@ -1963,7 +2151,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private static IEnumerable<DocumentBox> OrderSiblings(IEnumerable<DocumentBox> boxes)
     {
         DocumentBox[] values = boxes.ToArray();
-        HashSet<DocumentBoxId> ids = values.Select(box => box.BoxId).ToHashSet();
+        Dictionary<DocumentBoxId, DocumentBox> byId = values.ToDictionary(box => box.BoxId);
         HashSet<DocumentBoxId> referenced = values.Where(box => box.NextSiblingBoxId is not null)
             .Select(box => box.NextSiblingBoxId!.Value).ToHashSet();
         DocumentBox? current = values.FirstOrDefault(box => !referenced.Contains(box.BoxId));
@@ -1971,8 +2159,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         while (current is not null && visited.Add(current.BoxId))
         {
             yield return current;
-            current = current.NextSiblingBoxId is { } next && ids.Contains(next)
-                ? values.FirstOrDefault(box => box.BoxId == next)
+            current = current.NextSiblingBoxId is { } next && byId.TryGetValue(next, out DocumentBox? following)
+                ? following
                 : null;
         }
     }
@@ -2086,6 +2274,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         {
             _workspaceCancellation.Dispose();
             _workspaceCancellation = new CancellationTokenSource();
+            _operations = new AsyncOperationLifetime();
+            ChapterEditor.ResumeAfterFailedClose();
             return false;
         }
 
@@ -2096,6 +2286,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // Shutdown leaves manual drafts for the next exclusive Host's startup recovery.
     public async Task StopAsync()
     {
+        _renderGeneration++;
+        _chapterMapGeneration++;
         _workspaceCancellation.Cancel();
         _prefetchSubject.OnNext(default);
         ExitBookReading();
@@ -2121,6 +2313,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
         }
 
+        await ChapterEditor.DrainAsync();
+        await _operations.DisposeAsync();
         await ReleaseDocumentSessionAsync();
     }
 
@@ -2128,6 +2322,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     {
         if (disposing && !_prefetchSubject.IsDisposed)
         {
+            _operations.Dispose();
             Clear();
             _prefetchSubject.Dispose();
             _bookReadingSubject.Dispose();
@@ -2219,6 +2414,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private Task ReloadAsync()
     {
+        _pages = [];
         return RenderCurrentPageAsync();
     }
 
@@ -2234,6 +2430,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task RenderCurrentPageAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         // Issue #31 render-then-swap: the current image stays on screen while the next page
         // renders. It is only replaced after a new bitmap has been produced successfully, so
         // a failed or slow render never flashes a blank page.
@@ -2259,6 +2461,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
             _documentServices = services;
             FileAssetId? fileAssetId = await ResolveFileAssetIdAsync(services, documentInstanceId);
+            if (generation != _renderGeneration)
+            {
+                return;
+            }
+
             if (fileAssetId is null)
             {
                 ClearSourceValidation();
@@ -2267,7 +2474,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentInstanceId);
+            Result<IReadOnlyList<Page>> pages = _pages.Count > 0
+                ? Result<IReadOnlyList<Page>>.Success(_pages)
+                : await Task.Run(() => services.Pages.ListPagesAsync(documentInstanceId));
+            if (generation != _renderGeneration)
+            {
+                return;
+            }
+
             if (pages.IsFailure)
             {
                 ClearSourceValidation();
@@ -2332,7 +2546,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             else
             {
                 Result<DocumentTreeRevision> rev =
-                    await services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, page.PageId);
+                    await Task.Run(() =>
+                        services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, page.PageId));
                 if (generation != _renderGeneration)
                 {
                     return;
@@ -2400,9 +2615,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             Result<PdfPagePixelBufferLease> result;
             try
             {
-                result = PageRenderPreviewHandler is not null
-                    ? await PageRenderPreviewHandler(renderRequest, CancellationToken.None)
-                    : await services.PageRenders.RenderPreviewAsync(renderRequest);
+                Func<PageRenderRequest, CancellationToken, Task<Result<PdfPagePixelBufferLease>>>? handler =
+                    PageRenderPreviewHandler;
+                result = await Task.Run(() => handler is not null
+                    ? handler(renderRequest, CancellationToken.None)
+                    : services.PageRenders.RenderPreviewAsync(renderRequest));
             }
             catch (Exception) when (attempt < maxRetries && generation == _renderGeneration)
             {
@@ -2549,6 +2766,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private async Task PrefetchPageAsync(HostServices services, DocumentInstanceId documentInstanceId,
         FileAssetId? fileAssetId, int pageIndex, CancellationToken cancellationToken)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         try
         {
             if (pageIndex < 0 || pageIndex >= _pages.Count || pageIndex == PageIndex)
@@ -2557,9 +2780,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             Page page = _pages[pageIndex];
-            Result<PdfPagePixelBufferLease> preview = await services.PageRenders.RenderPreviewAsync(
-                new PageRenderRequest(documentInstanceId, page.PageId, fileAssetId, 120,
-                    Purpose: PageRenderPurpose.Preview), cancellationToken);
+            PageRenderRequest request = new(documentInstanceId, page.PageId, fileAssetId, 120,
+                Purpose: PageRenderPurpose.Preview);
+            Result<PdfPagePixelBufferLease> preview = await Task.Run(() => services.PageRenders.RenderPreviewAsync(
+                request, cancellationToken), cancellationToken);
             if (preview.IsSuccess)
             {
                 preview.Value.Dispose();
@@ -2597,7 +2821,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return FileAssetId.Parse(Item.FileAssetId);
         }
 
-        Result<FileAssetId> result = await services.Pages.GetFileAssetIdAsync(documentInstanceId);
+        Result<FileAssetId> result = await Task.Run(() => services.Pages.GetFileAssetIdAsync(documentInstanceId));
         return result.IsSuccess ? result.Value : null;
     }
 
@@ -2617,7 +2841,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         try
         {
             HostServices services = _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
-            Result discarded = await services.DocumentTrees.DiscardPageEditAsync(sessionId);
+            Result discarded = await Task.Run(() => services.DocumentTrees.DiscardPageEditAsync(sessionId));
             if (discarded.IsFailure)
             {
                 Status = $"放弃页面草稿失败：{discarded.ErrorMessage}";
@@ -2646,8 +2870,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             if (_documentServices is { } services)
             {
-                await services.PageRenders.ReleaseDocumentSessionAsync(
-                    DocumentInstanceId.Parse(Item.DocumentInstanceId));
+                DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+                await Task.Run(() => services.PageRenders.ReleaseDocumentSessionAsync(documentId));
             }
         }
         catch (Exception ex)
@@ -2677,13 +2901,27 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task<IReadOnlyList<DocumentBox>> LoadBoxesAsync(DocumentTreeRevisionId revisionId)
     {
-        if (DocumentBoxesLoadHandler is not null)
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
         {
-            return await DocumentBoxesLoadHandler(revisionId);
+            return [];
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        Func<DocumentTreeRevisionId, Task<IReadOnlyList<DocumentBox>>>? handler = DocumentBoxesLoadHandler;
+        return await Task.Run(() => LoadBoxesCoreAsync(services, revisionId, handler));
+    }
+
+    private static async Task<IReadOnlyList<DocumentBox>> LoadBoxesCoreAsync(HostServices services,
+        DocumentTreeRevisionId revisionId, Func<DocumentTreeRevisionId, Task<IReadOnlyList<DocumentBox>>>? handler)
+    {
+        if (handler is not null)
+        {
+            return await handler(revisionId);
         }
 
         Result<IReadOnlyList<DocumentBox>> result =
-            await (await _main.ServicesAsync()).DocumentTrees.ListBoxesAsync(revisionId);
+            await services.DocumentTrees.ListBoxesAsync(revisionId);
         return result.IsSuccess ? result.Value : [];
     }
 
@@ -2694,54 +2932,77 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // page. Callers outside the render path pass no generation and are never stale.
     private bool IsStaleGeneration(int? generation)
     {
-        return generation is not null && generation.Value != _renderGeneration;
+        return _workspaceCancellation.IsCancellationRequested ||
+               (generation is not null && generation.Value != _renderGeneration);
     }
 
     private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isDraft,
         int? generation = null)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         // Load into a local first: the loaded set is committed to the view (_loadedBoxes
         // and BoundingBoxes) only after the generation re-check, so a superseded load
         // leaves the newer page's boxes untouched.
-        IReadOnlyList<DocumentBox> loaded = await LoadBoxesAsync(revisionId);
-        if (IsStaleGeneration(generation))
+        int renderGeneration = generation ?? _renderGeneration;
+        HostServices services = await _main.ServicesAsync();
+        PageId? pageId = _currentPageId;
+        Func<DocumentTreeRevisionId, Task<IReadOnlyList<DocumentBox>>>? handler = DocumentBoxesLoadHandler;
+        PageContentSnapshot snapshot = await Task.Run(async () =>
+        {
+            IReadOnlyList<DocumentBox> boxes = await LoadBoxesCoreAsync(services, revisionId, handler);
+            IReadOnlyList<DocumentBoxOverlap> overlaps = [];
+            if (pageId is { } id)
+            {
+                Result<IReadOnlyList<DocumentBoxOverlap>> projected = await services.Overlaps.GetOrCreateAsync(
+                    revisionId, id, DocumentBoxOverlapDetector.PolicyBasis,
+                    _ => Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes)));
+                if (projected.IsSuccess)
+                {
+                    overlaps = projected.Value;
+                }
+            }
+
+            return new PageContentSnapshot(boxes, OrderedTree(boxes).ToArray(),
+                boxes.Where(box => box.ParentBoxId is not null).Select(box => box.ParentBoxId!.Value).ToHashSet(),
+                overlaps, await LoadPreviewSnapshotAsync(services, revisionId, boxes));
+        });
+        if (IsStaleGeneration(renderGeneration) || pageId != _currentPageId ||
+            (isDraft && _draftRevisionId != revisionId))
         {
             return;
         }
 
-        _loadedBoxes = loaded;
+        _loadedBoxes = snapshot.Boxes;
         int readingOrder = 0;
-        foreach ((DocumentBox Box, int Depth) item in OrderedTree(_loadedBoxes))
+        List<PdfBBoxViewModel> views = [];
+        foreach ((DocumentBox Box, int Depth) item in snapshot.Ordered)
         {
             DocumentBox box = item.Box;
-            BoundingBoxes.Add(new PdfBBoxViewModel(
-                _main, this, box, WidthPixels, HeightPixels, isDraft, ++readingOrder, item.Depth));
+            views.Add(new PdfBBoxViewModel(
+                _main, this, box, WidthPixels, HeightPixels, isDraft, ++readingOrder, item.Depth)
+            {
+                HasChildren = snapshot.Parents.Contains(box.BoxId),
+                IsTreeExpanded = !_collapsedBoxIds.Contains(box.BoxId)
+            });
         }
 
-        foreach (PdfBBoxViewModel view in BoundingBoxes)
-        {
-            view.HasChildren = _loadedBoxes.Any(box => box.ParentBoxId == view.BoxId);
-            view.IsTreeExpanded = !_collapsedBoxIds.Contains(view.BoxId);
-        }
+        _boundingBoxSnapshot.ReplaceWith(views);
 
         RebuildTreeBoxes();
-        await UpdateOverlapWarningsAsync(revisionId, generation);
-        if (IsStaleGeneration(generation))
+        ApplyOverlapWarnings(snapshot.Overlaps);
+
+        await UpdateContinuationLinksAsync(renderGeneration);
+        if (IsStaleGeneration(renderGeneration))
         {
             return;
         }
 
-        await UpdateContinuationLinksAsync(generation);
-        if (IsStaleGeneration(generation))
-        {
-            return;
-        }
-
-        await LoadPreviewAsync(revisionId, generation);
-        if (IsStaleGeneration(generation))
-        {
-            return;
-        }
+        ApplyPreviewSnapshot(snapshot.Preview);
 
         if (!isDraft && !IsViewingHistoricalRevision)
         {
@@ -2785,8 +3046,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                  pageIndex >= 0 && unresolved.Count > 0;
                  pageIndex--)
             {
-                Result<DocumentTreeRevision> revision = await services.DocumentTrees
-                    .GetCurrentRevisionAsync(documentInstanceId, _pages[pageIndex].PageId);
+                PageId pageId = _pages[pageIndex].PageId;
+                Result<DocumentTreeRevision> revision = await Task.Run(() => services.DocumentTrees
+                    .GetCurrentRevisionAsync(documentInstanceId, pageId));
+                if (IsStaleGeneration(generation))
+                {
+                    return;
+                }
+
                 if (revision.IsFailure)
                 {
                     continue;
@@ -2858,54 +3125,38 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // the projection for the page it entered; immutable revisions are reused from cache, Box edits
     // invalidate only this page, and the projection never reads the source file or computes a full
     // hash. The in-memory box set is passed through as the provider so there is no second read.
-    private async Task UpdateOverlapWarningsAsync(DocumentTreeRevisionId revisionId,
-        int? generation = null)
+    private void ApplyOverlapWarnings(IReadOnlyList<DocumentBoxOverlap> overlaps)
     {
-        OverlapMarkers.Clear();
+        List<PdfOverlapMarkerViewModel> markers = [];
         Dictionary<DocumentBoxId, PdfBBoxViewModel> byId = BoundingBoxes.ToDictionary(box => box.BoxId);
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
             box.HasOverlapWarning = false;
         }
 
-        if (_currentPageId is { } pageId)
+        foreach (DocumentBoxOverlap overlap in overlaps)
         {
-            IReadOnlyList<DocumentBox> boxes = _loadedBoxes;
-            HostServices services = await _main.ServicesAsync();
-            Result<IReadOnlyList<DocumentBoxOverlap>> overlaps = await services.Overlaps.GetOrCreateAsync(
-                revisionId,
-                pageId,
-                DocumentBoxOverlapDetector.PolicyBasis,
-                _ => Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes)));
-            if (IsStaleGeneration(generation))
+            if (byId.TryGetValue(overlap.First.BoxId, out PdfBBoxViewModel? first) &&
+                byId.TryGetValue(overlap.Second.BoxId, out PdfBBoxViewModel? second))
             {
-                return;
-            }
-
-            if (overlaps.IsSuccess)
-            {
-                foreach (DocumentBoxOverlap overlap in overlaps.Value)
-                {
-                    if (byId.TryGetValue(overlap.First.BoxId, out PdfBBoxViewModel? first) &&
-                        byId.TryGetValue(overlap.Second.BoxId, out PdfBBoxViewModel? second))
-                    {
-                        first.HasOverlapWarning = true;
-                        second.HasOverlapWarning = true;
-                        OverlapMarkers.Add(new PdfOverlapMarkerViewModel(
-                            first, second, overlap.Intersection, WidthPixels, HeightPixels));
-                    }
-                }
+                first.HasOverlapWarning = true;
+                second.HasOverlapWarning = true;
+                markers.Add(new PdfOverlapMarkerViewModel(
+                    first, second, overlap.Intersection, WidthPixels, HeightPixels));
             }
         }
+
+        _overlapMarkerSnapshot.ReplaceWith(markers);
 
         Raise(nameof(HasOverlapWarnings));
     }
 
     private static IEnumerable<(DocumentBox Box, int Depth)> OrderedTree(IReadOnlyList<DocumentBox> boxes)
     {
-        foreach (DocumentBox root in OrderSiblings(boxes.Where(box => box.ParentBoxId is null)))
+        ILookup<DocumentBoxId?, DocumentBox> children = boxes.ToLookup(box => box.ParentBoxId);
+        foreach (DocumentBox root in OrderSiblings(children[null]))
         {
-            foreach ((DocumentBox Box, int Depth) item in OrderedSubtree(boxes, root, 0))
+            foreach ((DocumentBox Box, int Depth) item in OrderedSubtree(children, root, 0))
             {
                 yield return item;
             }
@@ -2913,14 +3164,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     }
 
     private static IEnumerable<(DocumentBox Box, int Depth)> OrderedSubtree(
-        IReadOnlyList<DocumentBox> boxes,
+        ILookup<DocumentBoxId?, DocumentBox> children,
         DocumentBox box,
         int depth)
     {
         yield return (box, depth);
-        foreach (DocumentBox child in OrderSiblings(boxes.Where(candidate => candidate.ParentBoxId == box.BoxId)))
+        foreach (DocumentBox child in OrderSiblings(children[box.BoxId]))
         {
-            foreach ((DocumentBox Box, int Depth) item in OrderedSubtree(boxes, child, depth + 1))
+            foreach ((DocumentBox Box, int Depth) item in OrderedSubtree(children, child, depth + 1))
             {
                 yield return item;
             }
@@ -2988,8 +3239,15 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         for (int pageIndex = 0; pageIndex < PageIndex && pageIndex < _pages.Count; pageIndex++)
         {
-            Result<DocumentTreeRevision> revision = await services.DocumentTrees
-                .GetCurrentRevisionAsync(documentInstanceId, _pages[pageIndex].PageId);
+            int generation = _renderGeneration;
+            PageId pageId = _pages[pageIndex].PageId;
+            Result<DocumentTreeRevision> revision = await Task.Run(() => services.DocumentTrees
+                .GetCurrentRevisionAsync(documentInstanceId, pageId));
+            if (generation != _renderGeneration || ContinuationPickFollower != follower)
+            {
+                return;
+            }
+
             if (revision.IsFailure)
             {
                 continue;
@@ -3061,6 +3319,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     internal async Task ChooseContinuationSourceAsync(ContinuationSourceCandidate candidate)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PdfBBoxViewModel? follower = ContinuationPickFollower;
         PageEditSessionId? sessionId = EditSessionId;
         if (follower is null || sessionId is null)
@@ -3068,8 +3332,16 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
-            sessionId.Value, follower.BoxId, candidate.BoxId);
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        DocumentBoxId followerId = follower.BoxId;
+        DocumentBoxId sourceId = candidate.BoxId;
+        Result result = await Task.Run(() => services.DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, followerId, sourceId));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         CancelContinuationPick();
         if (result.IsFailure)
         {
@@ -3083,14 +3355,27 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     internal async Task ClearContinuationAsync(PdfBBoxViewModel box)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PageEditSessionId? sessionId = EditSessionId;
         if (sessionId is null)
         {
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetContinuationAsync(
-            sessionId.Value, box.BoxId, null);
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        DocumentBoxId boxId = box.BoxId;
+        Result result = await Task.Run(() => services.DocumentTreeEditor.SetContinuationAsync(
+            sessionId.Value, boxId, null));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"解除接续失败: {result.ErrorMessage}";
@@ -3122,40 +3407,93 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId, int? generation = null)
     {
-        PreviewBlocks.Clear();
-        ReadingScene = null;
-        HostServices services = await _main.ServicesAsync();
-        Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
-            revisionId, false);
-        if (compiled.IsFailure || IsStaleGeneration(generation))
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
         {
             return;
         }
 
+        int renderGeneration = generation ?? _renderGeneration;
+        HostServices services = await _main.ServicesAsync();
+        IReadOnlyList<DocumentBox> boxes = _loadedBoxes;
+        PreviewSnapshot snapshot = await Task.Run(() => LoadPreviewSnapshotAsync(services, revisionId, boxes));
+        if (!IsStaleGeneration(renderGeneration))
+        {
+            ApplyPreviewSnapshot(snapshot);
+        }
+    }
+
+    private static async Task<PreviewSnapshot> LoadPreviewSnapshotAsync(HostServices services,
+        DocumentTreeRevisionId revisionId, IReadOnlyList<DocumentBox> boxes)
+    {
+        Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
+            revisionId, false);
+        if (compiled.IsFailure)
+        {
+            return new PreviewSnapshot(null, []);
+        }
+
         MarkdownDocumentModel model = compiled.Value.Document ?? services.Markdown.Parse(compiled.Value.Markdown);
+        Dictionary<DocumentBoxId, string> types = boxes.ToDictionary(box => box.BoxId, box => box.BoxType);
+        DocumentBoxId?[] sources = new DocumentBoxId?[model.Blocks.Count];
+        bool[] mapped = new bool[sources.Length];
+        foreach (MarkdownSourceMapEntry entry in compiled.Value.SourceMap)
+        {
+            int end = Math.Min(sources.Length, entry.PreviewNodeStart + entry.PreviewNodeCount);
+            for (int index = Math.Max(0, entry.PreviewNodeStart); index < end; index++)
+            {
+                if (!mapped[index])
+                {
+                    sources[index] = entry.BoxId;
+                    mapped[index] = true;
+                }
+            }
+        }
+
+        List<PreviewBlockSnapshot> blocks = [];
         for (int index = 0; index < model.Blocks.Count; index++)
         {
-            int previewIndex = index;
             MarkdownBlock block = model.Blocks[index];
-            MarkdownSourceMapEntry? source = compiled.Value.SourceMap.FirstOrDefault(entry =>
-                previewIndex >= entry.PreviewNodeStart &&
-                previewIndex < entry.PreviewNodeStart + entry.PreviewNodeCount);
-            DocumentBoxId? boxId = source?.BoxId;
-            string kind = _loadedBoxes.FirstOrDefault(box => box.BoxId == boxId)?.BoxType ?? block.Kind;
-            PreviewBlocks.Add(new MarkdownPreviewBlockViewModel(
-                kind, MarkdownFor(block, compiled.Value.Markdown), block, block.Level, boxId,
+            DocumentBoxId? boxId = sources[index];
+            string kind = boxId is { } id && types.TryGetValue(id, out string? type) ? type : block.Kind;
+            blocks.Add(new PreviewBlockSnapshot(kind, MarkdownFor(block, compiled.Value.Markdown), block, boxId));
+        }
+
+        return new PreviewSnapshot(ReadingSceneBuilder.Build(model, compiled.Value.SourceMap, boxes,
+            ReadingPageImageKey, markdownSource: compiled.Value.Markdown), blocks);
+    }
+
+    private void ApplyPreviewSnapshot(PreviewSnapshot snapshot)
+    {
+        List<MarkdownPreviewBlockViewModel> blocks = [];
+        foreach (PreviewBlockSnapshot block in snapshot.Blocks)
+        {
+            DocumentBoxId? boxId = block.BoxId;
+            blocks.Add(new MarkdownPreviewBlockViewModel(
+                block.Kind, block.Markdown, block.Block, block.Block.Level, boxId,
                 () =>
                 {
                     SelectPreviewBox(boxId);
                     return Task.CompletedTask;
                 }));
 
-            PreviewBlocks[^1].IsSelected = boxId == _previewSelectedBoxId;
+            blocks[^1].IsSelected = boxId == _previewSelectedBoxId;
         }
 
-        ReadingScene = ReadingSceneBuilder.Build(model, compiled.Value.SourceMap, _loadedBoxes,
-            ReadingPageImageKey, markdownSource: compiled.Value.Markdown);
+        _previewBlockSnapshot.ReplaceWith(blocks);
+        ReadingScene = snapshot.Scene;
     }
+
+    private sealed record PreviewBlockSnapshot(string Kind, string Markdown, MarkdownBlock Block, DocumentBoxId? BoxId);
+
+    private sealed record PreviewSnapshot(ReadingScene? Scene, IReadOnlyList<PreviewBlockSnapshot> Blocks);
+
+    private sealed record PageContentSnapshot(
+        IReadOnlyList<DocumentBox> Boxes,
+        IReadOnlyList<(DocumentBox Box, int Depth)> Ordered,
+        HashSet<DocumentBoxId> Parents,
+        IReadOnlyList<DocumentBoxOverlap> Overlaps,
+        PreviewSnapshot Preview);
 
     private async Task CopyMarkdownAsync()
     {
@@ -3172,9 +3510,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
         Result<CompiledMarkdown> compiled =
-            await (await _main.ServicesAsync()).DocumentMarkdown.CompilePageMarkdownAsync(
-                revisionId.Value, false);
+            await Task.Run(() => services.DocumentMarkdown.CompilePageMarkdownAsync(revisionId.Value, false));
         if (compiled.IsFailure)
         {
             Status = $"复制 Markdown 失败：{compiled.ErrorMessage}";
@@ -3249,6 +3587,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task LoadChapterMapAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         int generation = ++_chapterMapGeneration;
         if (!TryGetDocumentInstanceId(out DocumentInstanceId documentId))
         {
@@ -3258,7 +3602,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         Result<ResolvedDocumentPageMap?> resolved =
-            await services.DocumentPageMaps.GetResolvedAsync(documentId);
+            await Task.Run(() => services.DocumentPageMaps.GetResolvedAsync(documentId));
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
@@ -3487,6 +3831,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // preview, so the source map's box ids keep the click-to-select link with the canvas.
     private async Task LoadTranslationAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         int generation = ++_translationLoadGeneration;
         TranslationScene = null;
         _translationMarkdown = null;
@@ -3498,17 +3848,24 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-        TranslatedPageMarkdown? translation =
-            await services.PageTranslations.GetPageTranslationAsync(documentInstanceId, pageId);
-        if (generation != _translationLoadGeneration || translation is null)
+        IReadOnlyList<DocumentBox> boxes = _loadedBoxes;
+        (TranslatedPageMarkdown? translation, ReadingScene? scene) = await Task.Run(async () =>
+        {
+            TranslatedPageMarkdown? translated =
+                await services.PageTranslations.GetPageTranslationAsync(documentInstanceId, pageId);
+            return translated is null
+                ? (null, (ReadingScene?)null)
+                : (translated, ReadingSceneBuilder.Build(services.Markdown.Parse(translated.Markdown),
+                    translated.SourceMap,
+                    boxes, ReadingPageImageKey, markdownSource: translated.Markdown));
+        });
+        if (generation != _translationLoadGeneration || translation is null || _currentPageId != pageId)
         {
             return;
         }
 
         _translationMarkdown = translation.Markdown;
-        MarkdownDocumentModel model = services.Markdown.Parse(translation.Markdown);
-        TranslationScene = ReadingSceneBuilder.Build(model, translation.SourceMap, _loadedBoxes,
-            ReadingPageImageKey, markdownSource: translation.Markdown);
+        TranslationScene = scene;
     }
 
     private void ResetTranslationState()
@@ -3549,6 +3906,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task EnterEditModeAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
         {
             Status = "该题录没有可编辑的文档实例。";
@@ -3569,7 +3932,20 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        Result<PageEditSession> session = await services.DocumentTrees.BeginPageEditAsync(docId, _currentPageId.Value);
+        PageId pageId = _currentPageId.Value;
+        int generation = _renderGeneration;
+        Result<PageEditSession> session =
+            await Task.Run(() => services.DocumentTrees.BeginPageEditAsync(docId, pageId));
+        if (generation != _renderGeneration || _currentPageId != pageId)
+        {
+            if (session.IsSuccess)
+            {
+                await Task.Run(() => services.DocumentTrees.DiscardPageEditAsync(session.Value.SessionId));
+            }
+
+            return;
+        }
+
         if (session.IsSuccess)
         {
             _editServices = services;
@@ -3588,13 +3964,25 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task SaveAndExitAsync()
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (EditSessionId is null)
         {
             return;
         }
 
         HostServices services = _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
-        Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(EditSessionId.Value);
+        PageEditSessionId sessionId = EditSessionId.Value;
+        Result<DocumentTreeRevision> res = await Task.Run(() => services.DocumentTrees.CommitPageEditAsync(sessionId));
+        if (EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (res.IsSuccess)
         {
             IsEditMode = false;
@@ -3632,8 +4020,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private async Task LoadPageRevisionsAsync(HostServices services, DocumentInstanceId documentInstanceId,
         PageId pageId, int? generation = null)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         Result<IReadOnlyList<DocumentTreeRevision>> revisions =
-            await services.DocumentTrees.ListRevisionsAsync(documentInstanceId, pageId);
+            await Task.Run(() => services.DocumentTrees.ListRevisionsAsync(documentInstanceId, pageId));
         if (IsStaleGeneration(generation))
         {
             // Superseded while listing: leave the newer page's revision rows untouched.
@@ -3696,6 +4090,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task RevertPageRevisionAsync(PageRevisionViewModel revision)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         if (IsEditMode)
         {
             Status = "请先提交或放弃当前页面草稿，再恢复历史版本。";
@@ -3721,8 +4121,16 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-        Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
-            documentInstanceId, _currentPageId.Value, revision.RevisionId);
+        PageId pageId = _currentPageId.Value;
+        DocumentTreeRevisionId revisionId = revision.RevisionId;
+        int generation = _renderGeneration;
+        Result<DocumentTreeRevision> result = await Task.Run(() => services.DocumentTrees.RevertToRevisionAsync(
+            documentInstanceId, pageId, revisionId));
+        if (generation != _renderGeneration)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"恢复版本失败：{result.ErrorMessage}";
@@ -3882,6 +4290,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     /// owns the returned bitmap. Returns null when the page cannot be rendered.</summary>
     internal async Task<Bitmap?> RenderBookReadingPageAsync(int pageIndex, CancellationToken cancellationToken)
     {
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return null;
+        }
+
         if (_bookReadingDocumentInstanceId is not { } documentInstanceId)
         {
             return null;
@@ -3890,8 +4304,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         try
         {
             HostServices services = await _main.ServicesAsync();
-            Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(
-                documentInstanceId, cancellationToken);
+            Result<IReadOnlyList<Page>> pages = _pages.Count > 0
+                ? Result<IReadOnlyList<Page>>.Success(_pages)
+                : await Task.Run(() => services.Pages.ListPagesAsync(documentInstanceId, cancellationToken),
+                    cancellationToken);
             Page? page = pages.IsSuccess
                 ? pages.Value.FirstOrDefault(candidate => candidate.PageIndex == pageIndex)
                 : null;
@@ -3902,9 +4318,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             PageRenderRequest request = new(documentInstanceId, page.PageId, Dpi: 120,
                 Purpose: PageRenderPurpose.Preview);
-            Result<PdfPagePixelBufferLease> preview = PageRenderPreviewHandler is not null
-                ? await PageRenderPreviewHandler(request, cancellationToken)
-                : await services.PageRenders.RenderPreviewAsync(request, cancellationToken);
+            Func<PageRenderRequest, CancellationToken, Task<Result<PdfPagePixelBufferLease>>>? handler =
+                PageRenderPreviewHandler;
+            Result<PdfPagePixelBufferLease> preview = await Task.Run(() => handler is not null
+                ? handler(request, cancellationToken)
+                : services.PageRenders.RenderPreviewAsync(request, cancellationToken), cancellationToken);
             if (preview.IsFailure)
             {
                 return null;
@@ -3972,8 +4390,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
             _bookReadingDocumentInstanceId = documentInstanceId;
             _bookReadingStream = stream;
-            IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(documentInstanceId, token)
+            IReadOnlyList<int> indices = await Task
+                .Run(() => stream.ListPageIndicesAsync(documentInstanceId, token), token)
                 .ConfigureAwait(true);
+            token.ThrowIfCancellationRequested();
             if (indices.Count == 0)
             {
                 BookReadingProgressText = "该文档没有可阅读的页面。";
@@ -4048,8 +4468,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 continue;
             }
 
-            BookReadingPage page = await stream.LoadPageAsync(
-                    documentInstanceId, pageIndex, _bookReadingIndices.Length, token)
+            int total = _bookReadingIndices.Length;
+            BookReadingPage page = await Task.Run(() => stream.LoadPageAsync(
+                    documentInstanceId, pageIndex, total, token), token)
                 .ConfigureAwait(true);
             await DeliverBookReadingPageAsync(page).ConfigureAwait(true);
             _bookReadingLo = Math.Min(_bookReadingLo, page.PageIndex);

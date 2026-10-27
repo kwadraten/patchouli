@@ -8,6 +8,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
+using Patchouli.Performance;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
@@ -66,14 +67,9 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
             // While the adapter is synchronously blocked on its worker thread, the real UI
             // dispatcher must keep pumping jobs — the modal would otherwise freeze exactly like
             // the pre-fix Dispatcher.UIThread.InvokeAsync(operation) defect did.
-            for (int pulse = 0; pulse < 3; pulse++)
-            {
-                bool pumped = await Task.Run(async () =>
-                        await Dispatcher.UIThread.InvokeAsync(() => true).GetTask())
-                    .WaitAsync(TimeSpan.FromSeconds(10));
-                pumped.Should().BeTrue("the UI dispatcher kept pumping while OCR was blocked");
-                await Task.Delay(25);
-            }
+            UiHeartbeatMeasurement heartbeat = await UiHeartbeatProbe.MeasureAsync(() => Task.Delay(450));
+            heartbeat.Samples.Should().BeGreaterThanOrEqualTo(3);
+            heartbeat.MaximumGapMs.Should().BeLessThan(500);
 
             adapter.Release.TrySetResult(true);
             await prefill.WaitAsync(OperationTimeout);

@@ -119,6 +119,7 @@ public sealed partial class CitationPickerEntryViewModel : ViewModelBase
 /// </summary>
 public sealed partial class CitationPickerViewModel : ViewModelBase
 {
+    private int _searchGeneration;
     private const int PageSize = 50;
 
     private readonly ILibraryItemQueryService _query;
@@ -228,6 +229,9 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
         }
 
         string text = SearchText.Trim();
+        int generation = ++_searchGeneration;
+        LibraryItemCursor? cursor = _nextCursor;
+        int limit = _searchLimit;
         IsSearching = true;
         StatusText = "";
         try
@@ -236,7 +240,13 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
             if (text.Length == 0)
             {
                 Result<LibraryItemPage> page =
-                    await _query.ListRowsAsync(PageSize, _nextCursor, null, cancellationToken);
+                    await Task.Run(() => _query.ListRowsAsync(PageSize, cursor, null, cancellationToken),
+                        cancellationToken);
+                if (generation != _searchGeneration || cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 if (page.IsFailure)
                 {
                     StatusText = $"搜索失败：{page.ErrorMessage}";
@@ -250,8 +260,13 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
             }
             else
             {
-                Result<IReadOnlyList<LibraryItemRow>> found = await _query.SearchRowsAsync(
-                    new BibliographicItemSearch(text, [], _searchLimit), cancellationToken);
+                Result<IReadOnlyList<LibraryItemRow>> found = await Task.Run(() => _query.SearchRowsAsync(
+                    new BibliographicItemSearch(text, [], limit), cancellationToken), cancellationToken);
+                if (generation != _searchGeneration || cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 if (found.IsFailure)
                 {
                     StatusText = $"搜索失败：{found.ErrorMessage}";
@@ -293,8 +308,11 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
         }
         finally
         {
-            IsSearching = false;
-            LoadMoreCommand.NotifyCanExecuteChanged();
+            if (generation == _searchGeneration)
+            {
+                IsSearching = false;
+                LoadMoreCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 

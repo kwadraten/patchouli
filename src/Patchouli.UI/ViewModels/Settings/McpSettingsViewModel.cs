@@ -184,9 +184,11 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         int generation = Interlocked.Increment(ref _previewGeneration);
         try
         {
-            Result<McpLibraryProjection> projection = await (await _main.ServicesAsync()).Mcp
-                .GetLibraryProjectionAsync(_persistedSettings.ExposeLibraryTags,
-                    _persistedSettings.ExposeLibraryCollections);
+            HostServices services = await _main.ServicesAsync();
+            bool exposeTags = _persistedSettings.ExposeLibraryTags;
+            bool exposeCollections = _persistedSettings.ExposeLibraryCollections;
+            Result<McpLibraryProjection> projection = await Task.Run(() => services.Mcp
+                .GetLibraryProjectionAsync(exposeTags, exposeCollections), cancellationToken);
             if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _previewGeneration))
             {
                 return;
@@ -391,7 +393,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             }
 
             IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
-            Result validation = await service.ValidateSettingsAsync(_settings);
+            McpServerSettings draft = _settings;
+            Result validation = await Task.Run(() => service.ValidateSettingsAsync(draft));
             if (validation.IsFailure)
             {
                 LastError = validation.ErrorMessage;
@@ -427,8 +430,9 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         if (!SameConfiguration(baseline, _persistedSettings))
         {
             IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
-            Result<McpServerSettings> restored = await service.SaveDraftSettingsAsync(baseline,
-                _persistedSettings.Revision);
+            long revision = _persistedSettings.Revision;
+            Result<McpServerSettings> restored =
+                await Task.Run(() => service.SaveDraftSettingsAsync(baseline, revision));
             if (restored.IsFailure)
             {
                 LastError = restored.ErrorMessage;
@@ -453,8 +457,14 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         await _commitGate.WaitAsync();
         try
         {
-            Result<McpServerSettings> persisted =
-                await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<McpServerSettings> persisted = await Task.Run(() => services.McpSettings.GetSettingsAsync());
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             if (persisted.IsSuccess)
             {
                 _persistedSettings = persisted.Value;
@@ -594,7 +604,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         long editRevision = _editRevision;
         IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
         Result<McpServerSettings> result =
-            await service.GetSettingsAsync(cancellationToken);
+            await Task.Run(() => service.GetSettingsAsync(cancellationToken), cancellationToken);
         if (result.IsFailure)
         {
             LastError = result.ErrorMessage;
@@ -602,7 +612,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        Result validation = await service.ValidateSettingsAsync(result.Value, cancellationToken);
+        Result validation = await Task.Run(() => service.ValidateSettingsAsync(result.Value, cancellationToken),
+            cancellationToken);
         if (loadGeneration != _loadGeneration || editRevision != _editRevision || IsDirty)
         {
             SetStatus("MCP 设置已在加载期间变更，已保留当前草稿。");
@@ -635,6 +646,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         _activeSaveCancellation?.Cancel();
         _activeSaveCancellation?.Dispose();
         _activeSaveCancellation = saveCancellation;
+        int generation = _main.LibraryGeneration;
         try
         {
             SaveState = SettingsSaveState.Saving;
@@ -646,10 +658,17 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
                 ToolOverrides = _settings.ToolOverrides.ToArray()
             };
             IMcpServerSettingsService settingsService = (await _main.ServicesAsync()).McpSettings;
-            Result<McpServerSettings> result = await settingsService.SaveDraftSettingsAsync(
+            long persistedRevision = _persistedSettings.Revision;
+            CancellationToken token = saveCancellation.Token;
+            Result<McpServerSettings> result = await Task.Run(() => settingsService.SaveDraftSettingsAsync(
                 draft,
-                _persistedSettings.Revision,
-                saveCancellation.Token);
+                persistedRevision,
+                token), token);
+            if (generation != _main.LibraryGeneration)
+            {
+                return;
+            }
+
             if (result.IsFailure)
             {
                 SaveState = SettingsSaveState.Failed;
@@ -673,7 +692,12 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             }
 
             LastError = null;
-            Result validation = await settingsService.ValidateSettingsAsync(result.Value, saveCancellation.Token);
+            Result validation = await Task.Run(() => settingsService.ValidateSettingsAsync(result.Value, token), token);
+            if (generation != _main.LibraryGeneration)
+            {
+                return;
+            }
+
             ValidationState = validation.IsSuccess ? SettingsValidationState.Valid : SettingsValidationState.Invalid;
             if (validation.IsFailure)
             {
@@ -687,6 +711,11 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         }
         catch (OperationCanceledException) when (saveCancellation.IsCancellationRequested)
         {
+            if (generation != _main.LibraryGeneration)
+            {
+                return;
+            }
+
             SaveState = SettingsSaveState.Dirty;
             SetStatus("保存已取消，当前草稿仍未保存");
             Raise(nameof(IsDirty));

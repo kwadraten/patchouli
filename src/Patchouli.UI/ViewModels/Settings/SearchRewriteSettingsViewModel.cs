@@ -27,6 +27,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
     private readonly List<SearchRewriteRuleId> _pendingDeletions = [];
     private bool _isDirty;
     private long _editRevision;
+    private long _previewEpoch;
     private readonly SettingsDraftStore _draftStore;
     [ExcludeFromDerivedGeneration] private string DraftKey => "search:" + Path.GetFullPath(_main.RuntimeDatabasePath);
 
@@ -115,7 +116,8 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
         {
             HostServices services = await _main.ServicesAsync();
             Result<IReadOnlyList<SearchProfile>> profiles =
-                await services.SearchProfiles.ListProfilesAsync(true, cancellationToken);
+                await Task.Run(() => services.SearchProfiles.ListProfilesAsync(true, cancellationToken),
+                    cancellationToken);
             if (revision != _editRevision || generation != _main.LibraryGeneration)
             {
                 return;
@@ -132,7 +134,8 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
             }
 
             Result<IReadOnlyList<SearchRewriteRule>> rules =
-                await services.SearchProfiles.ListRulesAsync(null, true, cancellationToken);
+                await Task.Run(() => services.SearchProfiles.ListRulesAsync(null, true, cancellationToken),
+                    cancellationToken);
             SearchDraft? draft = await _draftStore.ReadAsync<SearchDraft>(DraftKey, cancellationToken);
             if (revision != _editRevision || generation != _main.LibraryGeneration)
             {
@@ -200,6 +203,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
         string draftKey = DraftKey;
         SearchRewriteRuleRowViewModel[] rows = Rules.ToArray();
         SearchRewriteRuleId[] deletions = _pendingDeletions.ToArray();
+        int generation = _main.LibraryGeneration;
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         try
@@ -210,6 +214,11 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
             foreach (SearchRewriteRuleRowViewModel row in rows)
             {
                 Result committed = await row.CommitAsync(services);
+                if (!_main.IsCurrentLibraryContext(services, generation))
+                {
+                    return;
+                }
+
                 if (committed.IsFailure)
                 {
                     bool incomplete = committed.ErrorCode is AppErrorCodes.ValidationFailed or AppErrorCodes.NotFound;
@@ -223,7 +232,12 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
             foreach (SearchRewriteRuleId ruleId in deletions)
             {
-                Result deleted = await services.SearchProfiles.DeleteRuleAsync(ruleId);
+                Result deleted = await Task.Run(() => services.SearchProfiles.DeleteRuleAsync(ruleId));
+                if (!_main.IsCurrentLibraryContext(services, generation))
+                {
+                    return;
+                }
+
                 if (deleted.IsFailure)
                 {
                     errors.Add($"删除规则：{deleted.ErrorMessage}");
@@ -370,7 +384,15 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
         try
         {
             HostServices services = await _main.ServicesAsync();
-            Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+            int generation = _main.LibraryGeneration;
+            long epoch = ++_previewEpoch;
+            string queryText = PreviewQuery;
+            Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+            if (!_main.IsCurrentLibraryContext(services, generation) || epoch != _previewEpoch)
+            {
+                return;
+            }
+
             if (library.IsFailure)
             {
                 PreviewIsError = true;
@@ -380,8 +402,15 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
                 return;
             }
 
-            Result<SearchRewritePlan> plan = await services.QueryRewriter.BuildRewritePlanAsync(PreviewQuery,
-                new SearchRewriteOptions(library.Value.LibraryId, PreviewOnly: true));
+            Result<SearchRewritePlan> plan = await Task.Run(() => services.QueryRewriter.BuildRewritePlanAsync(
+                queryText,
+                new SearchRewriteOptions(library.Value.LibraryId, PreviewOnly: true)));
+            if (!_main.IsCurrentLibraryContext(services, generation) || epoch != _previewEpoch ||
+                PreviewQuery != queryText)
+            {
+                return;
+            }
+
             PreviewExpandedQueries.Clear();
             PreviewWarnings.Clear();
             if (plan.IsFailure)
@@ -652,12 +681,13 @@ public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
         SearchProfileId? profileId = SelectedScope.ProfileId;
         string ruleType = SelectedRuleType.Value;
         string direction = SelectedDirection.Value;
+        int priority = Priority;
 
         if (RuleId is null || profileId != _originalProfileId)
         {
             if (RuleId is { } oldRuleId)
             {
-                Result deleted = await services.SearchProfiles.DeleteRuleAsync(oldRuleId);
+                Result deleted = await Task.Run(() => services.SearchProfiles.DeleteRuleAsync(oldRuleId));
                 if (deleted.IsFailure)
                 {
                     return deleted;
@@ -669,22 +699,25 @@ public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
                 Raise(nameof(IsExisting));
             }
 
-            return await AddAsNewRuleAsync(services, profileId, ruleType, pattern, replacement, direction, note);
+            return await AddAsNewRuleAsync(services, profileId, ruleType, pattern, replacement, direction, note,
+                priority);
         }
 
         SearchRewriteRuleId ruleId = RuleId.Value;
-        Result<SearchRewriteRule> updated = await services.SearchProfiles.UpdateRewriteRuleAsync(ruleId, ruleType,
-            pattern, replacement, direction, Priority, note);
+        Result<SearchRewriteRule> updated = await Task.Run(() => services.SearchProfiles.UpdateRewriteRuleAsync(ruleId,
+            ruleType,
+            pattern, replacement, direction, priority, note));
         return updated.IsFailure
             ? Result.Failure(updated.ErrorCode!, updated.ErrorMessage!)
             : await ApplyEnabledIfNeededAsync(services, ruleId, _originalEnabled);
     }
 
     private async Task<Result> AddAsNewRuleAsync(HostServices services, SearchProfileId? profileId, string ruleType,
-        string pattern, string replacement, string direction, string? note)
+        string pattern, string replacement, string direction, string? note, int priority)
     {
-        Result<SearchRewriteRule> added = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
-            pattern, replacement, direction, Priority, note);
+        Result<SearchRewriteRule> added = await Task.Run(() => services.SearchProfiles.AddRewriteRuleAsync(profileId,
+            ruleType,
+            pattern, replacement, direction, priority, note));
         if (added.IsFailure)
         {
             return Result.Failure(added.ErrorCode!, added.ErrorMessage!);
@@ -707,8 +740,9 @@ public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
             return Result.Success();
         }
 
-        return Enabled
-            ? await services.SearchProfiles.EnableRuleAsync(ruleId)
-            : await services.SearchProfiles.DisableRuleAsync(ruleId);
+        bool enabled = Enabled;
+        return await Task.Run(() => enabled
+            ? services.SearchProfiles.EnableRuleAsync(ruleId)
+            : services.SearchProfiles.DisableRuleAsync(ruleId));
     }
 }

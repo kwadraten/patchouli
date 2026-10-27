@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -2571,6 +2572,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetVersion version,
         CancellationToken cancellationToken)
     {
+        UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
         if (_pageRenderService is null || _minerUClientFactory is null || _credentialResolver is null)
         {
             return Result<OcrRegionCandidate>.Failure(
@@ -3002,6 +3004,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         NormalizedBBox? region,
         CancellationToken cancellationToken)
     {
+        UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
         IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
         if (adapter is null || adapter.Kind == OcrAdapterKind.Mock)
         {

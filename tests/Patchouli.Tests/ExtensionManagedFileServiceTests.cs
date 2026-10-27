@@ -1,4 +1,5 @@
 using System.Net;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using FluentAssertions;
 using Patchouli.Core.Results;
@@ -20,15 +21,17 @@ public sealed class ExtensionManagedFileServiceTests : IDisposable
         : HttpMessageHandler
     {
         public int Calls;
-        public readonly List<string> RequestedUrls = [];
-        public readonly List<string?> UserAgents = [];
+
+        // Different manifests intentionally download concurrently; the recorder must not lose writes.
+        public readonly ConcurrentQueue<string> RequestedUrls = new();
+        public readonly ConcurrentQueue<string?> UserAgents = new();
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            Calls++;
-            RequestedUrls.Add(request.RequestUri!.ToString());
-            UserAgents.Add(request.Headers.UserAgent.ToString());
+            Interlocked.Increment(ref Calls);
+            RequestedUrls.Enqueue(request.RequestUri!.ToString());
+            UserAgents.Enqueue(request.Headers.UserAgent.ToString());
             return Task.FromResult(respond(request, cancellationToken));
         }
     }
@@ -60,7 +63,7 @@ public sealed class ExtensionManagedFileServiceTests : IDisposable
             Func<IProgress<double>?, CancellationToken, Task<Result>> download,
             CancellationToken cancellationToken = default)
         {
-            Calls++;
+            Interlocked.Increment(ref Calls);
             LastPlan = plan;
             Entered.TrySetResult();
             return body(this, plan, download, cancellationToken);

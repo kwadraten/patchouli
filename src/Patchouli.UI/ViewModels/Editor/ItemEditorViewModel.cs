@@ -1,7 +1,5 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
-using Dapper;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Csl;
@@ -20,6 +18,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Host.Composition;
 using Patchouli.UI;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
@@ -407,7 +406,7 @@ public sealed partial class ExtraCslRowViewModel : ViewModelBase
     public AsyncCommand RemoveCommand { get; }
 }
 
-public sealed partial class ItemEditorViewModel : ViewModelBase
+public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposable
 {
     private readonly MainWindowViewModel _main;
     private bool _isConstructing = true;
@@ -431,6 +430,19 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     private CompositeDisposable _fieldSubscriptions = new();
     private readonly Subject<Unit> _itemTypeRequests = new();
     private readonly SemaphoreSlim _loadGate = new(1, 1);
+    private int _cslPreviewGeneration;
+    private long _editGeneration;
+    private long _identifierInputRevision;
+    private AsyncOperationLifetime _operations = new();
+    private HostServices? _boundServices;
+    private int _boundLibraryGeneration;
+    private bool _editorDisposed;
+
+    [ExcludeFromDerivedGeneration]
+    private bool IsBoundLibraryCurrent => !_editorDisposed && (_boundServices is null ||
+                                                               _main.IsCurrentLibraryContext(_boundServices,
+                                                                   _boundLibraryGeneration));
+
     private int _buildFieldsGeneration;
 
     /// <summary>Test seam over <see cref="MetadataLookupUiBridge" />; production code never overrides it.</summary>
@@ -587,7 +599,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     {
         SelectedItemTypeOption = AvailableItemTypes.FirstOrDefault(option => option.Key == value);
         Raise(nameof(IsExtendedSectionEmpty));
-        if (!_isConstructing && !_isLoading)
+        if (!_editorDisposed && !_isConstructing && !_isLoading)
         {
             _itemTypeRequests.OnNext(Unit.Default);
             UpdateUnsavedCslPreviewState();
@@ -670,7 +682,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     [ObservableProperty] public partial bool HasCslPreviewWarning { get; private set; }
 
-    private void BuildFields(CslItemTypeProfile? itemTypeProfile)
+    private void BuildFields(CslItemTypeProfile? itemTypeProfile, bool preserveIdentifierInput = false)
     {
         _fieldSubscriptions.Dispose();
         _fieldSubscriptions = new CompositeDisposable();
@@ -680,7 +692,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         Fields.Clear();
         MoreFields.Clear();
-        UpdateIdentifierSchemeShortcuts(itemTypeProfile);
+        UpdateIdentifierSchemeShortcuts(itemTypeProfile, preserveIdentifierInput);
         ItemEditorFieldSet profile = CslItemTypeProfileService.GetProfile(itemTypeProfile);
 
         foreach (ItemFieldDefinition def in profile.VisibleFields)
@@ -761,8 +773,15 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task BuildFieldsAsync(CancellationToken cancellationToken = default)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         int generation = Interlocked.Increment(ref _buildFieldsGeneration);
         string currentType = ItemType;
+        long identifierRevision = _identifierInputRevision;
 
         await EnsureAvailableItemTypesAsync();
         if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _buildFieldsGeneration))
@@ -770,18 +789,20 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             return;
         }
 
+        HostServices profileServices = await _main.ServicesAsync();
         Result<CslItemTypeProfile> profileResult =
-            await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(currentType);
+            await Task.Run(() => profileServices.ItemTypeProfiles.GetProfileAsync(currentType));
 
         if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _buildFieldsGeneration))
         {
             return;
         }
 
-        BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+        BuildFields(profileResult.IsSuccess ? profileResult.Value : null,
+            identifierRevision != _identifierInputRevision);
     }
 
-    private void UpdateIdentifierSchemeShortcuts(CslItemTypeProfile? profile)
+    private void UpdateIdentifierSchemeShortcuts(CslItemTypeProfile? profile, bool preserveIdentifierInput)
     {
         IdentifierSchemeShortcuts.Clear();
         foreach (string scheme in profile?.IdentifierSchemes
@@ -796,7 +817,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
                 SelectIdentifierScheme));
         }
 
-        if (IdentifierSchemeShortcuts.Count > 0)
+        if (!preserveIdentifierInput && IdentifierSchemeShortcuts.Count > 0)
         {
             IdentifierScheme = IdentifierSchemeShortcuts[0].Scheme;
         }
@@ -837,28 +858,15 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private static async Task<string?> TryGetMergedIntoAsync(HostServices services, ItemId itemId)
     {
-        try
-        {
-            await using SqliteConnection connection = services.ConnectionFactory.CreateReadConnection();
-            await connection.OpenAsync();
-            return await connection.ExecuteScalarAsync<string>(
-                """
-                select merged_into_item_id
-                from items
-                where item_id = @ItemId
-                  and deleted_at is null
-                  and merged_into_item_id is not null;
-                """,
-                new { ItemId = itemId.ToString() });
-        }
-        catch
-        {
-            return null;
-        }
+        Result<ItemLifecycleInfo> lifecycle = await Task.Run(() => services.Items.GetItemLifecycleAsync(itemId));
+        return lifecycle.IsSuccess && lifecycle.Value.DeletedAt is null
+            ? lifecycle.Value.MergedIntoItemId?.ToString()
+            : null;
     }
 
     private void MarkUnsaved()
     {
+        _editGeneration++;
         if (_hasUnsavedChanges)
         {
             return;
@@ -963,14 +971,31 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     // Identifier specific bindings
     [ObservableProperty] public partial string IdentifierScheme { get; set; } = BuiltInIdentifierSchemes.DOI;
 
+    partial void OnIdentifierSchemeChanged(string value)
+    {
+        _identifierInputRevision++;
+    }
+
+    partial void OnIdentifierValueChanged(string value)
+    {
+        _identifierInputRevision++;
+    }
+
     [ObservableProperty] public partial string IdentifierValue { get; set; } = "";
 
     [ObservableProperty] public partial string IdentifierNote { get; set; } = "";
 
     public async Task NewAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || _editorDisposed)
+        {
+            return;
+        }
+
         await EnsureAvailableItemTypesAsync();
         _isLoading = true;
+        long identifierRevision = _identifierInputRevision;
         Interlocked.Increment(ref _buildFieldsGeneration);
         try
         {
@@ -989,9 +1014,14 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             IsTagEditorOpen = false;
             ItemType = "general";
 
+            HostServices services = await _main.ServicesAsync();
+            _boundServices = services;
+            _boundLibraryGeneration = _main.LibraryGeneration;
+            string itemType = ItemType;
             Result<CslItemTypeProfile> profileResult =
-                await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(ItemType);
-            BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+                await Task.Run(() => services.ItemTypeProfiles.GetProfileAsync(itemType));
+            BuildFields(profileResult.IsSuccess ? profileResult.Value : null,
+                identifierRevision != _identifierInputRevision);
 
             foreach (ItemFieldDescriptor f in Fields.Concat(MoreFields))
             {
@@ -1042,21 +1072,41 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     public async Task LoadAsync(string itemId)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || _editorDisposed)
+        {
+            return;
+        }
+
         // 串行化重入：库修订事件（线程池线程）与用户显式加载可能并发触发 LoadAsync，
         // 并发执行会在 ExtraCslRows 的 Clear 与枚举之间产生竞态。
         await _loadGate.WaitAsync();
         _isLoading = true;
+        long identifierRevision = _identifierInputRevision;
         Interlocked.Increment(ref _buildFieldsGeneration);
         try
         {
             await EnsureAvailableItemTypesAsync();
             HostServices services = await _main.ServicesAsync();
-            Result<long> currentRevision = await services.LibraryRevisions.GetCurrentRevisionAsync();
+            int libraryGeneration = _main.LibraryGeneration;
+            _boundServices = services;
+            _boundLibraryGeneration = libraryGeneration;
             ItemId parsed = ItemId.Parse(itemId);
-            Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
+            (Result<long> currentRevision, Result<ItemMetadata> item) = await Task.Run(async () =>
+                (await services.LibraryRevisions.GetCurrentRevisionAsync(), await services.Items.GetItemAsync(parsed)));
+            if (_editorDisposed || !_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (item.IsFailure)
             {
                 string? mergedInto = await TryGetMergedIntoAsync(services, parsed);
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+
                 if (!string.IsNullOrWhiteSpace(mergedInto))
                 {
                     _itemId = parsed;
@@ -1123,9 +1173,17 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
                 _creatorCache.Add(editableCreator);
             }
 
-            Result<CslItemTypeProfile> profileResult = await services.ItemTypeProfiles.GetProfileAsync(ItemType);
+            string itemType = ItemType;
+            Result<CslItemTypeProfile> profileResult =
+                await Task.Run(() => services.ItemTypeProfiles.GetProfileAsync(itemType));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration) || _itemId != parsed)
+            {
+                return;
+            }
+
             Fields.Clear();
-            BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+            BuildFields(profileResult.IsSuccess ? profileResult.Value : null,
+                identifierRevision != _identifierInputRevision);
 
             Status = $"正在编辑：{item.Value.Title}";
             _pendingIdentifiers.Clear();
@@ -1160,8 +1218,9 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<CslItemTypeProfile>> profiles =
-            await (await _main.ServicesAsync()).ItemTypeProfiles.ListProfilesAsync();
+            await Task.Run(() => services.ItemTypeProfiles.ListProfilesAsync());
         if (profiles.IsFailure)
         {
             Status = profiles.ErrorMessage ?? "无法加载文献类型。";
@@ -1194,6 +1253,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task SaveAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || _editorDisposed)
+        {
+            return;
+        }
+
         if (IsSaving)
         {
             return;
@@ -1212,6 +1277,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task SaveCoreAsync()
     {
+        if (_boundServices is not null && !_main.IsCurrentLibraryContext(_boundServices, _boundLibraryGeneration))
+        {
+            Status = "此编辑器所属的书库已关闭，请在当前书库中重新打开题录。";
+            return;
+        }
+
         if (IsMergedSource)
         {
             Status = "已合并的题录无法保存。";
@@ -1228,6 +1299,9 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
 
+        int libraryGeneration = _main.LibraryGeneration;
+        ItemId? savingItemId = _itemId;
+        long editGeneration = _editGeneration;
         ItemFieldDescriptor? creatorField = GetCreatorField();
         List<ItemCreatorInput> creators = creatorField?.Creators
             .Select(c => c.IsLiteral
@@ -1250,7 +1324,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         List<string> stagedOperationFailures = [];
         if (_itemId is null)
         {
-            Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest(
+            CreateItemRequest request = new(
                 ItemType,
                 title,
                 GetOptionalFieldValue("Subtitle"),
@@ -1278,7 +1352,13 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
                 Creators: creators,
                 Dates: dates,
                 Identifiers: _pendingIdentifiers.ToArray(),
-                Collections: _collectionsDirty ? SelectedCollectionIds() : null));
+                Collections: _collectionsDirty ? SelectedCollectionIds() : null);
+            Result<ItemMetadata> created = await Task.Run(() => services.Items.CreateItemAsync(request));
+            if (_editorDisposed || !_main.IsCurrentLibraryContext(services, libraryGeneration) ||
+                _itemId != savingItemId)
+            {
+                return;
+            }
 
             if (created.IsFailure)
             {
@@ -1296,7 +1376,14 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             ItemMetadata loadedItem;
             if (_loadedItem is null)
             {
-                Result<ItemMetadata> existing = await services.Items.GetItemAsync(_itemId.Value);
+                ItemId itemId = _itemId.Value;
+                Result<ItemMetadata> existing = await Task.Run(() => services.Items.GetItemAsync(itemId));
+                if (_editorDisposed || !_main.IsCurrentLibraryContext(services, libraryGeneration) ||
+                    _itemId != savingItemId)
+                {
+                    return;
+                }
+
                 if (existing.IsFailure)
                 {
                     Status = existing.ErrorMessage ?? "无法加载待保存的题录。";
@@ -1310,37 +1397,42 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
                 loadedItem = _loadedItem;
             }
 
-            Result<ItemMetadata> updated = await services.Items.UpdateItemAsync(
-                _itemId.Value,
-                new UpdateItemRequest(
-                    ItemType,
-                    title,
-                    GetOptionalFieldValue("Subtitle", loadedItem.Subtitle),
-                    GetOptionalFieldValue("TitleShort", loadedItem.TitleShort),
-                    PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
-                    ContainerTitleShort: GetOptionalFieldValue("ContainerTitleShort", loadedItem.ContainerTitleShort),
-                    CollectionTitle: GetOptionalFieldValue("CollectionTitle", loadedItem.CollectionTitle),
-                    Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
-                    Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
-                    Edition: GetOptionalFieldValue("Edition", loadedItem.Edition),
-                    Genre: GetOptionalFieldValue("Genre", loadedItem.Genre),
-                    Number: GetOptionalFieldValue("Number", loadedItem.Number),
-                    ChapterNumber: GetOptionalFieldValue("ChapterNumber", loadedItem.ChapterNumber),
-                    Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
-                    Version: GetOptionalFieldValue("Version", loadedItem.Version),
-                    Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
-                    Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
-                    Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
-                    Status: GetOptionalFieldValue("Status", loadedItem.Status),
-                    Note: GetOptionalFieldValue("Note", loadedItem.Note),
-                    AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
-                    TagsJson: SerializeTags(),
-                    CollectionsJson: loadedItem.CollectionsJson,
-                    CustomFieldsJson: customFieldsJson,
-                    Creators: creators,
-                    Dates: dates,
-                    ExpectedUpdatedAt: loadedItem.UpdatedAt,
-                    Collections: _collectionsDirty ? SelectedCollectionIds() : null));
+            UpdateItemRequest request = new(
+                ItemType,
+                title,
+                GetOptionalFieldValue("Subtitle", loadedItem.Subtitle),
+                GetOptionalFieldValue("TitleShort", loadedItem.TitleShort),
+                PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
+                ContainerTitleShort: GetOptionalFieldValue("ContainerTitleShort", loadedItem.ContainerTitleShort),
+                CollectionTitle: GetOptionalFieldValue("CollectionTitle", loadedItem.CollectionTitle),
+                Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
+                Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
+                Edition: GetOptionalFieldValue("Edition", loadedItem.Edition),
+                Genre: GetOptionalFieldValue("Genre", loadedItem.Genre),
+                Number: GetOptionalFieldValue("Number", loadedItem.Number),
+                ChapterNumber: GetOptionalFieldValue("ChapterNumber", loadedItem.ChapterNumber),
+                Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
+                Version: GetOptionalFieldValue("Version", loadedItem.Version),
+                Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
+                Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
+                Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
+                Status: GetOptionalFieldValue("Status", loadedItem.Status),
+                Note: GetOptionalFieldValue("Note", loadedItem.Note),
+                AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
+                TagsJson: SerializeTags(),
+                CollectionsJson: loadedItem.CollectionsJson,
+                CustomFieldsJson: customFieldsJson,
+                Creators: creators,
+                Dates: dates,
+                ExpectedUpdatedAt: loadedItem.UpdatedAt,
+                Collections: _collectionsDirty ? SelectedCollectionIds() : null);
+            ItemId updateItemId = _itemId.Value;
+            Result<ItemMetadata> updated = await Task.Run(() => services.Items.UpdateItemAsync(updateItemId, request));
+            if (_editorDisposed || !_main.IsCurrentLibraryContext(services, libraryGeneration) ||
+                _itemId != savingItemId)
+            {
+                return;
+            }
 
             if (updated.IsFailure)
             {
@@ -1355,6 +1447,10 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         }
 
         stagedOperationFailures.AddRange(await ApplyStagedIdentifierAndFileOpsAsync(services));
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
 
         Status = ItemType == "general"
             ? $"题录已保存：{title.Trim()}。当前为通用文献，生成 CSL 前请先指定具体类型。"
@@ -1364,7 +1460,11 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             Status += $"。部分暂存操作失败：{string.Join("；", stagedOperationFailures)}";
         }
 
-        ResetUnsavedState();
+        if (_editGeneration == editGeneration)
+        {
+            ResetUnsavedState();
+        }
+
         RaiseAll();
         _main.Report(Status);
         await RefreshIdentifiersAsync();
@@ -1476,24 +1576,36 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task RefreshCollectionsAsync(HostServices services)
     {
-        Collections.Clear();
-        Result<IReadOnlyList<Collection>> all = await services.Collections.ListCollectionsAsync();
-        if (all.IsFailure)
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
         {
             return;
         }
 
-        HashSet<CollectionId> selected = new();
-        if (_itemId is not null)
+        ItemId? itemId = _itemId;
+        int generation = _main.LibraryGeneration;
+        (Result<IReadOnlyList<Collection>> all, HashSet<CollectionId> selected) = await Task.Run(async () =>
         {
-            Result<IReadOnlyList<CollectionId>> membership =
-                await services.Collections.GetItemCollectionIdsAsync(_itemId.Value);
-            if (membership.IsSuccess)
+            Result<IReadOnlyList<Collection>> catalog = await services.Collections.ListCollectionsAsync();
+            HashSet<CollectionId> membership = [];
+            if (itemId is not null)
             {
-                selected = membership.Value.ToHashSet();
+                Result<IReadOnlyList<CollectionId>> result =
+                    await services.Collections.GetItemCollectionIdsAsync(itemId.Value);
+                if (result.IsSuccess)
+                {
+                    membership = result.Value.ToHashSet();
+                }
             }
+
+            return (catalog, membership);
+        });
+        if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId || all.IsFailure)
+        {
+            return;
         }
 
+        Collections.Clear();
         foreach (Collection collection in all.Value)
         {
             Collections.Add(new CollectionSelectionItemViewModel(
@@ -1523,9 +1635,16 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
     /// </summary>
     public async Task RefreshCollectionCatalogAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         HostServices services = await _main.ServicesAsync();
-        Result<IReadOnlyList<Collection>> all = await services.Collections.ListCollectionsAsync();
-        if (all.IsFailure)
+        int generation = _main.LibraryGeneration;
+        Result<IReadOnlyList<Collection>> all = await Task.Run(() => services.Collections.ListCollectionsAsync());
+        if (!_main.IsCurrentLibraryContext(services, generation) || all.IsFailure)
         {
             return;
         }
@@ -1543,12 +1662,26 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task RefreshIdentifiersAsync()
     {
-        Identifiers.Clear();
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         if (_itemId is not null)
         {
             HostServices services = await _main.ServicesAsync();
+            ItemId itemId = _itemId.Value;
+            int generation = _main.LibraryGeneration;
             Result<IReadOnlyList<ItemIdentifier>> identifiers =
-                await services.Items.ListIdentifiersAsync(_itemId.Value);
+                await Task.Run(() => services.Items.ListIdentifiersAsync(itemId));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return;
+            }
+
+            Identifiers.Clear();
+
             if (identifiers.IsSuccess)
             {
                 foreach (ItemIdentifier identifier in identifiers.Value)
@@ -1569,6 +1702,10 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
                 }
             }
         }
+        else
+        {
+            Identifiers.Clear();
+        }
 
         foreach ((string _, ItemIdentifierInput? staged) in _projectionStaged)
         {
@@ -1588,6 +1725,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task LookupIdentifierAsync(IdentifierItemViewModel row)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         if (_itemId is null || row.ItemIdentifier is null || row.IsBusy)
         {
             return;
@@ -1738,42 +1881,73 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task RefreshLinkedFilesAsync()
     {
-        LinkedFiles.Clear();
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         if (_itemId is not null)
         {
             HostServices services = await _main.ServicesAsync();
-            Result<IReadOnlyList<DocumentInstance>> documents =
-                await services.Documents.ListDocumentInstancesForItemAsync(_itemId.Value);
+            ItemId itemId = _itemId.Value;
+            int generation = _main.LibraryGeneration;
+            (Result<IReadOnlyList<DocumentInstance>> documents, Dictionary<DocumentInstanceId, string> names) =
+                await Task.Run(async () =>
+                {
+                    Result<IReadOnlyList<DocumentInstance>> loaded =
+                        await services.Documents.ListDocumentInstancesForItemAsync(itemId);
+                    Dictionary<DocumentInstanceId, string> displayNames = [];
+                    if (loaded.IsSuccess)
+                    {
+                        foreach (DocumentInstance document in loaded.Value)
+                        {
+                            string name = document.Title ?? document.DocumentInstanceId.ToString();
+                            if (document.FileAssetId is { } assetId)
+                            {
+                                Result<FileAsset> asset = await services.Files.GetFileAssetAsync(assetId);
+                                if (asset.IsSuccess)
+                                {
+                                    name = asset.Value.FileName;
+                                }
+                            }
+
+                            displayNames[document.DocumentInstanceId] = name;
+                        }
+                    }
+
+                    return (loaded, displayNames);
+                });
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return;
+            }
+
             if (documents.IsFailure)
             {
                 Status = documents.ErrorMessage ?? "无法加载关联文件。";
                 return;
             }
 
+            LinkedFiles.Clear();
             foreach (DocumentInstance document in documents.Value
                          .Where(document => !_pendingDocumentRemovals.Contains(document.DocumentInstanceId))
                          .OrderByDescending(document => document.IsPrimary)
                          .ThenBy(document => document.CreatedAt))
             {
-                string displayName = document.Title ?? document.DocumentInstanceId.ToString();
-                if (document.FileAssetId is not null)
-                {
-                    Result<FileAsset> fileAsset = await services.Files.GetFileAssetAsync(document.FileAssetId.Value);
-                    if (fileAsset.IsSuccess)
-                    {
-                        displayName = fileAsset.Value.FileName;
-                    }
-                }
-
                 bool isPrimaryStaged = _pendingPrimaryDocumentId is { } pending &&
                                        pending == document.DocumentInstanceId;
                 LinkedFiles.Add(new LinkedDocumentInstanceItemViewModel(
                     document,
-                    displayName,
+                    names[document.DocumentInstanceId],
                     SetPrimaryDocumentAsync,
                     StageDocumentRemovalAsync,
                     isPrimaryStaged));
             }
+        }
+        else
+        {
+            LinkedFiles.Clear();
         }
 
         foreach (string path in _pendingFileRegistrations)
@@ -1831,6 +2005,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task LoadDocumentCommitsAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         DocumentCommits.Clear();
         if (SelectedHistoryDocument is null || SelectedHistoryDocument.IsPendingRegistration)
         {
@@ -1839,15 +2019,23 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentInstanceId = SelectedHistoryDocument.DocumentInstanceId;
-        Result<IReadOnlyList<DocumentCommitDetail>> commits =
-            await services.DocumentTrees.ListDocumentCommitsAsync(documentInstanceId);
+        int generation = _main.LibraryGeneration;
+        (Result<IReadOnlyList<DocumentCommitDetail>> commits, Result<IReadOnlyList<Page>> pages) =
+            await Task.Run(async () =>
+                (await services.DocumentTrees.ListDocumentCommitsAsync(documentInstanceId),
+                    await services.Pages.ListPagesAsync(documentInstanceId)));
+        if (!_main.IsCurrentLibraryContext(services, generation) ||
+            SelectedHistoryDocument?.DocumentInstanceId != documentInstanceId)
+        {
+            return;
+        }
+
         if (commits.IsFailure)
         {
             Status = $"无法加载文档版本历史：{commits.ErrorMessage}";
             return;
         }
 
-        Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentInstanceId);
         IReadOnlyList<Page> pageList = pages.IsSuccess ? pages.Value : Array.Empty<Page>();
 
         IReadOnlyList<DocumentCommitDetail> details = commits.Value;
@@ -1888,6 +2076,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task RevertCommitPageAsync(DocumentCommitPageViewModel page)
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
         if (SelectedHistoryDocument is null || SelectedHistoryDocument.IsPendingRegistration)
         {
             return;
@@ -1905,10 +2099,18 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
-            SelectedHistoryDocument.DocumentInstanceId,
-            page.PageId,
-            page.TreeRevisionId);
+        int generation = _main.LibraryGeneration;
+        DocumentInstanceId documentId = SelectedHistoryDocument.DocumentInstanceId;
+        PageId pageId = page.PageId;
+        DocumentTreeRevisionId revisionId = page.TreeRevisionId;
+        Result<DocumentTreeRevision> result = await Task.Run(() => services.DocumentTrees.RevertToRevisionAsync(
+            documentId, pageId, revisionId));
+        if (!_main.IsCurrentLibraryContext(services, generation) ||
+            SelectedHistoryDocument?.DocumentInstanceId != documentId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Status = $"恢复页面版本失败：{result.ErrorMessage}";
@@ -2341,12 +2543,22 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         }
 
         List<string> failures = [];
+        ItemId? itemId = _itemId;
+        int generation = _main.LibraryGeneration;
         foreach ((string scheme, ItemIdentifierInput? staged) in _projectionStaged.ToArray())
         {
             Result result = await ApplyProjectionIdentifierAsync(services, scheme, staged);
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (result.IsSuccess)
             {
-                _projectionStaged.Remove(scheme);
+                if (_projectionStaged.TryGetValue(scheme, out ItemIdentifierInput? current) && current == staged)
+                {
+                    _projectionStaged.Remove(scheme);
+                }
             }
             else
             {
@@ -2367,48 +2579,52 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             return Result.Success();
         }
 
-        Result<IReadOnlyList<ItemIdentifier>> identifiers =
-            await services.Items.ListIdentifiersAsync(_itemId.Value);
-        if (identifiers.IsFailure)
+        ItemId itemId = _itemId.Value;
+        return await Task.Run(async () =>
         {
-            return Result.Failure(
-                identifiers.ErrorCode ?? AppErrorCodes.DatabaseError,
-                identifiers.ErrorMessage ?? "无法读取现有标识符。");
-        }
-
-        List<ItemIdentifier> persisted = identifiers.Value
-            .Where(identifier => string.Equals(identifier.Scheme, scheme, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        bool alreadyStored = staged is not null &&
-                             persisted.Any(identifier =>
-                                 string.Equals(identifier.Value, staged.Value, StringComparison.Ordinal));
-        if (alreadyStored)
-        {
-            return Result.Success();
-        }
-
-        foreach (ItemIdentifier identifier in persisted)
-        {
-            Result removed = await services.Items.RemoveIdentifierAsync(_itemId.Value, identifier.IdentifierId);
-            if (removed.IsFailure)
-            {
-                return removed;
-            }
-        }
-
-        if (staged is not null)
-        {
-            Result<ItemIdentifier> added =
-                await services.Items.AddIdentifierAsync(_itemId.Value, staged.Scheme, staged.Value, staged.Note);
-            if (added.IsFailure)
+            Result<IReadOnlyList<ItemIdentifier>> identifiers =
+                await services.Items.ListIdentifiersAsync(itemId);
+            if (identifiers.IsFailure)
             {
                 return Result.Failure(
-                    added.ErrorCode ?? AppErrorCodes.DatabaseError,
-                    added.ErrorMessage ?? "无法写入标识符。");
+                    identifiers.ErrorCode ?? AppErrorCodes.DatabaseError,
+                    identifiers.ErrorMessage ?? "无法读取现有标识符。");
             }
-        }
 
-        return Result.Success();
+            List<ItemIdentifier> persisted = identifiers.Value
+                .Where(identifier => string.Equals(identifier.Scheme, scheme, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            bool alreadyStored = staged is not null &&
+                                 persisted.Any(identifier =>
+                                     string.Equals(identifier.Value, staged.Value, StringComparison.Ordinal));
+            if (alreadyStored)
+            {
+                return Result.Success();
+            }
+
+            foreach (ItemIdentifier identifier in persisted)
+            {
+                Result removed = await services.Items.RemoveIdentifierAsync(itemId, identifier.IdentifierId);
+                if (removed.IsFailure)
+                {
+                    return removed;
+                }
+            }
+
+            if (staged is not null)
+            {
+                Result<ItemIdentifier> added =
+                    await services.Items.AddIdentifierAsync(itemId, staged.Scheme, staged.Value, staged.Note);
+                if (added.IsFailure)
+                {
+                    return Result.Failure(
+                        added.ErrorCode ?? AppErrorCodes.DatabaseError,
+                        added.ErrorMessage ?? "无法写入标识符。");
+                }
+            }
+
+            return Result.Success();
+        });
     }
 
     /// <summary>Applies the staged identifier removals/additions, file registrations and the staged
@@ -2421,9 +2637,16 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         }
 
         List<string> failures = [];
+        ItemId itemId = _itemId.Value;
+        int generation = _main.LibraryGeneration;
         foreach (IdentifierId identifierId in _pendingIdentifierRemovals.ToArray())
         {
-            Result result = await services.Items.RemoveIdentifierAsync(_itemId.Value, identifierId);
+            Result result = await Task.Run(() => services.Items.RemoveIdentifierAsync(itemId, identifierId));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (result.IsSuccess)
             {
                 _pendingIdentifierRemovals.Remove(identifierId);
@@ -2437,7 +2660,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
         foreach (ItemIdentifierInput input in _pendingIdentifiers.ToArray())
         {
             Result<ItemIdentifier> result =
-                await services.Items.AddIdentifierAsync(_itemId.Value, input.Scheme, input.Value, input.Note);
+                await Task.Run(() => services.Items.AddIdentifierAsync(itemId, input.Scheme, input.Value, input.Note));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (result.IsSuccess)
             {
                 _pendingIdentifiers.Remove(input);
@@ -2448,35 +2676,88 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             }
         }
 
-        foreach (DocumentInstanceId documentInstanceId in _pendingDocumentRemovals.ToArray())
+        DocumentInstanceId[] removals = _pendingDocumentRemovals.ToArray();
+        if (removals.Length > 0)
         {
-            Result result =
-                await services.Documents.RemoveDocumentInstanceAsync(_itemId.Value, documentInstanceId);
-            if (result.IsSuccess)
+            DocumentRemovalBatch removed = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("移除关联文件", "正在永久删除文档页面树及其历史...", true),
+                async context =>
+                {
+                    List<(DocumentInstanceId Id, Result Result)> outcomes = [];
+                    bool cancelled = false;
+                    foreach (DocumentInstanceId documentId in removals)
+                    {
+                        if (context.CancellationToken.IsCancellationRequested)
+                        {
+                            cancelled = true;
+                            break;
+                        }
+
+                        try
+                        {
+                            Result result = await services.Documents.RemoveDocumentInstanceAsync(itemId, documentId,
+                                context.CancellationToken);
+                            outcomes.Add((documentId, result));
+                            await context.ReportAsync(outcomes.Count, removals.Length, "正在移除关联文件...");
+                        }
+                        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                        {
+                            cancelled = true;
+                            break;
+                        }
+                    }
+
+                    return new DocumentRemovalBatch(outcomes, cancelled);
+                });
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
             {
-                _pendingDocumentRemovals.Remove(documentInstanceId);
+                return failures;
             }
-            else
+
+            foreach ((DocumentInstanceId id, Result result) in removed.Outcomes)
             {
-                failures.Add($"移除关联文件：{result.ErrorMessage}");
+                if (result.IsSuccess)
+                {
+                    _pendingDocumentRemovals.Remove(id);
+                }
+                else
+                {
+                    failures.Add($"移除关联文件：{result.ErrorMessage}");
+                }
+            }
+
+            if (removed.IsCancelled)
+            {
+                failures.Add("移除关联文件已取消，未完成的移除仍保留为待保存更改。");
             }
         }
 
         foreach (string path in _pendingFileRegistrations.ToArray())
         {
-            Result<FileAsset> asset = await services.Files.RegisterFileAsync(path);
+            Result<FileAsset> asset = await Task.Run(() => services.Files.RegisterFileAsync(path));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (asset.IsFailure)
             {
                 failures.Add($"注册关联文件 {Path.GetFileName(path)}：{asset.ErrorMessage ?? path}");
                 continue;
             }
 
-            Result<DocumentInstance> document = await services.Documents.AttachDocumentInstanceAsync(
-                _itemId.Value,
+            string title = GetFieldValue("Title");
+            Result<DocumentInstance> document = await Task.Run(() => services.Documents.AttachDocumentInstanceAsync(
+                itemId,
                 asset.Value.FileAssetId,
                 DocumentInstanceType.PrimaryScan,
-                GetFieldValue("Title"),
-                false);
+                title,
+                false));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (document.IsFailure)
             {
                 failures.Add($"关联文件 {Path.GetFileName(path)}：{document.ErrorMessage ?? path}");
@@ -2488,7 +2769,13 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         if (_pendingPrimaryDocumentId is { } primaryDocumentId)
         {
-            Result result = await services.Documents.SetPrimaryDocumentInstanceAsync(_itemId.Value, primaryDocumentId);
+            Result result = await Task.Run(() =>
+                services.Documents.SetPrimaryDocumentInstanceAsync(itemId, primaryDocumentId));
+            if (!_main.IsCurrentLibraryContext(services, generation) || _itemId != itemId)
+            {
+                return failures;
+            }
+
             if (result.IsSuccess)
             {
                 _pendingPrimaryDocumentId = null;
@@ -2501,6 +2788,16 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
         await RefreshLinkedFilesAsync();
         return failures;
+    }
+
+    private sealed record DocumentRemovalBatch(
+        IReadOnlyList<(DocumentInstanceId Id, Result Result)> Outcomes,
+        bool IsCancelled) : IOperationOutcome
+    {
+        public bool IsSuccess => !IsCancelled && Outcomes.All(outcome => outcome.Result.IsSuccess);
+
+        public string? ErrorMessage =>
+            Outcomes.FirstOrDefault(outcome => outcome.Result.IsFailure).Result?.ErrorMessage;
     }
 
     private void SyncProjectionFields()
@@ -2638,14 +2935,31 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     private async Task RefreshCslPreviewAsync()
     {
+        using IDisposable? operation = _operations.TryEnter();
+        if (operation is null || !IsBoundLibraryCurrent)
+        {
+            return;
+        }
+
+        int previewGeneration = ++_cslPreviewGeneration;
         if (_itemId is null || ItemType == "general")
         {
             UpdateUnsavedCslPreviewState();
             return;
         }
 
+        ItemId itemId = _itemId.Value;
+        int libraryGeneration = _main.LibraryGeneration;
+        string itemType = ItemType;
+        HostServices services = await _main.ServicesAsync();
         Result<CslRenderResult> rendered =
-            await (await _main.ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([_itemId.Value]));
+            await Task.Run(() => services.CslRenderer.RenderAsync(new CslRenderRequest([itemId])));
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration) || _itemId != itemId || ItemType != itemType ||
+            previewGeneration != _cslPreviewGeneration)
+        {
+            return;
+        }
+
         if (rendered.IsFailure)
         {
             HasCslPreviewWarning = true;
@@ -2688,13 +3002,30 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !_editorDisposed)
         {
+            _editorDisposed = true;
+            _itemId = null;
+            _cslPreviewGeneration++;
+            _buildFieldsGeneration++;
+            _operations.Dispose();
             _itemTypeRequests.Dispose();
             _fieldSubscriptions.Dispose();
-            _loadGate.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    internal async Task DetachLibraryContextAsync()
+    {
+        await _operations.DisposeAsync();
+        _operations = new AsyncOperationLifetime();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        await _operations.DisposeAsync();
+        _loadGate.Dispose();
     }
 }

@@ -191,7 +191,7 @@ public sealed partial class SnapshotViewModel : ViewModelBase
     {
         HostServices services = await _main.ServicesAsync();
         int libraryGeneration = _main.LibraryGeneration;
-        Result<SnapshotSyncStatus> result = await services.SnapshotSync.GetStatusAsync();
+        Result<SnapshotSyncStatus> result = await Task.Run(() => services.SnapshotSync.GetStatusAsync());
         if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
         {
             return;

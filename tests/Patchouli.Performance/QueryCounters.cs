@@ -1,3 +1,5 @@
+using Patchouli.Core.Diagnostics;
+
 namespace Patchouli.Performance;
 
 /// <summary>
@@ -10,18 +12,18 @@ public sealed class QueryCounters
     private long _statements;
     private long _writes;
     private long _rowsRead;
-    private long _uiThreadCommands;
+    private long _uiThreadStart = UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite);
 
     public long Statements => Interlocked.Read(ref _statements);
     public long Writes => Interlocked.Read(ref _writes);
     public long RowsRead => Interlocked.Read(ref _rowsRead);
 
     /// <summary>
-    /// Number of database command executions that happened on the Avalonia UI dispatcher thread.
-    /// AC3 requires database work to never run on the UI dispatcher, so this counter is the
-    /// deterministic proof that the measured write pipeline stayed off the UI thread.
+    /// Global SQLite connection-open violations since reset, including ordinary production factories,
+    /// not just statements issued through this counting factory. Zero is AC3's execution-boundary gate.
     /// </summary>
-    public long UiThreadCommands => Interlocked.Read(ref _uiThreadCommands);
+    public long UiThreadCommands => UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite) -
+                                    Interlocked.Read(ref _uiThreadStart);
 
     internal void RecordStatement()
     {
@@ -38,16 +40,11 @@ public sealed class QueryCounters
         Interlocked.Increment(ref _rowsRead);
     }
 
-    internal void RecordUiThreadCommand()
-    {
-        Interlocked.Increment(ref _uiThreadCommands);
-    }
-
     public void Reset()
     {
         Interlocked.Exchange(ref _statements, 0);
         Interlocked.Exchange(ref _writes, 0);
         Interlocked.Exchange(ref _rowsRead, 0);
-        Interlocked.Exchange(ref _uiThreadCommands, 0);
+        Interlocked.Exchange(ref _uiThreadStart, UiThreadExecutionGuard.GetCount(UiThreadExecutionGuard.Sqlite));
     }
 }

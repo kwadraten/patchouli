@@ -12,6 +12,7 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
+using Patchouli.Performance;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
@@ -79,13 +80,9 @@ public sealed class OcrQueueRefreshBoundaryTests(AvaloniaSharedSessionFixture he
             }
 
             // While the load is synchronously blocked, the UI dispatcher must keep pumping.
-            for (int pulse = 0; pulse < 3; pulse++)
-            {
-                bool pumped = await Task.Run(async () =>
-                        await Dispatcher.UIThread.InvokeAsync(() => true).GetTask())
-                    .WaitAsync(TimeSpan.FromSeconds(10));
-                pumped.Should().BeTrue("the dispatcher kept pumping while the snapshot was blocked");
-            }
+            UiHeartbeatMeasurement heartbeat = await UiHeartbeatProbe.MeasureAsync(() => Task.Delay(450));
+            heartbeat.Samples.Should().BeGreaterThanOrEqualTo(3);
+            heartbeat.MaximumGapMs.Should().BeLessThan(500);
 
             rows.Release.TrySetResult(true);
             (await applied.Task.WaitAsync(OperationTimeout)).Should().Be(1);

@@ -3,13 +3,70 @@ using Microsoft.Data.Sqlite;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
+using Patchouli.Core.Bibliography;
+using Patchouli.Host.Composition;
+using Patchouli.UI.ViewModels.Editor;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
-public sealed class LibraryContextIsolationTests : IDisposable
+[Collection("RetainedTabUI")]
+public sealed class LibraryContextIsolationTests(AvaloniaSharedSessionFixture headless) : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
+
+    [Fact]
+    public async Task Library_switch_drains_an_accepted_editor_write_and_refuses_later_saves_from_the_old_editor()
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path)
+            {
+                RuntimeDatabasePath = _settings.CreateDatabasePath("editor-drain")
+            };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            ItemMetadata item = (await Task.Run(() => services.Items.CreateItemAsync("book", "Before switch"))).Value;
+            await main.EditItemByIdAsync(item.ItemId.ToString());
+            ItemEditorViewModel editor = main.ItemEditor;
+            editor.Fields.Single(field => field.Key == "Title").Value = "Accepted before switch";
+            IDisposable? writer = await services.ConnectionFactory.EnterWriteAsync();
+            Task? saving = null;
+            Task? switching = null;
+            try
+            {
+                saving = editor.SaveCommand.ExecuteAsync();
+                await Task.Delay(50);
+                editor.IsSaving.Should().BeTrue();
+                switching = main.BeginLibrarySwitchAsync();
+                await Task.Delay(50);
+                switching.IsCompleted.Should()
+                    .BeFalse("the old Host must retain ownership until the accepted write really finishes");
+                writer.Dispose();
+                writer = null;
+                await saving.WaitAsync(TimeSpan.FromSeconds(10));
+                await switching.WaitAsync(TimeSpan.FromSeconds(10));
+                main.HasOpenRuntimeDatabase.Should().BeFalse();
+                await editor.SaveCommand.ExecuteAsync();
+                editor.Status.Should().Contain("所属的书库已关闭");
+            }
+            finally
+            {
+                writer?.Dispose();
+                if (saving is not null)
+                {
+                    await saving;
+                }
+
+                if (switching is not null)
+                {
+                    await switching;
+                }
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
 
     [Fact]
     public async Task Beginning_database_switch_invalidates_and_clears_lazy_page_state_before_old_host_shutdown()

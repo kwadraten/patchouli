@@ -6,6 +6,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Markdig;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -158,11 +159,14 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     partial void OnIsSelectedChanged(bool value)
     {
         Raise(nameof(ShowHandles));
+        Raise(nameof(HandleOwner));
     }
 
     public int ZIndex => IsSelected ? 1 : 0;
 
     [ExcludeFromDerivedGeneration] public bool ShowHandles => IsSelected && Workspace.IsEditMode;
+
+    [ExcludeFromDerivedGeneration] public PdfBBoxViewModel? HandleOwner => ShowHandles ? this : null;
 
     [ObservableProperty] public partial bool HasOverlapWarning { get; internal set; }
 
@@ -197,6 +201,12 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     private async Task SaveTextAsync()
     {
+        using IDisposable? operation = Workspace.EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null)
         {
@@ -208,10 +218,16 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateLeafAsync(
-            sessionId.Value,
-            new UpdateLeafCommand(BoxId, BoxType, PayloadForText(Text), HeadingLevel, CodeLanguage,
-                Payload is AlgorithmBoxPayload ? DocumentBoxType.Algorithm : null));
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        UpdateLeafCommand command = new(BoxId, BoxType, PayloadForText(Text), HeadingLevel, CodeLanguage,
+            Payload is AlgorithmBoxPayload ? DocumentBoxType.Algorithm : null);
+        Result result = await Task.Run(() => services.DocumentTreeEditor.UpdateLeafAsync(sessionId.Value, command));
+        if (!_main.IsCurrentLibraryContext(services, generation) || Workspace.EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Workspace.Status = $"更新文本失败: {result.ErrorMessage}";
@@ -275,6 +291,12 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     public async Task<Result> SaveTableHtmlAsync(string html)
     {
+        using IDisposable? operation = Workspace.EnterOperation();
+        if (operation is null)
+        {
+            return Result.Failure(AppErrorCodes.InvalidState, "工作区已关闭。");
+        }
+
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null || !Workspace.IsEditMode)
         {
@@ -288,8 +310,15 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             return Result.Failure(payload.ErrorCode!, payload.ErrorMessage!);
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateLeafAsync(sessionId.Value,
-            new UpdateLeafCommand(BoxId, DocumentBoxType.Table, payload.Value));
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        UpdateLeafCommand command = new(BoxId, DocumentBoxType.Table, payload.Value);
+        Result result = await Task.Run(() => services.DocumentTreeEditor.UpdateLeafAsync(sessionId.Value, command));
+        if (!_main.IsCurrentLibraryContext(services, generation) || Workspace.EditSessionId != sessionId)
+        {
+            return result;
+        }
+
         if (result.IsFailure)
         {
             Workspace.Status = $"表格未写入页面草稿：{result.ErrorMessage}";
@@ -304,13 +333,27 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     private async Task DeleteAsync()
     {
+        using IDisposable? operation = Workspace.EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null)
         {
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.DeleteBoxAsync(sessionId.Value, BoxId);
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        DocumentBoxId boxId = BoxId;
+        Result result = await Task.Run(() => services.DocumentTreeEditor.DeleteBoxAsync(sessionId.Value, boxId));
+        if (!_main.IsCurrentLibraryContext(services, generation) || Workspace.EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Workspace.Status = $"删除边界框失败: {result.ErrorMessage}";
@@ -323,14 +366,29 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     internal async Task ToggleSuppressedAsync()
     {
+        using IDisposable? operation = Workspace.EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null || IsLogicalPage)
         {
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetSuppressedAsync(
-            sessionId.Value, BoxId, !IsSuppressed);
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        DocumentBoxId boxId = BoxId;
+        bool suppressed = !IsSuppressed;
+        Result result = await Task.Run(() => services.DocumentTreeEditor.SetSuppressedAsync(
+            sessionId.Value, boxId, suppressed));
+        if (!_main.IsCurrentLibraryContext(services, generation) || Workspace.EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Workspace.Status = $"切换文档流状态失败: {result.ErrorMessage}";
@@ -343,6 +401,12 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
 
     internal async Task SaveBBoxAsync()
     {
+        using IDisposable? operation = Workspace.EnterOperation();
+        if (operation is null)
+        {
+            return;
+        }
+
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null)
         {
@@ -357,8 +421,16 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
             return;
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateBBoxAsync(
-            sessionId.Value, BoxId, bbox);
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        DocumentBoxId boxId = BoxId;
+        Result result = await Task.Run(() => services.DocumentTreeEditor.UpdateBBoxAsync(
+            sessionId.Value, boxId, bbox));
+        if (!_main.IsCurrentLibraryContext(services, generation) || Workspace.EditSessionId != sessionId)
+        {
+            return;
+        }
+
         if (result.IsFailure)
         {
             Workspace.Status = $"更新区域失败: {result.ErrorMessage}";
@@ -387,6 +459,7 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
     internal void NotifyEditModeChanged()
     {
         Raise(nameof(ShowHandles));
+        Raise(nameof(HandleOwner));
         SaveTextCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
         SaveBBoxCommand.NotifyCanExecuteChanged();

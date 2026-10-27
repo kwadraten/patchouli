@@ -377,7 +377,8 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> library =
+            await Task.Run(() => services.Library.GetCurrentLibraryAsync(cancellationToken), cancellationToken);
         if (library.IsFailure)
         {
             return Result<LibraryId>.Failure(library.ErrorCode!, library.ErrorMessage!);

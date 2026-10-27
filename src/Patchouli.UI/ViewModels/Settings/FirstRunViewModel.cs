@@ -212,7 +212,15 @@ public sealed partial class FirstRunViewModel : ViewModelBase
 
             try
             {
-                _existingDatabaseSetup = await ExistingDatabaseSetupInspector.InspectAsync(DatabasePath);
+                string databasePath = DatabasePath;
+                ExistingDatabaseSetup setup =
+                    await Task.Run(() => ExistingDatabaseSetupInspector.InspectAsync(databasePath));
+                if (DatabasePath != databasePath)
+                {
+                    return;
+                }
+
+                _existingDatabaseSetup = setup;
             }
             catch (Exception ex)
             {
@@ -269,9 +277,14 @@ public sealed partial class FirstRunViewModel : ViewModelBase
         IsBusy = true;
         try
         {
-            State = orchestrator is not null
-                ? await orchestrator.CreateFirstRunLibraryAsync(LibraryName)
-                : await workflow!.CreateLibraryAsync(LibraryName);
+            string name = LibraryName;
+            FirstRunWorkflowState state = await Task.Run(() => orchestrator is not null
+                ? orchestrator.CreateFirstRunLibraryAsync(name)
+                : workflow!.CreateLibraryAsync(name));
+            if (ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(workflow, _workflow))
+            {
+                State = state;
+            }
         }
         finally
         {
@@ -302,34 +315,36 @@ public sealed partial class FirstRunViewModel : ViewModelBase
         IsBusy = true;
         try
         {
+            SelectedFileSearchRoot scanRoot = SelectedScanRoot;
+            string? libraryId = _state.CreatedLibraryId;
             FirstRunImportResult result;
             if (orchestrator is not null)
             {
                 result = _modalOperations is null
-                    ? await orchestrator.ScanDirectoryAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
+                    ? await Task.Run(() => orchestrator.ScanDirectoryAndImportAsync(scanRoot, libraryId))
                     : await _modalOperations.RunAsync(
                         new ModalOperationOptions(
                             "初次扫描与导入",
                             "正在扫描所选目录并导入 PDF 题录。",
                             true),
                         context => orchestrator.ScanDirectoryAndImportAsync(
-                            SelectedScanRoot,
-                            _state.CreatedLibraryId,
+                            scanRoot,
+                            libraryId,
                             context.CancellationToken,
                             context.Report));
             }
             else
             {
                 result = _modalOperations is null
-                    ? await workflow!.ScanAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
+                    ? await Task.Run(() => workflow!.ScanAndImportAsync(scanRoot, libraryId))
                     : await _modalOperations.RunAsync(
                         new ModalOperationOptions(
                             "初次扫描与导入",
                             "正在扫描所选目录并导入 PDF 题录。",
                             true),
                         context => workflow!.ScanAndImportAsync(
-                            SelectedScanRoot,
-                            _state.CreatedLibraryId,
+                            scanRoot,
+                            libraryId,
                             context.CancellationToken,
                             context.Report));
             }
@@ -385,7 +400,7 @@ public sealed partial class FirstRunViewModel : ViewModelBase
             if (orchestrator is not null)
             {
                 State = _modalOperations is null
-                    ? await orchestrator.ImportFirstRunPdfAsync(request)
+                    ? await Task.Run(() => orchestrator.ImportFirstRunPdfAsync(request))
                     : await _modalOperations.RunAsync(
                         new ModalOperationOptions(
                             "导入 PDF 题录",
@@ -396,7 +411,7 @@ public sealed partial class FirstRunViewModel : ViewModelBase
             else
             {
                 State = _modalOperations is null
-                    ? await workflow!.ImportPdfAsync(request)
+                    ? await Task.Run(() => workflow!.ImportPdfAsync(request))
                     : await _modalOperations.RunAsync(
                         new ModalOperationOptions(
                             "导入 PDF 题录",

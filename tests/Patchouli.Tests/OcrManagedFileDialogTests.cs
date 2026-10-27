@@ -112,7 +112,7 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
             result.IsSuccess.Should().BeTrue();
             downloads.Should().Be(1, "the handler invokes the host's download callback once");
             modal.Options.Should().ContainSingle().Which.CanCancel.Should().BeTrue();
-            // ModalOperationContext.Report posts progress to the dispatcher; flush it.
+            // The runner applies no-window progress back on the calling dispatcher before returning.
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             modal.BlockingDialogs.Should().ContainSingle().Which.ProgressValue.Should()
                 .BeApproximately(50, 1, "callback progress reaches the blocking dialog");
@@ -470,7 +470,10 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
             Options.Add(options);
             using BlockingOperationDialogViewModel dialog = new();
             BlockingDialogs.Add(dialog);
-            return await operation(new ModalOperationContext(dialog, cancellationToken, false));
+            ModalOperationContext context = new(dialog, cancellationToken, false);
+            T result = await Task.Run(() => operation(context), cancellationToken);
+            context.ApplyPendingUpdates();
+            return result;
         }
     }
 

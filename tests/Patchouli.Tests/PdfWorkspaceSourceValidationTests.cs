@@ -266,7 +266,10 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             CancellationToken cancellationToken = default)
         {
             using BlockingOperationDialogViewModel dialog = new();
-            return await operation(new ModalOperationContext(dialog, cancellationToken, false));
+            ModalOperationContext context = new(dialog, cancellationToken, false);
+            T result = await Task.Run(() => operation(context), cancellationToken);
+            context.ApplyPendingUpdates();
+            return result;
         }
     }
 

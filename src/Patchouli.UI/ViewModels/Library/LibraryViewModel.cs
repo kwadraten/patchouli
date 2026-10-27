@@ -20,6 +20,7 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -50,7 +51,15 @@ public sealed partial class LibraryViewModel : ViewModelBase
         _main = main;
         CreateCommand = new AsyncCommand(async () =>
         {
-            Result<LibraryMetadata> r = await (await _main.ServicesAsync()).Library.CreateLibraryAsync(DisplayName);
+            string name = DisplayName;
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<LibraryMetadata> r = await Task.Run(() => services.Library.CreateLibraryAsync(name));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             Details = r.IsSuccess
                 ? $"{r.Value.DisplayName}\n{r.Value.LibraryId}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
@@ -60,7 +69,14 @@ public sealed partial class LibraryViewModel : ViewModelBase
 
         RefreshCommand = new AsyncCommand(async () =>
         {
-            Result<LibraryMetadata> r = await (await _main.ServicesAsync()).Library.GetCurrentLibraryAsync();
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<LibraryMetadata> r = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             Details = r.IsSuccess
                 ? $"{r.Value.DisplayName}\n{r.Value.LibraryId}\nSchema {r.Value.SchemaVersion}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
@@ -68,7 +84,15 @@ public sealed partial class LibraryViewModel : ViewModelBase
 
         RenameCommand = new AsyncCommand(async () =>
         {
-            Result<LibraryMetadata> r = await (await _main.ServicesAsync()).Library.RenameLibraryAsync(RenameTo);
+            string name = RenameTo;
+            HostServices services = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            Result<LibraryMetadata> r = await Task.Run(() => services.Library.RenameLibraryAsync(name));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
             Details = r.IsSuccess
                 ? $"Renamed: {r.Value.DisplayName}\n{r.Value.LibraryId}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";

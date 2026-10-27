@@ -390,7 +390,7 @@ public sealed class LibraryImportOrchestrator
             catch (FormatException)
             {
                 failed++;
-                failures.Add(new OcrEnqueueFailure(item.Title, "文档标识无效。"));
+                failures.Add(new OcrEnqueueFailure(item.Title, "文档标识无效。", item.ItemId));
                 continue;
             }
 
@@ -408,7 +408,7 @@ public sealed class LibraryImportOrchestrator
                 failed++;
                 failures.Add(new OcrEnqueueFailure(
                     item.Title,
-                    queued.ErrorMessage ?? "未知错误"));
+                    queued.ErrorMessage ?? "未知错误", item.ItemId));
             }
         }
 

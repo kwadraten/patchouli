@@ -4,20 +4,9 @@ using Patchouli.Performance;
 
 namespace Patchouli.Tests;
 
-public sealed class PerformanceHarnessTests
+[Collection("RetainedTabUI")]
+public sealed class PerformanceHarnessTests(AvaloniaSharedSessionFixture headless)
 {
-    private sealed class UiThreadIndicator
-    {
-        private int _isSet;
-
-        public bool IsSet => Volatile.Read(ref _isSet) == 1;
-
-        public void Set(bool value)
-        {
-            Interlocked.Exchange(ref _isSet, value ? 1 : 0);
-        }
-    }
-
     [Fact]
     public void Median_of_known_samples_is_correct()
     {
@@ -171,42 +160,42 @@ public sealed class PerformanceHarnessTests
     }
 
     [Fact]
-    public void Counting_connection_tracks_commands_executed_on_the_ui_thread()
+    public async Task Counting_factory_reads_global_ui_thread_connection_violations()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"patchouli-count-ui-{Guid.NewGuid():N}.sqlite");
-        UiThreadIndicator indicator = new();
-        CountingConnectionFactory factory = new(path, () => indicator.IsSet);
-        try
+        await headless.Session.Dispatch<bool>(async () =>
         {
-            System.Data.Common.DbConnection connection = factory.CreateConnection();
-            using (connection)
+            string path = Path.Combine(Path.GetTempPath(), $"patchouli-count-ui-{Guid.NewGuid():N}.sqlite");
+            CountingConnectionFactory factory = new(path);
+            try
             {
-                connection.Open();
-                using (System.Data.Common.DbCommand command = connection.CreateCommand())
+                System.Data.Common.DbConnection connection = factory.CreateConnection();
+                using (connection)
                 {
-                    command.CommandText = "create table t (id integer primary key);";
-                    command.ExecuteNonQuery();
-                }
+                    await Task.Run(connection.Open);
+                    using (System.Data.Common.DbCommand command = connection.CreateCommand())
+                    {
+                        command.CommandText = "create table t (id integer primary key);";
+                        command.ExecuteNonQuery();
+                    }
 
-                factory.Counters.UiThreadCommands.Should().Be(0);
-                indicator.Set(true);
-                using (System.Data.Common.DbCommand command = connection.CreateCommand())
-                {
-                    command.CommandText = "select 1;";
-                    command.ExecuteScalar();
-                }
+                    factory.Counters.UiThreadCommands.Should().Be(0);
+                    using SqliteConnection ordinary =
+                        new Infrastructure.Database.SqliteConnectionFactory(path).CreateReadConnection();
+                    ordinary.Open();
 
-                factory.Counters.UiThreadCommands.Should().Be(1);
-                indicator.Set(false);
+                    factory.Counters.UiThreadCommands.Should().Be(1);
+                }
             }
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            TryDelete(path);
-            TryDelete(path + "-wal");
-            TryDelete(path + "-shm");
-        }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+                TryDelete(path);
+                TryDelete(path + "-wal");
+                TryDelete(path + "-shm");
+            }
+
+            return true;
+        }, CancellationToken.None);
     }
 
     [Fact]

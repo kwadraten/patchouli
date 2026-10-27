@@ -74,7 +74,14 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
+        int generation = _main.LibraryGeneration;
+        Result<IReadOnlyList<FileSearchRoot>> roots =
+            await Task.Run(() => services.FileResolution.ListSearchRootsAsync());
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
         if (roots.IsFailure)
         {
             SetStatus(roots.ErrorMessage ?? "无法读取文件搜索根。");
@@ -299,7 +306,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result deleted = await services.FileResolution.DeleteSearchRootAsync(rootId);
+        Result deleted = await Task.Run(() => services.FileResolution.DeleteSearchRootAsync(rootId));
         if (deleted.IsFailure)
         {
             SetStatus(deleted.ErrorMessage ?? "文件搜索根删除失败。");
@@ -337,7 +344,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         HostServices services = await _main.ServicesAsync();
         List<FileSearchRootId> orderedIds = _fileSearchRoots.Select(row => row.RootId).ToList();
         (orderedIds[index], orderedIds[target]) = (orderedIds[target], orderedIds[index]);
-        Result reordered = await services.FileResolution.SetSearchRootOrderAsync(orderedIds);
+        Result reordered = await Task.Run(() => services.FileResolution.SetSearchRootOrderAsync(orderedIds));
         if (reordered.IsFailure)
         {
             SetStatus(reordered.ErrorMessage ?? "文件搜索根排序保存失败。");

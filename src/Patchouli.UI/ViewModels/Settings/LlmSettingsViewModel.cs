@@ -27,6 +27,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private long _credentialRefreshEpoch;
     private Func<Task<ICredentialStore>> _credentialStoreFactory;
     private Func<Task<ILlmSubscriptionService>> _subscriptionServiceFactory;
 
@@ -656,18 +657,31 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        int generation = _main.LibraryGeneration;
+        string providerId = row.ProviderId;
+        Action<Uri> openBrowser = _openSubscriptionBrowser;
         try
         {
             ILlmSubscriptionService service = await _subscriptionServiceFactory();
             row.SubscriptionStatusText = action == "login" ? "请在浏览器中完成订阅登录…" : "正在读取订阅状态…";
             if (action == "login")
             {
-                await service.LoginAsync(row.ProviderId, _openSubscriptionBrowser, cancellationToken);
+                await Task.Run(() => service.LoginAsync(providerId, openBrowser, cancellationToken), cancellationToken);
+                if (_main.LibraryGeneration != generation)
+                {
+                    return;
+                }
+
                 _main.NotifyLlmCredentialsChanged();
             }
             else if (action == "logout")
             {
-                await service.LogoutAsync(row.ProviderId, cancellationToken);
+                await Task.Run(() => service.LogoutAsync(providerId, cancellationToken), cancellationToken);
+                if (_main.LibraryGeneration != generation)
+                {
+                    return;
+                }
+
                 _main.NotifyLlmCredentialsChanged();
                 row.SubscriptionModels.Clear();
                 row.SubscriptionStatusText = "已退出订阅登录";
@@ -678,7 +692,13 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                 return;
             }
 
-            LlmSubscriptionAccount? account = await service.GetAccountAsync(row.ProviderId, cancellationToken);
+            LlmSubscriptionAccount? account =
+                await Task.Run(() => service.GetAccountAsync(providerId, cancellationToken), cancellationToken);
+            if (_main.LibraryGeneration != generation)
+            {
+                return;
+            }
+
             if (account is null)
             {
                 row.SubscriptionStatusText = "尚未登录订阅";
@@ -686,7 +706,12 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             }
 
             IReadOnlyList<LlmSubscriptionModel> models =
-                await service.ListModelsAsync(row.ProviderId, cancellationToken);
+                await Task.Run(() => service.ListModelsAsync(providerId, cancellationToken), cancellationToken);
+            if (_main.LibraryGeneration != generation)
+            {
+                return;
+            }
+
             SynchronizeCollection(row.SubscriptionModels, models.Select(model => model.Id));
             if (!models.Any(model => model.Id == row.Model))
             {
@@ -716,10 +741,17 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     private async Task OnRemoveApiKeyAsync(LlmProviderSettingsRowViewModel row)
     {
+        string providerId = row.ProviderId;
+        int generation = _main.LibraryGeneration;
         try
         {
             ICredentialStore store = await _credentialStoreFactory();
-            Result removed = await store.RemoveAsync(row.ProviderId, CancellationToken.None);
+            Result removed = await Task.Run(() => store.RemoveAsync(providerId, CancellationToken.None));
+            if (_main.LibraryGeneration != generation)
+            {
+                return;
+            }
+
             if (removed.IsFailure)
             {
                 LastError = removed.ErrorMessage ?? $"无法移除 {row.DisplayName} 的 API key。";
@@ -751,6 +783,9 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         }
 
         string secret = row.ApiKeyInput.Trim();
+        string providerId = row.ProviderId;
+        string displayName = row.DisplayName;
+        int generation = _main.LibraryGeneration;
         if (!row.HasPendingApiKey)
         {
             return true;
@@ -759,8 +794,14 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         try
         {
             ICredentialStore store = await _credentialStoreFactory();
-            Result<ProviderCredentialMetadata> saved = await store.SaveAsync(row.ProviderId, row.DisplayName, secret,
-                CancellationToken.None);
+            Result<ProviderCredentialMetadata> saved = await Task.Run(() => store.SaveAsync(providerId, displayName,
+                secret,
+                CancellationToken.None));
+            if (_main.LibraryGeneration != generation)
+            {
+                return false;
+            }
+
             if (saved.IsFailure)
             {
                 LastError = saved.ErrorMessage ?? $"无法保存 {row.DisplayName} 的 API key。";
@@ -790,12 +831,16 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     /// <summary>Refreshes readiness and loads saved API keys into their masked inputs.</summary>
     private async Task RefreshProviderCredentialsAsync(CancellationToken cancellationToken)
     {
+        int generation = _main.LibraryGeneration;
+        long epoch = ++_credentialRefreshEpoch;
+        LlmAppSettings settings = _current;
         IReadOnlyList<LlmProviderReadiness> readiness;
         ICredentialStore store;
         try
         {
             store = await _credentialStoreFactory();
-            readiness = await LlmProviderClientFactory.InspectAsync(_current, store, cancellationToken);
+            readiness = await Task.Run(() => LlmProviderClientFactory.InspectAsync(settings, store, cancellationToken),
+                cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -807,21 +852,29 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        if (cancellationToken.IsCancellationRequested)
+        if (cancellationToken.IsCancellationRequested || generation != _main.LibraryGeneration ||
+            epoch != _credentialRefreshEpoch)
         {
             return;
         }
 
         Dictionary<string, LlmProviderReadiness> byProviderId = readiness
             .ToDictionary(item => item.ProviderId, StringComparer.OrdinalIgnoreCase);
-        foreach (LlmProviderSettingsRowViewModel row in Providers)
+        foreach (LlmProviderSettingsRowViewModel row in Providers.ToArray())
         {
             row.ApplyReadiness(byProviderId.GetValueOrDefault(row.ProviderId));
             if (!row.IsSubscription)
             {
+                string providerId = row.ProviderId;
                 Result<string> savedSecret = row.HasCredential
-                    ? await store.GetActiveSecretForProviderAsync(row.ProviderId, cancellationToken)
+                    ? await Task.Run(() => store.GetActiveSecretForProviderAsync(providerId, cancellationToken),
+                        cancellationToken)
                     : Result<string>.Success("");
+                if (generation != _main.LibraryGeneration || epoch != _credentialRefreshEpoch)
+                {
+                    return;
+                }
+
                 row.LoadStoredSecret(savedSecret.IsSuccess ? savedSecret.Value : "");
             }
         }
