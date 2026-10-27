@@ -496,11 +496,29 @@ type CompiledExtensionGenerationLoader(runtimeDirectory: string) =
                             match extension with
                             | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
                             | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? IPdfTextLayerExtension as extension ->
+                    { new IPdfTextLayerExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.ProviderDefinition = extension.ProviderDefinition
+                        member _.ParseAsync(context, resources, token) =
+                            extension.ParseAsync(context, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
                 | :? IOcrExtension as extension ->
                     { new IOcrExtension with
                         member _.Descriptor = metadata.ToDescriptor()
                         member _.ConfigFields = fields
-                        member _.RecognizeAsync(context, resources, token) = extension.RecognizeAsync(context, resources, token)
+                        member _.EngineDefinition = extension.EngineDefinition
+                        member _.CheckReadinessAsync(config, resources, token) =
+                            extension.CheckReadinessAsync(config, resources, token)
+                        member _.RunAsync(job, resources, token) =
+                            ExecutionScope.run job.Info.Options.Concurrency (OcrJob.progress job) token (fun () -> task {
+                                do! extension.RunAsync(job, resources, token)
+                                return () })
                       interface IExtensionSettingsDefinition with
                         member _.SettingsType =
                             match extension with
@@ -642,6 +660,11 @@ type private ExtensionLease(active: ActiveGeneration) =
         member _.Ocr =
             match (current ()).Definition with
             | :? IOcrExtension as extension -> Some extension
+            | _ -> None
+            |> Option.toObj
+        member _.PdfTextLayer =
+            match (current ()).Definition with
+            | :? IPdfTextLayerExtension as extension -> Some extension
             | _ -> None
             |> Option.toObj
         member _.Retrieval =
@@ -893,6 +916,7 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionResource
                           descriptor.Kind = expectedKind
                           && (expectedKind <> ExtensionKind.Metadata || definition :? IMetadataExtension)
                           && (expectedKind <> ExtensionKind.Ocr || definition :? IOcrExtension)
+                          && (expectedKind <> ExtensionKind.PdfTextLayer || definition :? IPdfTextLayerExtension)
                           && (expectedKind <> ExtensionKind.Retrieval || definition :? IRetrievalExtension)
                           && (expectedKind <> ExtensionKind.Translation || definition :? ITranslationExtension)
                       if descriptor.Id <> metadata.Id || descriptor.HostApi <> metadata.HostApi

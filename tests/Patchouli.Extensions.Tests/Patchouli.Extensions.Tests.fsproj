@@ -14,12 +14,15 @@
     <Compile Include="TranslationSupportTests.fs" />
     <Compile Include="MetadataSupportTests.fs" />
     <Compile Include="ConfigSettingsTests.fs" />
+    <Compile Include="ManagedFileSchemaTests.fs" />
     <Compile Include="ConfigTests.fs" />
     <Compile Include="PipelineTests.fs" />
     <Compile Include="RetryTests.fs" />
     <Compile Include="ParallelTests.fs" />
     <Compile Include="BatchTests.fs" />
     <Compile Include="JobTests.fs" />
+    <Compile Include="OcrJobTests.fs" />
+    <Compile Include="OcrEngineFactoryTests.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Shared\Patchouli.Testing.csproj" />

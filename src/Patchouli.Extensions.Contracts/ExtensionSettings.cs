@@ -76,6 +76,28 @@ public sealed class OverrideAttribute(string key, object value) : Attribute
     public object Value { get; } = value;
 }
 
+/// <summary>
+/// Declares one host-managed file backing the annotated path setting. Valid only on a string
+/// property that also carries <see cref="FieldAttribute"/> with <see cref="ConfigValueKind.FilePath"/>
+/// or <see cref="ConfigValueKind.DirectoryPath"/> and <see cref="DefaultAttribute"/>. The metadata
+/// is read statically — attribute constructors on package code never run during schema reads.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = true)]
+public sealed class ManagedFileAttribute(string relativePath, string downloadUrl) : Attribute
+{
+    public string RelativePath { get; } = relativePath;
+    public string DownloadUrl { get; } = downloadUrl;
+    public long ExpectedBytes { get; set; }
+    public string? Sha256 { get; set; }
+    public string? Version { get; set; }
+    public string? DirectoryKind { get; set; }
+    public string? WhenKey { get; set; }
+    public string? WhenValue { get; set; }
+    public string? RequiredWhenKey { get; set; }
+    public string? RequiredWhenValue { get; set; }
+    public string? RequiredScopes { get; set; }
+}
+
 /// <summary>Reads one attributed settings record and projects its flattened schema without executing package code.</summary>
 public static class ConfigSettings
 {
@@ -132,7 +154,8 @@ public static class ConfigSettings
         Type root = typeof(T);
         if (root.FullName == "Microsoft.FSharp.Core.Unit")
         {
-            return (T)Activator.CreateInstance(root)!;
+            // F# unit's sole runtime value is null; Unit has no public constructor.
+            return default!;
         }
 
         return (T)CreateRecord(GetRuntimePlan(root), snapshot);
@@ -231,6 +254,22 @@ public static class ConfigSettings
         if (duplicate is not null)
         {
             throw Invalid($"Configuration key '{duplicate}' is declared more than once.");
+        }
+
+        HashSet<string> declaredKeys = keys.ToHashSet(StringComparer.Ordinal);
+        foreach ((SettingField field, ExtensionManagedFile file) in fields
+                     .SelectMany(field => (field.Descriptor.ManagedFiles ?? [])
+                         .Select(file => (field, file))))
+        {
+            foreach (string? conditionKey in new[] { file.WhenKey, file.RequiredWhenKey })
+            {
+                if (conditionKey is not null && !declaredKeys.Contains(conditionKey))
+                {
+                    throw Invalid(
+                        $"Managed file '{file.RelativePath}' on '{field.Descriptor.Key}' conditions on " +
+                        $"unknown configuration key '{conditionKey}'.");
+                }
+            }
         }
 
         foreach (PropertyInfo parent in OrderedProperties(root)
@@ -371,7 +410,8 @@ public static class ConfigSettings
         if (kind is ConfigValueKind.Integer or ConfigValueKind.Decimal or ConfigValueKind.Boolean
             or ConfigValueKind.Text or
             ConfigValueKind.MultilineText or ConfigValueKind.Language or ConfigValueKind.Choice
-            or ConfigValueKind.CredentialReference)
+            or ConfigValueKind.CredentialReference or ConfigValueKind.FilePath
+            or ConfigValueKind.DirectoryPath)
         {
             Type rawType = IsNullable(property.PropertyType)
                 ? property.PropertyType.GetGenericArguments()[0]
@@ -420,7 +460,7 @@ public static class ConfigSettings
 
         bool followsDefault = model is not null && GetNamedString(model, "FollowDefault") is { Length: > 0 };
         string? defaultDomain = model is null ? null : GetNamedString(model, "FollowDefault");
-        if (defaultDomain is not null && defaultDomain is not ("translation" or "metadata"))
+        if (defaultDomain is not null && defaultDomain is not ("translation" or "metadata" or "ocr"))
         {
             throw Invalid($"Model setting '{key}' declares an unknown default domain '{defaultDomain}'.");
         }
@@ -446,14 +486,147 @@ public static class ConfigSettings
         }
 
         bool hidden = GetNamedBoolean(field ?? model!, "Hidden");
+        ExtensionManagedFile[] managedFiles = DescribeManagedFiles(property, field, model,
+            defaultAttribute, property.PropertyType, kind, key);
         ConfigFieldDescriptor descriptor = new(key, label, kind, required, description, defaultText, minimum, maximum,
             choices.Length == 0 ? null : Array.AsReadOnly(choices))
         {
             FollowDefault = followsDefault,
             DefaultDomain = defaultDomain,
-            Hidden = hidden
+            Hidden = hidden,
+            ManagedFiles = managedFiles
         };
         return new SettingField(property, parent, descriptor, defaultValue);
+    }
+
+    /// <summary>
+    /// Projects <see cref="ManagedFileAttribute"/> declarations into validated contract records
+    /// purely from attribute metadata — the attribute objects themselves are never constructed.
+    /// </summary>
+    private static ExtensionManagedFile[] DescribeManagedFiles(PropertyInfo property,
+        CustomAttributeData? field, CustomAttributeData? model, CustomAttributeData? defaultAttribute,
+        Type propertyType, ConfigValueKind kind, string key)
+    {
+        CustomAttributeData[] declarations = GetAttributes(property, typeof(ManagedFileAttribute)).ToArray();
+        if (declarations.Length == 0)
+        {
+            return [];
+        }
+
+        if (field is null || model is not null)
+        {
+            throw Invalid($"Managed files on '{key}' require a Field attribute, not a Model attribute.");
+        }
+
+        if (defaultAttribute is null)
+        {
+            throw Invalid($"Managed files on '{key}' require a Default attribute.");
+        }
+
+        if (kind is not (ConfigValueKind.FilePath or ConfigValueKind.DirectoryPath))
+        {
+            throw Invalid(
+                $"Managed files on '{key}' require Kind = ConfigValueKind.FilePath or ConfigValueKind.DirectoryPath.");
+        }
+
+        if (propertyType.FullName != "System.String")
+        {
+            throw Invalid($"Managed path setting '{key}' must be a string property.");
+        }
+
+        return declarations.Select(declaration => DescribeManagedFile(declaration, key)).ToArray();
+    }
+
+    private static ExtensionManagedFile DescribeManagedFile(CustomAttributeData attribute, string key)
+    {
+        string relativePath = RequiredStringArgument(attribute, 0);
+        string downloadUrl = RequiredStringArgument(attribute, 1);
+        ValidateManagedRelativePath(relativePath, key);
+        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out Uri? uri) ||
+            uri.Scheme is not ("http" or "https"))
+        {
+            throw Invalid($"Managed file '{relativePath}' on '{key}' declares a non-http(s) download URL.");
+        }
+
+        long? expectedBytes = attribute.NamedArguments
+            .FirstOrDefault(argument => argument.MemberName == nameof(ManagedFileAttribute.ExpectedBytes))
+            .TypedValue.Value is { } bytes
+            ? Convert.ToInt64(bytes, CultureInfo.InvariantCulture)
+            : null;
+        if (expectedBytes is <= 0)
+        {
+            throw Invalid($"Managed file '{relativePath}' on '{key}' declares a non-positive ExpectedBytes.");
+        }
+
+        string? sha256 = GetNamedString(attribute, nameof(ManagedFileAttribute.Sha256));
+        if (sha256 is not null &&
+            (sha256.Length != 64 || sha256.Any(character => !Uri.IsHexDigit(character))))
+        {
+            throw Invalid($"Managed file '{relativePath}' on '{key}' declares an invalid SHA-256 digest.");
+        }
+
+        string? whenKey = GetNamedString(attribute, nameof(ManagedFileAttribute.WhenKey));
+        string? whenValue = GetNamedString(attribute, nameof(ManagedFileAttribute.WhenValue));
+        if (string.IsNullOrWhiteSpace(whenKey) != string.IsNullOrWhiteSpace(whenValue))
+        {
+            throw Invalid(
+                $"Managed file '{relativePath}' on '{key}' must set WhenKey and WhenValue together.");
+        }
+
+        string? requiredWhenKey = GetNamedString(attribute, nameof(ManagedFileAttribute.RequiredWhenKey));
+        string? requiredWhenValue = GetNamedString(attribute, nameof(ManagedFileAttribute.RequiredWhenValue));
+        if (string.IsNullOrWhiteSpace(requiredWhenKey) != string.IsNullOrWhiteSpace(requiredWhenValue))
+        {
+            throw Invalid(
+                $"Managed file '{relativePath}' on '{key}' must set RequiredWhenKey and RequiredWhenValue together.");
+        }
+
+        string? requiredScopes = GetNamedString(attribute, nameof(ManagedFileAttribute.RequiredScopes));
+        string[]? scopes = string.IsNullOrWhiteSpace(requiredScopes)
+            ? null
+            : requiredScopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (scopes is { Length: 0 })
+        {
+            scopes = null;
+        }
+
+        if (scopes is not null && scopes.Distinct(StringComparer.OrdinalIgnoreCase).Count() != scopes.Length)
+        {
+            throw Invalid($"Managed file '{relativePath}' on '{key}' declares duplicate required scopes.");
+        }
+
+        return new ExtensionManagedFile(
+            relativePath.Replace('\\', '/'),
+            downloadUrl,
+            expectedBytes,
+            sha256?.ToLowerInvariant(),
+            GetNamedString(attribute, nameof(ManagedFileAttribute.Version)),
+            GetNamedString(attribute, nameof(ManagedFileAttribute.DirectoryKind)),
+            string.IsNullOrWhiteSpace(whenKey) ? null : whenKey,
+            whenValue,
+            string.IsNullOrWhiteSpace(requiredWhenKey) ? null : requiredWhenKey,
+            requiredWhenValue,
+            scopes is null ? null : Array.AsReadOnly(scopes));
+    }
+
+    /// <summary>Bounded portable relative path: no rooted/absolute forms, drive letters, or traversal.</summary>
+    private static void ValidateManagedRelativePath(string relativePath, string key)
+    {
+        string normalized = relativePath.Replace('\\', '/');
+        if (normalized.StartsWith("/", StringComparison.Ordinal) || normalized.Contains(':') ||
+            normalized.IndexOfAny(['<', '>', '"', '|', '?', '*', '\0']) >= 0)
+        {
+            throw Invalid($"Managed file '{relativePath}' on '{key}' must be a relative portable path.");
+        }
+
+        string[] segments = normalized.Split('/');
+        if (segments.Length > 16 ||
+            segments.Any(segment => segment.Length == 0 || segment is "." or ".." ||
+                                    segment.EndsWith(' ') || segment.EndsWith('.')))
+        {
+            throw Invalid(
+                $"Managed file '{relativePath}' on '{key}' has empty, dot, or parent segments.");
+        }
     }
 
     private static object CreateRecord(RuntimeSettingsPlan plan, ExtensionConfigSnapshot snapshot)
@@ -800,7 +973,8 @@ public static class ConfigSettings
                                      constantType == typeof(string),
             ConfigValueKind.Text or ConfigValueKind.MultilineText or ConfigValueKind.Language or ConfigValueKind.Choice
                 or
-                ConfigValueKind.CredentialReference or ConfigValueKind.Documents or ConfigValueKind.PageRange =>
+                ConfigValueKind.CredentialReference or ConfigValueKind.Documents or ConfigValueKind.PageRange
+                or ConfigValueKind.FilePath or ConfigValueKind.DirectoryPath =>
                 typeName == "System.String" && constantType == typeof(string),
             ConfigValueKind.Boolean => typeName == "System.Boolean" && constantType == typeof(bool),
             ConfigValueKind.Integer => typeName == "System.Int32" && constantType == typeof(int),

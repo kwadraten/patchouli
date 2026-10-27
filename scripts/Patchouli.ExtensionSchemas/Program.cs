@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Patchouli.Extensions;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
+using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Translation;
 
 // Build-time compilation and schema inspection never initialize extension code.
@@ -35,7 +36,10 @@ var toolchainStamp = new
 string stampJson = JsonSerializer.Serialize(toolchainStamp, new JsonSerializerOptions { WriteIndented = true });
 WriteIfChanged(Path.Combine(AppContext.BaseDirectory, "ExtensionToolchain.json"), stampJson);
 WriteIfChanged(Path.Combine(Path.GetDirectoryName(outputPath)!, "ExtensionToolchain.json"), stampJson);
-ExtensionPackageSnapshot[] packages = BuiltInTranslationExtensions.Packages.Concat(BuiltInMetadataExtensions.Packages)
+ExtensionPackageSnapshot[] packages = BuiltInTranslationExtensions.Packages
+    .Concat(BuiltInMetadataExtensions.Packages)
+    .Concat(BuiltInOcrExtensions.Packages)
+    .Concat(BuiltInPdfTextLayerExtensions.Packages)
     .OrderBy(static package => package.Id, StringComparer.Ordinal)
     .ToArray();
 List<object> entries = new();

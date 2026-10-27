@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Import;
 using Patchouli.Llm;
@@ -25,7 +26,9 @@ public sealed class OcrPresetDefaultsTests
         initial.ModelId.Should().Be("vision-first");
         initial.EngineId.Should().Be(OcrEngineIds.MultimodalLlm);
         initial.ApplyOnSuccess.Should().BeTrue();
-        initial.ModelPath.Should().BeNull();
+        // The captured composition resolves the layout model's managed-file default, so the
+        // version pins that concrete path rather than an empty override.
+        initial.ModelPath.Should().EndWith(Path.Combine("pp-doclayout-v3", "inference.onnx"));
 
         (await orchestrator.EnsurePresetForEngineAsync(OcrEngineIds.MultimodalLlm)).Value.Should().Be(first.Value);
         (await services.OcrPresets.GetCurrentVersionAsync(first.Value)).Value.PresetVersionId
@@ -77,6 +80,36 @@ public sealed class OcrPresetDefaultsTests
             .Value.Should().BeNull();
     }
 
+    [Fact]
+    public async Task EnsureDefaults_materializes_a_managed_preset_for_every_registered_engine()
+    {
+        await using Context context = await Context.CreateAsync();
+        HostServices services = context.Services;
+
+        await services.OcrDefaults.EnsureDefaultsAsync();
+
+        IReadOnlyList<OcrPreset> presets = (await services.OcrPresets.ListPresetsAsync()).Value;
+        foreach (OcrEngineDefinition definition in services.OcrEngineRuntime.ListDefinitions())
+        {
+            OcrPreset preset = presets.Should().ContainSingle(candidate =>
+                string.Equals(candidate.Name, definition.DisplayName, StringComparison.Ordinal)).Subject;
+            OcrPresetVersion version =
+                (await services.OcrPresets.GetCurrentVersionAsync(preset.PresetId)).Value;
+            version.EngineId.Should().Be(definition.EngineId);
+        }
+
+        // Re-running reuses the managed defaults — no duplicate rows and no version churn.
+        int count = presets.Count;
+        await services.OcrDefaults.EnsureDefaultsAsync();
+        IReadOnlyList<OcrPreset> reran = (await services.OcrPresets.ListPresetsAsync()).Value;
+        reran.Should().HaveCount(count);
+        foreach (OcrPreset preset in reran)
+        {
+            (await services.OcrPresets.GetCurrentVersionAsync(preset.PresetId)).Value.PresetVersionId
+                .Should().Be(preset.CurrentVersionId!.Value);
+        }
+    }
+
     [Theory]
     [InlineData(OcrEngineIds.MinerU, OcrModelIds.MinerUDefault)]
     [InlineData(OcrEngineIds.NdlKoten, OcrModelIds.NdlKotenDefault)]
@@ -119,7 +152,7 @@ public sealed class OcrPresetDefaultsTests
         public async ValueTask DisposeAsync()
         {
             await Services.ShutdownAsync();
-            Directory.Delete(root, true);
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
         }
     }
 }

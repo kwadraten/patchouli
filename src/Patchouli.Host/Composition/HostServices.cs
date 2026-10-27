@@ -53,6 +53,7 @@ using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Update;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
@@ -63,6 +64,8 @@ using Patchouli.Host.Mcp;
 using Patchouli.Host.Metadata;
 using Patchouli.Host.Translation;
 using Patchouli.Host.Extensions;
+using Patchouli.Host.Ocr;
+using Patchouli.Host.PdfText;
 using Patchouli.Host.Settings;
 using Patchouli.UI;
 using Patchouli.Llm;
@@ -115,7 +118,8 @@ public sealed class HostServices
 
     private HostServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
         IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null,
-        IHostActivityTracker? activityTracker = null, HostOcrCompositionOptions? ocrComposition = null)
+        IHostActivityTracker? activityTracker = null, HostOcrCompositionOptions? ocrComposition = null,
+        IAppPaths? appPaths = null)
     {
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
@@ -132,8 +136,9 @@ public sealed class HostServices
         AgentSkills = new AgentSkillService();
         AgentLauncher = new AgentLaunchService(AgentDetection, AgentWorkspace, AgentSkills);
         AgentMcpConfig = new AgentMcpConfigService();
-        AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
-        OcrStorage = OcrStorageLocations.FromResolved(appPaths);
+        AppStorageLocations storagePaths = (appPaths ?? new PlatformAppPaths()).Resolve();
+        OcrStorage = OcrStorageLocations.FromResolved(storagePaths);
+        ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor);
         LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
@@ -206,17 +211,13 @@ public sealed class HostServices
             pageTranslationCache,
             Clock, LibraryRevisions);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
-        OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings);
+        OcrSelections = new OcrPresetSelectionService(new OcrPresetSelectionStore(settingsPath), OcrPresets, Library);
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
+        // MinerU is the one explicit built-in transport; every other engine routes through the
+        // compiled-FSX extension runtime — no native/vision product adapters here.
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
-        adapterRegistry.RegisterAdapter(new LayoutAwareMultimodalOcrAdapter(
-            new MultimodalLlmOcrAdapter(new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)),
-            _documentLayoutDetector, () => LlmSettings, OcrStorage.GetLayoutModelPath));
-        adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
-        adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
-        adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
         // Optional test/embedder adapters are registered last so an explicit dependency wins over
         // a product adapter with the same engine id. Production composition passes none.
         foreach (IRealOcrAdapter additionalAdapter in ocrComposition?.AdditionalOcrAdapters ?? [])
@@ -240,7 +241,7 @@ public sealed class HostServices
         PdfiumPdfPageRenderer pdfRenderer = new(pdfiumEngine);
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
-            Path.Combine(appPaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
+            Path.Combine(storagePaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
         SourceFingerprintValidation = new SourceFingerprintValidationService();
         PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
@@ -254,14 +255,35 @@ public sealed class HostServices
         VersionedEvidenceReader =
             new VersionedEvidenceReader(ConnectionFactory, Library, DocumentTrees, DocumentMarkdown);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
+        ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
+        TranslationExtensions = new TranslationExtensionCatalog(
+            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
+            () => LlmSettings, ExtensionResources);
+        // Issue #43: every non-MinerU OCR engine runs through the compiled-FSX runtime — the
+        // catalog supplies metadata, the lease registry pins engine + text-provider generations
+        // at queue acceptance, and the engine executes one task-level job per attempt.
+        PdfTextLayerInputSource pdfTextLayerInputs = new(ConnectionFactory, FileResolution,
+            FileSearchRootAccess, new SourceValidationService(), pdfiumEngine, PageRenders,
+            _documentLayoutDetector);
+        OcrExtensionEngineRuntime ocrEngineRuntime = new(TranslationExtensions, pdfTextLayerInputs,
+            RecognizeBuiltInOcrRegionAsync, ExtensionFiles);
+        OcrEngineRuntime = ocrEngineRuntime;
+        // The preset-picker catalog comes from the same runtime registration maps — composed
+        // here, after the runtime exists; never a host-local engine switch.
+        OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings,
+            ocrEngineRuntime, (engineId, token) => new OcrPresetCompositionService(this, StartupSettings.MinerU)
+                .CaptureVersionAsync(engineId, null, cancellationToken: token));
+        OcrEngineLeaseRegistry ocrEngineLeases = new(ocrEngineRuntime, OcrPresets.GetPresetVersionAsync);
         IOcrEngine pageOcrEngine = ocrComposition?.PageOcrEngine ?? new UnavailableOcrEngine();
         _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
             configuration => (MinerUClientFactoryOverride ?? CreateMinerUClient)(configuration),
             OcrStorage.MinerUWorkDirectory,
-            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess, revisions: LibraryRevisions);
-        OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex, activityTracker);
+            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess,
+            revisions: LibraryRevisions, engineRuntime: ocrEngineRuntime);
+        OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex,
+            activityTracker, ocrEngineLeases);
         OcrQueueScheduler ocrQueueScheduler = new(
             async cancellationToken =>
             {
@@ -274,8 +296,10 @@ public sealed class HostServices
             ocrQueueExecutor,
             loopErrorLogger: exception =>
                 _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
-            activityTracker: activityTracker);
-        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine, () => LlmSettings.OcrSelection.ProviderId);
+            activityTracker: activityTracker,
+            engineLeases: ocrEngineLeases);
+        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine,
+            () => LlmSettings.OcrSelection.ProviderId, ocrEngineRuntime);
         // The public start/cancel/retry orchestration behind send OCR Actions (issue #16): page
         // ranges, engine/preset resolution with pinned versions, readiness preflight and atomic
         // request dedup all live here; transports only speak IMcpOcrCommandApi.
@@ -285,14 +309,11 @@ public sealed class HostServices
             OcrPresets,
             OcrDefaults,
             adapterRegistry,
-            () => StartupSettings.OcrEngines.DocumentOcrEngine);
+            () => StartupSettings.OcrEngines.DocumentOcrEngine,
+            ct => OcrSelections.ResolveStoredSelectionAsync(OcrScope.Document, ct));
         // Issue #20 (B1): the direct batch translation engine is host-owned state, not an Agent or
         // workflow. Every run reads the live LLM/Translation settings when it starts; runs are
         // volatile and keep the engine's per-page outcomes for MCP observation and cancellation.
-        ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
-        TranslationExtensions = new TranslationExtensionCatalog(
-            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
-            () => LlmSettings, ExtensionResources);
         ExtensionDomains = new ExtensionDomainService(TranslationExtensions, Pages, PageRenders, DocumentTrees,
             ocrTreeImporter, Search);
         MetadataSources = new ExtensionMetadataRegistry(MetadataSources, () => TranslationExtensions.MetadataSources);
@@ -318,6 +339,16 @@ public sealed class HostServices
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
             DocumentPageMaps);
         CliPath = new CliPathService();
+        // Issue #28: endpoint descriptions enumerate each runs domain's implementations
+        // from the live registries (OCR adapters, extension catalog, metadata sources).
+        McpImplementationCatalog = new McpHostImplementationCatalogApi(
+            OcrAdapters,
+            () => StartupSettings.OcrEngines.DocumentOcrEngine,
+            TranslationExtensions,
+            MetadataSources,
+            () => LlmSettings.Translation.EngineId,
+            OcrEngineRuntime,
+            ResolveSelectedDocumentOcrEngineAsync);
         // Every MCP client acts through the same MCP command surface: identical validation,
         // permissions, atomic write set and error vocabulary.
         McpCommands = new McpCommandService(Mcp, McpWrites, BiblatexImport, Items, VersionedEvidenceReader,
@@ -331,7 +362,8 @@ public sealed class HostServices
             },
             ocrCommands: OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(TranslationRuns),
-            metadataRuns: new McpHostMetadataRunsApi(MetadataRuns));
+            metadataRuns: new McpHostMetadataRunsApi(MetadataRuns),
+            implementationCatalog: McpImplementationCatalog);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -475,6 +507,8 @@ public sealed class HostServices
     public IPageTranslationService PageTranslations { get; }
     public IOcrPresetService OcrPresets { get; }
     public OcrPresetDefaults OcrDefaults { get; }
+    public OcrPresetSelectionService OcrSelections { get; }
+    public ExtensionManagedFileService ExtensionFiles { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
@@ -487,9 +521,18 @@ public sealed class HostServices
     public IPageCoordinateService PageCoordinates { get; }
     public ISourceFingerprintValidationService SourceFingerprintValidation { get; }
     public IOcrRunCoordinator Ocr { get; }
+
+    /// <summary>
+    /// The composed engine registry: metadata listing for preset pickers plus task-lease
+    /// acquisition. Also the custom-engine registration surface — extensions call
+    /// <see cref="OcrExtensionEngineRuntime.RegisterEngine"/> through this property.
+    /// </summary>
+    public OcrExtensionEngineRuntime OcrEngineRuntime { get; }
+
     public IMcpOcrCommandApi OcrCommands { get; }
     public ITranslationRunService TranslationRuns { get; }
     public IMetadataRunService MetadataRuns { get; }
+    public IMcpImplementationCatalogApi McpImplementationCatalog { get; }
     public TranslationExtensionCatalog TranslationExtensions { get; }
     public ExtensionDomainService ExtensionDomains { get; }
     public HostExtensionResources ExtensionResources { get; }
@@ -806,7 +849,8 @@ public sealed class HostServices
         string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
         IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null,
-        RuntimeHostLease? runtimeHostLease = null, HostOcrCompositionOptions? ocrComposition = null)
+        RuntimeHostLease? runtimeHostLease = null, HostOcrCompositionOptions? ocrComposition = null,
+        IAppPaths? appPaths = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
@@ -829,7 +873,7 @@ public sealed class HostServices
 
         startupProgress?.Report(StartupStage.ComposingServices);
         HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected, activityTracker,
-            ocrComposition);
+            ocrComposition, appPaths);
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.
@@ -936,6 +980,26 @@ public sealed class HostServices
         return services;
     }
 
+    private async Task<Result<string?>> ResolveSelectedDocumentOcrEngineAsync(CancellationToken cancellationToken)
+    {
+        Result<OcrPresetId?> selected = await OcrSelections.ResolveStoredSelectionAsync(OcrScope.Document,
+            cancellationToken);
+        if (selected.IsFailure)
+        {
+            return Result<string?>.Failure(selected.ErrorCode!, selected.ErrorMessage!);
+        }
+
+        if (selected.Value is not { } presetId)
+        {
+            return Result<string?>.Success(null);
+        }
+
+        Result<OcrPresetVersion> version = await OcrPresets.GetCurrentVersionAsync(presetId, cancellationToken);
+        return version.IsFailure
+            ? Result<string?>.Failure(version.ErrorCode!, version.ErrorMessage!)
+            : Result<string?>.Success(version.Value.EngineId);
+    }
+
     /// <summary>Quiesces background work before a runtime-host ownership lease is released.</summary>
     public Task ShutdownAsync()
     {
@@ -954,7 +1018,17 @@ public sealed class HostServices
         }
 
         _lifetimeCancellation.Cancel();
-        await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        ExtensionFiles.Dispose(); // Close admission and cancel desktop prompts/direct downloads.
+        IOcrQueueScheduler ocrQueue = ((QueuedOcrRunCoordinator)Ocr).Queue;
+        if (ocrQueue is IAsyncDisposable ownedOcrQueue)
+        {
+            await ownedOcrQueue.DisposeAsync();
+        }
+        else
+        {
+            await ocrQueue.StopAsync();
+        }
+
         if (TranslationRuns is IAsyncDisposable translationRuns)
         {
             await translationRuns.DisposeAsync();
@@ -964,6 +1038,7 @@ public sealed class HostServices
 
         await LibraryRevisionMonitor.DisposeAsync();
         await TranslationExtensions.DisposeAsync();
+        await ExtensionFiles.DisposeAsync();
 
         // Page rendering owns the reusable PDFium document sessions for interactive viewing.
         // Every render consumer has stopped above, so disposing it now closes every open
@@ -980,5 +1055,38 @@ public sealed class HostServices
         _updateApiHttpClient.Dispose();
         _updateDownloadHttpClient.Dispose();
         ConnectionFactory.ClearPools();
+    }
+
+    /// <summary>
+    /// The built-in engine's input transport under an already-accepted task: a provider-declared
+    /// <see cref="PdfTextRequiredRegion"/> runs the text-only MinerU region path, while a
+    /// host-declared whole-page input (missing-text policy) runs the structured MinerU
+    /// page-image transport. Both return job candidates — no second run, no undeclared
+    /// fallback.
+    /// </summary>
+    private async Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>> RecognizeBuiltInOcrRegionAsync(
+        OcrJobPage jobPage, OcrJobInput input, OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(input.Kind, OcrInputKinds.PageImage, StringComparison.OrdinalIgnoreCase))
+        {
+            return await _ocrEngine.RecognizePageForVersionAsync(
+                jobPage.Page.DocumentId, jobPage.Page.PageId, input.Id, version,
+                cancellationToken);
+        }
+
+        Result<OcrRegionCandidate> recognized = await _ocrEngine.RecognizeRegionForVersionAsync(
+            jobPage.Page.DocumentId, jobPage.Page.PageId, input.Region, version, cancellationToken);
+        return recognized.IsFailure
+            ? Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                recognized.ErrorCode!, recognized.ErrorMessage!)
+            : Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Success(
+            [
+                new OcrExtensionBoxCandidate(input.Id,
+                    new DocumentBoxSeed(null, null, 0, recognized.Value.BoxType, null,
+                        recognized.Value.BBox, recognized.Value.Payload,
+                        recognized.Value.HeadingLevel,
+                        Confidence: recognized.Value.Confidence))
+            ]);
     }
 }

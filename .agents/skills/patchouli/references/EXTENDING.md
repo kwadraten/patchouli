@@ -13,6 +13,7 @@
 ## 扩展包与生命周期
 
 - 每个扩展包有 `main.fsx` 入口，可 `#load` 包内 `.fsx`；包源码位于应用数据目录下的 `extensions/{extension-id}/`。入口 XML 文档仍是必需契约：在 `let extension` 前使用 `/// <patchouli-extension id="…" kind="…" version="…" host-api="patchouli.extensions/3">`，并包含 `<name>`。它不是 attribute 元数据。可参考随包 `main.fsx`。
+- OCR Job 与托管文件声明属于现有扩展能力的增量扩张，Host API 保持 `patchouli.extensions/3`；既有翻译、元数据和 retrieval 扩展不因此被拒绝，也不需要新增 OCR 实现。新 OCR 源码仍在验收中。
 - FSX 源码编译为 DLL，按 generation 缓存并在宿主内 collectible `AssemblyLoadContext` 执行。允许外部 BCL、包内 DLL 和 NuGet 依赖。NuGet 冷还原需要已安装的 .NET SDK；只有 runtime 的安装不能替代 SDK。包内 DLL、BCL 引用和已验证编译产物缓存命中不需要 NuGet SDK 还原。依赖版本由仓库中央管理：`FSharp.Core` 10.1.401、`FSharp.Compiler.Service` 43.12.401。可信代码不是沙箱。
 - 同目录下的 `.generations/`（运行中的不可变快照）、`.lkg/`（恢复快照）、`config.json` 和 `extension-state.json` 由 Patchouli 管理，不要编辑；`.lkg/AGENTS.md` 也说明了这一点。只修改包根目录下的源码。
 - 桌面入口：“文献加工 → 文献翻译”的引擎列表，以及“元数据来源”的每一行，都有齿轮按钮，打开扩展配置窗口。
@@ -44,6 +45,7 @@
 - 可嵌套公共设置 record（通常命名 `Common`）。父属性上的 `[<Override("key", value)>]` 覆盖该扩展的嵌套字段默认值；用户已保存的值优先于覆盖默认值。
 - Factory 用 `ConfigSettings.Read<Settings>(snapshot)` 将冻结配置读入 record。
 - 工厂为 `Extension.createTranslation<Settings>` 和 `Extension.createMetadata<Settings>`；入口身份与 descriptor 由加载器提供。
+- `ExtensionKind.Retrieval` 是既有的显式 SDK 能力。宿主可把搜索候选交给 `IRetrievalExtension.RankAsync` 排序，并验证返回单位仍属于该候选集且分数有限。它不会自动接管默认搜索，也不代表默认向量/混合搜索已经交付。
 - `IExtensionResources.Http` 提供标准 `HttpClient`；`ResolveLlm(defaultDomain, selection)` 获取托管 LLM，未指定 selection 时可跟随默认模型。凭据按引用调用 `GetCredentialAsync(reference, token)`，只在使用点取得明文，并避免写入日志、提示词或异常。
 - FSX 扩展访问联网不经过单独的联网授权流程；MCP 权限控制属于独立边界，不授权或限制可信 FSX 代码。不要把 MCP 权限误当成扩展网络沙箱。
 - 模型调用使用完整响应 `CompleteAsync`，没有流式输出。
@@ -129,9 +131,13 @@
 
 不支持的 scheme 返回 `UnsupportedIdentifier`；响应中没有可用元数据时返回 `InvalidResponse`；标准网络访问使用 `resources.Http`。候选只是提议，由 Core 校验并原子应用（见 [CITATIONS](CITATIONS.md)）。随包来源（`metadata.crossref`、`metadata.datacite`、`metadata.openalex` 等）可以作为模板复制。
 
-## OCR 与检索扩展
+## OCR 扩展
 
-`IOcrExtension` 与 `IRetrievalExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列和检索排序仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
+`IOcrExtension` 只能通过宿主的显式入口调用，默认的 OCR 队列仍使用内置后端。OCR 结果要复用 Core 的 `DocumentBoxSeed`；只识别出文字时只生成文字块，不要编造表格或公式结构。
+
+## Retrieval 扩展
+
+`IRetrievalExtension` 通过显式 `RankSearchAsync` 使用：宿主先执行现有搜索，将有界候选及其证据交给扩展，验证排名仅引用这些候选且分数有限，再将结果关联回原证据。它不是默认搜索管线，不启用自动检索，也不意味着默认向量或混合搜索的交付。
 
 ## 证据边界
 

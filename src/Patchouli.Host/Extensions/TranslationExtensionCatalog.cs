@@ -11,6 +11,7 @@ using System.Threading.Channels;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
+using Patchouli.Infrastructure.Ocr;
 
 namespace Patchouli.Host.Extensions;
 
@@ -39,8 +40,18 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
     private Task _watchWork = Task.CompletedTask;
     private IReadOnlyList<IMetadataSource> _metadataSources;
 
+    private IReadOnlyDictionary<string, OcrEngineDefinition> _activeOcrDefinitions =
+        new ReadOnlyDictionary<string, OcrEngineDefinition>(new Dictionary<string, OcrEngineDefinition>());
+
+    private IReadOnlyDictionary<string, PdfTextLayerDefinition> _activeTextDefinitions =
+        new ReadOnlyDictionary<string, PdfTextLayerDefinition>(new Dictionary<string, PdfTextLayerDefinition>());
+
     private static readonly IReadOnlyList<ExtensionPackageSnapshot> BundledPackages = Array.AsReadOnly(
-        BuiltInTranslationExtensions.Packages.Concat(BuiltInMetadataExtensions.Packages).ToArray());
+        BuiltInTranslationExtensions.Packages
+            .Concat(BuiltInMetadataExtensions.Packages)
+            .Concat(BuiltInOcrExtensions.Packages)
+            .Concat(BuiltInPdfTextLayerExtensions.Packages)
+            .ToArray());
 
     public TranslationExtensionCatalog(string runtimeDirectory, Func<LlmAppSettings> settings,
         IExtensionResources resources)
@@ -132,6 +143,12 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
     public TranslationExtensionRunner Runner { get; }
     public IReadOnlyList<IMetadataSource> MetadataSources => Volatile.Read(ref _metadataSources);
 
+    public IReadOnlyDictionary<string, OcrEngineDefinition> ActiveOcrDefinitions =>
+        Volatile.Read(ref _activeOcrDefinitions);
+
+    public IReadOnlyDictionary<string, PdfTextLayerDefinition> ActiveTextLayerDefinitions =>
+        Volatile.Read(ref _activeTextDefinitions);
+
     /// <summary>Bundled package snapshots (read-only); used to list never-activated built-ins.</summary>
     public IReadOnlyList<ExtensionPackageSnapshot> BundledPackageSnapshots => BundledPackages;
 
@@ -142,6 +159,66 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         await EnsureBaselineInitializedAsync(cancellationToken).ConfigureAwait(false);
         return await ExtensionConfigurationDescriptionService.ReadAsync(Manager, BundledPackages, id,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Issue #28: enumerates the extensions of one kind from the live registry — the
+    /// bundled packages (descriptor parsed from each package's declared entry metadata,
+    /// available before first activation because the host activates them on demand)
+    /// plus every already-active third-party package whose lease descriptor matches.
+    /// This mirrors how <see cref="RefreshMetadataSourcesAsync"/> discovers metadata
+    /// sources; a package whose declared metadata cannot be parsed is skipped rather
+    /// than failing the whole enumeration.
+    /// </summary>
+    public async Task<IReadOnlyList<ExtensionDescriptor>> ListExtensionsByKindAsync(ExtensionKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureBaselineInitializedAsync(cancellationToken).ConfigureAwait(false);
+        Dictionary<string, ExtensionDescriptor> byId = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ExtensionPackageSnapshot package in BundledPackages)
+        {
+            ExtensionEntryMetadata metadata;
+            try
+            {
+                metadata = ExtensionEntryMetadata.Parse(package);
+            }
+            catch (ExtensionMetadataException)
+            {
+                continue;
+            }
+            catch (InvalidOperationException)
+            {
+                // Defensive: metadata-element location asserts in the entry
+                // metadata helpers surface as InvalidOperationException. Should
+                // parsing ever route through them, that is the same "declared
+                // metadata cannot be parsed" outcome as
+                // ExtensionMetadataException, so the package is skipped instead
+                // of failing the whole enumeration.
+                continue;
+            }
+
+            if (metadata.Kind == kind)
+            {
+                byId[metadata.Id] = metadata.ToDescriptor();
+            }
+        }
+
+        foreach (ExtensionGenerationInfo info in Manager.List())
+        {
+            if (!info.IsActive || byId.ContainsKey(info.Id))
+            {
+                continue;
+            }
+
+            await using IExtensionLease? lease =
+                await Manager.AcquireAsync(info.Id, cancellationToken).ConfigureAwait(false);
+            if (lease is not null && lease.Descriptor.Kind == kind)
+            {
+                byId[lease.Descriptor.Id] = lease.Descriptor;
+            }
+        }
+
+        return byId.Values.OrderBy(descriptor => descriptor.Id, StringComparer.Ordinal).ToArray();
     }
 
     public async Task<ExtensionDomainRun> AcquireDomainAsync(string id,
@@ -185,6 +262,8 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             .Where(item => item.IsActive)
             .ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
         List<IMetadataSource> sources = [];
+        Dictionary<string, OcrEngineDefinition> ocrDefinitions = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, PdfTextLayerDefinition> textDefinitions = new(StringComparer.OrdinalIgnoreCase);
         HashSet<string> bundledMetadataIds = new(StringComparer.OrdinalIgnoreCase);
         foreach ((string extensionId, MetadataSourceDefinition declared) in
                  BuiltInMetadataExtensions.SourceDefinitions)
@@ -219,14 +298,42 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             {
                 sources.Add(CreateMetadataSource(info.Id, metadata.SourceDefinition));
             }
+
+            try
+            {
+                if (lease?.Descriptor.Kind == ExtensionKind.Ocr && lease.Ocr is { } ocr &&
+                    ocr.EngineDefinition is { EngineId.Length: > 0 } engine && engine.EngineId != "unknown")
+                {
+                    ocrDefinitions[info.Id] = engine;
+                }
+
+                if (lease?.Descriptor.Kind == ExtensionKind.PdfTextLayer && lease.PdfTextLayer is { } text &&
+                    text.ProviderDefinition is { ProviderId.Length: > 0 } provider &&
+                    provider.ProviderId != PdfTextLayerProviderIds.Disabled)
+                {
+                    textDefinitions[info.Id] = provider;
+                }
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                                  "host.extensions.component-metadata", info.Id))
+            {
+                // A broken metadata getter does not erase other components; its source remains
+                // repairable, but it does not become a runnable implementation.
+                Trace.WriteLine($"Component metadata unavailable for {info.Id}: {exception.GetType().Name}");
+            }
         }
 
         Volatile.Write(ref _metadataSources, sources.AsReadOnly());
+        Volatile.Write(ref _activeOcrDefinitions,
+            new ReadOnlyDictionary<string, OcrEngineDefinition>(ocrDefinitions));
+        Volatile.Write(ref _activeTextDefinitions,
+            new ReadOnlyDictionary<string, PdfTextLayerDefinition>(textDefinitions));
     }
 
     public async Task<ExtensionCheckResult> ActivateAsync(ExtensionPackageSnapshot package,
         CancellationToken cancellationToken = default)
     {
+        await InstallMatchingBundledArtifactAsync(package, cancellationToken).ConfigureAwait(false);
         ExtensionCheckResult check =
             await Manager.ActivateAsync(package.Id, package, cancellationToken).ConfigureAwait(false);
         if (check.Succeeded)
@@ -355,7 +462,9 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             // Install only artifacts whose identity is the immutable bundled source fingerprint.
             // The generation loader can now activate normal bundled packages without FCS; edited
             // working copies have distinct fingerprints and are never mapped to this artifact.
-            foreach (ExtensionPackageSnapshot package in BundledPackages)
+            foreach (ExtensionPackageSnapshot package in BundledPackages.Where(package =>
+                         !BuiltInOcrExtensions.Definitions.ContainsKey(package.Id) &&
+                         !BuiltInPdfTextLayerExtensions.Definitions.ContainsKey(package.Id)))
             {
                 await BuiltInExtensionArtifacts.InstallAsync(_root, package, cancellationToken)
                     .ConfigureAwait(false);
@@ -428,9 +537,14 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             {
                 // Metadata sources activate lazily for the identifier scheme being looked up and are
                 // listed from their declarative definitions, so eager activation would start up to 16
-                // workers that the current lookup does not need.
+                // workers that the current lookup does not need. OCR engine and PDF text-layer
+                // packages are pinned per accepted queue task by the OCR runtime — activating them
+                // here would compile and load every engine's native support closure on any catalog
+                // touch (settings listing included); they stay lazy by design.
                 if (BuiltInMetadataExtensions.Packages.Any(package =>
-                        string.Equals(package.Id, builtin.Id, StringComparison.Ordinal)))
+                        string.Equals(package.Id, builtin.Id, StringComparison.Ordinal)) ||
+                    builtin.Id.StartsWith("ocr.", StringComparison.Ordinal) ||
+                    builtin.Id.StartsWith("pdf-text.", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -509,6 +623,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
                 return;
             }
 
+            await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
             if (await CatalogDiagnostics.SegmentAsync("extension.catalog.restore", builtin.Id,
                     () => Manager.RestoreAsync(builtin.Id, cancellationToken)).ConfigureAwait(false))
             {
@@ -576,10 +691,12 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
 
         // Persist the editable source before checking it so a failing built-in still appears in the
-        // extension editor with its diagnostics instead of disappearing from the list.
+        // extension editor with its diagnostics instead of disappearing from the list. Binaries must be
+        // persisted too: the package fingerprint covers them, and a sources-only working copy would hash
+        // differently from the bundled package and lose its trusted built-in schema.
         if (!hadWorkingCopy && !preserveDraft)
         {
-            await Manager.SaveSourceAsync(builtin.Id, builtin.Sources, cancellationToken).ConfigureAwait(false);
+            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
         }
 
         ExtensionCheckResult result = await Manager.ActivateAsync(candidate.Id, candidate, cancellationToken)
@@ -593,6 +710,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
 
         if (!result.Succeeded && candidate.Fingerprint != builtin.Fingerprint)
         {
+            await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
             result = await Manager.ActivateAsync(builtin.Id, builtin, cancellationToken).ConfigureAwait(false);
         }
 
@@ -605,10 +723,20 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
 
         if (candidate.Fingerprint == builtin.Fingerprint && !preserveDraft)
         {
-            await Manager.SaveSourceAsync(builtin.Id, builtin.Sources, cancellationToken).ConfigureAwait(false);
+            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
         }
 
         return result;
+    }
+
+    private Task InstallMatchingBundledArtifactAsync(ExtensionPackageSnapshot package,
+        CancellationToken cancellationToken)
+    {
+        ExtensionPackageSnapshot? bundled = BundledPackages.FirstOrDefault(candidate =>
+            candidate.Id == package.Id && candidate.Fingerprint == package.Fingerprint);
+        return bundled is null
+            ? Task.CompletedTask
+            : BuiltInExtensionArtifacts.InstallAsync(_root, bundled, cancellationToken);
     }
 
     public async Task<TranslationPageResult> TestAsync(string id, string text, string targetLanguage,

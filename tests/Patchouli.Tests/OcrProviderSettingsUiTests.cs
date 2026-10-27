@@ -3,26 +3,32 @@ using Avalonia.Headless;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using FluentAssertions;
+using Patchouli.Host;
+using Patchouli.Host.Composition;
 using Patchouli.Ocr;
-using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
+/// <summary>
+///     Headless coverage of the new "OCR 预设编排" surface: four per-scope preset pickers (document,
+///     page, region, working), the inline composition grid, and the persisted per-library scope
+///     selection. Component choices come from the extension registry — never OcrAdapters.
+/// </summary>
 [Collection("Avalonia")]
 public sealed class OcrProviderSettingsUiTests : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
     [Fact]
-    public async Task Ocr_combo_boxes_show_selected_engine_and_save_a_control_selection()
+    public async Task Ocr_tab_shows_scope_pickers_and_composition_grid_and_saves_selections()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
-            string databasePath = _settings.CreateDatabasePath("ocr-combo-ui");
+            string databasePath = _settings.CreateDatabasePath("ocr-compose-ui");
             await using MainWindowViewModel main = new(settingsPath: _settings.Path)
             {
                 RuntimeDatabasePath = databasePath
@@ -35,62 +41,65 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
             window.Show();
             try
             {
-                OcrProviderSettingsViewModel settings = main.Settings.OcrProviderSettings;
-                settings.SelectedDocumentEngine = OcrEngineIds.NdlLite;
-                settings.IsDirty.Should().BeTrue("this covers an OCR edit made before the first catalog load");
-
                 await main.Settings.SelectSectionAsync("ocr");
                 await main.Settings.WaitForActiveSectionLoadAsync();
                 Dispatcher.UIThread.RunJobs();
                 window.UpdateLayout();
 
-                settings.AvailableEngines.Should().NotBeEmpty();
-                ComboBox[] selectors = window.GetVisualDescendants().OfType<ComboBox>()
-                    .Where(combo => ReferenceEquals(combo.DataContext, settings) &&
-                                    ReferenceEquals(combo.ItemsSource, settings.AvailableEngines))
-                    .ToArray();
-                selectors.Should().HaveCount(3);
-
-                string[] expectedValues =
+                OcrProviderSettingsViewModel settings = main.Settings.OcrProviderSettings;
+                OcrPresetScopePickerViewModel[] pickers =
                 [
-                    OcrEngineIds.NdlLite,
-                    OcrEngineIds.NdlKoten,
-                    OcrEngineIds.NdlKoten
+                    settings.DocumentPresetPicker, settings.PagePresetPicker,
+                    settings.RegionPresetPicker
                 ];
-                settings.SelectedDocumentEngine.Should().Be(expectedValues[0]);
-                settings.SelectedPageEngine.Should().Be(expectedValues[1]);
-                settings.SelectedRegionEngine.Should().Be(expectedValues[2]);
-                for (int i = 0; i < selectors.Length; i++)
+                foreach (OcrPresetScopePickerViewModel picker in pickers)
                 {
-                    ComboBox selector = selectors[i];
-                    selector.Items.Should().NotBeEmpty();
-                    selector.SelectedValue.Should().Be(expectedValues[i]);
-                    selector.SelectedItem.Should().BeSameAs(settings.AvailableEngines.Single(option =>
-                        option.EngineId == expectedValues[i]));
+                    picker.Options.Should().ContainSingle(option =>
+                        ReferenceEquals(option, OcrPresetOption.Automatic));
+                    window.GetVisualDescendants().OfType<ComboBox>().Should().Contain(combo =>
+                        ReferenceEquals(combo.ItemsSource, picker.Options));
                 }
 
-                settings.SelectedDocumentEngine.Should().Be(OcrEngineIds.NdlLite);
-                settings.IsDirty.Should().BeTrue("loading the catalog must preserve the pre-load edit");
+                // The inline composition table — a real DataGrid, not an ItemsControl stand-in.
+                DataGrid grid = window.GetVisualDescendants().OfType<DataGrid>().Single(dataGrid =>
+                    ReferenceEquals(dataGrid.ItemsSource, settings.PresetRows));
 
-                OcrEngineOption target = settings.AvailableEngines.First(option =>
-                    option.EngineId != settings.SelectedDocumentEngine);
-                string targetEngineId = target.EngineId;
-                selectors[0].SelectedItem = target;
-                Dispatcher.UIThread.RunJobs();
-                settings.SelectedDocumentEngine.Should().Be(targetEngineId);
+                // Add + save one row: the first save creates the preset and its initial immutable
+                // version, then the scope pickers offer it as a real choice. Managed defaults
+                // for registered engines are already materialized rows; the draft is the new one.
+                await settings.AddPresetRowCommand.ExecuteAsync();
+                OcrPresetCompositionRowViewModel row = settings.PresetRows.Should()
+                    .ContainSingle(candidate => candidate.IsNew).Subject;
+                row.IsNew.Should().BeTrue();
+                row.Name = "扫描文献预设";
+
+                await settings.SavePresetRowAsync(row);
+
+                row.IsNew.Should().BeFalse();
+                row.HasError.Should().BeFalse(row.StatusText);
+                row.IsDirty.Should().BeFalse();
+                grid.ItemsSource.Should().BeSameAs(settings.PresetRows);
+
+                HostServices services = await main.ServicesAsync();
+                OcrPreset persisted = (await services.OcrPresets.ListPresetsAsync(false)).Value
+                    .Should().ContainSingle(preset => preset.Name == "扫描文献预设").Subject;
+                persisted.Name.Should().Be("扫描文献预设");
+                persisted.CurrentVersionId.Should().NotBeNull();
+
+                settings.RegionPresetPicker.Options.Should().Contain(option =>
+                    option.PresetId == persisted.PresetId.ToString());
+                settings.RegionPresetPicker.SelectedOption = settings.RegionPresetPicker.Options
+                    .Single(option => option.PresetId == persisted.PresetId.ToString());
                 settings.IsDirty.Should().BeTrue();
 
                 await settings.SaveAsync();
                 settings.SaveState.Should().Be(SettingsSaveState.Saved);
-                PatchouliAppSettings.Load(_settings.Path).OcrEngines.DocumentOcrEngine.Should().Be(targetEngineId);
 
-                await settings.LoadAsync();
-                Dispatcher.UIThread.RunJobs();
-                window.UpdateLayout();
-                selectors[0].SelectedValue.Should().Be(targetEngineId);
-                selectors[0].SelectedItem.Should().BeSameAs(settings.AvailableEngines.Single(option =>
-                    option.EngineId == targetEngineId));
-                settings.SelectedDocumentEngine.Should().Be(targetEngineId);
+                OcrPresetSelectionService selectionService = new(
+                    new OcrPresetSelectionStore(_settings.Path), services.OcrPresets,
+                    services.Library);
+                (await selectionService.ReadStoredSelectionsAsync()).Value.RegionPresetId.Should()
+                    .Be(persisted.PresetId.ToString());
             }
             finally
             {

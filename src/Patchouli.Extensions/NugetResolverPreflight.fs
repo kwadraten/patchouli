@@ -45,6 +45,33 @@ module internal NugetResolverPreflight =
         |> Array.map Path.GetFullPath
         |> Array.distinct
 
+    let rec private parentAt levels (directory: DirectoryInfo option) =
+        match directory, levels with
+        | Some current, 0 -> Some current.FullName
+        | Some current, remaining -> current.Parent |> Option.ofObj |> parentAt (remaining - 1)
+        | None, _ -> None
+
+    let private runtimeHostPath() =
+        let processPath = Environment.ProcessPath |> Option.ofObj |> Option.defaultValue ""
+        let runtimeRoot = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()
+        let runtimeHost =
+            Path.GetFullPath runtimeRoot
+            |> DirectoryInfo
+            |> Some
+            |> parentAt 3
+            |> Option.map (fun root -> Path.Combine(root, if OperatingSystem.IsWindows() then "dotnet.exe" else "dotnet"))
+            |> Option.defaultValue ""
+        let processName = Path.GetFileNameWithoutExtension processPath |> Option.ofObj |> Option.defaultValue ""
+        if String.Equals(processName, "dotnet", StringComparison.OrdinalIgnoreCase) then processPath else runtimeHost
+
+    let private existingDotnetHosts() =
+        let environmentValue name = Environment.GetEnvironmentVariable(name) |> Option.ofObj |> Option.defaultValue ""
+        candidatePaths(environmentValue "DOTNET_HOST_PATH", runtimeHostPath(), environmentValue "PATH",
+            environmentValue "ProgramW6432", environmentValue "ProgramFiles",
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            Path.PathSeparator, OperatingSystem.IsWindows())
+        |> Array.filter File.Exists
+
     let private positiveCacheSync = obj ()
     let mutable private positiveCache: (string * DateTimeOffset) option = None
 
@@ -124,29 +151,7 @@ module internal NugetResolverPreflight =
         match lock positiveCacheSync (fun () -> positiveCache |> Option.filter (fun (_, expires) -> expires > now)) with
         | Some(path, _) -> return SdkAvailable path
         | None ->
-            let environmentValue name = Environment.GetEnvironmentVariable(name) |> Option.ofObj |> Option.defaultValue ""
-            let runtimeHostPath =
-                let processPath = Environment.ProcessPath |> Option.ofObj |> Option.defaultValue ""
-                let runtimeRoot = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()
-                let runtimeHost =
-                    let rec parentAt levels (directory: DirectoryInfo option) =
-                        match directory, levels with
-                        | Some current, 0 -> Some current.FullName
-                        | Some current, remaining -> current.Parent |> Option.ofObj |> parentAt (remaining - 1)
-                        | None, _ -> None
-                    Path.GetFullPath runtimeRoot
-                    |> DirectoryInfo
-                    |> Some
-                    |> parentAt 3
-                    |> Option.map (fun root -> Path.Combine(root, if OperatingSystem.IsWindows() then "dotnet.exe" else "dotnet"))
-                    |> Option.defaultValue ""
-                let processName = Path.GetFileNameWithoutExtension processPath |> Option.ofObj |> Option.defaultValue ""
-                if String.Equals(processName, "dotnet", StringComparison.OrdinalIgnoreCase) then processPath else runtimeHost
-            let candidates = candidatePaths(environmentValue "DOTNET_HOST_PATH", runtimeHostPath, environmentValue "PATH",
-                environmentValue "ProgramW6432", environmentValue "ProgramFiles",
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                Path.PathSeparator, OperatingSystem.IsWindows())
-            let existing = candidates |> Array.filter File.Exists
+            let existing = existingDotnetHosts()
             if existing.Length = 0 then return DotnetMissing
             else
                 // Match FCS's selected host, not any later SDK installation hidden by PATH.

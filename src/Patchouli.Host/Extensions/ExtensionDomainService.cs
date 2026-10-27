@@ -54,110 +54,6 @@ public sealed class ExtensionDomainService
         _search = search;
     }
 
-    public async Task<Result<ExtensionOcrStage>> RecognizeAndStageAsync(string extensionId,
-        DocumentInstanceId documentId, PageId pageId, NormalizedBBox? region = null, int dpi = 200,
-        CancellationToken cancellationToken = default)
-    {
-        if (dpi is < 36 or > 1200)
-        {
-            return Failure<ExtensionOcrStage>(AppErrorCodes.ValidationFailed, "OCR DPI must be between 36 and 1200.");
-        }
-
-        NormalizedBBox inputRegion = region ?? FullPage;
-        Result regionValidation = inputRegion.Validate();
-        if (regionValidation.IsFailure)
-        {
-            return Failure<ExtensionOcrStage>(regionValidation.ErrorCode!, regionValidation.ErrorMessage!);
-        }
-
-        try
-        {
-            await using ExtensionDomainRun run = await AcquireAsync(extensionId, ExtensionKind.Ocr,
-                cancellationToken).ConfigureAwait(false);
-            Result<Page> pageResult = await _pages.GetPageAsync(pageId, cancellationToken).ConfigureAwait(false);
-            if (pageResult.IsFailure)
-            {
-                return Failure<ExtensionOcrStage>(pageResult.ErrorCode!, pageResult.ErrorMessage!);
-            }
-
-            Page page = pageResult.Value;
-            if (page.DocumentInstanceId != documentId)
-            {
-                return Failure<ExtensionOcrStage>(AppErrorCodes.ValidationFailed,
-                    "The page does not belong to the requested document instance.");
-            }
-
-            Result<DocumentTreeRevision> revisionResult = await _trees.GetCurrentRevisionAsync(documentId, pageId,
-                cancellationToken).ConfigureAwait(false);
-            if (revisionResult.IsFailure)
-            {
-                return Failure<ExtensionOcrStage>(revisionResult.ErrorCode!, revisionResult.ErrorMessage!);
-            }
-
-            Result<string> imagePathResult = await _renders.RenderRegionPngAsync(documentId, pageId, inputRegion,
-                dpi, cancellationToken).ConfigureAwait(false);
-            if (imagePathResult.IsFailure)
-            {
-                return Failure<ExtensionOcrStage>(imagePathResult.ErrorCode!, imagePathResult.ErrorMessage!);
-            }
-
-            byte[] imageBytes = await File.ReadAllBytesAsync(imagePathResult.Value, cancellationToken)
-                .ConfigureAwait(false);
-            ExtensionPageIdentity identity = new(documentId, pageId, revisionResult.Value.TreeRevisionId,
-                page.PageIndex);
-            ExtensionOcrInput input = new(new OcrInputId(Guid.NewGuid().ToString("N")), inputRegion,
-                "image/png", imageBytes);
-
-            Result<OcrExtensionCandidate> recognized = await run.RecognizeAsync(
-                new OcrExtensionContext(identity, [input], run.Config), cancellationToken).ConfigureAwait(false);
-            if (recognized.IsFailure)
-            {
-                return Failure<ExtensionOcrStage>(recognized.ErrorCode!, recognized.ErrorMessage!);
-            }
-
-            OcrDocumentTreeCandidate treeCandidate = new(
-            [
-                new OcrPageCandidate(pageId, page.PageIndex,
-                    recognized.Value.Boxes.Select(box =>
-                    {
-                        DocumentBoxSeed seed = box.Candidate;
-                        return new OcrBoxCandidate(seed.BoxType, seed.SubType, seed.SourceOrder,
-                            seed.Payload!, seed.BBox, seed.HeadingLevel, seed.Confidence, seed.Suppressed,
-                            seed.ParentBoxId, seed.BoxId, seed.ContinuesFromBoxId, seed.CodeLanguage);
-                    }).ToArray())
-            ], []);
-            Result treeValidation = treeCandidate.Validate();
-            if (treeValidation.IsFailure)
-            {
-                return Failure<ExtensionOcrStage>(treeValidation.ErrorCode!, treeValidation.ErrorMessage!);
-            }
-
-            OcrDocumentTreeImportRequest importRequest = new(documentId, treeCandidate,
-                $"extension:{extensionId}",
-                new Dictionary<PageId, DocumentTreeRevisionId> { [pageId] = identity.RevisionId });
-            Result<OcrDocumentTreeImportResult> working = await _ocrImporter.BeginWorkingAsync(importRequest,
-                cancellationToken).ConfigureAwait(false);
-            return working.IsFailure
-                ? Failure<ExtensionOcrStage>(working.ErrorCode!, working.ErrorMessage!)
-                : Result<ExtensionOcrStage>.Success(new ExtensionOcrStage(extensionId, run.Fingerprint, identity,
-                    recognized.Value, treeCandidate, working.Value));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (ExtensionDomainUnavailableException exception)
-        {
-            return Failure<ExtensionOcrStage>(exception.Code, exception.Message);
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
-                                              "host.extensions.ocr-stage"))
-        {
-            return Failure<ExtensionOcrStage>(AppErrorCodes.InvalidState,
-                $"OCR extension staging failed: {exception.Message}");
-        }
-    }
-
     public async Task<Result<ExtensionRetrievalResult>> RankSearchAsync(string extensionId, SearchRequest request,
         int candidateLimit = 100, int resultLimit = 20, CancellationToken cancellationToken = default)
     {
@@ -209,6 +105,130 @@ public sealed class ExtensionDomainService
         {
             return Failure<ExtensionRetrievalResult>(AppErrorCodes.InvalidState,
                 $"Retrieval extension ranking failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<ExtensionOcrStage>> RecognizeAndStageAsync(string extensionId,
+        DocumentInstanceId documentId, PageId pageId, NormalizedBBox? region = null, int dpi = 200,
+        CancellationToken cancellationToken = default)
+    {
+        if (dpi is < 36 or > 1200)
+        {
+            return Failure<ExtensionOcrStage>(AppErrorCodes.ValidationFailed, "OCR DPI must be between 36 and 1200.");
+        }
+
+        NormalizedBBox inputRegion = region ?? FullPage;
+        Result regionValidation = inputRegion.Validate();
+        if (regionValidation.IsFailure)
+        {
+            return Failure<ExtensionOcrStage>(regionValidation.ErrorCode!, regionValidation.ErrorMessage!);
+        }
+
+        try
+        {
+            await using ExtensionDomainRun run = await AcquireAsync(extensionId, ExtensionKind.Ocr,
+                cancellationToken).ConfigureAwait(false);
+            Result<Page> pageResult = await _pages.GetPageAsync(pageId, cancellationToken).ConfigureAwait(false);
+            if (pageResult.IsFailure)
+            {
+                return Failure<ExtensionOcrStage>(pageResult.ErrorCode!, pageResult.ErrorMessage!);
+            }
+
+            Page page = pageResult.Value;
+            if (page.DocumentInstanceId != documentId)
+            {
+                return Failure<ExtensionOcrStage>(AppErrorCodes.ValidationFailed,
+                    "The page does not belong to the requested document instance.");
+            }
+
+            Result<DocumentTreeRevision> revisionResult = await _trees.GetCurrentRevisionAsync(documentId, pageId,
+                cancellationToken).ConfigureAwait(false);
+            if (revisionResult.IsFailure)
+            {
+                return Failure<ExtensionOcrStage>(revisionResult.ErrorCode!, revisionResult.ErrorMessage!);
+            }
+
+            ExtensionPageIdentity identity = new(documentId, pageId, revisionResult.Value.TreeRevisionId,
+                page.PageIndex);
+            OcrJobInput jobInput = new(new OcrInputId(Guid.NewGuid().ToString("N")), inputRegion, "image/png");
+            OcrDomainJobRequest jobRequest = new(
+                $"ocr-stage-{Guid.NewGuid():N}",
+                documentId,
+                [new OcrJobPage(identity, [jobInput])],
+                async (input, readToken) =>
+                {
+                    Result<string> imagePathResult = await _renders.RenderRegionPngAsync(documentId, pageId,
+                        input.Region, dpi, readToken).ConfigureAwait(false);
+                    if (imagePathResult.IsFailure)
+                    {
+                        throw new InvalidOperationException(
+                            $"OCR input render failed: {imagePathResult.ErrorMessage}");
+                    }
+
+                    byte[] imageBytes = await File.ReadAllBytesAsync(imagePathResult.Value, readToken)
+                        .ConfigureAwait(false);
+                    return new OcrInputImage(input.Id, input.ContentType, imageBytes);
+                },
+                new OcrJobOptions(dpi));
+
+            Result<OcrDomainRunResult> runResult = await run.RunOcrAsync(jobRequest, cancellationToken)
+                .ConfigureAwait(false);
+            if (runResult.IsFailure)
+            {
+                return Failure<ExtensionOcrStage>(runResult.ErrorCode!, runResult.ErrorMessage!);
+            }
+
+            OcrExtensionCandidate? recognized = runResult.Value.AcceptedCandidates
+                .FirstOrDefault(candidate => candidate.Page == identity);
+            if (recognized is null)
+            {
+                OcrPageSettlement? settlement = runResult.Value.Settlements
+                    .FirstOrDefault(item => item.Page == identity);
+                return Failure<ExtensionOcrStage>(settlement?.ErrorCode ?? AppErrorCodes.InvalidState,
+                    settlement?.ErrorMessage ?? "The OCR extension did not settle the requested page.");
+            }
+
+            OcrDocumentTreeCandidate treeCandidate = new(
+            [
+                new OcrPageCandidate(pageId, page.PageIndex,
+                    recognized.Boxes.Select(box =>
+                    {
+                        DocumentBoxSeed seed = box.Candidate;
+                        return new OcrBoxCandidate(seed.BoxType, seed.SubType, seed.SourceOrder,
+                            seed.Payload!, seed.BBox, seed.HeadingLevel, seed.Confidence, seed.Suppressed,
+                            seed.ParentBoxId, seed.BoxId, seed.ContinuesFromBoxId, seed.CodeLanguage,
+                            ContinuationState: seed.ContinuationState);
+                    }).ToArray())
+            ], []);
+            Result treeValidation = treeCandidate.Validate();
+            if (treeValidation.IsFailure)
+            {
+                return Failure<ExtensionOcrStage>(treeValidation.ErrorCode!, treeValidation.ErrorMessage!);
+            }
+
+            OcrDocumentTreeImportRequest importRequest = new(documentId, treeCandidate,
+                $"extension:{extensionId}",
+                new Dictionary<PageId, DocumentTreeRevisionId> { [pageId] = identity.RevisionId });
+            Result<OcrDocumentTreeImportResult> working = await _ocrImporter.BeginWorkingAsync(importRequest,
+                cancellationToken).ConfigureAwait(false);
+            return working.IsFailure
+                ? Failure<ExtensionOcrStage>(working.ErrorCode!, working.ErrorMessage!)
+                : Result<ExtensionOcrStage>.Success(new ExtensionOcrStage(extensionId, run.Fingerprint, identity,
+                    recognized, treeCandidate, working.Value));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (ExtensionDomainUnavailableException exception)
+        {
+            return Failure<ExtensionOcrStage>(exception.Code, exception.Message);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "host.extensions.ocr-stage"))
+        {
+            return Failure<ExtensionOcrStage>(AppErrorCodes.InvalidState,
+                $"OCR extension staging failed: {exception.Message}");
         }
     }
 

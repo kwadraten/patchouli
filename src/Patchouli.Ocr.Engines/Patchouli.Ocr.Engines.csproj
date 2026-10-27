@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Patchouli.Ocr.Engines</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
+    <PackageReference Include="SkiaSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The native OCR algorithm sources live under Infrastructure\Ocr but compile only into
+         this standalone support assembly. Infrastructure keeps the adapters, download services
+         and interfaces, and reaches internals through InternalsVisibleTo. -->
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteCharsetParser.cs"
+             Link="NdlLite\NdlLiteCharsetParser.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteClassNames.cs"
+             Link="NdlLite\NdlLiteClassNames.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteDetector.cs"
+             Link="NdlLite\NdlLiteDetector.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteLayoutOrderer.cs"
+             Link="NdlLite\NdlLiteLayoutOrderer.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteModelFiles.cs"
+             Link="NdlLite\NdlLiteModelFiles.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteOcrPipeline.cs"
+             Link="NdlLite\NdlLiteOcrPipeline.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteReadingOrderSolver.cs"
+             Link="NdlLite\NdlLiteReadingOrderSolver.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteRecognitionCascade.cs"
+             Link="NdlLite\NdlLiteRecognitionCascade.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlLite\NdlLiteRecognizer.cs"
+             Link="NdlLite\NdlLiteRecognizer.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\NdlKotenCharsetParser.cs"
+             Link="NdlKoten\NdlKotenCharsetParser.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\NdlKotenClassNames.cs"
+             Link="NdlKoten\NdlKotenClassNames.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\NdlKotenModelFiles.cs"
+             Link="NdlKoten\NdlKotenModelFiles.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\NdlKotenOcrPipeline.cs"
+             Link="NdlKoten\NdlKotenOcrPipeline.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\ParseqRecognizer.cs"
+             Link="NdlKoten\ParseqRecognizer.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\ReadingOrderSolver.cs"
+             Link="NdlKoten\ReadingOrderSolver.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\NdlKoten\RtmdetDetector.cs"
+             Link="NdlKoten\RtmdetDetector.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\DbPostProcess.cs"
+             Link="RapidOcr\DbPostProcess.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrClassifier.cs"
+             Link="RapidOcr\RapidOcrClassifier.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrDetector.cs"
+             Link="RapidOcr\RapidOcrDetector.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrGeometry.cs"
+             Link="RapidOcr\RapidOcrGeometry.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrImage.cs"
+             Link="RapidOcr\RapidOcrImage.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrModelFiles.cs"
+             Link="RapidOcr\RapidOcrModelFiles.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrParameters.cs"
+             Link="RapidOcr\RapidOcrParameters.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrPipeline.cs"
+             Link="RapidOcr\RapidOcrPipeline.cs" />
+    <Compile Include="..\Patchouli.Infrastructure\Ocr\RapidOcr\RapidOcrRecognizer.cs"
+             Link="RapidOcr\RapidOcrRecognizer.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Infrastructure</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

@@ -42,6 +42,7 @@ public sealed class OcrPresetService : IOcrPresetService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -115,6 +116,7 @@ public sealed class OcrPresetService : IOcrPresetService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -250,10 +252,245 @@ public sealed class OcrPresetService : IOcrPresetService
         }
     }
 
+    public async Task<Result<IReadOnlyList<OcrPreset>>> ListPresetsAsync(bool includeArchived = false,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Result<LibraryMetadata> library =
+                await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+            if (library.IsFailure)
+            {
+                return Result<IReadOnlyList<OcrPreset>>.Failure(library.ErrorCode!,
+                    library.ErrorMessage!);
+            }
+
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            IEnumerable<PresetRow> rows = await connection.QueryAsync<PresetRow>(
+                """
+                select preset_id as PresetId, library_id as LibraryId, name as Name, description as Description,
+                       current_version_id as CurrentVersionId, archived as Archived,
+                       created_at as CreatedAt, updated_at as UpdatedAt
+                from ocr_presets
+                where library_id = @LibraryId and (@IncludeArchived = 1 or archived = 0)
+                order by archived asc, updated_at desc;
+                """,
+                new { LibraryId = library.Value.LibraryId.ToString(), IncludeArchived = includeArchived ? 1 : 0 });
+            return Result<IReadOnlyList<OcrPreset>>.Success(
+                rows.Select(row => row.ToPreset()).ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset"))
+        {
+            return DbFail<IReadOnlyList<OcrPreset>>(ex);
+        }
+    }
+
+    public async Task<Result<OcrPreset>> UpdatePresetAsync(OcrPresetId presetId, string name,
+        string? description, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed, "OCR preset name is required.");
+        }
+
+        try
+        {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            int affected = await connection.ExecuteAsync(
+                "update ocr_presets set name = @Name, description = @Description, updated_at = @UpdatedAt where preset_id = @PresetId;",
+                new
+                {
+                    PresetId = presetId.ToString(), Name = name.Trim(), Description = NullIfWhiteSpace(description),
+                    UpdatedAt = F(now)
+                }, transaction);
+            if (affected == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrPreset>.Failure(AppErrorCodes.NotFound, "OCR preset was not found.");
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return await GetPresetAsync(presetId, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset"))
+        {
+            return DbFail<OcrPreset>(ex);
+        }
+    }
+
+    public async Task<Result<OcrPreset>> SaveCompositionAsync(OcrPresetId presetId, string name,
+        string? description, OcrPresetVersionId? expectedCurrentVersionId,
+        OcrPresetVersionWrite? newVersion, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed, "OCR preset name is required.");
+        }
+
+        if (newVersion is not null && (string.IsNullOrWhiteSpace(newVersion.EngineId) ||
+                                       string.IsNullOrWhiteSpace(newVersion.ModelId)))
+        {
+            return Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed, "OCR engine and model are required.");
+        }
+
+        try
+        {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            PresetRow? row = await connection.QuerySingleOrDefaultAsync<PresetRow>(
+                "select preset_id as PresetId, library_id as LibraryId, name as Name, description as Description, current_version_id as CurrentVersionId, archived as Archived, created_at as CreatedAt, updated_at as UpdatedAt from ocr_presets where preset_id = @PresetId;",
+                new { PresetId = presetId.ToString() }, transaction);
+            if (row is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrPreset>.Failure(AppErrorCodes.NotFound, "OCR preset was not found.");
+            }
+
+            if (row.Archived == 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR preset is archived and cannot be saved.");
+            }
+
+            string? currentVersionId = row.CurrentVersionId;
+            if (expectedCurrentVersionId is not null && !string.Equals(currentVersionId,
+                    expectedCurrentVersionId.Value.ToString(), StringComparison.Ordinal))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<OcrPreset>.Failure(AppErrorCodes.Conflict,
+                    "OCR preset changed since it was loaded; refresh the preset list and retry the save.");
+            }
+
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            string? versionId = currentVersionId;
+            if (newVersion is not null)
+            {
+                OcrPresetVersion version = new(OcrPresetVersionId.New(), presetId,
+                    newVersion.EngineId.Trim(), newVersion.ModelId.Trim(),
+                    NullIfWhiteSpace(newVersion.ModelPath), DefaultParameters(newVersion.ParametersJson),
+                    newVersion.ApplyOnSuccess, now);
+                await InsertVersionAsync(connection, transaction, version);
+                versionId = version.PresetVersionId.ToString();
+            }
+
+            await connection.ExecuteAsync(
+                "update ocr_presets set name = @Name, description = @Description, current_version_id = @CurrentVersionId, updated_at = @UpdatedAt where preset_id = @PresetId;",
+                new
+                {
+                    PresetId = presetId.ToString(), Name = name.Trim(),
+                    Description = NullIfWhiteSpace(description), CurrentVersionId = versionId,
+                    UpdatedAt = F(now)
+                }, transaction);
+            await transaction.CommitAsync(cancellationToken);
+            return await GetPresetAsync(presetId, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset"))
+        {
+            return DbFail<OcrPreset>(ex);
+        }
+    }
+
+    public async Task<Result<OcrPresetVersion>> GetPresetVersionAsync(OcrPresetVersionId presetVersionId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            VersionRow? row = await connection.QuerySingleOrDefaultAsync<VersionRow>(
+                "select preset_version_id as PresetVersionId, preset_id as PresetId, engine_id as EngineId, model_id as ModelId, model_path as ModelPath, parameters_json as ParametersJson, apply_on_success as ApplyOnSuccess, created_at as CreatedAt from ocr_preset_versions where preset_version_id = @PresetVersionId;",
+                new { PresetVersionId = presetVersionId.ToString() });
+            return row is null
+                ? Result<OcrPresetVersion>.Failure(AppErrorCodes.NotFound,
+                    "OCR preset version was not found.")
+                : Result<OcrPresetVersion>.Success(row.ToVersion());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset"))
+        {
+            return DbFail<OcrPresetVersion>(ex);
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<OcrPresetVersion>>> ListVersionsAsync(OcrPresetId presetId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            IEnumerable<VersionRow> rows = await connection.QueryAsync<VersionRow>(
+                "select preset_version_id as PresetVersionId, preset_id as PresetId, engine_id as EngineId, model_id as ModelId, model_path as ModelPath, parameters_json as ParametersJson, apply_on_success as ApplyOnSuccess, created_at as CreatedAt from ocr_preset_versions where preset_id = @PresetId order by created_at desc;",
+                new { PresetId = presetId.ToString() });
+            return Result<IReadOnlyList<OcrPresetVersion>>.Success(
+                rows.Select(row => row.ToVersion()).ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset"))
+        {
+            return DbFail<IReadOnlyList<OcrPresetVersion>>(ex);
+        }
+    }
+
+    public async Task<Result<OcrPreset>> ResolveSelectionAsync(OcrPresetId presetId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<OcrPreset> preset = await GetPresetAsync(presetId, cancellationToken);
+        if (preset.IsFailure)
+        {
+            return preset;
+        }
+
+        if (preset.Value.Archived)
+        {
+            return Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed,
+                $"OCR preset '{preset.Value.Name}' is archived; choose another preset.");
+        }
+
+        Result<LibraryMetadata> library =
+            await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (library.IsFailure)
+        {
+            return Result<OcrPreset>.Failure(library.ErrorCode!, library.ErrorMessage!);
+        }
+
+        return preset.Value.LibraryId != library.Value.LibraryId
+            ? Result<OcrPreset>.Failure(AppErrorCodes.ValidationFailed,
+                $"OCR preset '{preset.Value.Name}' belongs to another library; explicit preset selections are library-scoped.")
+            : preset;
+    }
+
     public async Task<Result> ArchivePresetAsync(OcrPresetId presetId, CancellationToken cancellationToken = default)
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             int affected = await connection.ExecuteAsync(

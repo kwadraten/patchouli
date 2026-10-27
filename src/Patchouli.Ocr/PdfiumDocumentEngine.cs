@@ -40,6 +40,95 @@ public sealed class PdfiumDocumentException : Exception
 
 public sealed record PdfiumPageBitmap(byte[] BgraBytes, int Width, int Height, int Stride);
 
+/// <summary>A user-space page box: un-rotated PDF coordinates with a bottom-left origin.</summary>
+public readonly record struct PdfPageBox(double Left, double Bottom, double Right, double Top)
+{
+    public double Width => Right - Left;
+
+    public double Height => Top - Bottom;
+
+    public bool IsDegenerate => Width <= 0 || Height <= 0;
+
+    public PdfPageBox Intersect(PdfPageBox other)
+    {
+        return new PdfPageBox(Math.Max(Left, other.Left), Math.Max(Bottom, other.Bottom),
+            Math.Min(Right, other.Right), Math.Min(Top, other.Top));
+    }
+}
+
+/// <summary>Per-character native readout flags mirroring the PDFium text-page classifiers.</summary>
+[Flags]
+public enum PdfiumTextGlyphFlags
+{
+    None = 0,
+    Generated = 1,
+    UnicodeMapError = 2,
+    Hyphen = 4,
+    NoUnicodeMapping = 8,
+
+    /// <summary>The index is the low-surrogate half of a supplementary scalar owned by the previous index.</summary>
+    SurrogateContinuation = 16
+}
+
+/// <summary>
+/// One native text character exactly as PDFium reports it: original Unicode UTF-16 text
+/// (surrogate pairs kept on a single index) plus raw user-space geometry — un-rotated PDF
+/// coordinates with the origin at the bottom-left. <see cref="Index"/> is the native text
+/// index and the source anchor; display normalization belongs to the host input source.
+/// </summary>
+public sealed record PdfiumTextGlyph(
+    int Index,
+    string Text,
+    double Left,
+    double Right,
+    double Bottom,
+    double Top,
+    double OriginX,
+    double OriginY,
+    double AngleRadians,
+    PdfiumTextGlyphFlags Flags,
+    string? FontName,
+    int FontFlags,
+    double FontSize);
+
+/// <summary>
+/// One page's native text layer in raw user-space terms. <see cref="RotationDegrees"/> is the
+/// page's /Rotate value applied to produce the display page; <see cref="CharCount"/> is the
+/// PDFium character count for the page (the glyph stream's index domain). <see cref="MediaBox"/>
+/// is the declared media box; <see cref="EffectiveBox"/> is the effective display frame —
+/// the crop box intersected with the media box — that the renderer rasterizes, so glyph
+/// normalization and persisted-basis reconciliation use it rather than the raw media box.
+/// </summary>
+public sealed record PdfiumTextPage(
+    PdfPageBox MediaBox,
+    PdfPageBox EffectiveBox,
+    int RotationDegrees,
+    int CharCount,
+    IReadOnlyList<PdfiumTextGlyph> Glyphs,
+    /// <summary>
+    /// The page size PDFium reports through its float page-size entry points —
+    /// the rotated <see cref="EffectiveBox"/> dimensions the render pipeline sizes its bitmaps
+    /// from. Kept as a cross-check against the box geometry the native layer reports.
+    /// </summary>
+    double PageWidthPoints = 0,
+    double PageHeightPoints = 0);
+
+/// <summary>
+/// Native text-layer extraction surface for a PDF source. Implemented by
+/// <see cref="PdfiumDocumentEngine"/>; host input sources depend on the interface so page
+/// validation and context assembly can be tested without a live PDFium process.
+/// </summary>
+public interface IPdfTextExtractor
+{
+    /// <summary>
+    /// Reads the complete native text layer of one page inside the PDFium scheduler without
+    /// rendering. Returns an empty glyph list — not an exception — when the page has no text
+    /// object; selected-provider failure semantics belong to the caller.
+    /// </summary>
+    Task<PdfiumTextPage> ExtractTextPageAsync(string pdfPath, int pageIndex,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// A PDFium document that stays open across page renders so a viewing session does not
 /// reopen the PDF for every page. The session is lease-counted (issue #31): rendering holds a
@@ -74,6 +163,13 @@ public sealed class PdfiumDocumentSession : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         return _engine.RenderPageAsync(this, pageIndex, dpi, cancellationToken);
+    }
+
+    /// <summary>Reads the native text layer of one page while the document stays open.</summary>
+    public Task<PdfiumTextPage> ExtractTextPageAsync(int pageIndex,
+        CancellationToken cancellationToken = default)
+    {
+        return _engine.ExtractTextPageAsync(this, pageIndex, cancellationToken);
     }
 
     public ValueTask DisposeAsync()
@@ -187,7 +283,7 @@ public sealed class PdfiumDocumentSession : IAsyncDisposable
 /// native layer (<see cref="PdfiumNative"/>). Engine instances are cheap and share the one
 /// scheduler, so constructing several engines never creates competing native gates.
 /// </summary>
-public sealed class PdfiumDocumentEngine
+public sealed class PdfiumDocumentEngine : IPdfTextExtractor
 {
     public const string Version = "151.0.7920";
     private static readonly ConcurrentDictionary<PdfiumDocumentSession, byte> AllSessions = new();
@@ -243,6 +339,36 @@ public sealed class PdfiumDocumentEngine
         using IDisposable lease = session.AcquireLease();
         return await RunAsync(() => PdfiumNative.RenderPage(session.Document, pageIndex, dpi, session.Path),
             PdfiumPriority.Interactive, cancellationToken);
+    }
+
+    internal async Task<PdfiumTextPage> ExtractTextPageAsync(PdfiumDocumentSession session, int pageIndex,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable lease = session.AcquireLease();
+        return await RunAsync(() => PdfiumNative.ReadTextPage(session.Document, pageIndex, session.Path),
+            PdfiumPriority.Interactive, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads one page's native text layer as a single scheduled unit — load document, load
+    /// text page, walk character indices, close — with no page rendering. A document opened
+    /// for repeated extraction should use <see cref="PdfiumDocumentSession"/> instead.
+    /// </summary>
+    public async Task<PdfiumTextPage> ExtractTextPageAsync(string pdfPath, int pageIndex,
+        CancellationToken cancellationToken = default)
+    {
+        return await RunAsync(() =>
+        {
+            FpdfDocumentT document = PdfiumNative.LoadDocument(pdfPath);
+            try
+            {
+                return PdfiumNative.ReadTextPage(document, pageIndex, pdfPath);
+            }
+            finally
+            {
+                PdfiumNative.CloseDocument(document);
+            }
+        }, PdfiumPriority.Background, cancellationToken);
     }
 
     internal async Task CloseSessionAsync(PdfiumDocumentSession session)

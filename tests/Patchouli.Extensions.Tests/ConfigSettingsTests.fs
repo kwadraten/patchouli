@@ -35,9 +35,37 @@ type private InvalidDefaultSettings =
 type private NonRecordSettings() =
     member _.Prompt = "prompt"
 
+[<Settings>]
+type private OcrDefaultModelSettings =
+    { [<Model("OCR model", Key = "model", FollowDefault = "ocr")>]
+      Model: ExtensionModelSelection option }
+
+[<Settings>]
+type private InvalidModelDomainSettings =
+    { [<Model("Model", FollowDefault = "not-a-domain")>]
+      Model: ExtensionModelSelection option }
+
 [<Collection(TestEnvironment.CollectionName)>]
 type ConfigSettingsTests() =
     let snapshot values = ExtensionConfigSnapshot(Dictionary<string, string>(dict values), 0L)
+
+    [<Fact>]
+    member _.``unit settings use their canonical value without a runtime constructor`` () =
+        let value = ConfigSettings.Read<unit>(snapshot [])
+        Assert.Equal((), value)
+        Assert.Empty(ConfigSettings.Describe<unit>())
+
+    [<Fact>]
+    member _.``OCR model schema has its own default domain without materializing translation defaults`` () =
+        let field = Assert.Single(ConfigSettings.Describe<OcrDefaultModelSettings>())
+        Assert.Equal("ocr", field.DefaultDomain)
+        Assert.True(field.FollowDefault)
+        Assert.Equal(None, ConfigSettings.Read<OcrDefaultModelSettings>(snapshot []).Model)
+
+    [<Fact>]
+    member _.``unknown default model domains are rejected`` () =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            ConfigSettings.Describe<InvalidModelDomainSettings>() |> ignore) |> ignore
 
     [<Fact>]
     member _.``attributed FSharp settings record reads defaults and flattened keys`` () =

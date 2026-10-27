@@ -137,7 +137,9 @@ public sealed record ExtensionEntryMetadata(
             {
                 "translation" => ExtensionKind.Translation, "metadata" => ExtensionKind.Metadata,
                 "ocr" => ExtensionKind.Ocr, "retrieval" => ExtensionKind.Retrieval,
-                _ => throw At("kind must be translation, metadata, ocr, or retrieval.", root.Attribute("kind")!)
+                "pdf-text-layer" => ExtensionKind.PdfTextLayer,
+                _ => throw At("kind must be translation, metadata, ocr, retrieval, or pdf-text-layer.",
+                    root.Attribute("kind")!)
             };
             string version = RequiredAttribute("version");
             if (!System.Text.RegularExpressions.Regex.IsMatch(version,

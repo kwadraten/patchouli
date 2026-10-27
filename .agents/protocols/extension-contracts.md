@@ -17,10 +17,17 @@ Author-facing guidance (SDK usage, nullability rules, examples) lives in the dis
 | Progress | Step names and input identities | Execution identities, elapsed time, deduplicated counts and observer isolation | No percentage without a known total; no default body or credential logging |
 | Translation | Whole-task page order, cross-page batching, concurrency, retry policy, service protocol, alignment, candidate output | Page identity and revision checks, filtering pages requiring translation, frozen context snapshots, per-page atomic commits, progress reporting, and cancellation | Wrong identities, invalid payloads, or revision drift reject commit; a page settles once, and re-commit is valid only after Conflict+RetryPage; uncommitted pages settle as Failed/Cancelled on job completion |
 | Metadata | Identifier lookup and candidate content | Read-only proposal, expected-version check, atomic metadata/identifier application | Concurrent edits conflict; invalid identifiers cannot leave partial metadata |
-| OCR | Recognition and normalization to MinerU content semantics | MinerU-based shared model, input evidence, geometry/ownership checks, import commit | Provider-specific shapes cannot bypass normalization; candidate generation does not write document trees |
-| Retrieval | Query and ranking policy | Source revision/Box mapping, rebuildable derived index, evidence rules | Stale or foreign evidence cannot be promoted into authoritative source content |
+| OCR | Whole-task input order, cross-input and cross-page batching, concurrency, request-level retry, recognition and normalization to MinerU content semantics | Page/input identity and frozen baselines, lazy bounded input materialization, per-page exactly-once candidate settlement and receipts, Working Revision/adoption, progress and cancellation | Foreign inputs or pages, stale revisions, invalid geometry or payloads, and duplicate settlements are rejected; a page settles exactly once; unfinished inputs settle as Failed/Cancelled; candidates never write document trees directly |
+| Retrieval | Explicit reranking of host-supplied search candidates | Search evidence and candidate limits, lease/config snapshot, candidate identity and finite-score validation | Results cannot introduce or duplicate units; this SDK capability does not enable retrieval automatically or imply default vector/hybrid search |
 
 ## Authoring
+
+The host API remains `patchouli.extensions/3`. The task-level OCR job and declarative
+managed-file schema add capabilities to the existing extension system; migrating the former
+built-in OCR backends is not a breaking migration of existing non-OCR extensions. Existing
+translation, metadata and retrieval packages remain accepted without implementing OCR or
+rewriting their entry metadata. Derived artifacts still undergo normal source/reference
+identity validation. This does not claim that the in-progress #43 migration has passed acceptance.
 
 Package identity is authored once in the `///` XML documentation attached to the
 column-zero top-level `let extension` binding in `main.fsx` (ADR
@@ -44,6 +51,11 @@ hash, Host API and checker/reference assembly identities. This index is not anot
 manifest and cannot replace code or artifact validation. Missing or incompatible
 descriptions produce an explicit unchecked/source-only configuration view, not a runtime check
 or compiler launch hidden behind opening a settings dialog.
+
+Release publishes are explicitly single-node with `BuildInParallel=false` and
+`UseSharedCompilation=false`: RID/self-contained property variants can otherwise reach these
+neutral SDK output paths concurrently. Do not evade those locks by disabling artifact generation
+or changing SDK/cache identity; keep the schema and compiler artifacts produced and validated.
 
 `|>>` composes cold typed steps. `Parallel.map` preserves input order while item execution
 identities describe completion order. The shared host request gate bounds nested transport
@@ -123,6 +135,114 @@ the next page is taken.
 The compiled extension executes in a host-managed collectible `AssemblyLoadContext` (ALC);
 there is no worker RPC boundary. The existing whole-task job contract remains host mediated.
 
+## Task-level OCR job
+
+An OCR run has exactly one extension entry point:
+`IOcrExtension.RunAsync(job, resources, cancellationToken)`. The extension receives the
+whole task as an `IOcrJob` and drives it; there is no per-page `RecognizeAsync` and no
+optional second interface. The job scope may be a document run, selected pages, a single
+page or region, or an ephemeral in-memory prefill — task-level does not mean
+document-level, and an ephemeral job does not require a durable `OcrRun`.
+
+Semantic summary of `IOcrJob`:
+- **`Info`**: run-pinned `OcrJobInfo` (job id, document instance, `OcrJobOptions` such as
+  the render DPI and SDK concurrency budget, and the frozen `ExtensionConfigSnapshot`).
+  The host never mutates it while the job lives. Compiled OCR invocations enter the same
+  SDK execution scope as translation with this budget (default 1); it bounds cooperating
+  SDK parallel work, not arbitrary threads created by trusted extension code. The
+  separate in-flight image budget bounds held image buffers.
+- **`NextPageAsync(cancellationToken)`**: returns the next `OcrJobPage` in request order —
+  a page identity (document, page id, frozen source revision, page index) plus its issued
+  `OcrJobInput` descriptors. Each input declares an id, a normalized page-coordinate region
+  and a content type; image bytes are not embedded. `Inputs` is a read-only view: descriptor
+  instances cannot be swapped through collection casts. Returns `null` when no page remains.
+  The host serializes the call, so concurrent callers observe request order.
+- **`ReadInputImageAsync(input, cancellationToken)`**: materializes one issued input's
+  image on demand and returns an `OcrInputImage` lease (`IDisposable`) over its bytes. The
+  input must be the same descriptor instance the job issued — foreign, fabricated or
+  equal-valued-but-different descriptors throw `ArgumentException` — and its page must
+  still be unsettled; reads on a settled page throw `InvalidOperationException`. A
+  per-job in-flight budget bounds how many image leases may be open at once: a call that
+  would exceed it waits, cancellation-aware, until another lease is disposed. Each call
+  also links a job-owned read lifetime into its token and registers itself before any
+  await: when the job ends, budget waiters and cooperative loaders are cancelled, and the
+  invocation — including the extension's generation lease — stays alive until every
+  registered read has actually exited. A loader that ignores the job's cancellation is
+  still waited on, never released early; an image it returns after closure is disposed
+  immediately. The extension must dispose each lease; the host also releases any lease
+  still outstanding when the invocation ends. `OcrInputImage.Data` throws
+  `ObjectDisposedException` after disposal and drops its buffer reference.
+- **`SubmitCandidatesAsync(candidate, cancellationToken)`**: validates and records the
+  typed `OcrExtensionCandidate` (`DocumentBoxSeed` boxes, not flattened text) for one
+  issued, unsettled page. `candidate.Inputs` must account for every issued input exactly
+  once — a successful-but-blank input is `Recognized`, not omitted, and `Failed` requires
+  an error code; boxes may only attach to `Recognized` inputs. Geometry is expressed in
+  normalized page coordinates and must stay inside the referenced input's region; the
+  page identity — including its frozen source revision — must equal the issued page
+  exactly. Job-allocated seed `BoxId`s must be unique across the job; a `ParentBoxId`
+  must resolve inside the same submission; a `ContinuesFromBoxId` may additionally
+  resolve to a box id accepted earlier in the same job — cross-page continuations are
+  settlement-order sensitive: a page whose continuation targets a not-yet-accepted box
+  is rejected, so engines settling pages concurrently cannot emit forward references.
+  Every call returns an `OcrSubmissionReceipt`:
+  - `Accepted`: the page is settled; a second submission is `Rejected`, never merged.
+    `Accepted` means the candidate passed host validation and was recorded — it is not a
+    claim of full recognition success. `FailedInputCount` on the receipt and the recorded
+    `OcrPageSettlement` report how many issued inputs came back failed or skipped, and any
+    consumer that adopts or reports page outcomes must inspect `candidate.Inputs` /
+    `FailedInputCount` rather than treating an accepted settlement as complete success.
+  - `Rejected`: validation or ownership failed; the page stays unsettled and a corrected
+    submission may still be made.
+  - `Conflict`: the source revision moved after issue; `RetryPage` carries the reissued
+    page when the host can provide one.
+  - `Failed`: recorded through `FailPageAsync`.
+- **`FailPageAsync(page, errorCode, errorMessage, cancellationToken)`**: settles an issued,
+  unsettled page as failed. An all-failed page must be settled explicitly rather than
+  submitted as an empty candidate set.
+- **Terminal settlement**: every requested page settles exactly once. Pages issued but
+  still unsettled when the invocation returns settle as `Failed`, or `Cancelled` when the
+  job was cancelled; pages never taken settle as `Cancelled`. Submitting candidates is
+  never a write to canonical text: accepted sets proceed through the host's existing
+  validation, Working Revision and adoption rules.
+- **Lease and invocation lifetime**: the extension call always runs on the thread pool —
+  an `IOcrJob` mediates access, it does not create a thread boundary — and
+  `ExtensionDomainRun.DisposeAsync` waits for the in-flight invocation — including its
+  in-flight image reads — to exit before releasing the generation lease. Every disposer,
+  serial or concurrent, awaits the same drain-plus-lease-release operation, failures
+  included; a second disposer never returns while lease disposal is still running. Once
+  disposal starts, new invocations are rejected.
+
+The bundled SDK mirrors the translation shape: `OcrJob.runPages` /
+`OcrJob.runPagesWithOptions` is a strictly sequential default driver — lazy page pulls,
+per-input materialization and disposal, a bounded per-input attempt budget spent only on
+errors the `IsRetryableInputError` classifier accepts (the default retries only transient
+infrastructure errors; cancellation of any kind, argument/validation errors and
+programming errors never retry), typed per-input outcomes, partial-input submission
+(successful inputs submit with `Failed`/`Skipped` siblings still recorded), an all-failed
+page going through `FailPageAsync`, bounded `Conflict` reprocessing, and cancellation
+propagation. Progress stays non-success for partial pages: a page settled `Accepted`
+with `FailedInputCount > 0` emits a `Failed`-status `page-ocr` event (message
+`partially recognized`), never `Completed`. Engine error text is sanitized to the
+exception type name rather than raw messages that may carry secrets or paths. Engines
+that need concurrency or batching
+implement `RunAsync` directly against the job. Single-image engines plug into
+`Extension.createOcrPages`; task-level drivers use `Extension.createOcr`. The host-side
+staging entry (`ExtensionDomainService.RecognizeAndStageAsync`) and the compiled-extension
+path share the same `ExtensionDomainRun.RunOcrAsync` invocation; the host job collects
+accepted candidates per page and reports every page's terminal settlement in request order.
+
+The queue supplies the invocation's progress sink rather than waiting for batch import to finish.
+`page-ocr` events use the zero-based physical page index as `ItemId`; their completed/total counts
+are inputs on that page, not pages in the document. The host also reports page issue/settlement
+for direct task-level engines that do not use the SDK. Queue projection aggregates only the
+frozen job's pages, deduplicates terminal reports, and closes the sink before result import so
+late callbacks cannot replace import/adoption/indexing progress. Raw extension messages are not
+displayed. The bundled multimodal engine adds `layout-detection`, `reading-order`, `region-ocr`
+and `direct-ocr` subphases with `ParentPhase = "page-ocr"`, page `ItemId` and input `ExecutionId`;
+region counters report completed model responses, not accepted page candidates. Desktop task rows
+show the current physical page, input/region counts, and separate text-layer and import stages.
+These progress projections do not change candidate settlement, success or adoption semantics.
+
 ## Host policy
 
 Translation retains the task-level contract above. The extension owns whole-task page ordering,
@@ -130,6 +250,11 @@ cross-page batching, concurrency, and retry policy. The host owns page identity,
 verification, filtering, frozen context snapshots, per-page atomic commits, progress and
 cancellation. SDK records and compiler warnings remain validated. No legacy v2 compatibility
 claim or API-version blacklist is part of the target contract.
+
+OCR uses the task-level job contract above. The extension owns whole-task input order,
+cross-input and cross-page batching, concurrency, and request-level retry policy. The host
+owns page/input identity, frozen source baselines, lazy bounded input materialization,
+per-page exactly-once candidate settlement, progress and cancellation.
 
 OCR providers share the MinerU-based content model described in
 [OCR normalization](ocr-normalization.md). Raw text and text-box results enter the

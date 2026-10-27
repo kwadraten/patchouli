@@ -30,7 +30,17 @@ public sealed partial class ExtensionConfigurationDialog : Window
     public ExtensionConfigurationDialog(ExtensionSettingsViewModel editor) : this()
     {
         DataContext = editor;
-        Opened += (_, _) => editor.LoadAsync().Observe(nameof(ExtensionConfigurationDialog), "load-extension-dialog");
+        Opened += (_, _) =>
+        {
+            // Component catalogs can request the FSX source pane directly (custom, never-activated
+            // or invalid-source packages); the same toggle still controls it afterwards.
+            if (editor.OpenWithSourceExpanded && !IsSourceVisible)
+            {
+                ToggleSource();
+            }
+
+            editor.LoadAsync().Observe(nameof(ExtensionConfigurationDialog), "load-extension-dialog");
+        };
         Closed += (_, _) => editor.CancelPendingLoad();
     }
 

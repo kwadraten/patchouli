@@ -10,3 +10,6 @@ module Domains =
 
     [<Literal>]
     let metadata = "metadata"
+
+    [<Literal>]
+    let ocr = "ocr"

@@ -16,6 +16,7 @@
     <Compile Include="Capabilities.fs" />
     <Compile Include="Pipeline.fs" />
     <Compile Include="Job.fs" />
+    <Compile Include="OcrJob.fs" />
     <Compile Include="ExtensionFactories.fs" />
     <Compile Include="RuntimeFrameworkReferences.fs" />
     <Compile Include="ExtensionDiagnostics.fs" />

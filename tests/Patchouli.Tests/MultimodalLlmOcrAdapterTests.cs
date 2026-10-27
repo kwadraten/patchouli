@@ -463,8 +463,8 @@ public sealed class MultimodalLlmOcrAdapterTests
         candidate.Pages[0].PageId.Should().Be(context.Pages[0].PageId);
         candidate.Pages[0].Boxes.Should().HaveCount(2);
         candidate.Pages[0].Boxes.Select(box => box.BoxType).Should().AllBe(DocumentBoxType.Text);
-        candidate.Pages[0].Boxes[0].Payload.Should().BeOfType<TextBoxPayload>();
-        candidate.Pages[0].Boxes[0].Payload.ToString().Should().Contain("Hello");
+        candidate.Pages[0].Boxes[0].Payload.Should().BeOfType<TextBoxPayload>()
+            .Which.Markdown.Should().Contain("Hello");
 
         int boxCount = await context.CountAsync("select count(*) from document_boxes;");
         boxCount.Should().Be(2, "boxes exist only because the unified importer created them");

@@ -1,5 +1,67 @@
 # FSX extension and HTML table validation
 
+## OCR production integration (#43, 2026-10-25, pending acceptance)
+
+The continuation after the foundation below adds production task-level dispatch, a standalone
+native support assembly and compiled OCR/PDF-provider packages, structured preset forms and
+selectors, and the queue presentation/refresh boundary. These are **unaccepted working changes**,
+not a new green milestone. The earlier 4,200-test foundation run does not validate this source.
+
+Six delegated CLI sessions were audited from their exported generation metadata: each used
+`swe-2-max`, with no nested agent calls. The final coding turns supplied handoffs without a
+denied-tool termination. Central review added real default-host compiled-generation and native
+text-layer fixtures, plus an explicit real-weight RapidOCR probe; those tests have not yet run.
+Public RapidOCR weights were downloaded only under repository `.tmp/` and matched their pinned
+size/SHA-256 manifests; downloading weights is not OCR execution acceptance.
+
+The first central build failed on native extraction and support-facade syntax; the second failed
+on nullable geometry, tuple names and a local-variable collision. These failures are preserved
+under `.tmp/issue43-completion-20261025/validation/`. Compiler repairs are in progress; cleanup,
+SDK/interop/Full/inspection, real inference and packaging still require recorded results over
+the final integrated source. No installer, installation, commit, staging, push or PR is claimed.
+
+## Task-level OCR foundation (#43 / #45, 2026-10-25)
+
+ADR [0054](../adr/0054-task-level-ocr-extension-jobs.md) introduces the OCR-specific `IOcrJob`
+and sole `IOcrExtension.RunAsync` entry point. The validated slice covers the contract/SDK and
+explicit extension staging, lazy bounded image leases, typed partial input outcomes, real read
+and generation-disposal draining, early Task–Run/preset association, attempt-owned callbacks,
+precise Run-keyed queue projections and bounded SQL collection parameters. Existing region
+prefill remains ephemeral and modal: service execution is background-bound, UI application checks
+the original library/page/draft context, and workspace teardown waits for real work to exit even
+when the synchronous adapter ignores cancellation. F# `unit` settings use their canonical value
+instead of attempting to construct `Microsoft.FSharp.Core.Unit` through reflection.
+
+Historical Windows correctness gates over the foundation-only working snapshot (baseline `1abfc2f`):
+
+| Gate | Result / recorded run |
+| --- | --- |
+| Normal C#/F# build, scoped cleanup, rebuild | Zero compiler warnings/errors; JetBrains 2026.1.4, fixed `Built-in: Reformat & Apply Syntax Style` profile |
+| Focused OCR / caller / compiled-extension regression | 209 passed, 0 failed/skipped; `issue43-foundation-20261025-113156256-b519b8-focused` |
+| Complete separate F# SDK test project | 96 passed, 0 failed/skipped; `issue43-foundation-20261025-113220710-e12c56-sdk` |
+| Full ordinary batch | 3,992 passed, 0 failed, 8 existing allowlisted terminal skips |
+| Full UI batch | 22 passed, 0 failed/skipped |
+| Full compiled-extension/FCS batch | 186 passed, 0 failed/skipped |
+| Full aggregate | 4,200 passed, 0 failed, 8 allowlisted skips; `issue43-foundation-20261025-113235659-032ef5-full` |
+| Inspection over built F# metadata and C# callers | Zero errors and zero blocking findings, no added ReSharper suppressions |
+
+Runs use `scripts/run-tests.ps1`; Full batches execute sequentially, with no performance suite
+mixed into correctness. Evidence, worker/model audit and review notes are under
+`.tmp/issue43-implementation-20261025/`; recorded TRX/summaries are under the corresponding
+`.tmp/test-runs/<run-id>/` directories. Earlier failed build/focused/inspection attempts remain
+preserved rather than relabelled as acceptance. The final inspection uses the built
+`Patchouli.Extensions.dll` metadata through `-UseExistingBuild`.
+
+Limits: default-queue task-level FSX dispatch and actual RapidOCR/NDL/multimodal migrations are
+not complete; neither are the baseline-aware conflict receipt producer, full immutable
+extension-generation/configuration handoff, independent PDF text-layer implementation, preset
+selection UI or task-kind/source-label cleanup. The broader #46 UI refresh/database remediation
+is separate. No existing installed instance or real library was modified; no application version
+was increased or release/commit/PR made. Real-model opt-in variables were empty only in the
+validation child process; the user configuration was not changed. No real-model, natural UI-tail,
+endurance, cross-platform or self-contained packaging acceptance is claimed. The historical
+failed records below remain evidence of their own earlier source snapshots, not this run.
+
 ## Trusted compiled-FSX v3 migration (2026-10-23, in progress)
 
 ADR [0053](../adr/0053-trusted-compiled-fsx-extensions.md) supersedes the worker/FSI and

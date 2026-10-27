@@ -5,179 +5,88 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
+using Patchouli.Host;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
 using Patchouli.UI.ViewModels;
-using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
+/// <summary>
+///     "OCR 预设编排" settings tab: per-scope preset selection (document/page/region)
+///     plus the inline composition table. Rows combine registry components — an image OCR engine
+///     and an independent text-layer provider — and save through
+///     <see cref="IOcrPresetService.SaveCompositionAsync" /> so metadata + the new immutable
+///     version move atomically. A component change freezes the components' current resolved
+///     configuration via <see cref="OcrPresetCompositionService" />; a rename-only save never
+///     touches the frozen snapshot. Engine/provider choices come from
+///     <see cref="OcrExtensionEngineRuntime" /> registry metadata — never <c>OcrAdapters</c>,
+///     which only represents the MinerU compatibility path now. Component configuration stays in
+///     the component catalog dialogs; there is no preset modal.
+/// </summary>
 public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private readonly SettingsDraftStore _draftStore;
     private long _editRevision;
-    private string _token = "";
-    private string _persistedToken = "";
-    private string _modelVersion;
-    private string _persistedModelVersion;
-    private int _pollingTimeoutSeconds;
-    private int _persistedPollingTimeoutSeconds;
-    private string _documentOcrEngine = "";
-    private string _persistedDocumentOcrEngine = "";
-    private string _pageOcrEngine = "";
-    private string _persistedPageOcrEngine = "";
-    private string _regionOcrEngine = "";
-    private string _persistedRegionOcrEngine = "";
     private bool _isDirty;
     private bool _isConstructing;
     private bool _isSyncing;
+    private IReadOnlyList<OcrEngineOption> _engineOptions = [];
+
+    private IReadOnlyList<OcrTextLayerProviderOption> _providerOptions =
+        [OcrTextLayerProviderOption.Disabled];
+
+    private List<OcrPresetOption> _activePresetOptions = [];
+    private OcrPresetSelections _persistedSelections = OcrPresetSelections.Empty;
 
     public OcrProviderSettingsViewModel(MainWindowViewModel main)
     {
         _isConstructing = true;
         _main = main;
-        _draftStore = new SettingsDraftStore(main.SettingsFilePath);
-        RemoveMinerUCredentialCommand = new AsyncCommand(RemoveMinerUCredentialAsync);
-        _token = "";
-        _persistedToken = _token;
-        _modelVersion = NormalizeModelVersion(main.AppOptions.MinerU.ModelVersion);
-        _persistedModelVersion = _modelVersion;
-        _pollingTimeoutSeconds = main.AppOptions.MinerU.PollingTimeoutSeconds;
-        _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
-        LoadEnginesFromSettings(main.AppOptions.OcrEngines);
-        _persistedDocumentOcrEngine = _documentOcrEngine;
-        _persistedPageOcrEngine = _pageOcrEngine;
-        _persistedRegionOcrEngine = _regionOcrEngine;
-        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
-            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
+        AddPresetRowCommand = new AsyncCommand(AddPresetRow);
+        RefreshPresetRowsCommand = new AsyncCommand(async () =>
+        {
+            HostServices services = await _main.ServicesAsync();
+            await RefreshPresetRowsAsync(services, CancellationToken.None);
+        });
+        DocumentPresetPicker = new OcrPresetScopePickerViewModel(OcrScope.Document, "文档级 OCR");
+        PagePresetPicker = new OcrPresetScopePickerViewModel(OcrScope.Page, "页面级 OCR");
+        RegionPresetPicker = new OcrPresetScopePickerViewModel(OcrScope.Region, "区域级 OCR");
+        foreach (OcrPresetScopePickerViewModel picker in
+                 new[] { DocumentPresetPicker, PagePresetPicker, RegionPresetPicker })
+        {
+            picker.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(OcrPresetScopePickerViewModel.SelectedOption) &&
+                    !_isConstructing && !_isSyncing)
+                {
+                    UpdateDirtyState();
+                    MarkDirty("有未保存的更改");
+                }
+            };
+        }
+
         _isConstructing = false;
     }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(MinerUCredentialStatus))]
-    public partial string MinerUTokenInput { get; set; } = "";
+    /// <summary>Header plus button — appends one unsaved composition row.</summary>
+    public AsyncCommand AddPresetRowCommand { get; }
 
-    partial void OnMinerUTokenInputChanged(string value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
+    /// <summary>Header refresh — reloads preset rows and scope selections from storage.</summary>
+    public AsyncCommand RefreshPresetRowsCommand { get; }
 
-        _token = value;
-        UpdateDirtyState();
-        MarkDirty("有未保存的更改");
-    }
+    public OcrPresetScopePickerViewModel DocumentPresetPicker { get; }
+    public OcrPresetScopePickerViewModel PagePresetPicker { get; }
+    public OcrPresetScopePickerViewModel RegionPresetPicker { get; }
 
+    /// <summary>The inline composition rows; unsaved rows survive refreshes.</summary>
     [ExcludeFromDerivedGeneration]
-    public string MinerUCredentialStatus => string.IsNullOrWhiteSpace(MinerUTokenInput)
-        ? "未配置 ProviderCredential"
-        : "已配置 ProviderCredential";
+    public ObservableCollection<OcrPresetCompositionRowViewModel> PresetRows { get; } = new();
 
-    [ExcludeFromDerivedGeneration] public bool HasPersistedCredential => !string.IsNullOrWhiteSpace(_persistedToken);
+    [ObservableProperty] public partial string? PresetStatus { get; set; }
 
-    public ReadOnlyCollection<string> MinerUModelVersionOptions { get; } =
-        Array.AsReadOnly(["vlm", "pipeline"]);
-
-    [ObservableProperty] public partial string MinerUModelVersion { get; set; } = "vlm";
-
-    partial void OnMinerUModelVersionChanged(string value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
-
-        string normalized = NormalizeModelVersion(value);
-        if (_modelVersion != normalized)
-        {
-            _modelVersion = normalized;
-            UpdateDirtyState();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    [ObservableProperty] public partial int MinerUPollingTimeoutSeconds { get; set; }
-
-    partial void OnMinerUPollingTimeoutSecondsChanged(int value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
-
-        int clamped = Math.Max(30, Math.Min(value, 3600));
-        if (_pollingTimeoutSeconds != clamped)
-        {
-            _pollingTimeoutSeconds = clamped;
-            UpdateDirtyState();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    public string OcrConcurrencySummary { get; } = "OCR 队列第一版使用本机单任务 tick 执行。";
-
-    public string PreferredOcrProviderName => "MinerU";
-    public string PreferredOcrProviderType => "云端 OCR/版面解析";
-
-    [ExcludeFromDerivedGeneration] public ObservableCollection<OcrEngineOption> AvailableEngines { get; } = new();
-
-    [ObservableProperty] public partial string SelectedDocumentEngine { get; set; } = "";
-
-    partial void OnSelectedDocumentEngineChanged(string value)
-    {
-        if (_isConstructing || _isSyncing || value is null)
-        {
-            return;
-        }
-
-        string normalized = NormalizeEngineId(value);
-        if (_documentOcrEngine != normalized)
-        {
-            _documentOcrEngine = normalized;
-            UpdateDirtyState();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    [ObservableProperty] public partial string SelectedPageEngine { get; set; } = "";
-
-    partial void OnSelectedPageEngineChanged(string value)
-    {
-        if (_isConstructing || _isSyncing || value is null)
-        {
-            return;
-        }
-
-        string normalized = NormalizeEngineId(value);
-        if (_pageOcrEngine != normalized)
-        {
-            _pageOcrEngine = normalized;
-            UpdateDirtyState();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    [ObservableProperty] public partial string SelectedRegionEngine { get; set; } = "";
-
-    partial void OnSelectedRegionEngineChanged(string value)
-    {
-        if (_isConstructing || _isSyncing || value is null)
-        {
-            return;
-        }
-
-        string normalized = NormalizeEngineId(value);
-        if (_regionOcrEngine != normalized)
-        {
-            _regionOcrEngine = normalized;
-            UpdateDirtyState();
-            MarkDirty("有未保存的更改");
-        }
-    }
-
-    public AsyncCommand RemoveMinerUCredentialCommand { get; }
     public override bool SupportsEditing => true;
 
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
@@ -190,253 +99,515 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
         try
         {
             HostServices services = await _main.ServicesAsync();
-            IReadOnlyList<OcrEngineCapability> capabilities = services.OcrAdapters.ListCapabilities();
-            ReloadEngineCatalog(capabilities);
-        }
-        catch (Exception exception)
-        {
-            Status = $"加载 OCR 引擎列表失败：{exception.Message}";
-        }
-
-        OcrEnginesAppSettings? draft =
-            await _draftStore.ReadAsync<OcrEnginesAppSettings>("ocr-engines", cancellationToken);
-        if (draft is not null && !IsDirty && revision == _editRevision)
-        {
-            _persistedDocumentOcrEngine = draft.DocumentOcrEngine;
-            _persistedPageOcrEngine = draft.PageOcrEngine;
-            _persistedRegionOcrEngine = draft.RegionOcrEngine;
-            SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
-                draft.DocumentOcrEngine, draft.PageOcrEngine, draft.RegionOcrEngine);
-            ValidationState = SettingsValidationState.Invalid;
-        }
-
-        if (IsDirty)
-        {
-            Status = "OCR 设置有未保存的更改，已保留当前草稿。";
-            return;
-        }
-
-        try
-        {
-            if (AvailableEngines.Count == 0)
+            int generation = _main.LibraryGeneration;
+            // Registry metadata only — listing engines/providers never activates a package or
+            // opens a session, so it is safe to read on the dispatcher.
+            _engineOptions = services.OcrEngineRuntime.ListDefinitions()
+                .Where(definition => !definition.IsDevelopmentOnly)
+                .Select(definition => new OcrEngineOption(definition.EngineId,
+                    definition.DisplayName))
+                .ToArray();
+            _providerOptions =
+            [
+                OcrTextLayerProviderOption.Disabled,
+                ..services.OcrEngineRuntime.ListTextLayerDefinitions()
+                    .Select(provider => new OcrTextLayerProviderOption(provider.ProviderId,
+                        provider.DisplayName))
+            ];
+            await RefreshPresetRowsAsync(services, generation, cancellationToken);
+            if (cancellationToken.IsCancellationRequested ||
+                !_main.IsCurrentLibraryContext(services, generation) || revision != _editRevision)
             {
-                Status = "未注册任何 OCR 引擎。";
                 return;
             }
 
-            LastError = UnavailableSelectionNotice() ??
-                        (draft is null ? null : "请为全文、页与区域选择可用的 OCR 引擎。");
-            ValidationState = LastError is null ? SettingsValidationState.Valid : SettingsValidationState.Invalid;
-            Status = LastError ?? "OCR 引擎列表已加载。";
+            if (IsDirty)
+            {
+                Status = "OCR 设置有未保存的更改，已保留当前草稿。";
+                return;
+            }
+
+            LastError = null;
+            ValidationState = SettingsValidationState.Valid;
+            Status = PresetStatus ?? "OCR 预设已加载。";
         }
         catch (Exception exception)
         {
-            Status = $"加载 OCR 引擎列表失败：{exception.Message}";
+            Status = $"加载 OCR 预设失败：{exception.Message}";
         }
     }
 
     public override Task DiscardAsync()
     {
-        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
-            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
-        _isDirty = false;
-        SaveState = SettingsSaveState.Clean;
-        Status = "已放弃更改";
-        return Task.CompletedTask;
-    }
-
-    internal void LoadPersistedToken(string token)
-    {
-        if (IsDirty)
-        {
-            return;
-        }
-
-        _persistedToken = token;
-        _persistedModelVersion = NormalizeModelVersion(_main.AppOptions.MinerU.ModelVersion);
-        _persistedPollingTimeoutSeconds = _main.AppOptions.MinerU.PollingTimeoutSeconds;
-        LoadEnginesFromSettings(_main.AppOptions.OcrEngines);
-        _persistedDocumentOcrEngine = _documentOcrEngine;
-        _persistedPageOcrEngine = _pageOcrEngine;
-        _persistedRegionOcrEngine = _regionOcrEngine;
-        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
-            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
-        _isDirty = false;
-        LastError = null;
-        SaveState = SettingsSaveState.Saved;
-        Status = "已保存";
-    }
-
-    // 只同步凭据相关的持久化状态；引擎与模型草稿一律不触碰。
-    internal void LoadPersistedCredential(string token)
-    {
-        _persistedToken = token;
-        if (IsDirty)
-        {
-            Raise(nameof(HasPersistedCredential));
-            return;
-        }
-
-        _isSyncing = true;
-        _token = token;
-        MinerUTokenInput = token;
-        _isSyncing = false;
-        UpdateDirtyState();
-        Raise(nameof(HasPersistedCredential));
-    }
-
-    public override async Task SaveAsync()
-    {
-        long revision = _editRevision;
-        SaveState = SettingsSaveState.Saving;
-        Status = "正在保存...";
-
-        string token = _token;
-        string modelVersion = _modelVersion;
-        int pollingTimeout = _pollingTimeoutSeconds;
-        OcrEnginesAppSettings engines = new(
-            NormalizeEngineId(_documentOcrEngine),
-            NormalizeEngineId(_pageOcrEngine),
-            NormalizeEngineId(_regionOcrEngine));
-        bool minerUSaved = string.IsNullOrWhiteSpace(token)
-            ? await _main.SaveMinerUModelSettingsAsync(modelVersion, pollingTimeout)
-            : await _main.SaveMinerUSettingsAsync(token, modelVersion, pollingTimeout);
-        if (!minerUSaved)
-        {
-            LastError = "无法保存 MinerU 模型设置。";
-            SaveState = SettingsSaveState.Failed;
-            Status = "保存失败";
-            Raise(nameof(IsDirty));
-            Raise(nameof(CanSave));
-            return;
-        }
-
-        _persistedToken = token;
-        _persistedModelVersion = modelVersion;
-        _persistedPollingTimeoutSeconds = pollingTimeout;
-        Raise(nameof(HasPersistedCredential));
-
-        HostServices services = await _main.ServicesAsync();
-        string[] available = services.OcrAdapters.ListCapabilities().Select(capability => capability.EngineId)
-            .ToArray();
-        if (new[] { engines.DocumentOcrEngine, engines.PageOcrEngine, engines.RegionOcrEngine }
-            .Any(engine => !available.Contains(engine, StringComparer.Ordinal)))
-        {
-            await _draftStore.WriteAsync("ocr-engines", engines);
-            _persistedDocumentOcrEngine = engines.DocumentOcrEngine;
-            _persistedPageOcrEngine = engines.PageOcrEngine;
-            _persistedRegionOcrEngine = engines.RegionOcrEngine;
-            UpdateDirtyState();
-            SaveState = IsDirty || revision != _editRevision ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
-            ValidationState = SettingsValidationState.Invalid;
-            LastError = "请为全文、页与区域选择可用的 OCR 引擎。";
-            Status = "已保存草稿，请补全可用的 OCR 引擎。";
-            return;
-        }
-
-        bool enginesSaved = await _main.SaveOcrEngineSettingsAsync(engines);
-        if (!enginesSaved)
-        {
-            LastError = "无法保存 OCR 引擎选择。";
-            SaveState = SettingsSaveState.Failed;
-            Status = "保存失败";
-            Raise(nameof(IsDirty));
-            Raise(nameof(CanSave));
-            return;
-        }
-
-        await _draftStore.WriteAsync<OcrEnginesAppSettings>("ocr-engines", null);
-        _persistedDocumentOcrEngine = engines.DocumentOcrEngine;
-        _persistedPageOcrEngine = engines.PageOcrEngine;
-        _persistedRegionOcrEngine = engines.RegionOcrEngine;
-        UpdateDirtyState();
-        LastError = null;
-        SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
-        ValidationState = SettingsValidationState.Valid;
-        Status = "已保存";
-        UpdateDirtyState();
-    }
-
-    private async Task RemoveMinerUCredentialAsync()
-    {
-        if (!HasPersistedCredential)
-        {
-            return;
-        }
-
-        bool removed = await _main.RemoveMinerUCredentialAsync();
-        if (!removed)
-        {
-            SaveState = SettingsSaveState.Failed;
-            Status = "移除凭据失败";
-        }
-    }
-
-    private void LoadEnginesFromSettings(OcrEnginesAppSettings engines)
-    {
-        _documentOcrEngine = NormalizeEngineId(engines.DocumentOcrEngine);
-        _pageOcrEngine = NormalizeEngineId(engines.PageOcrEngine);
-        _regionOcrEngine = NormalizeEngineId(engines.RegionOcrEngine);
-    }
-
-    private void ReloadEngineCatalog(IReadOnlyList<OcrEngineCapability> capabilities)
-    {
-        string documentEngine = _documentOcrEngine;
-        string pageEngine = _pageOcrEngine;
-        string regionEngine = _regionOcrEngine;
         _isSyncing = true;
         try
         {
-            // Force Avalonia to clear stale SelectedValue state before the catalog is rebuilt.
-            // Raising the same ID after rebuilding is not enough: ComboBox may retain a null
-            // SelectedItem when the selected value never changed from the binding's perspective.
-            SelectedDocumentEngine = "";
-            SelectedPageEngine = "";
-            SelectedRegionEngine = "";
-
-            // Keep the backing selected IDs stable while clearing the ItemsSource. A ComboBox can
-            // publish SelectedValue=null as its old items disappear; those transient changes must
-            // not be interpreted as user edits.
-            AvailableEngines.Clear();
-            foreach (OcrEngineCapability capability in capabilities)
-            {
-                AvailableEngines.Add(new OcrEngineOption(capability.EngineId, capability.DisplayName));
-            }
-
-            SelectedDocumentEngine = documentEngine;
-            SelectedPageEngine = pageEngine;
-            SelectedRegionEngine = regionEngine;
-            // Re-evaluate SelectedValue after ItemsSource has its final contents, even if the IDs
-            // themselves did not change during the refresh.
-            Raise(nameof(SelectedDocumentEngine));
-            Raise(nameof(SelectedPageEngine));
-            Raise(nameof(SelectedRegionEngine));
+            DocumentPresetPicker.Apply(_activePresetOptions, _persistedSelections.DocumentPresetId);
+            PagePresetPicker.Apply(_activePresetOptions, _persistedSelections.PagePresetId);
+            RegionPresetPicker.Apply(_activePresetOptions, _persistedSelections.RegionPresetId);
         }
         finally
         {
             _isSyncing = false;
         }
+
+        _isDirty = false;
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        SaveState = SettingsSaveState.Clean;
+        Status = "已放弃更改";
+        return Task.CompletedTask;
     }
 
-    private string? UnavailableSelectionNotice()
+    /// <summary>Persists the three scope selections; composition rows save through their own commands.</summary>
+    public override async Task SaveAsync()
     {
-        string[] unavailable = new[] { _documentOcrEngine, _pageOcrEngine, _regionOcrEngine }
-            .Where(engineId => !string.IsNullOrWhiteSpace(engineId)
-                               && AvailableEngines.All(option => option.EngineId != engineId))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        return unavailable.Length == 0
+        SaveState = SettingsSaveState.Saving;
+        Status = "正在保存...";
+
+        HostServices services = await _main.ServicesAsync();
+        OcrPresetSelections selections = new(
+            SelectedPresetId(DocumentPresetPicker),
+            SelectedPresetId(PagePresetPicker),
+            SelectedPresetId(RegionPresetPicker));
+        // Scopes still showing an "unavailable" stored id are left out of the write entirely —
+        // an unrelated settings save must never clear a stale explicit choice or reassign it to
+        // Automatic / the latest preset behind the user's back.
+        Dictionary<OcrScope, OcrPresetId?> selectionWrites = new();
+        if (!DocumentPresetPicker.SelectedOption.IsUnavailable)
+        {
+            selectionWrites[OcrScope.Document] = ParsePresetId(selections.DocumentPresetId);
+        }
+
+        if (!PagePresetPicker.SelectedOption.IsUnavailable)
+        {
+            selectionWrites[OcrScope.Page] = ParsePresetId(selections.PagePresetId);
+        }
+
+        if (!RegionPresetPicker.SelectedOption.IsUnavailable)
+        {
+            selectionWrites[OcrScope.Region] = ParsePresetId(selections.RegionPresetId);
+        }
+
+        // ADO.NET/file IO off the dispatcher — SQLite async often runs synchronously.
+        Result selectionsSaved =
+            await Task.Run(() => services.OcrSelections.SaveSelectionsAsync(selectionWrites));
+        if (selectionsSaved.IsFailure)
+        {
+            LastError = selectionsSaved.ErrorMessage;
+            SaveState = SettingsSaveState.Failed;
+            Status = "预设选择保存失败";
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+            return;
+        }
+
+        _persistedSelections = new OcrPresetSelections(
+            DocumentPresetPicker.SelectedOption.IsUnavailable
+                ? _persistedSelections.DocumentPresetId
+                : selections.DocumentPresetId,
+            PagePresetPicker.SelectedOption.IsUnavailable
+                ? _persistedSelections.PagePresetId
+                : selections.PagePresetId,
+            RegionPresetPicker.SelectedOption.IsUnavailable
+                ? _persistedSelections.RegionPresetId
+                : selections.RegionPresetId);
+        _editRevision++;
+        UpdateDirtyState();
+        LastError = null;
+        SaveState = _isDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
+        ValidationState = SettingsValidationState.Valid;
+        Status = "已保存";
+    }
+
+    /// <summary>
+    ///     Saves one composition row. A name-only change persists metadata and keeps the frozen
+    ///     version; an engine/provider change captures the components' current resolved
+    ///     configuration into a new immutable version via the composition service, then commits
+    ///     metadata + version pointer atomically through <see cref="IOcrPresetService.SaveCompositionAsync" />.
+    /// </summary>
+    internal async Task SavePresetRowAsync(OcrPresetCompositionRowViewModel row)
+    {
+        await SavePresetRowAsync(row, false);
+    }
+
+    /// <summary>
+    ///     Explicit row refresh: always recaptures the selected components into a NEW immutable
+    ///     version — the documented way to fold edited component configuration into a preset.
+    /// </summary>
+    internal async Task RefreshPresetRowConfigAsync(OcrPresetCompositionRowViewModel row)
+    {
+        await SavePresetRowAsync(row, true);
+    }
+
+    private async Task SavePresetRowAsync(OcrPresetCompositionRowViewModel row, bool forceNewVersion)
+    {
+        if (string.IsNullOrWhiteSpace(row.Name))
+        {
+            row.MarkFailed("预设名称不能为空。");
+            return;
+        }
+
+        if (row.SelectedEngine is null || string.IsNullOrWhiteSpace(row.SelectedEngineId))
+        {
+            row.MarkFailed("请选择 OCR 引擎。");
+            return;
+        }
+
+        if (row.SelectedEngine.IsUnavailable)
+        {
+            row.MarkFailed($"引擎 '{row.SelectedEngineId}' 当前不可用；请重新选择可用的引擎后再保存。");
+            return;
+        }
+
+        if (row.SelectedProvider is { IsUnavailable: true })
+        {
+            row.MarkFailed($"文本层提供器 '{row.SelectedProviderId}' 当前不可用；请重新选择后再保存。");
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        int rowRevision = row.EditRevision;
+        // Capture UI state + app-level MinerU options on the dispatcher before background IO.
+        MinerUAppSettings minerU = _main.AppOptions.MinerU;
+        string name = row.Name.Trim();
+        string engineId = row.SelectedEngineId;
+        string? providerId = row.SelectedProviderId;
+        OcrPresetVersion? baseline = row.BaselineVersion;
+        bool applyOnSuccess = row.IsNew || row.PersistedApplyOnSuccess;
+        string missingTextPolicy = row.SelectedMissingTextPolicy;
+        bool componentsChanged = row.IsNew || forceNewVersion ||
+                                 !string.Equals(engineId, row.PersistedEngineId ?? "",
+                                     StringComparison.Ordinal) ||
+                                 !string.Equals(
+                                     OcrPresetCompositionRowViewModel.NormalizeProviderId(providerId),
+                                     OcrPresetCompositionRowViewModel.NormalizeProviderId(
+                                         row.PersistedProviderId),
+                                     StringComparison.Ordinal) ||
+                                 !string.Equals(missingTextPolicy,
+                                     row.PersistedMissingTextPolicy, StringComparison.Ordinal);
+
+        row.IsBusy = true;
+        try
+        {
+            OcrPresetCompositionService composition = new(services, minerU);
+            OcrPresetVersionWrite? write = null;
+            if (componentsChanged)
+            {
+                Result<OcrPresetVersionWrite> captured = await Task.Run(() => composition.CaptureVersionAsync(engineId,
+                    providerId, baseline,
+                    applyOnSuccess, missingTextPolicy));
+                if (captured.IsFailure)
+                {
+                    if (rowRevision == row.EditRevision)
+                    {
+                        row.MarkFailed($"组件配置捕获失败:{captured.ErrorMessage}");
+                    }
+
+                    return;
+                }
+
+                write = captured.Value;
+            }
+
+            Result<OcrPreset> saved;
+            if (row.IsNew)
+            {
+                // First save creates the preset with the already-frozen version payload.
+                saved = await Task.Run(() => services.OcrPresets.CreatePresetAsync(name, null,
+                    write!.EngineId, write.ModelId, write.ModelPath, write.ParametersJson,
+                    write.ApplyOnSuccess));
+            }
+            else
+            {
+                saved = await Task.Run(() => services.OcrPresets.SaveCompositionAsync(
+                    row.PresetId!.Value, name, row.PersistedDescription,
+                    row.BaselineVersionId, write));
+            }
+
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (saved.IsFailure)
+            {
+                if (rowRevision == row.EditRevision)
+                {
+                    if (saved.ErrorCode == AppErrorCodes.Conflict)
+                    {
+                        row.MarkConflict(
+                            $"预设在编辑期间已被更新:{saved.ErrorMessage}（请刷新后重试）");
+                    }
+                    else
+                    {
+                        row.MarkFailed($"保存失败:{saved.ErrorMessage}");
+                    }
+                }
+
+                return;
+            }
+
+            // Re-read the persisted state so the row's baseline matches the committed row —
+            // including the version the atomic save just pointed the preset at.
+            Result<OcrPresetVersion> version = saved.Value.CurrentVersionId is { } versionId
+                ? await Task.Run(() => services.OcrPresets.GetPresetVersionAsync(versionId))
+                : Result<OcrPresetVersion>.Failure(AppErrorCodes.NotFound, "Preset has no version.");
+            Result<OcrPresetComposition> readback = version.IsSuccess
+                ? await Task.Run(() => composition.ReadCompositionAsync(version.Value))
+                : Result<OcrPresetComposition>.Failure(AppErrorCodes.NotFound, "No version.");
+            if (rowRevision != row.EditRevision)
+            {
+                // The user kept editing while the save was in flight: the persisted baseline
+                // still moves forward, but the row stays dirty with the newer edits visible.
+                row.ApplyPersisted(saved.Value, version.IsSuccess ? version.Value : row.BaselineVersion,
+                    readback.IsSuccess ? readback.Value : null, _engineOptions, _providerOptions,
+                    "已保存（行内容随后又被修改）");
+                return;
+            }
+
+            row.ApplyPersisted(saved.Value, version.IsSuccess ? version.Value : null,
+                readback.IsSuccess ? readback.Value : null, _engineOptions, _providerOptions);
+            PresetStatus = $"已保存预设「{saved.Value.Name}」。";
+            await RefreshScopeSelectionsAsync(services, CancellationToken.None);
+        }
+        finally
+        {
+            row.IsBusy = false;
+        }
+    }
+
+    /// <summary>Archives a persisted row; an unsaved row is simply removed from the table.</summary>
+    internal async Task ArchivePresetRowAsync(OcrPresetCompositionRowViewModel row)
+    {
+        if (row.IsNew)
+        {
+            PresetRows.Remove(row);
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        row.IsBusy = true;
+        try
+        {
+            Result archived = await Task.Run(() =>
+                services.OcrPresets.ArchivePresetAsync(row.PresetId!.Value));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (archived.IsFailure)
+            {
+                row.MarkFailed($"归档失败:{archived.ErrorMessage}");
+                return;
+            }
+
+            row.MarkArchived();
+            PresetStatus = "已归档;历史版本保留。";
+            await RefreshScopeSelectionsAsync(services, CancellationToken.None);
+        }
+        finally
+        {
+            row.IsBusy = false;
+        }
+    }
+
+    private Task AddPresetRow()
+    {
+        PresetRows.Add(new OcrPresetCompositionRowViewModel(this, _engineOptions, _providerOptions));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    ///     Compatibility surface for existing MainWindow call-sites: MinerU credential state now
+    ///     lives on the MinerU component dialog; engine-token notifications no longer own state
+    ///     here. Kept as thin no-ops so notification paths compile unchanged.
+    /// </summary>
+    internal void LoadPersistedToken(string token)
+    {
+    }
+
+    internal void LoadPersistedCredential(string token)
+    {
+    }
+
+    /// <summary>
+    ///     Reloads preset rows, scope selections, and registry options. Clean rows refresh in
+    ///     place; dirty/new rows are never rewritten; presets that vanished stay visible through
+    ///     <see cref="OcrPresetCompositionRowViewModel.MarkRemoved" />.
+    /// </summary>
+    private async Task RefreshPresetRowsAsync(HostServices services, int generation,
+        CancellationToken cancellationToken)
+    {
+        MinerUAppSettings minerU = _main.AppOptions.MinerU;
+        // Presets are the only selectable unit: materialize each registered engine's managed
+        // default before listing so an unused engine (e.g. RapidOCR) stays reachable here.
+        try
+        {
+            await Task.Run(() => services.OcrDefaults.EnsureDefaultsAsync(cancellationToken),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            PresetStatus = $"预设默认值初始化失败:{exception.Message}";
+        }
+
+        Result<IReadOnlyList<OcrPreset>> presets = await Task.Run(
+            () => services.OcrPresets.ListPresetsAsync(true, cancellationToken),
+            cancellationToken);
+        if (presets.IsFailure)
+        {
+            PresetStatus = $"预设列表不可用:{presets.ErrorMessage}";
+            return;
+        }
+
+        // Resolve each preset's pinned version + composition readback off the dispatcher; a
+        // preset whose version is unreadable still lists and reports its failure on the row.
+        OcrPresetCompositionService composition = new(services, minerU);
+        RowSnapshot[] snapshots = await Task.Run(async () =>
+        {
+            RowSnapshot[] resolved = new RowSnapshot[presets.Value.Count];
+            for (int i = 0; i < presets.Value.Count; i++)
+            {
+                OcrPreset preset = presets.Value[i];
+                OcrPresetVersion? version = null;
+                OcrPresetComposition? readback = null;
+                string? statusOverride = null;
+                if (preset.CurrentVersionId is { } versionId)
+                {
+                    Result<OcrPresetVersion> current =
+                        await services.OcrPresets.GetPresetVersionAsync(versionId, cancellationToken);
+                    if (current.IsSuccess)
+                    {
+                        version = current.Value;
+                        Result<OcrPresetComposition> compositionReadback =
+                            await composition.ReadCompositionAsync(version, cancellationToken);
+                        if (compositionReadback.IsSuccess)
+                        {
+                            readback = compositionReadback.Value;
+                        }
+                    }
+                    else
+                    {
+                        statusOverride = $"版本读取失败:{current.ErrorMessage}";
+                    }
+                }
+                else
+                {
+                    statusOverride = "无可执行版本";
+                }
+
+                resolved[i] = new RowSnapshot(preset, version, readback, statusOverride);
+            }
+
+            return resolved;
+        }, cancellationToken);
+
+        Result<OcrPresetSelections> stored = await Task.Run(
+            () => services.OcrSelections.ReadStoredSelectionsAsync(cancellationToken),
+            cancellationToken);
+        if (cancellationToken.IsCancellationRequested ||
+            !_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
+        ApplyPresetSnapshots(snapshots);
+        OcrPresetSelections selections = stored.IsSuccess ? stored.Value : OcrPresetSelections.Empty;
+        _persistedSelections = selections;
+        _activePresetOptions = snapshots
+            .Where(snapshot => !snapshot.Preset.Archived && snapshot.Version is not null)
+            .Select(snapshot => new OcrPresetOption(
+                snapshot.Preset.PresetId.ToString(),
+                $"{snapshot.Preset.Name} ({snapshot.Version!.EngineId})",
+                snapshot.Version!.EngineId))
+            .ToList();
+
+        _isSyncing = true;
+        try
+        {
+            DocumentPresetPicker.Apply(_activePresetOptions, selections.DocumentPresetId);
+            PagePresetPicker.Apply(_activePresetOptions, selections.PagePresetId);
+            RegionPresetPicker.Apply(_activePresetOptions, selections.RegionPresetId);
+        }
+        finally
+        {
+            _isSyncing = false;
+        }
+
+        PresetStatus = stored.IsFailure ? $"预设选择读取失败:{stored.ErrorMessage}" : null;
+        UpdateDirtyState();
+    }
+
+    private async Task RefreshPresetRowsAsync(HostServices services, CancellationToken cancellationToken)
+    {
+        await RefreshPresetRowsAsync(services, _main.LibraryGeneration, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Merge pass: clean rows update in place, dirty/unsaved rows are untouched, and rows
+    ///     whose preset disappeared are marked removed rather than silently dropped.
+    /// </summary>
+    private void ApplyPresetSnapshots(RowSnapshot[] snapshots)
+    {
+        HashSet<OcrPresetId> seen = [];
+        foreach (RowSnapshot snapshot in snapshots)
+        {
+            seen.Add(snapshot.Preset.PresetId);
+            OcrPresetCompositionRowViewModel? row = PresetRows.FirstOrDefault(candidate =>
+                candidate.PresetId == snapshot.Preset.PresetId);
+            if (row is null)
+            {
+                PresetRows.Add(new OcrPresetCompositionRowViewModel(this, _engineOptions,
+                    _providerOptions, snapshot.Preset, snapshot.Version, snapshot.Composition,
+                    snapshot.StatusOverride));
+            }
+            else if (!row.IsDirty && !row.IsNew)
+            {
+                row.ApplyPersisted(snapshot.Preset, snapshot.Version, snapshot.Composition,
+                    _engineOptions, _providerOptions, snapshot.StatusOverride);
+            }
+        }
+
+        foreach (OcrPresetCompositionRowViewModel row in PresetRows)
+        {
+            if (row is { IsNew: false, IsDirty: false } && !seen.Contains(row.PresetId!.Value))
+            {
+                row.MarkRemoved();
+            }
+        }
+    }
+
+    /// <summary>
+    ///     After a row save/archive the scope pickers may need the new/updated preset option;
+    ///     selections are re-read, never guessed.
+    /// </summary>
+    private async Task RefreshScopeSelectionsAsync(HostServices services,
+        CancellationToken cancellationToken)
+    {
+        await RefreshPresetRowsAsync(services, cancellationToken);
+    }
+
+    private static string? SelectedPresetId(OcrPresetScopePickerViewModel picker)
+    {
+        return string.IsNullOrWhiteSpace(picker.SelectedOption.PresetId)
             ? null
-            : $"已保存的 OCR 引擎（{string.Join("、", unavailable)}）当前不可用，请重新选择。";
+            : picker.SelectedOption.PresetId;
+    }
+
+    private static OcrPresetId? ParsePresetId(string? value)
+    {
+        return Guid.TryParse(value, out Guid guid) ? new OcrPresetId(guid) : null;
     }
 
     private void UpdateDirtyState()
     {
-        _isDirty = _token != _persistedToken || _modelVersion != _persistedModelVersion
-                                             || _pollingTimeoutSeconds != _persistedPollingTimeoutSeconds
-                                             || _documentOcrEngine != _persistedDocumentOcrEngine
-                                             || _pageOcrEngine != _persistedPageOcrEngine
-                                             || _regionOcrEngine != _persistedRegionOcrEngine;
+        _isDirty = SelectedPresetId(DocumentPresetPicker) != _persistedSelections.DocumentPresetId ||
+                   SelectedPresetId(PagePresetPicker) != _persistedSelections.PagePresetId ||
+                   SelectedPresetId(RegionPresetPicker) != _persistedSelections.RegionPresetId;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }
@@ -448,46 +619,10 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
         Status = message;
     }
 
-    private void SyncState(string token, string modelVersion, int pollingTimeout, string docEngine, string pageEngine,
-        string regionEngine)
-    {
-        _isSyncing = true;
-        _token = token;
-        MinerUTokenInput = token;
-        _modelVersion = modelVersion;
-        MinerUModelVersion = modelVersion;
-        _pollingTimeoutSeconds = pollingTimeout;
-        MinerUPollingTimeoutSeconds = pollingTimeout;
-        _documentOcrEngine = docEngine;
-        SelectedDocumentEngine = docEngine;
-        _pageOcrEngine = pageEngine;
-        SelectedPageEngine = pageEngine;
-        _regionOcrEngine = regionEngine;
-        SelectedRegionEngine = regionEngine;
-        _isSyncing = false;
-        UpdateDirtyState();
-        Raise(nameof(HasPersistedCredential));
-    }
-
-    private static string NormalizeModelVersion(string? value)
-    {
-        return string.Equals(value, "pipeline", StringComparison.OrdinalIgnoreCase) ? "pipeline" : "vlm";
-    }
-
-    private static string NormalizeEngineId(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? "" : value.Trim().ToLowerInvariant();
-    }
-}
-
-public sealed class OcrEngineOption
-{
-    public OcrEngineOption(string engineId, string displayName)
-    {
-        EngineId = engineId;
-        DisplayName = displayName;
-    }
-
-    public string EngineId { get; }
-    public string DisplayName { get; }
+    /// <summary>One resolved row payload used by the off-dispatcher refresh pass.</summary>
+    private sealed record RowSnapshot(
+        OcrPreset Preset,
+        OcrPresetVersion? Version,
+        OcrPresetComposition? Composition,
+        string? StatusOverride);
 }

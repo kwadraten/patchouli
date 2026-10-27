@@ -1,0 +1,51 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+             x:Class="Patchouli.UI.Views.Settings.OcrComponentCatalogView"
+             x:DataType="settings:OcrComponentCatalogSettingsViewModel">
+  <Border Classes="Card">
+    <StackPanel Spacing="12">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="{Binding Title}" Classes="CardTitle" />
+        <Button Grid.Column="1" Content="刷新列表" Command="{Binding RefreshCommand}"
+                ToolTip.Tip="重新读取组件列表" AutomationProperties.Name="刷新列表" />
+      </Grid>
+      <TextBlock Text="{Binding Description}" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      <ItemsControl ItemsSource="{Binding Components}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate DataType="settings:OcrComponentRowViewModel">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Margin="0,8">
+              <StackPanel Spacing="4" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding Name}" FontWeight="Medium" VerticalAlignment="Center" />
+                  <TextBlock Text="{Binding VersionText}" FontSize="12" VerticalAlignment="Center"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding VersionText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+                <TextBlock Text="{Binding Summary}" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="{Binding StatusText}" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Button Command="{Binding ShowSourceCommand}" IsVisible="{Binding CanShowSource}"
+                        ToolTip.Tip="查看/编辑 FSX 源码" AutomationProperties.Name="扩展源码">
+                  <lucide:Lucide Icon="BookOpen" Width="16" Height="16" />
+                </Button>
+                <Button x:Name="ConfigureComponentButton" Command="{Binding ConfigureCommand}"
+                        ToolTip.Tip="配置" AutomationProperties.Name="配置">
+                  <lucide:Lucide Icon="Settings" Width="16" Height="16" />
+                </Button>
+              </StackPanel>
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                 IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    </StackPanel>
+  </Border>
+</UserControl>

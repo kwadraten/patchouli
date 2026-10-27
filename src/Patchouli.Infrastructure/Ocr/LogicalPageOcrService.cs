@@ -194,6 +194,10 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         }
 
         List<OcrRunId> runIds = [];
+        // 区域重建的两遍 ID 映射（第一遍）：先跑完所有区域、为每个区域框预分配
+        // 新 ID 并收集，再统一生成种子（第二遍）。这样区域内的接续链能用新 ID
+        // 互相指认而被保留；接续源不在本次区域集合内时无从映射，维持旧行为丢弃。
+        List<(LogicalPageOcrTarget Target, List<(DocumentBox Box, DocumentBoxId NewId)> Boxes)> collected = [];
         foreach (LogicalPageOcrTarget target in targets)
         {
             Result<OcrRun> run = await _ocr.RunPresetOnRegionAsync(
@@ -222,12 +226,49 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
                 return Result<LogicalPageOcrResult>.Failure(regionBoxes.ErrorCode!, regionBoxes.ErrorMessage!);
             }
 
-            int sourceOrder = 0;
+            List<(DocumentBox Box, DocumentBoxId NewId)> mapped = [];
             foreach (DocumentBox box in regionBoxes.Value.Where(box => box.BoxType != DocumentBoxType.LogicalPage))
             {
-                seeds.Add(new DocumentBoxSeed(null, target.LogicalPageBoxId, sourceOrder++, box.BoxType, box.SubType,
-                    box.BBox, box.Payload, box.HeadingLevel, box.CodeLanguage, box.Confidence,
-                    box.Suppressed));
+                mapped.Add((box, DocumentBoxId.New()));
+            }
+
+            collected.Add((target, mapped));
+        }
+
+        Dictionary<DocumentBoxId, DocumentBoxId> newIdByOldId = [];
+        Dictionary<DocumentBoxId, DocumentBox> regionBoxByOldId = [];
+        foreach ((LogicalPageOcrTarget _, List<(DocumentBox Box, DocumentBoxId NewId)> boxes) in collected)
+        {
+            foreach ((DocumentBox box, DocumentBoxId newId) in boxes)
+            {
+                newIdByOldId[box.BoxId] = newId;
+                regionBoxByOldId[box.BoxId] = box;
+            }
+        }
+
+        // 第二遍：生成种子。区域内接续链在源框可映射且两端满足接续规则（同为
+        // 适用类型且同类型、两端未抑制，与页级校验器口径一致）时保留，兼容
+        // 状态随关系一并带入；否则不带关系重建（与旧行为一致）。
+        foreach ((LogicalPageOcrTarget target, List<(DocumentBox Box, DocumentBoxId NewId)> boxes) in collected)
+        {
+            int sourceOrder = 0;
+            foreach ((DocumentBox box, DocumentBoxId newId) in boxes)
+            {
+                DocumentBoxId? continuesFrom = null;
+                string? continuationState = null;
+                if (box.ContinuesFromBoxId is { } sourceId &&
+                    newIdByOldId.TryGetValue(sourceId, out DocumentBoxId mappedSourceId) &&
+                    regionBoxByOldId.TryGetValue(sourceId, out DocumentBox? sourceBox) &&
+                    !box.Suppressed && !sourceBox.Suppressed &&
+                    DocumentContinuationRules.CanContinue(box.BoxType, sourceBox.BoxType))
+                {
+                    continuesFrom = mappedSourceId;
+                    continuationState = box.ContinuationState;
+                }
+
+                seeds.Add(new DocumentBoxSeed(newId, target.LogicalPageBoxId, sourceOrder++, box.BoxType,
+                    box.SubType, box.BBox, box.Payload, box.HeadingLevel, box.CodeLanguage, box.Confidence,
+                    box.Suppressed, continuesFrom, continuationState));
             }
         }
 

@@ -9,6 +9,7 @@
     <ProjectReference Include="..\..\src\Patchouli.Llm\Patchouli.Llm.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Ocr\Patchouli.Ocr.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Ocr.Engines\Patchouli.Ocr.Engines.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Host\Patchouli.Host.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Reading\Patchouli.Reading.csproj" />

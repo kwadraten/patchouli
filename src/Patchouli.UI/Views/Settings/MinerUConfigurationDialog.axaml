@@ -1,0 +1,65 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+        x:Class="Patchouli.UI.Views.Settings.MinerUConfigurationDialog"
+        x:DataType="settings:MinerUConfigurationDialogViewModel"
+        Title="MinerU 配置" Icon="/Assets/AppIcon.ico"
+        Width="520" Height="480" MinWidth="440" MinHeight="400"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+  <Grid RowDefinitions="*,Auto" Margin="24">
+    <ScrollViewer Grid.Row="0" IsEnabled="{Binding CanEdit}">
+      <StackPanel Spacing="14">
+        <StackPanel Spacing="6">
+          <TextBlock Text="MinerU（内置引擎）" FontSize="20" FontWeight="SemiBold" />
+          <TextBlock Text="云端 OCR/版面解析；凭据保存在本机凭据存储，不写入设置文件。保存后对之后启动的任务生效。"
+                     FontSize="12" TextWrapping="Wrap"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        </StackPanel>
+
+        <StackPanel Spacing="6">
+          <TextBlock Text="模型版本" FontWeight="Medium" />
+          <ComboBox ItemsSource="{Binding MinerUModelVersionOptions}"
+                    SelectedItem="{Binding MinerUModelVersion}"
+                    HorizontalAlignment="Stretch" AutomationProperties.Name="MinerU 模型版本" />
+          <TextBlock Text="vlm 使用多模态模型，pipeline 使用流水线。" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <StackPanel Spacing="6">
+          <TextBlock Text="轮询超时（秒）" FontWeight="Medium" />
+          <NumericUpDown Value="{Binding MinerUPollingTimeoutSeconds}" Minimum="30" Maximum="3600"
+                         Increment="30" HorizontalAlignment="Left" Width="160"
+                         AutomationProperties.Name="MinerU 轮询超时" />
+        </StackPanel>
+
+        <StackPanel Spacing="6">
+          <TextBlock Text="API Token" FontWeight="Medium" />
+          <TextBox Text="{Binding MinerUTokenInput}" PasswordChar="●"
+                   PlaceholderText="粘贴 MinerU API token；留空表示不配置凭据"
+                   AutomationProperties.Name="MinerU API token" />
+          <TextBlock Text="{Binding MinerUCredentialStatus}" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        </StackPanel>
+
+        <Button Content="移除凭据" Command="{Binding RemoveCredentialCommand}"
+                IsEnabled="{Binding HasPersistedCredential}" Classes="Danger"
+                HorizontalAlignment="Left" AutomationProperties.Name="移除 MinerU 凭据" />
+
+        <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                   IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <TextBlock Text="{Binding LastError}" FontSize="12" TextWrapping="Wrap"
+                   Foreground="{DynamicResource ErrorBrush}"
+                   IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,16,0,0">
+      <Button Content="取消" Click="CancelClicked" />
+      <Button Content="保存" Classes="Primary" Command="{Binding SaveCommand}"
+              IsEnabled="{Binding CanSave}" AutomationProperties.Name="保存 MinerU 配置" />
+    </StackPanel>
+  </Grid>
+</Window>

@@ -35,7 +35,9 @@ public enum ConfigValueKind
     Model,
     Documents,
     PageRange,
-    CredentialReference
+    CredentialReference,
+    FilePath,
+    DirectoryPath
 }
 
 public sealed record ConfigFieldDescriptor(
@@ -52,6 +54,13 @@ public sealed record ConfigFieldDescriptor(
     public bool FollowDefault { get; init; }
     public string? DefaultDomain { get; init; }
     public bool Hidden { get; init; }
+
+    /// <summary>
+    /// FSX-declared host-managed files backing this path field (<see cref="ConfigValueKind.FilePath"/>
+    /// or <see cref="ConfigValueKind.DirectoryPath"/>). Statically validated declaration metadata;
+    /// populated only when the property carries <c>ManagedFile</c> attributes.
+    /// </summary>
+    public IReadOnlyList<ExtensionManagedFile> ManagedFiles { get; init; } = [];
 }
 
 public static class ExtensionHostApi
@@ -64,7 +73,8 @@ public enum ExtensionKind
     Translation,
     Metadata,
     Ocr,
-    Retrieval
+    Retrieval,
+    PdfTextLayer
 }
 
 public sealed record ExtensionDescriptor(
@@ -103,6 +113,13 @@ public sealed class ExtensionPackageSnapshot
         foreach ((string path, string content) in sources)
         {
             string canonicalPath = NormalizeSourcePath(path);
+            if (!IsTextSourcePath(canonicalPath))
+            {
+                throw new ArgumentException(
+                    $"Extension sources must use a known textual format so the file store can persist them verbatim: {canonicalPath}",
+                    nameof(sources));
+            }
+
             ArgumentNullException.ThrowIfNull(content);
             if (!normalized.TryAdd(canonicalPath, content))
             {
@@ -115,6 +132,13 @@ public sealed class ExtensionPackageSnapshot
         foreach ((string path, ReadOnlyMemory<byte> content) in binaryFiles)
         {
             string canonicalPath = NormalizeSourcePath(path);
+            if (IsTextSourcePath(canonicalPath))
+            {
+                throw new ArgumentException(
+                    $"Binary package files cannot claim a textual path; the file store partitions by format so '{canonicalPath}' must be a source: {canonicalPath}",
+                    nameof(binaryFiles));
+            }
+
             if (normalized.ContainsKey(canonicalPath))
             {
                 throw new ArgumentException(
@@ -530,14 +554,38 @@ public sealed record ExtensionBoxOutcome(
     }
 }
 
-public sealed record LlmMessage(string Role, string Content);
+/// <summary>
+/// Typed image input for one extension LLM message: the host-owned image bytes and their media
+/// type. Bytes are the only payload — never a source or cache path — and the host encodes them
+/// into the provider request shape itself.
+/// </summary>
+public sealed record LlmImage(byte[] Data, string MediaType, string? Detail = null);
+
+public sealed record LlmMessage(string Role, string Content)
+{
+    /// <summary>Typed images attached to this message. Only <c>user</c> messages may carry images.</summary>
+    public IReadOnlyList<LlmImage>? Images { get; init; }
+}
 
 public sealed record LlmRequest(
     IReadOnlyList<LlmMessage> Messages,
     string? Model = null,
     decimal? Temperature = null,
     int? MaxOutputTokens = null,
-    string? ProviderId = null);
+    string? ProviderId = null)
+{
+    /// <summary>
+    /// The capability domain this call belongs to (<c>translation</c>, <c>metadata</c> or <c>ocr</c>);
+    /// a domain-bound capability stamps it so unbound requests keep their legacy defaults.
+    /// </summary>
+    public string? Domain { get; init; }
+
+    /// <summary>
+    /// Explicit reasoning effort for this request. When null a domain-bound capability applies its
+    /// configured default (for example the OCR reasoning effort); <c>"none"</c> disables reasoning.
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
+}
 
 public sealed record LlmResponse(string Text, string? Model = null, int? InputTokens = null, int? OutputTokens = null);
 
@@ -606,6 +654,12 @@ public interface IExtensionLease : IAsyncDisposable
     IMetadataExtension? Metadata { get; }
     IOcrExtension? Ocr { get; }
     IRetrievalExtension? Retrieval { get; }
+
+    /// <summary>
+    /// The pinned PDF text-layer provider, when the generation exports one; null otherwise.
+    /// Providers are selected and pinned independently of the image OCR engine.
+    /// </summary>
+    IPdfTextLayerExtension? PdfTextLayer => null;
 }
 
 public interface IMetadataExtension : IExtensionDefinition
@@ -630,17 +684,6 @@ public readonly record struct OcrInputId
     public string Value { get; }
 }
 
-public sealed record ExtensionOcrInput(
-    OcrInputId Id,
-    NormalizedBBox BBox,
-    string ContentType,
-    ReadOnlyMemory<byte> ImageData);
-
-public sealed record OcrExtensionContext(
-    ExtensionPageIdentity Page,
-    IReadOnlyList<ExtensionOcrInput> Inputs,
-    ExtensionConfigSnapshot Config);
-
 [method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record OcrExtensionBoxCandidate(OcrInputId InputId, DocumentBoxSeed Candidate)
 {
@@ -664,15 +707,16 @@ public sealed record OcrExtensionBoxCandidate(OcrInputId InputId, DocumentBoxSee
     }
 }
 
+/// <summary>
+/// One page's submission: typed box candidates plus an explicit outcome for every input the page
+/// was issued with. <paramref name="Inputs"/> must cover each issued input exactly once, so a
+/// successful-but-blank input is distinguishable from a failed one and a partially recognized
+/// page is never reported as a full success.
+/// </summary>
 public sealed record OcrExtensionCandidate(
     ExtensionPageIdentity Page,
-    IReadOnlyList<OcrExtensionBoxCandidate> Boxes);
-
-public interface IOcrExtension : IExtensionDefinition
-{
-    Task<OcrExtensionCandidate> RecognizeAsync(OcrExtensionContext context,
-        IExtensionResources resources, CancellationToken cancellationToken = default);
-}
+    IReadOnlyList<OcrExtensionBoxCandidate> Boxes,
+    IReadOnlyList<OcrInputSettlement> Inputs);
 
 public sealed record RetrievalExtensionContext(
     string Query,
@@ -693,39 +737,125 @@ public interface IRetrievalExtension : IExtensionDefinition
 /// <summary>Host-side validation for extension proposals before domain ownership checks or commits.</summary>
 public static class ExtensionCandidateValidation
 {
-    public static Result ValidateOcr(OcrExtensionContext context, OcrExtensionCandidate candidate)
+    /// <summary>
+    /// Validates one candidate submission against a page the job issued. The candidate page
+    /// identity (including its frozen source revision) must equal the issued page exactly; every
+    /// box must reference an issued input and keep its geometry inside that input's region;
+    /// job-allocated seed <see cref="DocumentBoxSeed.BoxId"/> values must be unique across the job;
+    /// a <see cref="DocumentBoxSeed.ParentBoxId"/> must resolve inside the same submission; and a
+    /// <see cref="DocumentBoxSeed.ContinuesFromBoxId"/> must resolve inside the same submission or
+    /// in <paramref name="previouslyAcceptedBoxIds"/>, which is how cross-page continuations pass
+    /// validation. Domain-level checks (known box types, payload rules) still belong to the
+    /// document-tree candidate validation downstream.
+    /// </summary>
+    public static Result ValidateOcr(OcrJobPage page, OcrExtensionCandidate candidate,
+        IReadOnlySet<DocumentBoxId>? previouslyAcceptedBoxIds = null)
     {
-        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(page);
         ArgumentNullException.ThrowIfNull(candidate);
-        if (candidate.Page != context.Page)
+        if (candidate.Page != page.Page)
         {
             return Result.Failure(AppErrorCodes.ValidationFailed,
                 "OCR candidate belongs to a different page or source revision.");
         }
 
-        if (context.Inputs is null || candidate.Boxes is null)
+        if (page.Inputs is null || page.Inputs.Count == 0 || candidate.Boxes is null ||
+            candidate.Inputs is null)
         {
             return Result.Failure(AppErrorCodes.ValidationFailed, "OCR input and candidate lists are required.");
         }
 
         Dictionary<OcrInputId, NormalizedBBox> inputs = [];
-        foreach (ExtensionOcrInput input in context.Inputs)
+        foreach (OcrJobInput input in page.Inputs)
         {
-            if (string.IsNullOrWhiteSpace(input.ContentType) || input.ImageData.IsEmpty)
+            if (string.IsNullOrWhiteSpace(input.ContentType) ||
+                string.IsNullOrWhiteSpace(input.Id.Value))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed,
-                    "OCR inputs require a content type and non-empty image data.");
+                    "OCR inputs require an identity and a content type.");
             }
 
-            if (!inputs.TryAdd(input.Id, input.BBox))
+            if (!inputs.TryAdd(input.Id, input.Region))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR input identities must be unique.");
             }
 
-            Result validInputBox = input.BBox.Validate();
+            Result validInputBox = input.Region.Validate();
             if (validInputBox.IsFailure)
             {
                 return validInputBox;
+            }
+        }
+
+        // Every issued input must be accounted for exactly once: no foreign or duplicate ids,
+        // a failed input must carry an error code, and a recognized/skipped input carries none.
+        Dictionary<OcrInputId, OcrInputSettlementState> settlements =
+            new(candidate.Inputs.Count);
+        foreach (OcrInputSettlement input in candidate.Inputs)
+        {
+            if (input is null || !inputs.ContainsKey(input.InputId))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR input outcomes must reference inputs issued for this page.");
+            }
+
+            if (!settlements.TryAdd(input.InputId, input.State))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR input outcomes must declare each issued input exactly once.");
+            }
+
+            switch (input.State)
+            {
+                case OcrInputSettlementState.Recognized or OcrInputSettlementState.Skipped
+                    when input.ErrorCode is not null || input.ErrorMessage is not null:
+                case OcrInputSettlementState.Failed
+                    when string.IsNullOrWhiteSpace(input.ErrorCode):
+                case not (OcrInputSettlementState.Recognized or OcrInputSettlementState.Failed or
+                    OcrInputSettlementState.Skipped):
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "OCR input outcomes must be Recognized, Skipped, or Failed with an error code.");
+            }
+        }
+
+        if (settlements.Count != inputs.Count)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "OCR input outcomes must account for every issued input.");
+        }
+
+        HashSet<DocumentBoxId> declaredBoxIds = [];
+        HashSet<DocumentBoxId> parentReferences = [];
+        HashSet<DocumentBoxId> continuationReferences = [];
+        foreach (OcrExtensionBoxCandidate box in candidate.Boxes)
+        {
+            DocumentBoxSeed seed = box.Candidate;
+            if (seed?.BoxId is { } declared && !declaredBoxIds.Add(declared))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR candidate box identities must be unique within a submission.");
+            }
+
+            if (seed?.ParentBoxId is { } parent)
+            {
+                parentReferences.Add(parent);
+            }
+
+            if (seed?.ContinuesFromBoxId is { } continuesFrom)
+            {
+                continuationReferences.Add(continuesFrom);
+            }
+        }
+
+        if (previouslyAcceptedBoxIds is not null)
+        {
+            foreach (DocumentBoxId declared in declaredBoxIds)
+            {
+                if (previouslyAcceptedBoxIds.Contains(declared))
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "OCR candidate box identities must not reuse ids accepted earlier in the job.");
+                }
             }
         }
 
@@ -737,7 +867,14 @@ public static class ExtensionCandidateValidation
                     "OCR candidate references an input that was not supplied to the extension.");
             }
 
-            if (box.Candidate is null || box.Candidate.Payload is null)
+            if (settlements[box.InputId] != OcrInputSettlementState.Recognized)
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR boxes may only attach to inputs declared recognized.");
+            }
+
+            if (box.Candidate is null ||
+                (box.Candidate.Payload is null && box.Candidate.BoxType != DocumentBoxType.LogicalPage))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR candidate content is required.");
             }
@@ -760,6 +897,25 @@ public static class ExtensionCandidateValidation
                 (!double.IsFinite(confidence) || confidence < 0 || confidence > 1))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed, "OCR confidence must be within 0..1.");
+            }
+        }
+
+        foreach (DocumentBoxId parent in parentReferences)
+        {
+            if (!declaredBoxIds.Contains(parent))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR parent references must resolve inside the same page submission.");
+            }
+        }
+
+        foreach (DocumentBoxId continuesFrom in continuationReferences)
+        {
+            if (!declaredBoxIds.Contains(continuesFrom) &&
+                !(previouslyAcceptedBoxIds?.Contains(continuesFrom) ?? false))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR continuation references must resolve inside the job's accepted or submitted boxes.");
             }
         }
 

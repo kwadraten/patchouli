@@ -71,6 +71,48 @@ internal sealed class RapidOcrImage
         }
     }
 
+    /// <summary>
+    /// Decodes hosted image bytes with the same rules as <see cref="TryDecode(string)"/>: EXIF
+    /// orientation is applied and alpha is composited over the luminance-picked background.
+    /// The extension runtime supplies image bytes; no temporary file is written.
+    /// </summary>
+    public static RapidOcrImage? TryDecode(ReadOnlySpan<byte> data)
+    {
+        try
+        {
+            using SKMemoryStream stream = new(data.ToArray());
+            using SKCodec? codec = SKCodec.Create(stream);
+            if (codec is null)
+            {
+                return null;
+            }
+
+            using SKBitmap? decoded = SKBitmap.Decode(codec);
+            if (decoded is null)
+            {
+                return null;
+            }
+
+            return FromBitmap(decoded, codec.EncodedOrigin);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     internal static RapidOcrImage FromBitmap(SKBitmap bitmap, SKEncodedOrigin origin)
     {
         RapidOcrImage bgr = FromBitmapPixels(bitmap);

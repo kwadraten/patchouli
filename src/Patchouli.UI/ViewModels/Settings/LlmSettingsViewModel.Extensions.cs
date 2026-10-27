@@ -1,11 +1,16 @@
+using System;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Translation;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
+using Patchouli.Llm;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -63,7 +68,14 @@ public sealed partial class LlmSettingsViewModel
         {
             try
             {
-                packages[id] = await services.TranslationExtensions.Manager.ReadSourceAsync(id);
+                ExtensionPackageSnapshot working =
+                    await services.TranslationExtensions.Manager.ReadSourceAsync(id);
+                // A directory with no package payload is a config/state overlay, not a working
+                // source: it must not shadow the bundled snapshot's metadata.
+                if (working.Sources.Count > 0 || working.BinaryFiles.Count > 0)
+                {
+                    packages[id] = working;
+                }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -114,5 +126,68 @@ public sealed partial class LlmSettingsViewModel
         await _main.Settings.SelectSectionAsync("extensions");
         ExtensionSettingsViewModel extensions = _main.Settings.ExtensionSettings;
         extensions.SelectedExtension = extensions.Extensions.FirstOrDefault(item => item.Id == TranslationEngineId);
+    }
+}
+
+/// <summary>
+/// One-time migration of the retired host-owned multimodal OCR page into the attributed
+/// <c>ocr.multimodal</c> FSX configuration (screenshot revision): the seed is written only when
+/// the component has never been configured (revision 0 with no saved values) so explicit OCR
+/// provider/model, reasoning effort, concurrency and local-layout choices survive the settings
+/// move. Values written here use the same keys the package's attributed schema declares.
+/// </summary>
+internal static class OcrMultimodalLegacySeed
+{
+    public const string PackageId = "ocr.multimodal";
+
+    public static bool NeedsSeed(string extensionId, ExtensionConfigSnapshot config)
+    {
+        return string.Equals(extensionId, PackageId, StringComparison.Ordinal) &&
+               config.Revision == 0 && config.Values.Count == 0;
+    }
+
+    /// <summary>
+    /// Writes the migration snapshot (revision 1) only for a never-configured component; the
+    /// returned snapshot is what the configuration form should display.
+    /// </summary>
+    public static async Task<ExtensionConfigSnapshot> EnsureSeededAsync(IExtensionManager manager,
+        string extensionId, ExtensionConfigSnapshot config, LlmAppSettings legacy,
+        OcrStorageLocations? storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(manager);
+        ArgumentNullException.ThrowIfNull(config);
+        if (!NeedsSeed(extensionId, config))
+        {
+            return config;
+        }
+
+        ExtensionConfigSnapshot seeded = new(CreateValues(legacy, storage), config.Revision + 1);
+        await manager.SaveConfigAsync(extensionId, seeded, cancellationToken);
+        return seeded;
+    }
+
+    internal static Dictionary<string, string> CreateValues(LlmAppSettings legacy,
+        OcrStorageLocations? storage)
+    {
+        ArgumentNullException.ThrowIfNull(legacy);
+        (string providerId, string model) = legacy.OcrSelection;
+        string layoutModel = OcrLayoutModelIds.Normalize(legacy.OcrLayoutModel);
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // Same {providerId, model} JSON shape ExtensionConfigFieldViewModel writes; an
+            // unresolved pair stays empty so the model field follows the provider default.
+            ["model"] = providerId.Length == 0 && model.Length == 0
+                ? ""
+                : JsonSerializer.Serialize(new { providerId, model }),
+            ["model-id"] = model,
+            ["model-path"] = legacy.OcrUseLocalLayout && storage is not null
+                ? storage.GetLayoutModelPath(layoutModel)
+                : "",
+            ["use-local-layout"] = legacy.OcrUseLocalLayout ? "true" : "false",
+            ["layout-model"] = layoutModel,
+            ["concurrency"] = Math.Clamp(legacy.OcrConcurrency, 1, OcrPerformanceSettings.MaxConcurrency)
+                .ToString(CultureInfo.InvariantCulture),
+            ["reasoning-effort"] = OcrPerformanceSettings.NormalizeReasoning(legacy.OcrReasoningEffort)
+        };
     }
 }

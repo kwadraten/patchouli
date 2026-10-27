@@ -10,13 +10,18 @@
     <ProjectReference Include="..\..\src\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
     <ProjectReference Include="..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
     <ProjectReference Include="..\..\sidecar\Patchouli.Extensions.Compiler\Patchouli.Extensions.Compiler.fsproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
+    <ProjectReference Include="..\..\src\Patchouli.Ocr.Engines\Patchouli.Ocr.Engines.csproj" GlobalPropertiesToRemove="$(SchemaGeneratorRemoveProperties)" />
     <Compile Include="..\..\src\Patchouli.Infrastructure\Translation\BuiltInTranslationExtensions.cs" Link="BuiltInTranslationExtensions.cs" />
     <Compile Include="..\..\src\Patchouli.Infrastructure\Bibliography\MetadataLookup\BuiltInMetadataExtensions.cs" Link="BuiltInMetadataExtensions.cs" />
+    <Compile Include="..\..\src\Patchouli.Infrastructure\Ocr\BuiltInOcrExtensions.cs" Link="BuiltInOcrExtensions.cs" />
+    <Compile Include="..\..\src\Patchouli.Infrastructure\Ocr\BuiltInPdfTextLayerExtensions.cs" Link="BuiltInPdfTextLayerExtensions.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\..\src\Patchouli.Infrastructure\Translation\Extensions\**\*.fsx"
                       LogicalName="Patchouli.Infrastructure.Translation.Extensions.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\..\src\Patchouli.Infrastructure\Bibliography\MetadataLookup\Extensions\**\*.fsx"
                       LogicalName="Patchouli.Infrastructure.Bibliography.MetadataLookup.Extensions.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\src\Patchouli.Infrastructure\Ocr\Extensions\**\*.fsx"
+                      LogicalName="Patchouli.Infrastructure.Ocr.Extensions.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

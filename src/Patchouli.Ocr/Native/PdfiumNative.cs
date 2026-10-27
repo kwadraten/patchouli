@@ -130,6 +130,206 @@ internal static class PdfiumNative
         }
     }
 
+    /// <summary>
+    /// Reads one page's complete native text layer inside a single native unit: load page,
+    /// open the PDFium text page, walk every character index in native order, then close the
+    /// text page and page. No rendering and no second PDF parser. Characters that fail an
+    /// individual read keep their index so the source anchor stream stays intact; a page
+    /// with no text object returns an empty glyph list rather than an exception.
+    /// </summary>
+    internal static PdfiumTextPage ReadTextPage(FpdfDocumentT document, int pageIndex, string? path)
+    {
+        int pageCount = fpdfview.FPDF_GetPageCount(document);
+        if (pageIndex < 0 || pageIndex >= pageCount)
+        {
+            throw new InvalidOperationException("Page index is outside the PDF page range.");
+        }
+
+        FpdfPageT page = fpdfview.FPDF_LoadPage(document, pageIndex);
+        EnsureHandle(page, "page", path);
+        FpdfTextpageT? textPage = null;
+        try
+        {
+            double pageWidth = fpdfview.FPDF_GetPageWidthF(page);
+            double pageHeight = fpdfview.FPDF_GetPageHeightF(page);
+            float left = 0, bottom = 0, right = (float)pageWidth, top = (float)pageHeight;
+            if (fpdf_transformpage.FPDFPageGetMediaBox(page, ref left, ref bottom, ref right, ref top) == 0)
+            {
+                left = 0;
+                bottom = 0;
+                right = (float)pageWidth;
+                top = (float)pageHeight;
+            }
+
+            PdfPageBox mediaBox = new(left, bottom, right, top);
+            float cropLeft = 0, cropBottom = 0, cropRight = 0, cropTop = 0;
+            PdfPageBox effectiveBox = mediaBox;
+            if (fpdf_transformpage.FPDFPageGetCropBox(page, ref cropLeft, ref cropBottom,
+                    ref cropRight, ref cropTop) != 0)
+            {
+                PdfPageBox clipped = mediaBox.Intersect(
+                    new PdfPageBox(cropLeft, cropBottom, cropRight, cropTop));
+                if (!clipped.IsDegenerate)
+                {
+                    effectiveBox = clipped;
+                }
+            }
+
+            int rotation = fpdf_edit.FPDFPageGetRotation(page) switch
+            {
+                1 => 90,
+                2 => 180,
+                3 => 270,
+                _ => 0
+            };
+
+            textPage = fpdf_text.FPDFTextLoadPage(page);
+            if (textPage is null || textPage.__Instance == IntPtr.Zero)
+            {
+                return new PdfiumTextPage(mediaBox, effectiveBox, rotation, 0,
+                    Array.Empty<PdfiumTextGlyph>(), pageWidth, pageHeight);
+            }
+
+            int charCount = fpdf_text.FPDFTextCountChars(textPage);
+            List<PdfiumTextGlyph> glyphs = new(Math.Max(0, charCount));
+            for (int index = 0; index < charCount; index++)
+            {
+                glyphs.Add(ReadGlyph(textPage, index, charCount));
+            }
+
+            return new PdfiumTextPage(mediaBox, effectiveBox, rotation, charCount, glyphs,
+                pageWidth, pageHeight);
+        }
+        finally
+        {
+            if (textPage is { } openTextPage && openTextPage.__Instance != IntPtr.Zero)
+            {
+                fpdf_text.FPDFTextClosePage(openTextPage);
+            }
+
+            fpdfview.FPDF_ClosePage(page);
+        }
+    }
+
+    /// <summary>
+    /// Reads one character in-place. The character index is its permanent source anchor —
+    /// readers never reorder or drop indices even when a sub-read fails.
+    /// </summary>
+    private static PdfiumTextGlyph ReadGlyph(FpdfTextpageT textPage, int index, int charCount)
+    {
+        PdfiumTextGlyphFlags flags = PdfiumTextGlyphFlags.None;
+        if (fpdf_text.FPDFTextIsGenerated(textPage, index) != 0)
+        {
+            flags |= PdfiumTextGlyphFlags.Generated;
+        }
+
+        if (fpdf_text.FPDFTextIsHyphen(textPage, index) != 0)
+        {
+            flags |= PdfiumTextGlyphFlags.Hyphen;
+        }
+
+        if (fpdf_text.FPDFTextHasUnicodeMapError(textPage, index) != 0)
+        {
+            flags |= PdfiumTextGlyphFlags.UnicodeMapError;
+        }
+
+        (string text, bool continuation) = ReadGlyphText(textPage, index, charCount);
+        if (continuation)
+        {
+            // The low-surrogate half of a supplementary scalar: the text lives on the
+            // previous index, so this index is trustworthy but contributes no text.
+            flags |= PdfiumTextGlyphFlags.SurrogateContinuation;
+        }
+        else if (text.Length == 0)
+        {
+            flags |= PdfiumTextGlyphFlags.NoUnicodeMapping;
+        }
+
+        double left = 0, right = 0, bottom = 0, top = 0;
+        _ = fpdf_text.FPDFTextGetCharBox(textPage, index, ref left, ref right, ref bottom, ref top);
+        double originX = 0, originY = 0;
+        _ = fpdf_text.FPDFTextGetCharOrigin(textPage, index, ref originX, ref originY);
+        double angle = fpdf_text.FPDFTextGetCharAngle(textPage, index);
+        double fontSize = fpdf_text.FPDFTextGetFontSize(textPage, index);
+        (string? fontName, int fontFlags) = ReadGlyphFont(textPage, index);
+        return new PdfiumTextGlyph(index, text, left, right, bottom, top, originX, originY,
+            angle, flags, fontName, fontFlags, fontSize);
+    }
+
+    /// <summary>
+    /// Reads the character as UTF-16 text so supplementary-plane scalars stay intact —
+    /// a surrogate pair occupies two PDFium indices: the first carries the whole scalar, the
+    /// second is reported as a continuation so the index domain stays exact while the
+    /// character stream never emits a lone surrogate.
+    /// </summary>
+    private static (string Text, bool Continuation) ReadGlyphText(FpdfTextpageT textPage,
+        int index, int charCount)
+    {
+        ushort[] buffer = new ushort[8];
+        int written = fpdf_text.FPDFTextGetText(textPage, index, 1, ref buffer[0]);
+        if (written <= 1)
+        {
+            uint code = fpdf_text.FPDFTextGetUnicode(textPage, index);
+            string fallback = code is > 0 and <= 0x10FFFF and not (>= 0xD800 and <= 0xDFFF)
+                ? char.ConvertFromUtf32((int)code)
+                : string.Empty;
+            return (fallback, false);
+        }
+
+        char first = (char)buffer[0];
+        if (char.IsLowSurrogate(first))
+        {
+            // Second half of a surrogate pair — the previous index already produced it.
+            return (string.Empty, true);
+        }
+
+        if (char.IsHighSurrogate(first))
+        {
+            if (index + 1 < charCount)
+            {
+                ushort[] pair = new ushort[4];
+                int pairWritten = fpdf_text.FPDFTextGetText(textPage, index, 2, ref pair[0]);
+                if (pairWritten > 2 && char.IsLowSurrogate((char)pair[1]))
+                {
+                    return (new string([(char)pair[0], (char)pair[1]]), false);
+                }
+            }
+
+            return (string.Empty, false);
+        }
+
+        int length = Math.Min(written - 1, buffer.Length); // exclude terminator
+        char[] chars = new char[length];
+        for (int i = 0; i < length; i++)
+        {
+            chars[i] = (char)buffer[i];
+        }
+
+        return (new string(chars), false);
+    }
+
+    private static (string? Name, int Flags) ReadGlyphFont(FpdfTextpageT textPage, int index)
+    {
+        int flags = 0;
+        ulong length = fpdf_text.FPDFTextGetFontInfo(textPage, index, IntPtr.Zero, 0, ref flags);
+        if (length == 0 || length > 4096)
+        {
+            return (null, flags);
+        }
+
+        IntPtr buffer = Marshal.AllocHGlobal(checked((int)length));
+        try
+        {
+            _ = fpdf_text.FPDFTextGetFontInfo(textPage, index, buffer, length, ref flags);
+            string? name = Marshal.PtrToStringUTF8(buffer, checked((int)length));
+            return (name?.TrimEnd('\0'), flags);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
     /// <summary>Reads every page's info inside one native unit; the document is opened and closed here.</summary>
     internal static IReadOnlyList<PdfiumPageInfoEntry> ReadPageInfos(string path, int pageCount)
     {

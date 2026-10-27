@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Credentials;
@@ -18,6 +19,7 @@ using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
+using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Infrastructure.Ocr;
 
@@ -41,6 +43,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
     private readonly IFileMaterializationService? _fileMaterialization;
     private readonly ILibraryRevisionService? _revisions;
     private readonly IDocumentTreeService _trees;
+    private readonly IOcrEngineRuntime? _engineRuntime;
 
     /// <summary>Raised exactly once after a successful OCR candidate commit.</summary>
     public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted;
@@ -61,11 +64,13 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IFileResolutionService? fileResolution = null,
         IFileMaterializationService? fileMaterialization = null,
         ILibraryRevisionService? revisions = null,
-        IDocumentTreeService? trees = null)
+        IDocumentTreeService? trees = null,
+        IOcrEngineRuntime? engineRuntime = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _engine = engine ?? new MockOcrEngine();
+        _engineRuntime = engineRuntime;
         _searchDirtyMarker = searchDirtyMarker;
         _treeImporter = treeImporter ?? new OcrDocumentTreeImporter(connectionFactory, clock);
         _adapterRegistry = adapterRegistry;
@@ -98,7 +103,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IFileResolutionService? fileResolution = null,
         IFileMaterializationService? fileMaterialization = null,
         ILibraryRevisionService? revisions = null,
-        IDocumentTreeService? trees = null)
+        IDocumentTreeService? trees = null,
+        IOcrEngineRuntime? engineRuntime = null)
         : this(
             connectionFactory,
             clock,
@@ -115,7 +121,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
             fileResolution,
             fileMaterialization,
             revisions,
-            trees)
+            trees,
+            engineRuntime)
     {
         _credentialResolver = credentialResolver;
     }
@@ -245,6 +252,150 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
     }
 
+    /// <summary>
+    /// Unified frozen-request entry used by the queue executor. When the request pins a preset
+    /// version, that exact version executes regardless of the preset's current version; when
+    /// <paramref name="execution"/> is supplied, the created run is reported through it immediately
+    /// after the run row exists and before model execution or page progress begins.
+    /// </summary>
+    public async Task<Result<OcrRun>> ExecuteAsync(
+        OcrRunExecutionRequest request,
+        OcrRunExecutionContext? execution = null,
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageIds.Count == 0)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                "At least one physical page is required.");
+        }
+
+        OcrPresetVersion? resolvedVersion = null;
+        if (request.PresetVersionId is { } presetVersionId)
+        {
+            Result<OcrPresetVersion> pinned = await GetPresetVersionAsync(presetVersionId, cancellationToken);
+            if (pinned.IsFailure)
+            {
+                return Result<OcrRun>.Failure(pinned.ErrorCode!, pinned.ErrorMessage!);
+            }
+
+            if (pinned.Value.PresetId != request.PresetId)
+            {
+                return Result<OcrRun>.Failure(AppErrorCodes.InvalidArgument,
+                    "The pinned preset version does not belong to the requested preset.");
+            }
+
+            resolvedVersion = pinned.Value;
+        }
+
+        // Queued attempts freeze the accepted page set and preset version; a newer current preset
+        // version must not change what this attempt runs. Version-pinned executions leave adoption
+        // to the queue task's CommitOnCompletion instead of preset auto-apply, matching the
+        // pre-existing pinned-pages behavior.
+        bool allowAutoCommit = request.PresetVersionId is null && !request.WorkingDraft;
+
+        // Every non-MinerU product engine runs through ONE task-level IOcrJob invocation over
+        // the accepted scope. Queued tasks carry the generation pinned at acceptance; direct
+        // (unpinned) calls acquire a lease for this single invocation so no entry path drops
+        // into the removed per-page adapter registry. Unknown custom engine metadata fails
+        // here instead of silently falling back to a legacy adapter.
+        IOcrEngineLease? directLease = null;
+        if (request.EngineLease is null && resolvedVersion is not null &&
+            _engineRuntime is not null)
+        {
+            Result<OcrEngineDefinition> definition = await _engineRuntime.GetDefinitionAsync(
+                resolvedVersion.EngineId, cancellationToken);
+            if (definition.IsFailure)
+            {
+                return Result<OcrRun>.Failure(definition.ErrorCode!, definition.ErrorMessage!);
+            }
+
+            if (!definition.Value.AdapterKind.Equals(OcrAdapterKind.LocalProcess,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Result<IOcrEngineLease> acquired = await _engineRuntime.AcquireAsync(
+                    new OcrEngineLeaseRequest(resolvedVersion, Scope: request.Scope), cancellationToken);
+                if (acquired.IsFailure)
+                {
+                    return Result<OcrRun>.Failure(acquired.ErrorCode!, acquired.ErrorMessage!);
+                }
+
+                directLease = acquired.Value;
+            }
+        }
+
+        IOcrEngineLease? extensionLease = request.EngineLease ?? directLease;
+        if (extensionLease is not null &&
+            (!extensionLease.IsBuiltIn || extensionLease.TextLayerProviderId is { Length: > 0 }))
+        {
+            try
+            {
+                return await RunExtensionJobAsync(request, extensionLease, allowAutoCommit,
+                    resolvedVersion, execution, progress, cancellationToken);
+            }
+            finally
+            {
+                if (directLease is not null)
+                {
+                    await directLease.DisposeAsync();
+                }
+            }
+        }
+
+        if (directLease is not null)
+        {
+            await directLease.DisposeAsync();
+        }
+
+        switch (request.Scope)
+        {
+            case OcrRunExecutionScope.Document:
+            case OcrRunExecutionScope.Pages:
+            {
+                if (request.WorkingDraft && request.PageIds.Count != 1)
+                {
+                    return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                        "Working-draft OCR runs on exactly one physical page.");
+                }
+
+                Result<Page[]> pages =
+                    await GetPagesAsync(request.DocumentInstanceId, request.PageIds, cancellationToken);
+                return pages.IsFailure
+                    ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
+                    : await RunPagesAsync(request.DocumentInstanceId, request.PresetId, pages.Value, null,
+                        cancellationToken, progress, allowAutoCommit, resolvedVersion, execution);
+            }
+            case OcrRunExecutionScope.Region:
+            {
+                if (request.PageIds.Count != 1 || request.RegionBBox is null)
+                {
+                    return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                        "Region OCR requires exactly one physical page and a normalized region.");
+                }
+
+                Result bbox = request.RegionBBox.Value.Validate();
+                if (bbox.IsFailure)
+                {
+                    return Result<OcrRun>.Failure(bbox.ErrorCode!, bbox.ErrorMessage!);
+                }
+
+                Result<Page[]> pages =
+                    await GetPagesAsync(request.DocumentInstanceId, request.PageIds, cancellationToken);
+                return pages.IsFailure
+                    ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
+                    : await RunPagesAsync(request.DocumentInstanceId, request.PresetId, pages.Value,
+                        request.RegionBBox, cancellationToken, progress, false, resolvedVersion,
+                        execution);
+            }
+            default:
+            {
+                return Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
+                    "Unsupported OCR execution scope.");
+            }
+        }
+    }
+
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
@@ -254,7 +405,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Result<Page[]> pages = await GetPagesAsync(documentInstanceId, null, cancellationToken);
         return pages.IsFailure
             ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress);
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, cancellationToken, progress);
     }
 
     public async Task<Result<OcrRun>> RunPresetOnPagesAsync(
@@ -264,15 +415,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
         CancellationToken cancellationToken = default,
         IProgress<OcrTaskStageProgress>? progress = null)
     {
-        if (pageIds.Count == 0)
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "At least one physical page is required.");
-        }
-
-        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, pageIds, cancellationToken);
-        return pages.IsFailure
-            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress);
+        return await ExecuteAsync(
+            new OcrRunExecutionRequest(documentInstanceId, presetId, pageIds, OcrRunExecutionScope.Pages),
+            null, cancellationToken, progress);
     }
 
     public async Task<Result<OcrRun>> RunPresetOnPagesWithVersionAsync(
@@ -283,30 +428,10 @@ public sealed class OcrRunEngine : IOcrRunEngine
         CancellationToken cancellationToken = default,
         IProgress<OcrTaskStageProgress>? progress = null)
     {
-        if (pageIds.Count == 0)
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "At least one physical page is required.");
-        }
-
-        Result<OcrPresetVersion> pinned = await GetPresetVersionAsync(presetVersionId, cancellationToken);
-        if (pinned.IsFailure)
-        {
-            return Result<OcrRun>.Failure(pinned.ErrorCode!, pinned.ErrorMessage!);
-        }
-
-        if (pinned.Value.PresetId != presetId)
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.InvalidArgument,
-                "The pinned preset version does not belong to the requested preset.");
-        }
-
-        // Queued tasks must execute the exact version accepted at enqueue time, even if the
-        // preset's current version changed while the task waited in the queue.
-        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, pageIds, cancellationToken);
-        return pages.IsFailure
-            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress,
-                false, pinned.Value);
+        return await ExecuteAsync(
+            new OcrRunExecutionRequest(documentInstanceId, presetId, pageIds, OcrRunExecutionScope.Pages,
+                presetVersionId),
+            null, cancellationToken, progress);
     }
 
     public async Task<Result<OcrRun>> RunPresetOnRegionAsync(
@@ -316,28 +441,20 @@ public sealed class OcrRunEngine : IOcrRunEngine
         NormalizedBBox regionBBox,
         CancellationToken cancellationToken = default)
     {
-        Result bbox = regionBBox.Validate();
-        if (bbox.IsFailure)
-        {
-            return Result<OcrRun>.Failure(bbox.ErrorCode!, bbox.ErrorMessage!);
-        }
-
-        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
-        return pages.IsFailure
-            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, regionBBox, null, cancellationToken,
-                allowAutoCommit: false);
+        return await ExecuteAsync(
+            new OcrRunExecutionRequest(documentInstanceId, presetId, [pageId], OcrRunExecutionScope.Region,
+                regionBBox: regionBBox),
+            null, cancellationToken);
     }
 
     public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
         DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
         CancellationToken cancellationToken = default)
     {
-        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
-        return pages.IsFailure
-            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken,
-                allowAutoCommit: false);
+        return await ExecuteAsync(
+            new OcrRunExecutionRequest(documentInstanceId, presetId, [pageId],
+                OcrRunExecutionScope.Pages, workingDraft: true),
+            null, cancellationToken);
     }
 
     public async Task<Result> DiscardWorkingRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
@@ -407,8 +524,32 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 documentInstanceId, pages.Value.Single(), regionBBox, version.Value, cancellationToken);
         }
 
+        // Extension engines run the ephemeral region through the same one-job path as the queue —
+        // no fake persistent Run is created for the preview candidate.
+        if (_engineRuntime is not null)
+        {
+            Result<OcrEngineDefinition> definition =
+                await _engineRuntime.GetDefinitionAsync(version.Value.EngineId, cancellationToken);
+            if (definition.IsSuccess)
+            {
+                Result<IOcrEngineLease> lease = await _engineRuntime.AcquireAsync(
+                    new OcrEngineLeaseRequest(version.Value, Scope: OcrRunExecutionScope.Region), cancellationToken);
+                if (lease.IsFailure)
+                {
+                    return Result<OcrRegionCandidate>.Failure(lease.ErrorCode!, lease.ErrorMessage!);
+                }
+
+                await using IOcrEngineLease held = lease.Value;
+                if (!held.IsBuiltIn)
+                {
+                    return await RecognizeRegionWithExtensionJobAsync(documentInstanceId,
+                        pages.Value.Single(), regionBBox, version.Value, held, cancellationToken);
+                }
+            }
+        }
+
         Result<OcrEnginePageResult> output = await RunEngineAsync(
-            pages.Value.Single(), version.Value, regionBBox, null, cancellationToken);
+            pages.Value.Single(), version.Value, regionBBox, cancellationToken);
         if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
         {
             return Result<OcrRegionCandidate>.Failure(
@@ -422,51 +563,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
             ? Result<OcrRegionCandidate>.Failure(bbox.ErrorCode!, bbox.ErrorMessage!)
             : Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
                 pageId, bbox.Value, DocumentBoxType.Text, new TextBoxPayload(output.Value.Text.Trim())));
-    }
-
-    public async Task<Result<OcrRun>> RunPresetOnImagePageAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        PageId pageId,
-        string imagePath,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "OCR image input was not found.");
-        }
-
-        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
-        return pages.IsFailure
-            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, imagePath, cancellationToken);
-    }
-
-    public async Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        PageId pageId,
-        int dpi = 200,
-        CancellationToken cancellationToken = default)
-    {
-        if (_pageRenderService is null)
-        {
-            return Result<OcrRun>.Failure(
-                AppErrorCodes.UnsupportedOperation,
-                "PDF page rendering is not configured for OCR.");
-        }
-
-        Result<OcrInputDescriptor> input = await _pageRenderService.BuildOcrInputFromRenderedPageAsync(
-            documentInstanceId, pageId, dpi, cancellationToken);
-        if (input.IsFailure || string.IsNullOrWhiteSpace(input.Value.ImagePath))
-        {
-            return Result<OcrRun>.Failure(
-                input.ErrorCode ?? AppErrorCodes.InvalidState,
-                input.ErrorMessage ?? "Rendered OCR input is unavailable.");
-        }
-
-        return await RunPresetOnImagePageAsync(
-            documentInstanceId, presetId, pageId, input.Value.ImagePath, cancellationToken);
     }
 
     public async Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
@@ -900,11 +996,11 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetId presetId,
         IReadOnlyList<Page> pages,
         NormalizedBBox? region,
-        string? imagePath,
         CancellationToken cancellationToken,
         IProgress<OcrTaskStageProgress>? progress = null,
         bool allowAutoCommit = true,
-        OcrPresetVersion? resolvedVersion = null)
+        OcrPresetVersion? resolvedVersion = null,
+        OcrRunExecutionContext? execution = null)
     {
         Result<OcrPresetVersion> version = resolvedVersion is not null
             ? Result<OcrPresetVersion>.Success(resolvedVersion)
@@ -928,12 +1024,20 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (version.Value.EngineId == OcrEngineIds.MinerU)
         {
             return await RunMinerUDocumentAsync(
-                documentInstanceId, presetId, version.Value, pages, region, imagePath, cancellationToken, progress);
+                documentInstanceId, presetId, version.Value, pages, region, cancellationToken,
+                progress, execution);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        Result<OcrRun>? rejected = await RejectRunWhenBindingFailsAsync(execution, run, pages,
+            cancellationToken);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
         // Capture each page's committed revision baseline before any recognition starts. The
         // snapshot is propagated onto every candidate working revision so adoption can detect
         // a manual edit committed while the engine was running; reading it later would
@@ -952,7 +1056,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
                 Result<OcrEnginePageResult> output = await RunEngineAsync(
-                    page, version.Value, region, imagePath, cancellationToken);
+                    page, version.Value, region, cancellationToken);
                 if (output.IsFailure || !output.Value.Succeeded)
                 {
                     failures++;
@@ -1080,12 +1184,814 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
     }
 
+    /// <summary>
+    /// Extension job path (issue #43): the whole accepted scope runs through one task-level
+    /// <see cref="IOcrJob"/> invocation against the generation pinned at queue acceptance. The
+    /// selected PDF text-layer provider parses first — never touching image resources — and
+    /// only the regions it explicitly forwards to OCR (or pages without a provider) become
+    /// image inputs. Typed <see cref="DocumentBoxSeed"/> candidates (tables, equations,
+    /// subtypes, order, continuations) merge with native seeds and flow through the same
+    /// working/importer path as built-in runs — never flattened to text.
+    /// </summary>
+    private async Task<Result<OcrRun>> RunExtensionJobAsync(
+        OcrRunExecutionRequest request,
+        IOcrEngineLease lease,
+        bool allowAutoCommit,
+        OcrPresetVersion? resolvedVersion,
+        OcrRunExecutionContext? execution,
+        IProgress<OcrTaskStageProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        Result<OcrPresetVersion> versionResult = resolvedVersion is not null
+            ? Result<OcrPresetVersion>.Success(resolvedVersion)
+            : await ResolvePresetVersionAsync(request.PresetId, cancellationToken);
+        if (versionResult.IsFailure)
+        {
+            return Result<OcrRun>.Failure(versionResult.ErrorCode!, versionResult.ErrorMessage!);
+        }
+
+        OcrPresetVersion version = versionResult.Value;
+        // Interactive drafts never auto-adopt; queued attempts defer adoption to the task's
+        // CommitOnCompletion instead of preset auto-apply — same rule as the built-in path.
+        if (!allowAutoCommit || request.Scope is OcrRunExecutionScope.Region)
+        {
+            version = version with { ApplyOnSuccess = false };
+        }
+
+        if (request.Scope is OcrRunExecutionScope.Region &&
+            (request.PageIds.Count != 1 || request.RegionBBox is null))
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
+                "Region OCR requires exactly one physical page and a normalized region.");
+        }
+
+        if (request.Scope is OcrRunExecutionScope.Region &&
+            request.RegionBBox!.Value.Validate() is { IsFailure: true } invalidRegion)
+        {
+            return Result<OcrRun>.Failure(invalidRegion.ErrorCode!, invalidRegion.ErrorMessage!);
+        }
+
+        if (!string.Equals(version.EngineId, lease.EngineId, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.InvalidArgument,
+                "The pinned engine lease does not match the frozen preset version engine.");
+        }
+
+        Result<Page[]> pagesResult =
+            await GetPagesAsync(request.DocumentInstanceId, request.PageIds, cancellationToken);
+        if (pagesResult.IsFailure)
+        {
+            return Result<OcrRun>.Failure(pagesResult.ErrorCode!, pagesResult.ErrorMessage!);
+        }
+
+        Page[] pages = pagesResult.Value;
+        OcrRun run = NewRun(request.DocumentInstanceId, request.PresetId, version,
+                OcrRunState.Running) with
+            {
+                ParametersSnapshotJson =
+                BuildExtensionProvenanceJson(version.ParametersJson, lease, version.ModelPath)
+            };
+        await InsertRunAsync(run, cancellationToken);
+        await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        Result<OcrRun>? rejected = await RejectRunWhenBindingFailsAsync(execution, run, pages,
+            cancellationToken);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(request.DocumentInstanceId, pages,
+                cancellationToken);
+        int failures = 0;
+        int processedPages = 0;
+        DocumentTreeRevisionId? firstWorking = null;
+
+        Dictionary<PageId, List<DocumentBoxSeed>> nativeSeeds = new();
+        // Native-box anchors (native-text char index) aligned with each provider box, and the
+        // declared regions' anchor positions — the merge preserves the provider's declared
+        // reading-order slots instead of re-sorting geometry.
+        Dictionary<PageId, int[]> nativeAnchors = new();
+        Dictionary<OcrInputId, int> regionAnchors = new();
+        Dictionary<PageId, List<(OcrInputId InputId, DocumentBoxSeed Seed)>> jobSeeds = new();
+        Dictionary<PageId, (string Code, string Message)> pageFailures = new();
+        Dictionary<OcrInputId, Func<CancellationToken, Task<OcrInputImage>>> loaders = new();
+        List<OcrJobPage> jobPages = [];
+        const int dpi = 200;
+        bool providerSelected = lease.TextLayerProviderId is { Length: > 0 }
+                                && !string.Equals(lease.TextLayerProviderId, "disabled",
+                                    StringComparison.OrdinalIgnoreCase);
+        bool textLayerScope = providerSelected && request.Scope
+            is OcrRunExecutionScope.Document or OcrRunExecutionScope.Pages;
+        // Composition-level provider-failure policy (default page-ocr): content-level
+        // provider failures — missing, unusable or damaged text, unreadable sources,
+        // provider error diagnostics — route the page to the selected image engine as a
+        // whole-page input. Only provider-side infrastructure failures (no pinned provider,
+        // a released generation) stay hard failures: the image engine cannot honestly
+        // substitute for a provider invocation that never ran.
+        bool missingTextFallback = !string.Equals(lease.TextLayerMissingTextPolicy,
+            TextLayerMissingTextPolicies.Fail, StringComparison.OrdinalIgnoreCase);
+        int textLayerFallbackPages = 0;
+
+        static bool IsProviderInfrastructureFailure(string? code)
+        {
+            return string.Equals(code, AppErrorCodes.UnsupportedOperation, StringComparison.Ordinal) ||
+                   string.Equals(code, AppErrorCodes.InvalidState, StringComparison.Ordinal);
+        }
+
+        void EnqueuePageImageInput(Page target, DocumentTreeRevisionId targetBaseline)
+        {
+            OcrJobInput pageInput = new(new OcrInputId($"page-{target.PageIndex}"),
+                new NormalizedBBox(0, 0, 1, 1),
+                "image/png", OcrInputKinds.PageImage);
+            loaders[pageInput.Id] = ct => ReadPageImageAsync(pageInput.Id,
+                request.DocumentInstanceId, target, dpi, ct);
+            jobPages.Add(new OcrJobPage(
+                new ExtensionPageIdentity(request.DocumentInstanceId, target.PageId,
+                    targetBaseline, target.PageIndex),
+                [pageInput]));
+        }
+
+        try
+        {
+            progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Preparing, 0, null));
+            // Phase 1 — independent text layer (native providers never render or load images;
+            // only pages the missing-text policy declares for image OCR materialize pixels).
+            for (int pageOffset = 0; pageOffset < pages.Length; pageOffset++)
+            {
+                Page page = pages[pageOffset];
+                cancellationToken.ThrowIfCancellationRequested();
+                await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing,
+                    null, null, null);
+                baselines.TryGetValue(page.PageId, out DocumentTreeRevisionId baseline);
+
+                if (textLayerScope)
+                {
+                    progress?.Report(new OcrTaskStageProgress(OcrTaskStage.ParsingTextLayer,
+                        pageOffset / (double)pages.Length,
+                        FormattableString.Invariant($"pages:{pageOffset}/{pages.Length};page:{page.PageIndex + 1}")));
+                    Result<PdfTextLayerResult> parsed = await lease.ParseTextLayerAsync(
+                        request.DocumentInstanceId, page.PageId, page.PageIndex, baseline,
+                        null, request.Scope, cancellationToken);
+                    if (parsed.IsFailure)
+                    {
+                        if (IsProviderInfrastructureFailure(parsed.ErrorCode))
+                        {
+                            pageFailures[page.PageId] = (parsed.ErrorCode!, parsed.ErrorMessage!);
+                        }
+                        else if (missingTextFallback)
+                        {
+                            // Declared fallback: any content-level provider failure —
+                            // missing, unusable or damaged text, an unreadable source —
+                            // becomes an explicit whole-page image input.
+                            EnqueuePageImageInput(page, baseline);
+                            textLayerFallbackPages++;
+                        }
+                        else
+                        {
+                            pageFailures[page.PageId] = (parsed.ErrorCode!, parsed.ErrorMessage!);
+                        }
+
+                        continue;
+                    }
+
+                    PdfTextLayerResult provider = parsed.Value;
+                    PdfTextLayerDiagnostic? providerError =
+                        provider.Diagnostics.FirstOrDefault(d => d.Severity == PdfTextLayerDiagnosticSeverity.Error);
+                    if (providerError is not null)
+                    {
+                        // An error-level provider diagnostic means its page output is not
+                        // trustworthy; the page falls back to image OCR under the default
+                        // policy and stays an explicit failure under the strict policy.
+                        if (missingTextFallback)
+                        {
+                            EnqueuePageImageInput(page, baseline);
+                            textLayerFallbackPages++;
+                        }
+                        else
+                        {
+                            pageFailures[page.PageId] = (providerError.Code, providerError.Message);
+                        }
+
+                        continue;
+                    }
+
+                    nativeSeeds[page.PageId] = provider.Boxes.Select(box => box.Box).ToList();
+                    nativeAnchors[page.PageId] = provider.Boxes
+                        .Select(box => box.Anchors.Count > 0
+                            ? box.Anchors[0].StartCharIndex
+                            : int.MaxValue)
+                        .ToArray();
+                    if (provider.RequiredOcrRegions.Count == 0)
+                    {
+                        if (provider.Boxes.Count == 0)
+                        {
+                            if (missingTextFallback)
+                            {
+                                EnqueuePageImageInput(page, baseline);
+                                textLayerFallbackPages++;
+                            }
+                            else
+                            {
+                                // Selected native provider produced nothing and asked for no
+                                // OCR: under the strict missing-text policy an explicit failure.
+                                pageFailures[page.PageId] =
+                                    (PdfTextLayerDiagnosticCodes.NativeTextMissing,
+                                        "The selected PDF text-layer provider found no usable native " +
+                                        "text and declared no regions for image OCR.");
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    jobPages.Add(new OcrJobPage(
+                        new ExtensionPageIdentity(request.DocumentInstanceId, page.PageId,
+                            baseline, page.PageIndex),
+                        provider.RequiredOcrRegions.Select((region, index) =>
+                        {
+                            OcrJobInput input = new(new OcrInputId($"region-{page.PageIndex}-{index}"),
+                                region.Region, "image/png", OcrInputKinds.RegionImage);
+                            regionAnchors[input.Id] = region.Anchors is { Count: > 0 }
+                                ? region.Anchors[0].StartCharIndex
+                                : int.MaxValue;
+                            loaders[input.Id] = ct => ReadRegionImageAsync(input.Id,
+                                request.DocumentInstanceId, page, region.Region, dpi, ct);
+                            return input;
+                        }).ToList()));
+                    continue;
+                }
+
+                if (request.Scope is OcrRunExecutionScope.Region)
+                {
+                    OcrJobInput regionInput = new(new OcrInputId("region"),
+                        request.RegionBBox!.Value, "image/png", OcrInputKinds.RegionImage);
+                    loaders[regionInput.Id] = ct => ReadRegionImageAsync(regionInput.Id,
+                        request.DocumentInstanceId, page, request.RegionBBox.Value, dpi, ct);
+                    jobPages.Add(new OcrJobPage(
+                        new ExtensionPageIdentity(request.DocumentInstanceId, page.PageId,
+                            baseline, page.PageIndex),
+                        [regionInput]));
+                    continue;
+                }
+
+                EnqueuePageImageInput(page, baseline);
+            }
+
+            if (textLayerScope)
+            {
+                ReportPageProgress(progress, pages.Length, pages.Length, OcrTaskStage.ParsingTextLayer);
+            }
+
+            ReportPageProgress(progress, pages.Length - jobPages.Count, pages.Length);
+            // Image readiness probes only when image inputs remain on an extension lease — a
+            // page fully resolved by the native provider never validates image weights,
+            // credentials or rendering, and a built-in engine's region transport reports its
+            // own readiness instead of the extension probe.
+            if (jobPages.Count > 0 && !lease.IsBuiltIn)
+            {
+                string imageScope =
+                    jobPages.All(page => page.Inputs.All(input => input.Kind == OcrInputKinds.RegionImage))
+                        ? OcrRunExecutionScope.Region
+                        : request.Scope;
+                Result ready = await lease.EnsureManagedFilesAsync(imageScope, cancellationToken);
+                if (ready.IsSuccess)
+                {
+                    ready = await lease.CheckReadinessAsync(cancellationToken);
+                }
+
+                if (ready.IsFailure)
+                {
+                    foreach (OcrJobPage page in jobPages)
+                    {
+                        pageFailures.TryAdd(page.Page.PageId,
+                            (ready.ErrorCode!, ready.ErrorMessage!));
+                    }
+
+                    jobPages.Clear();
+                }
+            }
+
+            run = run with
+            {
+                ParametersSnapshotJson = BuildExtensionProvenanceJson(version.ParametersJson, lease,
+                    version.ModelPath, jobPages.Count > 0, textLayerFallbackPages)
+            };
+            await UpdateRunParametersSnapshotAsync(run, cancellationToken);
+
+            // Phase 2 — ONE task-level image phase over the remaining scope.
+            if (jobPages.Count > 0 && lease.IsBuiltIn)
+            {
+                // A built-in engine (MinerU) with a pinned provider: explicit provider-declared
+                // regions and host-declared missing-text page inputs go through the engine's
+                // region transport under the same task — never an undeclared fallback.
+                // Credentials/rendering are only touched on this branch.
+                int recognizedPages = pages.Length - jobPages.Count;
+                foreach (OcrJobPage jobPage in jobPages)
+                {
+                    ReportPageProgress(progress, recognizedPages, pages.Length);
+                    if (lease.BuiltInRegionRunner is null)
+                    {
+                        pageFailures[jobPage.Page.PageId] = ("engine_region_ocr_unsupported",
+                            $"Engine '{lease.EngineId}' cannot recognize provider-declared regions.");
+                        ReportPageProgress(progress, ++recognizedPages, pages.Length);
+                        continue;
+                    }
+
+                    List<(OcrInputId InputId, DocumentBoxSeed Seed)> regionSeeds = [];
+                    foreach (OcrJobInput input in jobPage.Inputs)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Recognizing,
+                            recognizedPages / (double)pages.Length,
+                            FormattableString.Invariant(
+                                $"pages:{recognizedPages}/{pages.Length};page:{jobPage.Page.PageIndex + 1}")));
+                        Result<IReadOnlyList<OcrExtensionBoxCandidate>> recognized =
+                            await lease.BuiltInRegionRunner(jobPage, input, version,
+                                cancellationToken);
+                        if (recognized.IsFailure)
+                        {
+                            pageFailures[jobPage.Page.PageId] =
+                                (recognized.ErrorCode!, recognized.ErrorMessage!);
+                            break;
+                        }
+
+                        regionSeeds.AddRange(recognized.Value.Select(candidate =>
+                            (candidate.InputId, candidate.Candidate)));
+                    }
+
+                    if (!pageFailures.ContainsKey(jobPage.Page.PageId))
+                    {
+                        jobSeeds[jobPage.Page.PageId] = regionSeeds;
+                    }
+
+                    ReportPageProgress(progress, ++recognizedPages, pages.Length);
+                }
+            }
+            else if (jobPages.Count > 0)
+            {
+                Result<OcrDomainRunResult> outcome;
+                using (OcrExtensionProgress extensionProgress = new(jobPages, pages.Length, progress))
+                {
+                    OcrDomainJobRequest jobRequest = new(
+                        $"ocr-run-{run.OcrRunId}", request.DocumentInstanceId, jobPages,
+                        (input, ct) => new ValueTask<OcrInputImage>(loaders[input.Id](ct)),
+                        new OcrJobOptions(dpi, 1),
+                        extensionProgress,
+                        BaselineProbe: ProbeBaselineAsync);
+                    outcome = await lease.RunOcrJobAsync(jobRequest, cancellationToken);
+                }
+
+                if (outcome.IsFailure)
+                {
+                    foreach (OcrJobPage page in jobPages)
+                    {
+                        pageFailures.TryAdd(page.Page.PageId,
+                            (outcome.ErrorCode!, outcome.ErrorMessage!));
+                    }
+                }
+                else
+                {
+                    Dictionary<PageId, OcrExtensionCandidate> accepted = outcome.Value
+                        .AcceptedCandidates
+                        .GroupBy(candidate => candidate.Page.PageId)
+                        .ToDictionary(group => group.Key, group => group.First());
+                    HashSet<PageId> issued = jobPages.Select(job => job.Page.PageId).ToHashSet();
+                    foreach (OcrPageSettlement settlement in outcome.Value.Settlements)
+                    {
+                        switch (settlement.State)
+                        {
+                            case OcrPageSettlementState.Accepted
+                                when settlement.FailedInputCount == 0:
+                                // A fully settled page: every issued input recognized.
+                                jobSeeds[settlement.Page.PageId] =
+                                    accepted.TryGetValue(settlement.Page.PageId,
+                                        out OcrExtensionCandidate? full)
+                                        ? full.Boxes.Select(box => (box.InputId, box.Candidate)).ToList()
+                                        : [];
+                                break;
+                            case OcrPageSettlementState.Accepted:
+                                // Partial acceptance: failed/skipped inputs must not be
+                                // imported and silently reported as a full success — the page
+                                // fails with actionable per-input diagnostics.
+                                pageFailures[settlement.Page.PageId] = ("ocr_partial_inputs",
+                                    PartialInputsMessage(accepted.GetValueOrDefault(
+                                        settlement.Page.PageId), settlement));
+                                break;
+                            case OcrPageSettlementState.Cancelled:
+                                pageFailures.TryAdd(settlement.Page.PageId, ("cancelled",
+                                    settlement.ErrorMessage ??
+                                    "OCR was cancelled before this page settled."));
+                                break;
+                            default:
+                                // Failed or terminal Conflict: record the real code — the
+                                // conflict is never replaced by a generic unfinished-page error.
+                                pageFailures.TryAdd(settlement.Page.PageId,
+                                    (settlement.ErrorCode ?? AppErrorCodes.InvalidState,
+                                        settlement.ErrorMessage ?? "OCR failed for this page."));
+                                break;
+                        }
+                    }
+
+                    // A page issued to the job but never settled is an explicit failure —
+                    // never a blank-page success.
+                    foreach (PageId issuedPage in issued)
+                    {
+                        if (!jobSeeds.ContainsKey(issuedPage) && !pageFailures.ContainsKey(issuedPage))
+                        {
+                            pageFailures[issuedPage] = ("ocr_page_unsettled",
+                                "The OCR job ended without recording an outcome for this page.");
+                        }
+                    }
+                }
+            }
+
+            // Phase 3 — import: provider seeds first (native reading order), then image boxes.
+            ReportPageProgress(progress, 0, pages.Length, OcrTaskStage.Importing);
+            foreach (Page page in pages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (pageFailures.TryGetValue(page.PageId, out (string Code, string Message) fail))
+                {
+                    failures++;
+                    processedPages++;
+                    await UpdatePageResultAsync(run.OcrRunId, page.PageId,
+                        OcrPageResultState.Failed, null, fail.Code, fail.Message);
+                    ReportPageProgress(progress, processedPages, pages.Length, OcrTaskStage.Importing);
+                    continue;
+                }
+
+                // Merge on declared reading order: native boxes keep the provider's anchor
+                // sequence; OCR output lands in each declared region's anchor slot (a middle
+                // hole fills the hole, not the tail). Image-only pages keep the engine's own
+                // declared order — no geometric re-sort.
+                List<DocumentBoxSeed> seeds = [];
+                if (nativeSeeds.TryGetValue(page.PageId, out List<DocumentBoxSeed>? native) &&
+                    jobSeeds.TryGetValue(page.PageId, out List<(OcrInputId, DocumentBoxSeed)>? hybrid))
+                {
+                    int[] anchors = nativeAnchors.GetValueOrDefault(page.PageId) ?? [];
+                    List<(int Anchor, int Seq, DocumentBoxSeed Seed)> merged = [];
+                    int seq = 0;
+                    for (int i = 0; i < native.Count; i++)
+                    {
+                        merged.Add((i < anchors.Length ? anchors[i] : int.MaxValue, seq++, native[i]));
+                    }
+
+                    foreach ((OcrInputId inputId, DocumentBoxSeed seed) in hybrid)
+                    {
+                        merged.Add((regionAnchors.GetValueOrDefault(inputId, int.MaxValue),
+                            seq++, seed));
+                    }
+
+                    seeds = merged.OrderBy(entry => entry.Anchor)
+                        .ThenBy(entry => entry.Seq)
+                        .Select(entry => entry.Seed)
+                        .ToList();
+                }
+                else if (native is not null)
+                {
+                    seeds.AddRange(native);
+                }
+                else if (jobSeeds.TryGetValue(page.PageId, out List<(OcrInputId, DocumentBoxSeed)>? ocr))
+                {
+                    seeds.AddRange(ocr.Select(entry => entry.Item2));
+                }
+
+                if (seeds.Any(seed => string.IsNullOrWhiteSpace(seed.BoxType) ||
+                                      seed.BBox.Validate().IsFailure))
+                {
+                    failures++;
+                    processedPages++;
+                    await UpdatePageResultAsync(run.OcrRunId, page.PageId,
+                        OcrPageResultState.Failed, null, "invalid_candidate",
+                        "The OCR extension returned a candidate with an invalid type or geometry.");
+                    ReportPageProgress(progress, processedPages, pages.Length, OcrTaskStage.Importing);
+                    continue;
+                }
+
+                if (seeds.Count == 0)
+                {
+                    // A recognized-but-blank page is a success: same logical-page placeholder as
+                    // the built-in path.
+                    seeds.Add(new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage,
+                        null, new NormalizedBBox(0, 0, 1, 1),
+                        new TextBoxPayload("Blank page (OCR returned no content).")));
+                }
+
+                OcrDocumentTreeCandidate candidate = new(
+                    [
+                        new OcrPageCandidate(page.PageId, page.PageIndex,
+                            seeds.Select((seed, index) => new OcrBoxCandidate(
+                                    seed.BoxType, seed.SubType, index, seed.Payload!, seed.BBox,
+                                    seed.HeadingLevel, seed.Confidence, seed.Suppressed,
+                                    seed.ParentBoxId,
+                                    seed.BoxId,
+                                    seed.ContinuesFromBoxId,
+                                    seed.CodeLanguage))
+                                .ToArray())
+                    ],
+                    []);
+                Result<OcrDocumentTreeImportResult> working =
+                    await _treeImporter.BeginWorkingAsync(
+                        new OcrDocumentTreeImportRequest(request.DocumentInstanceId, candidate,
+                            ExpectedParentTreeRevisionIds: baselines),
+                        cancellationToken);
+                if (working.IsFailure)
+                {
+                    failures++;
+                    processedPages++;
+                    await UpdatePageResultAsync(run.OcrRunId, page.PageId,
+                        OcrPageResultState.Failed, null, working.ErrorCode, working.ErrorMessage);
+                    ReportPageProgress(progress, processedPages, pages.Length, OcrTaskStage.Importing);
+                    continue;
+                }
+
+                DocumentTreeRevisionId revisionId = working.Value.WorkingRevisionIds.Single();
+                firstWorking ??= revisionId;
+                await UpdatePageResultAsync(run.OcrRunId, page.PageId,
+                    OcrPageResultState.Succeeded, revisionId, null, null);
+                processedPages++;
+                ReportPageProgress(progress, processedPages, pages.Length, OcrTaskStage.Importing);
+            }
+
+            return await FinalizeRunAsync(run, pages, version, failures, firstWorking,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.ocr-extension-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, pages, exception);
+        }
+    }
+
+    /// <summary>Actionable per-input diagnostics for a partially accepted page.</summary>
+    private static string PartialInputsMessage(OcrExtensionCandidate? candidate,
+        OcrPageSettlement settlement)
+    {
+        if (candidate is null)
+        {
+            return settlement.ErrorMessage ??
+                   $"The page settled with {settlement.FailedInputCount} unprocessed input(s).";
+        }
+
+        string[] problems = candidate.Inputs
+            .Where(input => input.State is not OcrInputSettlementState.Recognized)
+            .Select(input => input.State is OcrInputSettlementState.Skipped
+                ? $"{input.InputId.Value}: skipped"
+                : $"{input.InputId.Value}: {input.ErrorCode ?? "failed"}" +
+                  (input.ErrorMessage is { } message ? $" ({message})" : ""))
+            .ToArray();
+        return problems.Length == 0
+            ? $"The page settled with {settlement.FailedInputCount} unprocessed input(s)."
+            : "Page inputs failed or were skipped: " + string.Join("; ", problems);
+    }
+
+    /// <summary>Re-reads the current committed revision for baseline-change detection mid-job.</summary>
+    private async ValueTask<ExtensionPageIdentity?> ProbeBaselineAsync(
+        ExtensionPageIdentity identity, CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? current = await connection.QuerySingleOrDefaultAsync<string?>(
+            """
+            select tree_revision_id from document_tree_revisions
+            where page_id = @PageId and is_current = 1 limit 1;
+            """,
+            new { PageId = identity.PageId.ToString() });
+        if (current is null || string.Equals(current, identity.RevisionId.ToString(),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return new ExtensionPageIdentity(identity.DocumentId, identity.PageId,
+            DocumentTreeRevisionId.Parse(current), identity.PageIndex);
+    }
+
+    /// <summary>Host-mediated lazy image materialization for a full-page job input.</summary>
+    private async Task<OcrInputImage> ReadPageImageAsync(
+        OcrInputId inputId,
+        DocumentInstanceId documentInstanceId,
+        Page page,
+        int dpi,
+        CancellationToken cancellationToken)
+    {
+        Result<OcrInputDescriptor> rendered =
+            await _pageRenderService!.BuildOcrInputFromRenderedPageAsync(
+                documentInstanceId, page.PageId, dpi, cancellationToken);
+        if (rendered.IsFailure || rendered.Value.ImagePath is not { } imagePath)
+        {
+            throw new InvalidOperationException(
+                rendered.ErrorMessage ?? "PDF page rendering failed.");
+        }
+
+        return new OcrInputImage(inputId, "image/png",
+            await File.ReadAllBytesAsync(imagePath, cancellationToken));
+    }
+
+    private async Task<OcrInputImage> ReadRegionImageAsync(
+        OcrInputId inputId,
+        DocumentInstanceId documentInstanceId,
+        Page page,
+        NormalizedBBox region,
+        int dpi,
+        CancellationToken cancellationToken)
+    {
+        Result<string> rendered = await _pageRenderService!.RenderRegionPngAsync(
+            documentInstanceId, page.PageId, region, dpi, cancellationToken);
+        if (rendered.IsFailure)
+        {
+            throw new InvalidOperationException(rendered.ErrorMessage ?? "Region rendering failed.");
+        }
+
+        return new OcrInputImage(inputId, "image/png",
+            await File.ReadAllBytesAsync(rendered.Value, cancellationToken));
+    }
+
+    /// <summary>Runtime provenance merged under `_runtime` — no weights or secrets copied.</summary>
+    private static string BuildExtensionProvenanceJson(
+        string parametersJson, IOcrEngineLease lease, string? modelPath,
+        bool? imageEngineRequested = null, int? textLayerFallbackPages = null)
+    {
+        JsonObject root = JsonNode.Parse(
+                              string.IsNullOrWhiteSpace(parametersJson) ? "{}" : parametersJson) as JsonObject
+                          ?? new JsonObject();
+        JsonObject runtime = new()
+        {
+            ["engine_extension_id"] = lease.EngineExtensionId,
+            ["engine_fingerprint"] = lease.EngineFingerprint,
+            ["engine_config_version"] = lease.EngineConfigurationVersion,
+            ["model_identity"] = lease.ModelIdentity ?? modelPath,
+            // Honest provenance: a real content digest when the model file could be hashed,
+            // "unknown" when it could not — never a synthesized modelId|path fingerprint.
+            ["model_digest"] = imageEngineRequested == false ? null : lease.ModelDigest ?? "unknown"
+        };
+        if (imageEngineRequested is { } requested)
+        {
+            runtime["image_engine_requested"] = requested;
+        }
+
+        if (lease.EngineConfig is { } engineConfig)
+        {
+            runtime["engine_config"] = JsonSerializer.SerializeToNode(engineConfig.Values);
+        }
+
+        if (lease.TextLayerProviderId is { Length: > 0 })
+        {
+            runtime["text_layer_provider_id"] = lease.TextLayerProviderId;
+            runtime["text_layer_extension_id"] = lease.TextLayerExtensionId;
+            runtime["text_layer_fingerprint"] = lease.TextLayerFingerprint;
+            runtime["text_layer_config_version"] = lease.TextLayerConfigurationVersion;
+            runtime["text_layer_config"] = lease.TextLayerConfig is { } textConfig
+                ? JsonSerializer.SerializeToNode(textConfig.Values)
+                : null;
+            runtime["text_layer_missing_text_policy"] = lease.TextLayerMissingTextPolicy;
+            if (textLayerFallbackPages is > 0)
+            {
+                runtime["text_layer_fallback_pages"] = textLayerFallbackPages;
+            }
+        }
+
+        // The frozen hosted-model selection (provider/model/reasoning) at acceptance — from the
+        // lease's effective config snapshot, never re-read. Only non-secret scalar values are
+        // written; keys/credentials are never copied into provenance.
+        JsonObject modelSelection = new();
+        if (lease.EngineConfig?.Values is { } configValues)
+        {
+            foreach (string key in new[]
+                     {
+                         "model", "model-id", "model_id",
+                         "provider", "provider-id", "provider_id", "reasoning-effort",
+                         "reasoning_effort"
+                     })
+            {
+                if (configValues.TryGetValue(key, out string? value) &&
+                    !string.IsNullOrWhiteSpace(value))
+                {
+                    modelSelection[key] = value;
+                }
+            }
+        }
+
+        if (modelSelection.Count > 0)
+        {
+            runtime["resolved_model_selection"] = modelSelection;
+        }
+
+        root["_runtime"] = runtime;
+        return root.ToJsonString();
+    }
+
+    private async Task UpdateRunParametersSnapshotAsync(OcrRun run, CancellationToken cancellationToken)
+    {
+        using IDisposable write = await _connectionFactory.EnterWriteAsync(cancellationToken);
+        await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
+        await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "update ocr_runs set parameters_snapshot_json=@Snapshot where ocr_run_id=@RunId;",
+            new { Snapshot = run.ParametersSnapshotJson, RunId = run.OcrRunId.ToString() },
+            cancellationToken: cancellationToken));
+    }
+
+    /// <summary>
+    /// Ephemeral region recognition through the same one-job invocation as the queue path:
+    /// one page, one region input, one <see cref="IOcrJob"/> call. No persistent run row is
+    /// created — the preview candidate stays ephemeral by design.
+    /// </summary>
+    private async Task<Result<OcrRegionCandidate>> RecognizeRegionWithExtensionJobAsync(
+        DocumentInstanceId documentInstanceId,
+        Page page,
+        NormalizedBBox regionBBox,
+        OcrPresetVersion version,
+        IOcrEngineLease lease,
+        CancellationToken cancellationToken)
+    {
+        Result ready = await lease.EnsureManagedFilesAsync(OcrRunExecutionScope.Region, cancellationToken);
+        if (ready.IsSuccess)
+        {
+            ready = await lease.CheckReadinessAsync(cancellationToken);
+        }
+
+        if (ready.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
+        }
+
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(documentInstanceId, [page], cancellationToken);
+        baselines.TryGetValue(page.PageId, out DocumentTreeRevisionId baseline);
+        int dpi = 200;
+        OcrJobInput input = new(new OcrInputId("region"), regionBBox, "image/png", OcrInputKinds.RegionImage);
+        Dictionary<OcrInputId, Func<CancellationToken, Task<OcrInputImage>>> loaders = new()
+        {
+            [input.Id] = ct => ReadRegionImageAsync(input.Id, documentInstanceId, page, regionBBox,
+                dpi, ct)
+        };
+        OcrDomainJobRequest job = new(
+            $"ocr-region-{page.PageId}", documentInstanceId,
+            [
+                new OcrJobPage(
+                    new ExtensionPageIdentity(documentInstanceId, page.PageId, baseline, page.PageIndex),
+                    [input])
+            ],
+            (requested, ct) => new ValueTask<OcrInputImage>(loaders[requested.Id](ct)),
+            new OcrJobOptions(dpi, 1),
+            BaselineProbe: ProbeBaselineAsync);
+        Result<OcrDomainRunResult> outcome = await lease.RunOcrJobAsync(job, cancellationToken);
+        if (outcome.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(outcome.ErrorCode!, outcome.ErrorMessage!);
+        }
+
+        OcrPageSettlement? settlement =
+            outcome.Value.Settlements.FirstOrDefault(item => item.Page.PageId == page.PageId);
+        if (settlement is null || settlement.State != OcrPageSettlementState.Accepted)
+        {
+            return Result<OcrRegionCandidate>.Failure(
+                settlement?.ErrorCode ?? AppErrorCodes.InvalidState,
+                settlement?.ErrorMessage ?? "OCR returned no text.");
+        }
+
+        // Ephemeral regions feed a single text prefill. A single text box maps losslessly;
+        // several all-text boxes join as one region text; ANY typed block (table, formula,
+        // heading …) is an explicit failure — never a silent first-box pick that discards
+        // structure. Consumers needing typed region output must widen OcrRegionCandidate.
+        List<DocumentBoxSeed> seeds = outcome.Value.AcceptedCandidates
+            .Where(candidate => candidate.Page.PageId == page.PageId)
+            .SelectMany(candidate => candidate.Boxes)
+            .Select(box => box.Candidate)
+            .ToList();
+        if (seeds.Any(seed => seed.Payload is not TextBoxPayload))
+        {
+            return Result<OcrRegionCandidate>.Failure("ocr_region_typed_output",
+                "Region OCR returned typed blocks that a text prefill cannot represent; " +
+                "run a durable region task to keep the structured result.");
+        }
+
+        List<TextBoxPayload> texts = seeds
+            .Select(seed => seed.Payload)
+            .OfType<TextBoxPayload>()
+            .Where(payload => !string.IsNullOrWhiteSpace(payload.Markdown))
+            .ToList();
+        return texts.Count > 0
+            ? Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
+                page.PageId, regionBBox, DocumentBoxType.Text,
+                new TextBoxPayload(string.Join("\n\n", texts.Select(payload => payload.Markdown.Trim())))))
+            : Result<OcrRegionCandidate>.Failure(AppErrorCodes.InvalidState,
+                "OCR returned no text.");
+    }
+
     private static void ReportPageProgress(IProgress<OcrTaskStageProgress>? progress, int processedPages,
-        int totalPages)
+        int totalPages, string stage = OcrTaskStage.Recognizing)
     {
         double fraction = totalPages == 0 ? 0 : processedPages / (double)totalPages;
         progress?.Report(new OcrTaskStageProgress(
-            OcrTaskStage.Recognizing,
+            stage,
             fraction,
             $"pages:{processedPages}/{totalPages}"));
     }
@@ -1135,9 +2041,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetVersion version,
         IReadOnlyList<Page> pages,
         NormalizedBBox? region,
-        string? imagePath,
         CancellationToken cancellationToken,
-        IProgress<OcrTaskStageProgress>? progress = null)
+        IProgress<OcrTaskStageProgress>? progress = null,
+        OcrRunExecutionContext? execution = null)
     {
         if (_minerUResultImporter is null || _minerUClientFactory is null || _credentialResolver is null)
         {
@@ -1149,13 +2055,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (region is not null)
         {
             return await RunMinerURegionAsync(
-                documentInstanceId, presetId, version, pages.Single(), region.Value, cancellationToken);
-        }
-
-        if (imagePath is not null)
-        {
-            return await RunMinerUImagePageAsync(
-                documentInstanceId, presetId, version, pages.Single(), imagePath, cancellationToken);
+                documentInstanceId, presetId, version, pages.Single(), region.Value, cancellationToken,
+                execution);
         }
 
         Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
@@ -1235,6 +2136,13 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        Result<OcrRun>? rejected = await RejectRunWhenBindingFailsAsync(execution, run, pages,
+            cancellationToken);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
         // Capture each selected page's committed revision baseline before the remote upload:
         // the snapshot is propagated onto every imported working revision so adoption can
         // conflict with a manual edit committed while MinerU was processing, instead of
@@ -1345,7 +2253,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetVersion version,
         Page page,
         NormalizedBBox regionBBox,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OcrRunExecutionContext? execution = null)
     {
         if (_pageRenderService is null)
         {
@@ -1371,6 +2280,13 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, [page], cancellationToken);
+        Result<OcrRun>? rejected = await RejectRunWhenBindingFailsAsync(execution, run, [page],
+            cancellationToken);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
         Result<string> crop;
         try
         {
@@ -1395,36 +2311,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, regionBBox);
         return await RunMinerUImageRunAsync(
             run, version, page, new OcrUploadSource.RegionImage(crop.Value, context), client, cancellationToken);
-    }
-
-    private async Task<Result<OcrRun>> RunMinerUImagePageAsync(
-        DocumentInstanceId documentInstanceId,
-        OcrPresetId presetId,
-        OcrPresetVersion version,
-        Page page,
-        string imagePath,
-        CancellationToken cancellationToken)
-    {
-        Result<string> secret = await _credentialResolver!(ProviderIds.MinerU, cancellationToken);
-        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
-        {
-            return Result<OcrRun>.Failure(
-                secret.ErrorCode ?? AppErrorCodes.InvalidState,
-                secret.ErrorMessage ?? "MinerU credential is unavailable.");
-        }
-
-        IMinerUClient client = CreateMinerUClient(version, secret.Value);
-        if (!client.IsConfigured)
-        {
-            return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "MinerU client is not configured.");
-        }
-
-        OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
-        await InsertRunAsync(run, cancellationToken);
-        await InsertPendingPageResultsAsync(run.OcrRunId, [page], cancellationToken);
-        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 0, null);
-        return await RunMinerUImageRunAsync(
-            run, version, page, new OcrUploadSource.PageImage(imagePath, context), client, cancellationToken);
     }
 
     private async Task<Result<OcrRun>> RunMinerUImageRunAsync(
@@ -1531,6 +2417,153 @@ public sealed class OcrRunEngine : IOcrRunEngine
         return ranges;
     }
 
+    /// <summary>
+    /// Region recognition through the built-in engine for an already-accepted task's frozen
+    /// preset version — the same transport as <see cref="RunPresetOnRegionAsync"/> but with no
+    /// separate run/page-settlement bookkeeping, so a provider-declared region merges into the
+    /// owning run instead of spawning a second one. Wired by HostServices as the built-in
+    /// lease's region runner; only invoked for explicit provider-declared regions.
+    /// </summary>
+    public async Task<Result<OcrRegionCandidate>> RecognizeRegionForVersionAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        NormalizedBBox regionBBox,
+        OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        Result region = regionBBox.Validate();
+        if (region.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(region.ErrorCode!, region.ErrorMessage!);
+        }
+
+        Result<Page[]> found = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
+        if (found.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(found.ErrorCode!, found.ErrorMessage!);
+        }
+
+        Page? page = found.Value.FirstOrDefault(item => item.PageId == pageId);
+        if (page is null)
+        {
+            return Result<OcrRegionCandidate>.Failure(AppErrorCodes.NotFound,
+                "The page no longer exists in the document.");
+        }
+
+        return version.EngineId switch
+        {
+            OcrEngineIds.MinerU => await RecognizeRegionWithMinerUAsync(
+                documentInstanceId, page, regionBBox, version, cancellationToken),
+            _ => Result<OcrRegionCandidate>.Failure(AppErrorCodes.UnsupportedOperation,
+                $"Engine '{version.EngineId}' has no built-in region transport.")
+        };
+    }
+
+    /// <summary>
+    /// The built-in engine's whole-page transport for a host-declared missing-text input: the
+    /// page renders once, uploads through the pinned version's MinerU page-image pipeline and
+    /// every structured box returns as a candidate for the owning run. Wired by HostServices for
+    /// <see cref="OcrInputKinds.PageImage"/> inputs only — provider-declared regions keep using
+    /// the text-only region transport, which cannot represent structured output.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>> RecognizePageForVersionAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        OcrInputId inputId,
+        OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(version.EngineId, OcrEngineIds.MinerU, StringComparison.Ordinal))
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                AppErrorCodes.UnsupportedOperation,
+                $"Engine '{version.EngineId}' has no built-in whole-page transport.");
+        }
+
+        if (_pageRenderService is null || _minerUClientFactory is null ||
+            _credentialResolver is null)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                AppErrorCodes.UnsupportedOperation, "MinerU page OCR is not configured.");
+        }
+
+        Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                secret.ErrorMessage ?? "MinerU credential is unavailable.");
+        }
+
+        Result<Page[]> found = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
+        if (found.IsFailure)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                found.ErrorCode!, found.ErrorMessage!);
+        }
+
+        Page? page = found.Value.FirstOrDefault(item => item.PageId == pageId);
+        if (page is null)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(AppErrorCodes.NotFound,
+                "The page no longer exists in the document.");
+        }
+
+        const int dpi = 200;
+        Result<OcrInputDescriptor> rendered = await _pageRenderService
+            .BuildOcrInputFromRenderedPageAsync(documentInstanceId, pageId, dpi, cancellationToken);
+        if (rendered.IsFailure || rendered.Value.ImagePath is not { } imagePath)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                rendered.ErrorCode ?? AppErrorCodes.InvalidState,
+                rendered.ErrorMessage ?? "PDF page rendering failed.");
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        if (!client.IsConfigured)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                AppErrorCodes.InvalidState, "MinerU client is not configured.");
+        }
+
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, dpi, null);
+        Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client,
+                _minerUUploadLimits)
+            .PrepareAndUploadAsync(new OcrUploadSource.PageImage(imagePath, context),
+                Path.Combine(_minerUCacheRoot, "regions"), cancellationToken);
+        if (prepared.IsFailure)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                prepared.ErrorCode!, prepared.ErrorMessage!);
+        }
+
+        Result<OcrDocumentTreeCandidate> structured = new MinerUResultParser()
+            .ParseImageStructuredTree(prepared.Value, page);
+        if (structured.IsFailure)
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                structured.ErrorCode!, structured.ErrorMessage!);
+        }
+
+        OcrPageCandidate? pageCandidate =
+            structured.Value.Pages.SingleOrDefault(candidate => candidate.PageId == page.PageId);
+        if (pageCandidate is null ||
+            structured.Value.Diagnostics.Any(diagnostic => diagnostic.BlocksCommit))
+        {
+            return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
+                AppErrorCodes.InvalidState,
+                "MinerU returned no committable page result for the missing-text page.");
+        }
+
+        return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Success(
+            pageCandidate.Boxes.Select(box => new OcrExtensionBoxCandidate(inputId,
+                    new DocumentBoxSeed(box.PreassignedBoxId, box.ParentLogicalPageBoxId,
+                        box.SourceOrder, box.BoxType, box.SubType, box.BBox, box.Payload,
+                        box.HeadingLevel, box.CodeLanguage, box.Confidence, box.Suppressed,
+                        box.ContinuesFromBoxId, box.ContinuationState)))
+                .ToArray());
+    }
+
     private async Task<Result<OcrRegionCandidate>> RecognizeRegionWithMinerUAsync(
         DocumentInstanceId documentInstanceId,
         Page page,
@@ -1595,7 +2628,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
 
         string text = string.Join("\n", pageCandidate.Boxes.OrderBy(box => box.SourceOrder)
-            .Select(box => ((TextBoxPayload)box.Payload).Markdown)
+            .Select(box => box.Payload).OfType<TextBoxPayload>().Select(payload => payload.Markdown)
             .Where(markdown => !string.IsNullOrWhiteSpace(markdown)));
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -1704,6 +2737,36 @@ public sealed class OcrRunEngine : IOcrRunEngine
     {
         return await FailMinerURunAsync(run, pages, AppErrorCodes.InvalidState,
             $"OCR post-run processing failed: {exception.Message}", CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Reports a freshly created run through the queue-supplied execution context before any model
+    /// work starts. When the scheduler rejects the binding (superseded or removed attempt, or a
+    /// conflicting run owner) the orphaned run is terminalized deterministically instead of being
+    /// left 'running' without an owning task.
+    /// </summary>
+    private async Task<Result<OcrRun>?> RejectRunWhenBindingFailsAsync(
+        OcrRunExecutionContext? execution,
+        OcrRun run,
+        IReadOnlyList<Page> pages,
+        CancellationToken cancellationToken)
+    {
+        if (execution is null)
+        {
+            return null;
+        }
+
+        Result bound = execution.ReportRunCreated(run.OcrRunId, run.PresetVersionId);
+        if (bound.IsSuccess)
+        {
+            return null;
+        }
+
+        Result<OcrRun> failed = await FailMinerURunAsync(run, pages, bound.ErrorCode, bound.ErrorMessage,
+            cancellationToken);
+        return failed.IsFailure
+            ? failed
+            : Result<OcrRun>.Failure(bound.ErrorCode!, bound.ErrorMessage!);
     }
 
     private async Task<Result<LibraryChangeSet?>> IncrementCommitRevisionAsync(SqliteConnection connection,
@@ -1867,7 +2930,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     {
                         State = OcrPageResultState.Failed,
                         ErrorCode = errorCode ?? AppErrorCodes.InvalidState,
-                        ErrorMessage = errorMessage ?? "MinerU OCR failed.",
+                        ErrorMessage = StorageText.NormalizeInvalidCodePoints(errorMessage) ?? "MinerU OCR failed.",
                         Now = now,
                         RunId = run.OcrRunId.ToString(),
                         PageId = page.PageId.ToString()
@@ -1937,7 +3000,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         OcrPresetVersion version,
         NormalizedBBox? region,
-        string? imagePath,
         CancellationToken cancellationToken)
     {
         IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
@@ -1947,19 +3009,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
 
         OcrInputDescriptor input;
-        if (imagePath is not null)
-        {
-            input = new OcrInputDescriptor(
-                page.PageId,
-                page.DocumentInstanceId,
-                region is null ? OcrInputKinds.ImageFile : OcrInputKinds.RegionImage,
-                imagePath,
-                null,
-                region,
-                "available",
-                null);
-        }
-        else if (_pageRenderService is not null)
+        if (_pageRenderService is not null)
         {
             Result<OcrInputDescriptor> rendered = await _pageRenderService.BuildOcrInputFromRenderedPageAsync(
                 page.DocumentInstanceId, page.PageId, cancellationToken: cancellationToken);
@@ -2082,6 +3132,49 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (pages.IsFailure)
         {
             return Result.Failure(pages.ErrorCode!, pages.ErrorMessage!);
+        }
+
+        // Extension engines are checked through the runtime lease — a non-executing probe on the
+        // pinned generation — not through the legacy adapter registry.
+        if (_engineRuntime is not null &&
+            await _engineRuntime.GetDefinitionAsync(presetVersion.EngineId, cancellationToken)
+                is { IsSuccess: true })
+        {
+            Result<IOcrEngineLease> acquired = await _engineRuntime.AcquireAsync(
+                new OcrEngineLeaseRequest(presetVersion, Scope: OcrRunExecutionScope.Document), cancellationToken);
+            if (acquired.IsFailure)
+            {
+                return Result.Failure(acquired.ErrorCode!, acquired.ErrorMessage!);
+            }
+
+            await using IOcrEngineLease probe = acquired.Value;
+            if (probe.TextLayerProviderId is { Length: > 0 } selectedProvider &&
+                selectedProvider != PdfTextLayerProviderIds.Disabled)
+            {
+                // The selected provider may resolve every page without image OCR. Its actual
+                // parse determines which resources are needed; do not block it on unused weights
+                // or cloud credentials during admission.
+                return await CheckSourceAvailableAsync(documentInstanceId, cancellationToken);
+            }
+
+            if (!probe.IsBuiltIn)
+            {
+                Result files = await probe.EnsureManagedFilesAsync(OcrRunExecutionScope.Document,
+                    cancellationToken);
+                if (files.IsFailure)
+                {
+                    return Result.Failure(files.ErrorCode ?? AppErrorCodes.InvalidState,
+                        "Required OCR files are missing or were not downloaded; configure the selected engine's managed files.");
+                }
+
+                Result readiness = await probe.CheckReadinessAsync(cancellationToken);
+                if (readiness.IsFailure)
+                {
+                    return readiness;
+                }
+
+                return await CheckSourceAvailableAsync(documentInstanceId, cancellationToken);
+            }
         }
 
         if (_adapterRegistry?.GetAdapter(presetVersion.EngineId) is not { } adapter)
@@ -2321,7 +3414,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 State = state,
                 RevisionId = revisionId?.ToString(),
                 ErrorCode = errorCode,
-                ErrorMessage = errorMessage,
+                ErrorMessage = StorageText.NormalizeInvalidCodePoints(errorMessage),
                 Now = FormatUtc(_clock.UtcNow),
                 RunId = runId.ToString(),
                 PageId = pageId.ToString()

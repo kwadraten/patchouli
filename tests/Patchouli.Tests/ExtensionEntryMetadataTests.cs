@@ -96,6 +96,24 @@ public sealed class ExtensionEntryMetadataTests
         parse.Should().Throw<ExtensionMetadataException>().WithMessage("*unsupported*host API*");
     }
 
+    [Theory]
+    [InlineData("translation", ExtensionKind.Translation)]
+    [InlineData("metadata", ExtensionKind.Metadata)]
+    [InlineData("retrieval", ExtensionKind.Retrieval)]
+    public void New_ocr_capabilities_keep_existing_v3_extension_metadata_compatible(string kind,
+        ExtensionKind expectedKind)
+    {
+        ExtensionHostApi.Current.Should().Be("patchouli.extensions/3");
+        string source = "/// <summary>Existing non-OCR extension.</summary>\n" +
+                        $"/// <patchouli-extension id=\"test.parser\" kind=\"{kind}\" version=\"1.0.0\" host-api=\"patchouli.extensions/3\">\n" +
+                        "/// <name>Existing extension</name>\n/// </patchouli-extension>\nlet extension = 1";
+
+        ExtensionEntryMetadata metadata = ExtensionEntryMetadata.Parse(Package(source));
+
+        metadata.Kind.Should().Be(expectedKind);
+        metadata.HostApi.Should().Be("patchouli.extensions/3");
+    }
+
     [Fact]
     public void Parse_maps_xml_errors_to_original_main_source_line()
     {
@@ -121,6 +139,17 @@ public sealed class ExtensionEntryMetadataTests
         Action parse = () => ExtensionEntryMetadata.Parse(Package(source));
 
         parse.Should().Throw<ExtensionMetadataException>().Which.Line.Should().Be(3);
+    }
+
+    [Fact]
+    public void Parse_accepts_the_existing_retrieval_kind()
+    {
+        string source = "/// <summary>Summary.</summary>\n" +
+                        "/// <patchouli-extension id=\"test.parser\"\n" +
+                        "/// kind=\"retrieval\" version=\"1.0.0\" host-api=\"patchouli.extensions/3\">\n" +
+                        "/// <name>Parser</name>\n/// </patchouli-extension>\nlet extension = 1";
+
+        ExtensionEntryMetadata.Parse(Package(source)).Kind.Should().Be(ExtensionKind.Retrieval);
     }
 
     [Theory]

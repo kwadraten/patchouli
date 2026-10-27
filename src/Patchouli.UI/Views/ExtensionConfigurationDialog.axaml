@@ -27,6 +27,14 @@
                   <TextBlock Text="{Binding Descriptor.Label}" FontWeight="Medium" TextWrapping="Wrap" />
                   <TextBox Text="{Binding Value}" IsVisible="{Binding IsText}" AcceptsReturn="True"
                            TextWrapping="Wrap" MinHeight="34" MaxHeight="180" />
+                  <controls:PathPickerTextBox Path="{Binding Value}" PickerMode="OpenFile"
+                                              IsVisible="{Binding IsFilePath}" IsEditable="True"
+                                              DialogTitle="{Binding Descriptor.Label}"
+                                              PlaceholderText="留空使用默认路径" />
+                  <controls:PathPickerTextBox Path="{Binding Value}" PickerMode="Folder"
+                                              IsVisible="{Binding IsDirectoryPath}" IsEditable="True"
+                                              DialogTitle="{Binding Descriptor.Label}"
+                                              PlaceholderText="留空使用默认目录" />
                   <CheckBox IsChecked="{Binding BooleanValue}" IsVisible="{Binding IsBoolean}" Content="启用" />
                   <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Value}"
                             IsVisible="{Binding IsChoice}" HorizontalAlignment="Stretch" />

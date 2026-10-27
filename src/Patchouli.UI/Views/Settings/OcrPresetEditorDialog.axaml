@@ -1,0 +1,9 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Patchouli.UI.Views.Settings.OcrPresetEditorDialog"
+        Title="OCR 预设" Width="560" Height="640" MinWidth="480" MinHeight="480"
+        WindowStartupLocation="CenterOwner" CanResize="true">
+  <!-- Retired modal editor: preset composition is inline rows on the OCR 预设编排 settings tab.
+       This stub keeps the compiled view type stable until main removes the file in cleanup. -->
+  <TextBlock Text="预设编辑已迁移至设置中的内联编排表。" Margin="16" TextWrapping="Wrap" />
+</Window>

@@ -12,6 +12,10 @@ public sealed record OcrEnginesAppSettings(
         return new OcrEnginesAppSettings(OcrEngineIds.NdlKoten, OcrEngineIds.NdlKoten, OcrEngineIds.NdlKoten);
     }
 
+    /// <summary>
+    ///     Engine-per-scope selection retained for migration/default compatibility only; the
+    ///     authoritative per-run choice is the stored preset selection.
+    /// </summary>
     public string EngineFor(OcrScope scope)
     {
         return scope switch

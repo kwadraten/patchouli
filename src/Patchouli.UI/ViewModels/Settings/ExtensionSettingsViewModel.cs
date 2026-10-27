@@ -14,6 +14,7 @@ using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Extensions;
+using Patchouli.Llm;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -96,8 +97,12 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public override bool IsDirty => false;
     public override bool CanSave => false;
 
-    public async Task OpenAsync(string id)
+    /// <summary>When set, the configuration dialog expands its FSX source pane on open.</summary>
+    public bool OpenWithSourceExpanded { get; set; }
+
+    public async Task OpenAsync(string id, bool openSource = false)
     {
+        OpenWithSourceExpanded = openSource;
         SelectedExtension = new ExtensionListItem(id, id, "");
         await Task.CompletedTask;
     }
@@ -398,6 +403,13 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         ExtensionPackageSnapshot source = await ReadDisplaySourceAsync(manager,
             services.TranslationExtensions.BundledPackageSnapshots, item.Id, cancellationToken);
         ExtensionConfigSnapshot config = await manager.ReadConfigAsync(item.Id, cancellationToken);
+        // One-time migration: an ocr.multimodal component that has never been configured inherits
+        // the legacy host-owned OCR settings so explicit user choices survive the settings move.
+        LlmAppSettings legacyOcrSettings = _main.AppOptions.Llm;
+        config = await Task.Run(
+            () => OcrMultimodalLegacySeed.EnsureSeededAsync(manager, item.Id, config,
+                legacyOcrSettings, services.OcrStorage, cancellationToken),
+            cancellationToken);
         if (version != Volatile.Read(ref _selectionVersion)
             || !ReferenceEquals(services, _services) || !ReferenceEquals(manager, _manager)
             || !ReferenceEquals(services, await _main.ServicesAsync()))
@@ -437,7 +449,17 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
                                 ?? "无 Active generation";
         ConfigurationRevisionText = config.Revision.ToString(CultureInfo.InvariantCulture);
 
-        ApplyFields(descriptors, config.Values);
+        IReadOnlyDictionary<string, string> fieldValues = config.Values;
+        if (descriptors.Count > 0 && services.ExtensionFiles is { } managedFiles)
+        {
+            // Managed-path defaults are metadata/path resolution only — no directory creation or
+            // network — and explicit non-empty custom paths always win.
+            fieldValues = await Task.Run(
+                () => managedFiles.ResolveDefaults(item.Id, descriptors, config).Values,
+                cancellationToken);
+        }
+
+        ApplyFields(descriptors, fieldValues);
 
         Diagnostics.Clear();
         foreach (ExtensionDiagnostic diagnostic in description.Diagnostics)
@@ -477,7 +499,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         }
     }
 
-    private static async Task<ExtensionPackageSnapshot> ReadDisplaySourceAsync(IExtensionManager manager,
+    internal static async Task<ExtensionPackageSnapshot> ReadDisplaySourceAsync(IExtensionManager manager,
         IReadOnlyList<ExtensionPackageSnapshot> bundled, string id, CancellationToken cancellationToken)
     {
         ExtensionPackageSnapshot source;
@@ -931,6 +953,9 @@ public sealed partial class ExtensionConfigFieldViewModel : ViewModelBase
         IsBoolean = descriptor.Kind == ConfigValueKind.Boolean;
         IsChoice = descriptor.Kind == ConfigValueKind.Choice;
         IsCredential = descriptor.Kind == ConfigValueKind.CredentialReference;
+        IsFilePath = descriptor.Kind == ConfigValueKind.FilePath;
+        IsDirectoryPath = descriptor.Kind == ConfigValueKind.DirectoryPath;
+        ManagedFiles = descriptor.ManagedFiles ?? [];
     }
 
     public ConfigFieldDescriptor Descriptor { get; }
@@ -941,7 +966,12 @@ public sealed partial class ExtensionConfigFieldViewModel : ViewModelBase
     public bool IsBoolean { get; }
     public bool IsChoice { get; }
     public bool IsCredential { get; }
-    public bool IsText => !IsModel && !IsBoolean && !IsChoice && !IsCredential;
+    public bool IsFilePath { get; }
+    public bool IsDirectoryPath { get; }
+    public bool IsPath => IsFilePath || IsDirectoryPath;
+    public IReadOnlyList<ExtensionManagedFile> ManagedFiles { get; }
+    public bool HasManagedFiles => ManagedFiles.Count > 0;
+    public bool IsText => !IsModel && !IsBoolean && !IsChoice && !IsCredential && !IsPath;
     [ObservableProperty] public partial string Value { get; set; } = "";
 
     public bool BooleanValue
