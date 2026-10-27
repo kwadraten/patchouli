@@ -20,8 +20,9 @@ internal static class SearchTextAnalyzer
         List<string> tokens = new();
         StringBuilder word = new();
         List<char> cjkRun = new();
+        string normalizedInput = StorageText.NormalizeInvalidCodePoints(text)!;
 
-        foreach (char c in text.Normalize(NormalizationForm.FormKC))
+        foreach (char c in normalizedInput.Normalize(NormalizationForm.FormKC))
         {
             if (IsCjk(c))
             {

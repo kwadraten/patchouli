@@ -35,6 +35,15 @@ public interface ILibraryItemQueryService
         IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Resolves every requested document, including non-primary documents, without losing its item association.</summary>
+    Task<Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>> GetDocumentItemIdsAsync(
+        IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>.Failure(
+            AppErrorCodes.UnsupportedOperation, "Batched document-to-item associations are not supported."));
+    }
+
     Task<Result<DocumentNavigationRow?>> GetDocumentNavigationAsync(
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);

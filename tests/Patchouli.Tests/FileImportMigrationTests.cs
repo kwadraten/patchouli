@@ -136,12 +136,20 @@ public sealed class FileImportMigrationTests : IDisposable
             new AppliedMigration("050", "050_file_search_root_sort_order"),
             new AppliedMigration("051", "051_file_import_recovery"),
             new AppliedMigration("052", "052_create_document_page_maps"),
-            new AppliedMigration("053", "053_add_page_translation_target_language"));
+            new AppliedMigration("053", "053_add_page_translation_target_language"),
+            new AppliedMigration("054", "054_document_box_continuation_state"),
+            new AppliedMigration("055", "055_normalize_page_coordinate_basis"));
         (await connection.ExecuteScalarAsync<int>(
                 "select count(*) from pragma_table_info('file_search_root_definitions') where name = 'sort_order';"))
             .Should().Be(1);
         (await connection.ExecuteScalarAsync<int>(
                 "select count(*) from pragma_table_info('csl_settings') where name = 'language_locale_mappings_json';"))
+            .Should().Be(1);
+        (await connection.ExecuteScalarAsync<int>(
+                "select count(*) from pragma_table_info('document_boxes') where name = 'continuation_state';"))
+            .Should().Be(1);
+        (await connection.ExecuteScalarAsync<int>(
+                "select count(*) from sqlite_master where type = 'table' and name = 'continuation_migration_diagnostics';"))
             .Should().Be(1);
         (await runner.RunAsync()).Should().BeEmpty();
     }

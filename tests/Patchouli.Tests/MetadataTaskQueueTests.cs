@@ -334,7 +334,7 @@ public sealed class MetadataTaskQueueTests : IDisposable
                 OcrQueueTaskId.New(), LibraryId.New(), DocumentInstanceId.New(), OcrPresetId.New(),
                 [PageId.New()], OcrQueueTaskKind.Document, OcrEngineIds.MinerU, OcrAdapterKind.CloudApi,
                 ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-                OcrQueueTaskState.Running, 1, 1, null, null, null, null, null, null);
+                OcrQueueTaskState.Running, 1, 1, null, null, null, null);
 
             OcrQueueTaskViewModel ocrRow = new(ocrTask, "OCR Document", queue, null, null, null, DateTimeOffset.UtcNow);
 
@@ -704,20 +704,6 @@ public sealed class MetadataTaskQueueTests : IDisposable
 
         public Task<Result<OcrQueueTask>> EnqueueMockPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages,
-            string priority, CancellationToken c = default)
-        {
-            return Task.FromResult(Result<OcrQueueTask>.Failure("unsupported", ""));
-        }
-
-        public Task<Result<OcrQueueTask>> EnqueueImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            string imagePath,
-            string priority, CancellationToken c = default)
-        {
-            return Task.FromResult(Result<OcrQueueTask>.Failure("unsupported", ""));
-        }
-
-        public Task<Result<OcrQueueTask>> EnqueueRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            int dpi,
             string priority, CancellationToken c = default)
         {
             return Task.FromResult(Result<OcrQueueTask>.Failure("unsupported", ""));

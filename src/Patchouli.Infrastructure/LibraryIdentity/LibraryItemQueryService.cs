@@ -456,19 +456,40 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
         CancellationToken cancellationToken = default)
     {
+        Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>> pairs =
+            await GetDocumentItemIdsAsync(documentInstanceIds, cancellationToken);
+        return pairs.IsFailure
+            ? Result<IReadOnlyList<ItemId>>.Failure(pairs.ErrorCode!, pairs.ErrorMessage!)
+            : Result<IReadOnlyList<ItemId>>.Success(pairs.Value.Values.Distinct().ToArray());
+    }
+
+    public async Task<Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>> GetDocumentItemIdsAsync(
+        IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(documentInstanceIds);
+        cancellationToken.ThrowIfCancellationRequested();
         if (documentInstanceIds.Count == 0)
         {
-            return Result<IReadOnlyList<ItemId>>.Success([]);
+            return Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>.Success(
+                new Dictionary<DocumentInstanceId, ItemId>());
         }
 
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
-            IEnumerable<string> ids = await connection.QueryAsync<string>(
-                "select item_id from document_instances where document_instance_id in @Ids;",
-                new { Ids = documentInstanceIds.Select(static id => id.ToString()).Distinct().ToArray() });
-            return Result<IReadOnlyList<ItemId>>.Success(ids.Select(ItemId.Parse).ToArray());
+            string ids = JsonSerializer.Serialize(documentInstanceIds.Select(static id => id.ToString()).Distinct());
+            IEnumerable<DocumentItemDbRow> rows = await connection.QueryAsync<DocumentItemDbRow>(
+                new CommandDefinition(
+                    """
+                    select document_instance_id as DocumentInstanceId, item_id as ItemId
+                    from document_instances
+                    where document_instance_id in (select value from json_each(@Ids));
+                    """, new { Ids = ids }, cancellationToken: cancellationToken));
+            return Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>.Success(rows.ToDictionary(
+                static row => DocumentInstanceId.Parse(row.DocumentInstanceId),
+                static row => ItemId.Parse(row.ItemId)));
         }
         catch (OperationCanceledException)
         {
@@ -477,9 +498,15 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.library-item-query"))
         {
-            return Result<IReadOnlyList<ItemId>>.Failure(AppErrorCodes.DatabaseError,
+            return Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {exception.Message}");
         }
+    }
+
+    private sealed class DocumentItemDbRow
+    {
+        public string DocumentInstanceId { get; set; } = "";
+        public string ItemId { get; set; } = "";
     }
 
     public async Task<Result<DocumentNavigationRow?>> GetDocumentNavigationAsync(

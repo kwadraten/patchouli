@@ -20,6 +20,37 @@ namespace Patchouli.Tests;
 public sealed class LibraryItemQueryServiceTests
 {
     [Fact]
+    public async Task Batched_document_associations_preserve_non_primary_documents_and_bound_large_id_sets()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata first = (await context.Items.CreateItemAsync("book", "First item")).Value;
+        ItemMetadata second = (await context.Items.CreateItemAsync("book", "Second item")).Value;
+        DocumentInstance primary = (await context.Documents.AttachDocumentInstanceAsync(first.ItemId, null,
+            DocumentInstanceType.PrimaryScan, makePrimary: true)).Value;
+        DocumentInstance alternate = (await context.Documents.AttachDocumentInstanceAsync(first.ItemId, null,
+            DocumentInstanceType.AlternateScan, makePrimary: false)).Value;
+        DocumentInstance other = (await context.Documents.AttachDocumentInstanceAsync(second.ItemId, null,
+            DocumentInstanceType.PrimaryScan, makePrimary: true)).Value;
+        DocumentInstanceId[] requested = Enumerable.Range(0, 12_000).Select(_ => DocumentInstanceId.New())
+            .Concat([
+                primary.DocumentInstanceId, alternate.DocumentInstanceId, other.DocumentInstanceId,
+                alternate.DocumentInstanceId
+            ]).ToArray();
+
+        Result<IReadOnlyDictionary<DocumentInstanceId, ItemId>> pairs =
+            await context.Query.GetDocumentItemIdsAsync(requested);
+
+        pairs.IsSuccess.Should().BeTrue(pairs.ErrorMessage);
+        pairs.Value.Should().HaveCount(3);
+        pairs.Value[primary.DocumentInstanceId].Should().Be(first.ItemId);
+        pairs.Value[alternate.DocumentInstanceId].Should().Be(first.ItemId);
+        pairs.Value[other.DocumentInstanceId].Should().Be(second.ItemId);
+        (await context.Query.GetItemIdsByDocumentInstanceIdsAsync(requested)).Value
+            .Should().BeEquivalentTo([first.ItemId, second.ItemId]);
+        (await context.Query.GetDocumentItemIdsAsync([])).Value.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Rows_format_east_asian_authors_in_stored_order_and_match_editor_display()
     {
         await using TestContext context = await CreateContextAsync();

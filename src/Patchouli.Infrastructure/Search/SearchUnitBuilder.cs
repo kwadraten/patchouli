@@ -204,7 +204,8 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             select box_id as BoxId, parent_box_id as ParentBoxId, next_sibling_box_id as NextSiblingBoxId,
                 box_type as BoxType, sub_type as SubType, payload_json as PayloadJson,
                 bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
-                suppressed as Suppressed
+                suppressed as Suppressed, continues_from_box_id as ContinuesFromBoxId,
+                continuation_state as ContinuationState
             from document_boxes where tree_revision_id = @RevisionId;
             """,
             new { RevisionId = revisionId.ToString() })).ToArray();
@@ -358,7 +359,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 pageId.ToString(),
                 box.BoxId.ToString(),
                 revisionId.ToString(),
-                text.Trim(),
+                StorageText.NormalizeInvalidCodePoints(text.Trim())!,
                 JsonSerializer.Serialize(new BBoxJson(box.BBox.X, box.BBox.Y, box.BBox.Width, box.BBox.Height)),
                 box.BoxType,
                 ordinal++);
@@ -562,6 +563,8 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         public double BBoxWidth { get; set; }
         public double BBoxHeight { get; set; }
         public int Suppressed { get; set; }
+        public string? ContinuesFromBoxId { get; set; }
+        public string? ContinuationState { get; set; }
 
         public DocumentBox ToBox(DocumentInstanceId documentInstanceId, PageId pageId,
             DocumentTreeRevisionId revisionId)
@@ -571,7 +574,9 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, SubType,
                 new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
                 DocumentBoxPayloadSerializer.Deserialize(BoxType, SubType, PayloadJson), null, null, null,
-                Suppressed == 1);
+                Suppressed == 1,
+                ContinuesFromBoxId is null ? null : DocumentBoxId.Parse(ContinuesFromBoxId),
+                ContinuationState);
         }
     }
 
