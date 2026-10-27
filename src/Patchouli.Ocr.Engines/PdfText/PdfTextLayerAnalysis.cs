@@ -296,10 +296,14 @@ public static class PdfTextGlyphStream
 
             List<PdfTextGlyph> ordered = run.OrderBy(g => g.NativeIndex).ToList();
             List<PdfTextGlyph> segment = [ordered[0]];
-            bool segmentVertical = StepsVoteVertical(ordered, 0);
+            bool segmentVertical = !IsGenerated(ordered[0]) && StepsVoteVertical(ordered, 0);
             for (int i = 1; i < ordered.Count; i++)
             {
-                bool glyphVertical = StepsVoteVertical(ordered, i);
+                // Synthesized whitespace/return glyphs inherit the segment they sit in —
+                // they carry no direction evidence of their own.
+                bool glyphVertical = IsGenerated(ordered[i])
+                    ? segmentVertical
+                    : StepsVoteVertical(ordered, i);
                 if (glyphVertical != segmentVertical)
                 {
                     refined.Add((segment, segmentVertical));
@@ -321,12 +325,32 @@ public static class PdfTextGlyphStream
     /// and next stream neighbours are classified; the glyph counts as upright-vertical when
     /// stacking evidence dominates (same 2:1 rule the run-level vote used).
     /// </summary>
+    private static bool IsGenerated(PdfTextGlyph glyph)
+    {
+        return glyph.Flags.HasFlag(PdfGlyphFlags.Generated);
+    }
+
     private static bool StepsVoteVertical(IReadOnlyList<PdfTextGlyph> run, int index)
     {
         int horizontal = 0, vertical = 0;
-        if (index > 0)
+        // The glyph's own neighbours are the nearest non-generated stream entries:
+        // PDFium-synthesized whitespace glyphs may sit between every real pair and would
+        // report edge-position steps that erase the true stacking evidence.
+        int previous = index - 1;
+        while (previous >= 0 && IsGenerated(run[previous]))
         {
-            switch (WritingFrameGeometry.StepClass(run[index - 1], run[index]))
+            previous--;
+        }
+
+        int next = index + 1;
+        while (next < run.Count && IsGenerated(run[next]))
+        {
+            next++;
+        }
+
+        if (previous >= 0)
+        {
+            switch (WritingFrameGeometry.StepClass(run[previous], run[index]))
             {
                 case WritingFrameGeometry.GlyphStep.Vertical:
                     vertical++;
@@ -337,9 +361,9 @@ public static class PdfTextGlyphStream
             }
         }
 
-        if (index + 1 < run.Count)
+        if (next < run.Count)
         {
-            switch (WritingFrameGeometry.StepClass(run[index], run[index + 1]))
+            switch (WritingFrameGeometry.StepClass(run[index], run[next]))
             {
                 case WritingFrameGeometry.GlyphStep.Vertical:
                     vertical++;
@@ -464,12 +488,15 @@ public static class PdfTextGlyphStream
     /// <summary>
     /// Joins a line's text by direction runs: the stream is segmented into maximal
     /// strong-direction runs in NATIVE index order, runs are ordered along the line's inline
-    /// axis, and inside each run the native (logical) order is emitted unchanged. This is the
-    /// visual-order → logical-order reconstruction: an RTL Hebrew run followed by digits keeps
-    /// "אבג 123" instead of geometrically reversing every glyph into "אבג 321". Neutral runs
-    /// (spaces, punctuation, combining marks) attach to the preceding strong run — an honest
-    /// BiDi approximation, not the full UBA: without shaping data, mirrored brackets and
-    /// neutrals at embedding-level boundaries keep the adjacent run's direction.
+    /// axis, and inside each run glyphs emit in the run's own reading direction — ascending
+    /// inline position when the run's direction agrees with the line frame, descending when
+    /// it opposes. This is the visual-order → logical-order reconstruction: an RTL Hebrew run
+    /// inside an LTR line emits right-to-left — "אבג" stays "אבג" — and a run stored at its
+    /// visual slot is repaired by its own geometry rather than by reversing the character
+    /// array. Neutral runs (spaces, punctuation, combining marks) attach to the preceding
+    /// strong run — an honest BiDi approximation, not the full UBA: without shaping data,
+    /// mirrored brackets and neutrals at embedding-level boundaries keep the adjacent
+    /// run's direction.
     /// </summary>
     private static string AssembleText(
         List<(PdfTextGlyph Glyph, WritingRect Rect)> projected,
@@ -504,38 +531,69 @@ public static class PdfTextGlyphStream
             runs[^1].Glyphs.Add((glyph, rect));
         }
 
-        // Order runs by their position along the line's inline axis; inside each run the
-        // native logical order is the emitted text.
-        List<List<(PdfTextGlyph Glyph, WritingRect Rect)>> orderedRuns = runs
-            .Select(run => (run.Glyphs, MinU: run.Glyphs.Min(item => item.Rect.MinU)))
+        // Order runs by their position along the line's inline axis. Inside each run the
+        // emission follows the run's own reading direction — ascending inline position
+        // when the run's strong direction agrees with the line frame's, descending when
+        // they oppose. Stream order cannot be trusted to be logical: producers may store
+        // a shaped RTL cluster at its visual slot (a ة index ahead of مكتب), so the
+        // run's geometry, not the native index, decides emission order. Geometric
+        // ordering is identical to native order for well-formed input and additionally
+        // repairs split or visual-order runs.
+        bool rtlFrame = frame.Direction == WritingDirection.HorizontalRtl;
+        bool horizontalFrame = frame.Direction is WritingDirection.HorizontalLtr
+            or WritingDirection.HorizontalRtl;
+        List<(PdfDirectionClass Class, List<(PdfTextGlyph Glyph, WritingRect Rect)> Glyphs,
+            double MinU, double MaxU)> spans = runs
+            .Select(run => (run.Class, run.Glyphs,
+                MinU: run.Glyphs.Min(item => item.Rect.MinU),
+                MaxU: run.Glyphs.Max(item => item.Rect.MaxU)))
             .OrderBy(run => run.MinU)
-            .Select(run => run.Glyphs)
             .ToList();
-        List<(PdfTextGlyph Glyph, WritingRect Rect)> ordered =
-            orderedRuns.SelectMany(run => run).ToList();
+        List<((PdfTextGlyph Glyph, WritingRect Rect) Item, int Run)> ordered = [];
+        for (int r = 0; r < spans.Count; r++)
+        {
+            (PdfDirectionClass cls, List<(PdfTextGlyph Glyph, WritingRect Rect)> glyphs, _, _) =
+                spans[r];
+            bool flipped = horizontalFrame && cls != PdfDirectionClass.Neutral &&
+                           cls == PdfDirectionClass.Rtl != rtlFrame;
+            IEnumerable<(PdfTextGlyph Glyph, WritingRect Rect)> emitted = flipped
+                ? glyphs.OrderByDescending(item => item.Rect.MinU)
+                    .ThenBy(item => item.Glyph.NativeIndex)
+                : glyphs.OrderBy(item => item.Rect.MinU)
+                    .ThenBy(item => item.Glyph.NativeIndex);
+            ordered.AddRange(emitted.Select(item => (item, r)));
+        }
+
         // Word-gap estimation is calibrated against the line's own tracking so direction
         // never leaks into it: the reference is the median signed ink gap and median pitch
         // of the OTHER adjacent pairs (the pair under test cannot calibrate itself), and a
         // space is inserted only when the physical gap exceeds that baseline by more than
-        // the configured fraction of a glyph pitch. Glyphs inside a strong-direction run
-        // therefore concatenate without spaces — including RTL runs whose projected U
-        // coordinates decrease along native order — while a real word break still exceeds
-        // the baseline. A lone pair has no tracking reference and falls back to the
-        // absolute multiple of the median glyph advance.
+        // the configured fraction of a glyph pitch. Inside a run the gap is measured along
+        // the emission direction (descending for a flipped run); at a run boundary it is
+        // the two runs' nearest-edge gap. Glyphs inside a strong-direction run therefore
+        // concatenate without spaces, while a real word break still exceeds the baseline.
+        // A lone pair has no tracking reference and falls back to the absolute multiple of
+        // the median glyph advance.
         double medianAdvance = WritingFrameGeometry.Median(
-            ordered.Select(item => item.Rect.InlineSize).Where(size => size > 0).ToArray(), 0.01);
+            ordered.Select(item => item.Item.Rect.InlineSize).Where(size => size > 0)
+                .ToArray(), 0.01);
         double[] signedGaps = new double[ordered.Count - 1];
         double[] pitches = new double[ordered.Count - 1];
         for (int i = 1; i < ordered.Count; i++)
         {
-            signedGaps[i - 1] = ordered[i].Rect.MinU - ordered[i - 1].Rect.MaxU;
-            pitches[i - 1] = Math.Abs(ordered[i].Rect.MinU - ordered[i - 1].Rect.MinU);
+            ((PdfTextGlyph Glyph, WritingRect Rect) item, int run) = ordered[i];
+            ((PdfTextGlyph Glyph, WritingRect Rect) previous, int previousRun) = ordered[i - 1];
+            signedGaps[i - 1] = previousRun == run
+                ? Math.Max(item.Rect.MinU - previous.Rect.MaxU,
+                    previous.Rect.MinU - item.Rect.MaxU)
+                : Math.Max(0, spans[run].MinU - spans[previousRun].MaxU);
+            pitches[i - 1] = Math.Abs(item.Rect.MinU - previous.Rect.MinU);
         }
 
         System.Text.StringBuilder text = new();
         for (int i = 0; i < ordered.Count; i++)
         {
-            (PdfTextGlyph glyph, WritingRect rect) = ordered[i];
+            ((PdfTextGlyph Glyph, WritingRect Rect) item, _) = ordered[i];
             if (i > 0)
             {
                 double naturalGap = signedGaps.Length > 1
@@ -546,16 +604,16 @@ public static class PdfTextGlyphStream
                     : medianAdvance;
                 double spaceThreshold = Math.Max(
                     naturalGap + medianPitch * wordGapFactor, 0.0008);
-                string previous = ordered[i - 1].Glyph.Text;
-                if (signedGaps[i - 1] > spaceThreshold && glyph.Text.Length > 0 &&
-                    !char.IsWhiteSpace(glyph.Text[0]) &&
+                string previous = ordered[i - 1].Item.Glyph.Text;
+                if (signedGaps[i - 1] > spaceThreshold && item.Glyph.Text.Length > 0 &&
+                    !char.IsWhiteSpace(item.Glyph.Text[0]) &&
                     (previous.Length == 0 || !char.IsWhiteSpace(previous[^1])))
                 {
                     text.Append(' ');
                 }
             }
 
-            text.Append(glyph.Text);
+            text.Append(item.Glyph.Text);
         }
 
         return text.ToString();

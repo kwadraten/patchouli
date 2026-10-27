@@ -303,10 +303,20 @@ public sealed class GapTreeTextLayerAnalyzer : IPdfTextLayerAnalyzer
             }
         }
 
+        // The page-edge pseudo interval bounds the sweep even where no cutline survived:
+        // a row whose trailing edge gap never persisted across a row run still owns units
+        // beyond its last surviving cutline, and they belong to a tail region out to the
+        // page edge rather than running the gap index out of range.
+        double edgeLeft = cuts.Count == 0
+            ? rows.SelectMany(row => row).Min(unit => unit.Box.MinU) - 1
+            : cuts[0].Left - 1;
+        double edgeRight = cuts.Count == 0
+            ? rows.SelectMany(row => row).Max(unit => unit.Box.MaxU) + 1
+            : cuts[^1].Right + 1;
         TreeNode root = new()
         {
-            XLeft = cuts[0].Left - 1,
-            XRight = cuts[^1].Right + 1,
+            XLeft = edgeLeft,
+            XRight = edgeRight,
             RTop = -1,
             RBottom = -1
         };
@@ -398,12 +408,15 @@ public sealed class GapTreeTextLayerAnalyzer : IPdfTextLayerAnalyzer
             openNodes = stillOpen;
 
             // Walk units left→right across the row's gap intervals (upstream's u_i/g_i sweep).
+            // The surviving cutlines may not cover the row's own trailing edge, so the final
+            // interval falls back to the page edge rather than reading past the gap list.
             while (unitIndex < row.Count)
             {
                 Unit unit = row[unitIndex];
-                double intervalLeft = gaps[gapIndex].Right;
-                double intervalRight = gaps[gapIndex + 1].Left;
-                if (unit.Box.MinU + Tolerance > intervalRight)
+                int gi = Math.Min(gapIndex, gaps.Count - 1);
+                double intervalLeft = gi < 0 ? edgeLeft : gaps[gi].Right;
+                double intervalRight = gi + 1 < gaps.Count ? gaps[gi + 1].Left : edgeRight;
+                if (unit.Box.MinU + Tolerance > intervalRight && gi + 1 < gaps.Count)
                 {
                     gapIndex++;
                     continue;

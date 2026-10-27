@@ -237,7 +237,12 @@ public static class WritingFrameGeometry
     public static (int Horizontal, int Vertical) AdjacencyVotes(IReadOnlyList<PdfTextGlyph> glyphs)
     {
         int horizontal = 0, vertical = 0;
-        IReadOnlyList<PdfTextGlyph> ordered = glyphs.OrderBy(glyph => glyph.NativeIndex).ToArray();
+        // Generated glyphs — PDFium-synthesized whitespace/return entries, not page content —
+        // carry no direction evidence; some producers emit one between every pair of real
+        // glyphs, which would poison every adjacency vote with edge-position steps.
+        IReadOnlyList<PdfTextGlyph> ordered = glyphs
+            .Where(glyph => !glyph.Flags.HasFlag(PdfGlyphFlags.Generated))
+            .OrderBy(glyph => glyph.NativeIndex).ToArray();
         for (int i = 1; i < ordered.Count; i++)
         {
             switch (StepClass(ordered[i - 1], ordered[i]))
@@ -434,7 +439,9 @@ public static class WritingFrameGeometry
     private static double BaselineTiltDegrees(IReadOnlyList<PdfTextGlyph> glyphs)
     {
         double dxSum = 0, dySum = 0;
-        IReadOnlyList<PdfTextGlyph> ordered = glyphs.OrderBy(glyph => glyph.NativeIndex).ToArray();
+        IReadOnlyList<PdfTextGlyph> ordered = glyphs
+            .Where(glyph => !glyph.Flags.HasFlag(PdfGlyphFlags.Generated))
+            .OrderBy(glyph => glyph.NativeIndex).ToArray();
         for (int i = 1; i < ordered.Count; i++)
         {
             double dx = ordered[i].BaselineX - ordered[i - 1].BaselineX;
