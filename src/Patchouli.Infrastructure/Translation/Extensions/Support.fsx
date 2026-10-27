@@ -502,125 +502,131 @@ module Support =
     /// cells are retranslated once through <paramref name="retranslate"/> before the box fails.
     let mergeSegments (retranslate: Segment array -> CancellationToken -> Task<SegmentOutcome array>)
                       (boxes: ExtensionBox array) (segments: Segment array) (outcomes: SegmentOutcome array)
-                      (token: CancellationToken) : Task<ExtensionBoxOutcome array> = task {
+                      (token: CancellationToken) : Task<ExtensionBoxOutcome array> =
         let byId = Dictionary<string, SegmentOutcome>(StringComparer.Ordinal)
         for outcome in outcomes do byId[outcome.SegmentId] <- outcome
-        let merged = ResizeArray<ExtensionBoxOutcome>(boxes.Length)
-        for box in boxes do
-            let! outcome = task {
-                let owned = segments |> Array.filter (fun segment -> segment.Box.Id = box.Id)
-                                     |> Array.sortBy (fun segment -> segment.PartIndex)
-                if owned.Length = 0 then
-                    return skipped box.Id
-                else
-                    let results = owned |> Array.map (fun segment -> byId.TryGetValue(segment.Id))
-                    if results |> Array.exists (function | true, value -> value.Kind <> ExtensionBoxOutcomeKind.Translated | _ -> true) then
-                        let error = results |> Array.tryPick (function | true, value when value.Kind = ExtensionBoxOutcomeKind.Failed -> Some value | _ -> None)
-                        match error with
-                        | Some error -> return ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
-                            Option.toObj error.ErrorCode, Option.toObj error.ErrorMessage)
-                        | None -> return ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
-                            "translation_segment_missing", "A text segment did not produce a translation.")
-                    elif owned |> Array.exists (fun segment -> segment.TableCellKey.IsSome) then
-                        let cells =
-                            owned |> Array.groupBy (fun segment -> segment.TableCellKey.Value)
-                                  |> Array.map (fun (key, cellSegments) ->
-                                      key, cellSegments |> Array.sortBy (fun segment -> segment.PartIndex))
-                        let cellText (ordered: Segment array) =
-                            ordered |> Array.map (fun segment ->
-                                byId[segment.Id].TranslatedText |> Option.defaultValue "")
-                                    |> String.concat ""
-                        let cellStart (ordered: Segment array) = ordered[0].TableCellStart
-                        let cellLength (ordered: Segment array) = ordered[0].TableCellLength
-                        let invalidOutcome () = ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
-                            "translation_table_invalid", "The table payload could not be reconstructed safely.")
-                        if String.Equals(box.Type, "list", StringComparison.OrdinalIgnoreCase) then
-                            // Item texts splice back under their original markers; continuation
-                            // lines are re-indented to the item's content column.
-                            let source = box.Text |> Option.ofObj |> Option.defaultValue String.Empty
-                            let mutable rebuilt = source
-                            for _, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
-                                let start = cellStart ordered
-                                let lineStart =
-                                    let index = source.LastIndexOf('\n', max 0 (start - 1))
-                                    if index < 0 then 0 else index + 1
-                                let indent = String(' ', start - lineStart)
-                                rebuilt <- rebuilt.Remove(start, cellLength ordered)
-                                              .Insert(start, indentItemText indent (cellText ordered))
-                            let annotations = match listPayload box with | Some payload -> payload.Annotations | None -> null
-                            return ExtensionBoxOutcome.FromPayload(box.Id,
-                                ListBoxPayload(rebuilt, Annotations = annotations))
-                        else
-                            match tableSource box with
-                            | Some("html", text, _) ->
-                                match readTablePayload box with
-                                | None -> return invalidOutcome ()
-                                | Some sourcePayload ->
-                                    let validate rebuilt =
-                                        match TableContentAdapter.CreateHtml(rebuilt) with
-                                        | created when created.IsSuccess ->
-                                            TableContentAdapter.ValidateTranslation(sourcePayload, created.Value)
-                                        | failure -> failure
-                                    let translated = Dictionary<string, string>(StringComparer.Ordinal)
-                                    for key, ordered in cells do translated[key] <- cellText ordered
-                                    let splice () =
-                                        let mutable rebuilt = text
-                                        for key, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
-                                            rebuilt <- rebuilt.Remove(cellStart ordered, cellLength ordered)
-                                                         .Insert(cellStart ordered, translated[key])
-                                        rebuilt
-                                    let mutable candidate = validate (splice ())
-                                    if candidate.IsFailure then
-                                        // Only the offending cells get a second translation attempt.
-                                        let badCells =
-                                            cells |> Array.choose (fun (key, ordered) ->
-                                                let sourceCell = text.Substring(cellStart ordered, cellLength ordered)
-                                                if cellStructureCompatible sourceCell (cellText ordered)
-                                                then None else Some(key, ordered))
-                                        for key, ordered in badCells do
-                                            let! retried =
-                                                task {
-                                                    try return! retranslate ordered token
-                                                    with _ ->
-                                                        return ordered |> Array.map (fun segment ->
-                                                            failure segment.Id "translation_table_invalid"
-                                                                "The cell retranslation request failed.") }
-                                            if retried |> Array.forall (fun outcome ->
-                                                outcome.Kind = ExtensionBoxOutcomeKind.Translated) then
-                                                translated[key] <-
-                                                    retried |> Array.map (fun outcome ->
-                                                        outcome.TranslatedText |> Option.defaultValue "")
-                                                            |> String.concat ""
-                                        candidate <- validate (splice ())
-                                    if candidate.IsSuccess then
-                                        return ExtensionBoxOutcome.FromPayload(box.Id, candidate.Value)
-                                    else
-                                        return ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
-                                            "translation_table_invalid", candidate.ErrorMessage)
-                            | Some("markdown", text, _) ->
-                                match readTablePayload box with
-                                | None -> return invalidOutcome ()
-                                | Some sourcePayload ->
-                                    let mutable rebuilt = text
-                                    for _, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
-                                        rebuilt <- rebuilt.Remove(cellStart ordered, cellLength ordered)
-                                                     .Insert(cellStart ordered, escapeGfmCell (cellText ordered))
-                                    return ExtensionBoxOutcome.FromPayload(box.Id,
-                                        TableBoxPayload(rebuilt, Annotations = sourcePayload.Annotations))
-                            | _ -> return invalidOutcome ()
+        let retranslateBadCells (badCells: (string * Segment array) array)
+                              (translated: Dictionary<string, string>) = task {
+            for key, ordered in badCells do
+                let! retried = task {
+                    try return! retranslate ordered token
+                    with _ ->
+                        return ordered |> Array.map (fun segment ->
+                            failure segment.Id "translation_table_invalid"
+                                "The cell retranslation request failed.") }
+                if retried |> Array.forall (fun outcome ->
+                    outcome.Kind = ExtensionBoxOutcomeKind.Translated) then
+                    translated[key] <-
+                        retried |> Array.map (fun outcome ->
+                            outcome.TranslatedText |> Option.defaultValue "")
+                                |> String.concat "" }
+        let cellText (ordered: Segment array) =
+            ordered |> Array.map (fun segment ->
+                byId[segment.Id].TranslatedText |> Option.defaultValue "")
+                    |> String.concat ""
+        let cellStart (ordered: Segment array) = ordered[0].TableCellStart
+        let cellLength (ordered: Segment array) = ordered[0].TableCellLength
+        // Only the offending cells get a second translation attempt; each retry revalidates
+        // the full payload once the replacements are spliced in.
+        let spliceHtmlCells (box: ExtensionBox) (text: string) sourcePayload
+                            (cells: (string * Segment array) array) : Task<ExtensionBoxOutcome> = task {
+            let validate rebuilt =
+                match TableContentAdapter.CreateHtml(rebuilt) with
+                | created when created.IsSuccess ->
+                    TableContentAdapter.ValidateTranslation(sourcePayload, created.Value)
+                | failure -> failure
+            let translated = Dictionary<string, string>(StringComparer.Ordinal)
+            for key, ordered in cells do translated[key] <- cellText ordered
+            let splice () =
+                let mutable rebuilt = text
+                for key, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
+                    rebuilt <- rebuilt.Remove(cellStart ordered, cellLength ordered)
+                                 .Insert(cellStart ordered, translated[key])
+                rebuilt
+            let mutable candidate = validate (splice ())
+            if candidate.IsFailure then
+                let badCells =
+                    cells |> Array.choose (fun (key, ordered) ->
+                        let sourceCell = text.Substring(cellStart ordered, cellLength ordered)
+                        if cellStructureCompatible sourceCell (cellText ordered)
+                        then None else Some(key, ordered))
+                do! retranslateBadCells badCells translated
+                candidate <- validate (splice ())
+            if candidate.IsSuccess then
+                return ExtensionBoxOutcome.FromPayload(box.Id, candidate.Value)
+            else
+                return ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
+                    "translation_table_invalid", candidate.ErrorMessage) }
+        let mergeBox (box: ExtensionBox) : Task<ExtensionBoxOutcome> =
+            let owned = segments |> Array.filter (fun segment -> segment.Box.Id = box.Id)
+                                 |> Array.sortBy (fun segment -> segment.PartIndex)
+            if owned.Length = 0 then
+                Task.FromResult(skipped box.Id)
+            else
+                let results = owned |> Array.map (fun segment -> byId.TryGetValue(segment.Id))
+                if results |> Array.exists (function | true, value -> value.Kind <> ExtensionBoxOutcomeKind.Translated | _ -> true) then
+                    let error = results |> Array.tryPick (function | true, value when value.Kind = ExtensionBoxOutcomeKind.Failed -> Some value | _ -> None)
+                    match error with
+                    | Some error -> Task.FromResult(ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
+                        Option.toObj error.ErrorCode, Option.toObj error.ErrorMessage))
+                    | None -> Task.FromResult(ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
+                        "translation_segment_missing", "A text segment did not produce a translation."))
+                elif owned |> Array.exists (fun segment -> segment.TableCellKey.IsSome) then
+                    let cells =
+                        owned |> Array.groupBy (fun segment -> segment.TableCellKey.Value)
+                              |> Array.map (fun (key, cellSegments) ->
+                                  key, cellSegments |> Array.sortBy (fun segment -> segment.PartIndex))
+                    let invalidOutcome () = ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Failed, null, null,
+                        "translation_table_invalid", "The table payload could not be reconstructed safely.")
+                    if String.Equals(box.Type, "list", StringComparison.OrdinalIgnoreCase) then
+                        // Item texts splice back under their original markers; continuation
+                        // lines are re-indented to the item's content column.
+                        let source = box.Text |> Option.ofObj |> Option.defaultValue String.Empty
+                        let mutable rebuilt = source
+                        for _, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
+                            let start = cellStart ordered
+                            let lineStart =
+                                let index = source.LastIndexOf('\n', max 0 (start - 1))
+                                if index < 0 then 0 else index + 1
+                            let indent = String(' ', start - lineStart)
+                            rebuilt <- rebuilt.Remove(start, cellLength ordered)
+                                          .Insert(start, indentItemText indent (cellText ordered))
+                        let annotations = match listPayload box with | Some payload -> payload.Annotations | None -> null
+                        Task.FromResult(ExtensionBoxOutcome.FromPayload(box.Id,
+                            ListBoxPayload(rebuilt, Annotations = annotations)))
                     else
-                        let text = owned |> Array.map (fun segment -> byId[segment.Id].TranslatedText |> Option.defaultValue "") |> String.concat ""
-                        match box.Payload with
-                        | :? TextBoxPayload as source ->
-                            return ExtensionBoxOutcome.FromPayload(box.Id, TextBoxPayload(text, Annotations = source.Annotations))
-                        | :? ListBoxPayload as source ->
-                            return ExtensionBoxOutcome.FromPayload(box.Id, ListBoxPayload(text, Annotations = source.Annotations))
-                        | :? AlgorithmBoxPayload as source ->
-                            return ExtensionBoxOutcome.FromPayload(box.Id, AlgorithmBoxPayload(text, Annotations = source.Annotations))
-                        | _ -> return ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, text)
-            }
-            merged.Add(outcome)
-        return merged.ToArray() }
+                        match tableSource box with
+                        | Some("html", text, _) ->
+                            match readTablePayload box with
+                            | None -> Task.FromResult(invalidOutcome ())
+                            | Some sourcePayload -> spliceHtmlCells box text sourcePayload cells
+                        | Some("markdown", text, _) ->
+                            match readTablePayload box with
+                            | None -> Task.FromResult(invalidOutcome ())
+                            | Some sourcePayload ->
+                                let mutable rebuilt = text
+                                for _, ordered in cells |> Array.sortByDescending (fun (_, o) -> cellStart o) do
+                                    rebuilt <- rebuilt.Remove(cellStart ordered, cellLength ordered)
+                                                 .Insert(cellStart ordered, escapeGfmCell (cellText ordered))
+                                Task.FromResult(ExtensionBoxOutcome.FromPayload(box.Id,
+                                    TableBoxPayload(rebuilt, Annotations = sourcePayload.Annotations)))
+                        | _ -> Task.FromResult(invalidOutcome ())
+                else
+                    let text = owned |> Array.map (fun segment -> byId[segment.Id].TranslatedText |> Option.defaultValue "") |> String.concat ""
+                    match box.Payload with
+                    | :? TextBoxPayload as source ->
+                        Task.FromResult(ExtensionBoxOutcome.FromPayload(box.Id, TextBoxPayload(text, Annotations = source.Annotations)))
+                    | :? ListBoxPayload as source ->
+                        Task.FromResult(ExtensionBoxOutcome.FromPayload(box.Id, ListBoxPayload(text, Annotations = source.Annotations)))
+                    | :? AlgorithmBoxPayload as source ->
+                        Task.FromResult(ExtensionBoxOutcome.FromPayload(box.Id, AlgorithmBoxPayload(text, Annotations = source.Annotations)))
+                    | _ -> Task.FromResult(ExtensionBoxOutcome(box.Id, ExtensionBoxOutcomeKind.Translated, text))
+        task {
+            let merged = ResizeArray<ExtensionBoxOutcome>(boxes.Length)
+            for box in boxes do
+                let! outcome = mergeBox box
+                merged.Add(outcome)
+            return merged.ToArray() }
 
     let configText key fallback (job: ITranslationJob) =
         match (config job).Values.TryGetValue(key) with
