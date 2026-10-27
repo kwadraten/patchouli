@@ -4,52 +4,8 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Llm;
-using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Ocr;
-
-public sealed class OcrRetryPolicy : IOcrRetryPolicy
-{
-    private static readonly HashSet<string> Transient =
-    [
-        "network_timeout", "temporary_provider_error", "rate_limited", "quota_exceeded_retryable", "worker_crashed",
-        OcrFailureCode.LocalOcrTimeout, MinerUProviderStatus.DownloadFailed, MinerUProviderStatus.Timeout,
-        MinerUProviderStatus.UploadFailed, MinerUProviderStatus.UploadUrlFailed,
-        LlmFailureCodes.Cancelled, LlmFailureCodes.Interrupted, LlmFailureCodes.InvalidModelOutput
-    ];
-
-    private static readonly HashSet<string> Manual =
-    [
-        "auth_failed", "model_not_found", "bad_endpoint_config", "model_path_missing", "model_path_inaccessible",
-        OcrFailureCode.SourceFileMissing, OcrFailureCode.SourceFileChanged,
-        OcrFailureCode.BBoxCoordinateTransformFailed, OcrFailureCode.ImageTooLargeForOcr,
-        OcrFailureCode.RendererTimeout, "unsupported_file", "invalid_page_box", "missing_executable",
-        LlmFailureCodes.ContextLengthExceeded, LlmFailureCodes.ContentFiltered, LlmFailureCodes.EmptyResponse
-    ];
-
-    public string Classify(string? code)
-    {
-        return Manual.Contains(code ?? "") ? OcrRetryClassification.ManualRepairRequired :
-            Transient.Contains(code ?? "") ? OcrRetryClassification.TransientRetryable :
-            OcrRetryClassification.NonRetryable;
-    }
-
-    public bool ShouldRetry(OcrQueueTask task, string? code)
-    {
-        return Classify(code) == OcrRetryClassification.TransientRetryable && (code == OcrFailureCode.LocalOcrTimeout
-            ? task.AttemptCount < 1
-            : task.AttemptCount < task.MaxAttempts);
-    }
-
-    public TimeSpan GetNextDelay(int attempt)
-    {
-        return attempt switch
-        {
-            1 => TimeSpan.FromSeconds(5), 2 => TimeSpan.FromSeconds(30), _ => TimeSpan.FromMinutes(2)
-        };
-    }
-}
 
 public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
 {
@@ -279,14 +235,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         {
             running = _running.Values.ToArray();
             foreach (OcrQueueTask queued in _tasks.Values.Where(task =>
-                         !_running.ContainsKey(task.TaskId) && task.State is
-                             OcrQueueTaskState.Queued or OcrQueueTaskState.Paused).ToArray())
+                         OcrQueueLifecyclePolicy.IsShutdownCancellable(task,
+                             _running.ContainsKey(task.TaskId))).ToArray())
             {
-                _tasks[queued.TaskId] = queued with
-                {
-                    State = OcrQueueTaskState.Cancelled,
-                    UpdatedAt = _clock.UtcNow
-                };
+                _tasks[queued.TaskId] = OcrQueueLifecyclePolicy.CancelWaiting(queued, _clock.UtcNow);
             }
         }
 
@@ -344,31 +296,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 }
             }
 
-            TimeSpan? delayToWait = null;
+            TimeSpan? delayToWait;
             lock (_stateLock)
             {
-                DateTimeOffset now = _clock.UtcNow;
-                DateTimeOffset? nearest = null;
-
-                foreach (OcrQueueTask task in _tasks.Values)
-                {
-                    if (task.State == OcrQueueTaskState.Queued && !Paused(task))
-                    {
-                        if (task.ScheduledAfter.HasValue && task.ScheduledAfter.Value > now)
-                        {
-                            if (nearest == null || task.ScheduledAfter.Value < nearest.Value)
-                            {
-                                nearest = task.ScheduledAfter.Value;
-                            }
-                        }
-                    }
-                }
-
-                if (nearest.HasValue)
-                {
-                    TimeSpan diff = nearest.Value - now;
-                    delayToWait = diff > TimeSpan.Zero ? diff : TimeSpan.Zero;
-                }
+                delayToWait = OcrQueueDispatchPolicy.NextDeferredWakeDelay(_tasks.Values, _clock.UtcNow, _pauses);
             }
 
             if (delayToWait == TimeSpan.Zero)
@@ -417,8 +348,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         // exposes a read-only view so queued work can never observe caller-side edits.
         IReadOnlyList<PageId> acceptedPages =
             Array.AsReadOnly(request.PageIds?.ToArray() ?? []);
-        if (acceptedPages.Count == 0 || string.IsNullOrWhiteSpace(request.TaskKind) ||
-            string.IsNullOrWhiteSpace(request.EngineId) || string.IsNullOrWhiteSpace(request.AdapterKind))
+        if (!OcrQueueLifecyclePolicy.IsAcceptableRequest(request, acceptedPages.Count))
         {
             return Result<OcrQueueTask>.Failure(AppErrorCodes.ValidationFailed,
                 "OCR queue task requires pages, kind, engine, and adapter kind.");
@@ -438,14 +368,8 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         lock (_stateLock)
         {
             _libraryId ??= resolvedLibraryId!.Value;
-            DateTimeOffset now = _clock.UtcNow;
-            task = new OcrQueueTask(OcrQueueTaskId.New(), _libraryId.Value, request.DocumentInstanceId,
-                request.PresetId,
-                acceptedPages, request.TaskKind, request.EngineId, request.AdapterKind, request.ProviderId,
-                request.Priority, now, now, OcrQueueTaskState.Queued, 0, Math.Max(1, request.MaxAttempts), null, null,
-                null, null, RegionBBox: request.RegionBBox,
-                CommitOnCompletion: request.CommitOnCompletion, PresetVersionId: request.PresetVersionId,
-                Source: request.Source);
+            task = OcrQueueLifecyclePolicy.CreateAccepted(request, OcrQueueTaskId.New(), _libraryId.Value,
+                acceptedPages, _clock.UtcNow);
         }
 
         // Acceptance pins the generation the task will run: the pinned image engine and the
@@ -518,21 +442,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         return Result<OcrQueueTask>.Success(task);
     }
 
-    /// <summary>
-    ///     A request rejected at acceptance (generation pin failure) still leaves a durable
-    ///     failed row: the caller's transient status message disappears, but the queue must
-    ///     keep why nothing ran. The row is terminal — retrying goes through the normal
-    ///     failed-task retry path and re-pins a generation.
-    /// </summary>
     private void RecordRejectedTask(OcrQueueTask task, string errorCode, string errorMessage)
     {
-        OcrQueueTask rejected = task with
-        {
-            State = OcrQueueTaskState.Failed,
-            LastErrorCode = errorCode,
-            LastErrorMessage = errorMessage,
-            UpdatedAt = _clock.UtcNow
-        };
+        OcrQueueTask rejected =
+            OcrQueueLifecyclePolicy.RejectAtAcceptance(task, errorCode, errorMessage, _clock.UtcNow);
         lock (_stateLock)
         {
             _tasks[rejected.TaskId] = rejected;
@@ -554,28 +467,16 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 return Task.CompletedTask;
             }
 
-            OcrQueueTask[] eligible = _tasks.Values
-                .Where(t => t.State == OcrQueueTaskState.Queued &&
-                            !_running.ContainsKey(t.TaskId) &&
-                            (t.ScheduledAfter is null || t.ScheduledAfter <= _clock.UtcNow) && !Paused(t))
-                .OrderByDescending(Score)
-                .ThenBy(t => t.CreatedAt)
-                .ToArray();
+            OcrQueueTask[] eligible = OcrQueueDispatchPolicy.SelectDispatchCandidates(
+                _tasks.Values, _running.Keys, _clock.UtcNow, _pauses);
             foreach (OcrQueueTask candidate in eligible)
             {
-                if (!CanRun(candidate))
+                if (!OcrQueueDispatchPolicy.CanRunNow(candidate, _tasks.Values, _limits))
                 {
                     continue;
                 }
 
-                OcrQueueTask task = candidate with
-                {
-                    State = OcrQueueTaskState.Running,
-                    UpdatedAt = _clock.UtcNow,
-                    RunId = candidate.RunId,
-                    CompletedPageCount = candidate.CompletedPageCount,
-                    FailedPageCount = 0
-                };
+                OcrQueueTask task = OcrQueueLifecyclePolicy.Claim(candidate, _clock.UtcNow);
                 _tasks[task.TaskId] = task;
                 lock (_progressLock)
                 {
@@ -608,13 +509,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             c.ThrowIfCancellationRequested();
             lock (_stateLock)
             {
-                DateTimeOffset now = _clock.UtcNow;
-                bool idle = _running.Count == 0 && _tasks.Values.All(t =>
-                    t.State != OcrQueueTaskState.Running &&
-                    (t.State != OcrQueueTaskState.Queued ||
-                     (t.ScheduledAfter is not null && t.ScheduledAfter > now) ||
-                     Paused(t)));
-                if (idle)
+                if (OcrQueueDispatchPolicy.IsIdle(_tasks.Values, _running.Count, _clock.UtcNow, _pauses))
                 {
                     return;
                 }
@@ -636,15 +531,9 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             lock (_stateLock)
             {
                 if (_tasks.TryGetValue(task.TaskId, out OcrQueueTask? live) &&
-                    live.State == OcrQueueTaskState.Running && live.AttemptCount == task.AttemptCount)
+                    OcrQueueLifecyclePolicy.IsLiveClaim(live, task.AttemptCount))
                 {
-                    _tasks[task.TaskId] = live with
-                    {
-                        State = OcrQueueTaskState.Failed,
-                        LastErrorCode = "worker_cleanup_failed",
-                        LastErrorMessage = "The OCR worker could not finish releasing its resources.",
-                        UpdatedAt = _clock.UtcNow
-                    };
+                    _tasks[task.TaskId] = OcrQueueLifecyclePolicy.FailWorkerCleanup(live, _clock.UtcNow);
                 }
             }
         }
@@ -721,108 +610,26 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 : null;
             _attemptBindings.Remove(task.TaskId);
 
-            // Finalization must still belong to the live claimed attempt: a task removed or
-            // superseded while the worker unwound must not be resurrected or overwritten.
             if (_tasks.TryGetValue(task.TaskId, out OcrQueueTask? live) &&
-                live.State == OcrQueueTaskState.Running && live.AttemptCount == task.AttemptCount)
+                OcrQueueLifecyclePolicy.IsLiveClaim(live, task.AttemptCount))
             {
-                DateTimeOffset now = _clock.UtcNow;
-                // The run bound through the execution context (or explicitly retained on the
-                // claim) owns this attempt; a worker result naming a different run is a
-                // contradiction that fails the attempt, not a change of ownership.
-                OcrRunId? effectiveRunId = boundRunId ?? live.RunId;
-                if (effectiveRunId is { } owned && result.RunId is { } reportedRunId &&
-                    reportedRunId != owned)
+                updated = OcrQueueCompletionPolicy.SettleAttempt(live, task, result, boundRunId, _retry,
+                    _clock.UtcNow);
+                _tasks[task.TaskId] = updated;
+                if (updated.State == OcrQueueTaskState.Queued)
                 {
-                    result = new OcrQueueExecutionResult(false, false, "run_identity_mismatch",
-                        $"The OCR worker reported run {reportedRunId} but this attempt is bound to run {owned}.",
-                        owned, result.CompletedPageCount, result.FailedPageCount);
-                }
-                else
-                {
-                    effectiveRunId ??= result.RunId;
-                }
-
-                if (result.Cancelled)
-                {
-                    updated = live with
-                    {
-                        State = OcrQueueTaskState.Cancelled,
-                        RunId = effectiveRunId,
-                        CompletedPageCount = result.CompletedPageCount > 0
-                            ? result.CompletedPageCount
-                            : task.CompletedPageCount,
-                        FailedPageCount = result.FailedPageCount,
-                        UpdatedAt = now
-                    };
-                }
-                else if (result.Succeeded)
-                {
-                    updated = live with
-                    {
-                        State = OcrQueueTaskState.Succeeded,
-                        RunId = effectiveRunId,
-                        CompletedPageCount = result.CompletedPageCount > 0
-                            ? result.CompletedPageCount
-                            : task.CompletedPageCount,
-                        FailedPageCount = result.FailedPageCount,
-                        UpdatedAt = now
-                    };
-                }
-                else if (_retry.ShouldRetry(task, result.ErrorCode))
-                {
-                    int completed = result.CompletedPageCount > 0
-                        ? result.CompletedPageCount
-                        : task.CompletedPageCount;
-                    bool retainRecognition = effectiveRunId is not null && result.FailedPageCount == 0 &&
-                                             completed >= task.PageIds.Count;
-                    updated = live with
-                    {
-                        State = OcrQueueTaskState.Queued,
-                        AttemptCount = task.AttemptCount + 1,
-                        ScheduledAfter = now + _retry.GetNextDelay(task.AttemptCount + 1),
-                        // Recognition retries bind a new run. Post-recognition adoption/index
-                        // retries retain completed recognition, which the executor revalidates.
-                        RunId = retainRecognition ? effectiveRunId : null,
-                        CompletedPageCount = retainRecognition ? completed : 0,
-                        FailedPageCount = 0,
-                        LastErrorCode = result.ErrorCode,
-                        LastErrorMessage = result.ErrorMessage,
-                        UpdatedAt = now
-                    };
                     lock (_progressLock)
                     {
+                        // A requeued attempt owns the next progress stream: drop this attempt's
+                        // last report so readers cannot see stale progress before it reports.
                         _progress.Remove(task.TaskId);
                         _lastProgressNotification.Remove(task.TaskId);
                     }
                 }
-                else
-                {
-                    updated = live with
-                    {
-                        State = _retry.Classify(result.ErrorCode) == OcrRetryClassification.ManualRepairRequired
-                            ? OcrQueueTaskState.Blocked
-                            : OcrQueueTaskState.Failed,
-                        RunId = effectiveRunId,
-                        CompletedPageCount = result.CompletedPageCount > 0
-                            ? result.CompletedPageCount
-                            : task.CompletedPageCount,
-                        FailedPageCount = result.FailedPageCount,
-                        LastErrorCode = result.ErrorCode,
-                        LastErrorMessage = result.ErrorMessage,
-                        UpdatedAt = now
-                    };
-                }
-
-                _tasks[task.TaskId] = updated;
             }
         }
 
-        // Terminal (or dropped) task: the acceptance-time generation pin ends here. A requeued
-        // attempt of the same task keeps its pin — retries re-run the same selection.
-        if (_engineLeases is not null &&
-            (updated is null || updated.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
-                or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked))
+        if (_engineLeases is not null && OcrQueueCompletionPolicy.ReleasesGenerationPin(updated))
         {
             await _engineLeases.ReleaseAsync(task.TaskId);
         }
@@ -834,8 +641,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             return;
         }
 
-        if (updated.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
-            or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+        if (OcrQueueLifecyclePolicy.IsTerminal(updated.State))
         {
             lock (_progressLock)
             {
@@ -850,67 +656,35 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
     }
 
     /// <summary>
-    /// Typed run-binding callback used by <see cref="OcrRunExecutionContext"/>. It binds a newly
-    /// created run to the live task only while that exact attempt is still running: a repeated
-    /// identical binding is idempotent, a different run for the same attempt conflicts, and a
-    /// report from a superseded or removed attempt is rejected so it cannot mutate the task that
-    /// replaced it. State is mutated under <see cref="_stateLock"/> but the change notification is
-    /// raised after the lock is released.
+    /// Typed run-binding callback used by <see cref="OcrRunExecutionContext"/>: the decision is
+    /// evaluated by <see cref="OcrRunBindingPolicy"/> under <see cref="_stateLock"/>; the change
+    /// notification is raised after the lock is released.
     /// </summary>
     private Result BindAttemptRun(OcrQueueTaskId taskId, int attempt, OcrRunId runId,
         OcrPresetVersionId? presetVersionId)
     {
-        OcrQueueTask updated;
+        OcrRunBindingPolicy.Decision decision;
         lock (_stateLock)
         {
-            if (!_tasks.TryGetValue(taskId, out OcrQueueTask? task))
+            _tasks.TryGetValue(taskId, out OcrQueueTask? task);
+            decision = OcrRunBindingPolicy.Evaluate(task, attempt, runId, presetVersionId, _clock.UtcNow);
+            if (decision.RecordsBinding)
             {
-                return Result.Failure(AppErrorCodes.InvalidState,
-                    "The OCR queue task was removed before its run could be bound.");
-            }
-
-            if (task.State != OcrQueueTaskState.Running || task.AttemptCount != attempt)
-            {
-                return Result.Failure(AppErrorCodes.InvalidState,
-                    "The OCR run belongs to a superseded queue attempt.");
-            }
-
-            if (task.PresetVersionId is { } expectedVersion && presetVersionId is { } actualVersion &&
-                expectedVersion != actualVersion)
-            {
-                return Result.Failure(AppErrorCodes.Conflict,
-                    "The OCR run does not use this task's fixed preset version.");
-            }
-
-            if (task.RunId == runId && (task.PresetVersionId is not null || presetVersionId is null))
-            {
-                // Idempotent repeat (including a retained run re-reporting itself): still record
-                // the binding so a later report naming a different run conflicts rather than
-                // silently replacing the ownership this attempt already holds.
                 _attemptBindings[taskId] = (attempt, runId);
-                return Result.Success();
             }
 
-            if (task.RunId is not null && task.RunId != runId)
+            if (decision.UpdatedTask is { } updated)
             {
-                return Result.Failure(AppErrorCodes.Conflict,
-                    "A different OCR run is already bound to this queue attempt.");
+                _tasks[taskId] = updated;
             }
-
-            _attemptBindings[taskId] = (attempt, runId);
-            updated = task with
-            {
-                RunId = runId,
-                // Legacy unpinned tasks learn the actual durable version here. A later retry
-                // may pin that same version without discarding already completed recognition.
-                PresetVersionId = task.PresetVersionId ?? presetVersionId,
-                UpdatedAt = _clock.UtcNow
-            };
-            _tasks[taskId] = updated;
         }
 
-        OnChanged(updated, OcrQueueChangeKind.Updated);
-        return Result.Success();
+        if (decision.UpdatedTask is { } changed)
+        {
+            OnChanged(changed, OcrQueueChangeKind.Updated);
+        }
+
+        return decision.Result;
     }
 
     private void OnProgress(OcrTaskProgressReport report)
@@ -919,12 +693,11 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         // cannot interleave between them. Reports are attempt-owned: unknown, removed,
         // non-running, or foreign-attempt reports are dropped entirely, and the change
         // notification is published only after both locks are released.
-        bool isTerminal = report.Fraction is not null && report.Fraction.Value >= 1.0;
+        bool isTerminal = OcrQueueProgressPolicy.IsTerminal(report);
         lock (_stateLock)
         {
             if (!_tasks.TryGetValue(report.TaskId, out OcrQueueTask? current) ||
-                current.State != OcrQueueTaskState.Running ||
-                report.Attempt != current.AttemptCount)
+                !OcrQueueProgressPolicy.Accepts(current, report))
             {
                 return;
             }
@@ -933,9 +706,9 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             {
                 _progress[report.TaskId] = report;
                 DateTimeOffset now = _clock.UtcNow;
-                if (!isTerminal &&
-                    _lastProgressNotification.TryGetValue(report.TaskId, out DateTimeOffset last) &&
-                    (now - last).TotalMilliseconds < 200)
+                if (!OcrQueueProgressPolicy.ShouldNotify(isTerminal,
+                        _lastProgressNotification.TryGetValue(report.TaskId, out DateTimeOffset last) ? last : null,
+                        now))
                 {
                     return;
                 }
@@ -973,7 +746,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
     public Task<Result> PauseAsync(string scope, string? target = null, CancellationToken c = default)
     {
         c.ThrowIfCancellationRequested();
-        if (scope == "preset")
+        if (OcrQueuePausePolicy.IsUnsupportedScope(scope))
         {
             return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
                 "Preset-level pause is not supported."));
@@ -981,7 +754,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
 
         lock (_stateLock)
         {
-            _pauses.Add(scope + ":" + (target ?? ""));
+            _pauses.Add(OcrQueuePausePolicy.Key(scope, target));
         }
 
         RefreshActivityStates();
@@ -995,7 +768,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         c.ThrowIfCancellationRequested();
         lock (_stateLock)
         {
-            _pauses.Remove(scope + ":" + (target ?? ""));
+            _pauses.Remove(OcrQueuePausePolicy.Key(scope, target));
         }
 
         RefreshActivityStates();
@@ -1016,19 +789,15 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 return Result.Failure(AppErrorCodes.NotFound, "Queue task was not found.");
             }
 
-            if (task.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
-                or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+            if (OcrQueueLifecyclePolicy.IsTerminal(task.State))
             {
                 return Result.Failure(AppErrorCodes.InvalidState,
                     "Terminal OCR tasks cannot be cancelled.");
             }
 
-            if (_running.TryGetValue(id, out toCancel))
+            if (!_running.TryGetValue(id, out toCancel))
             {
-            }
-            else
-            {
-                updated = task with { State = OcrQueueTaskState.Cancelled, UpdatedAt = _clock.UtcNow };
+                updated = OcrQueueLifecyclePolicy.CancelWaiting(task, _clock.UtcNow);
                 _tasks[id] = updated;
                 lock (_progressLock)
                 {
@@ -1087,42 +856,14 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 return Result<OcrQueueTask>.Failure(AppErrorCodes.NotFound, "Queue task was not found.");
             }
 
-            if (task.State is not (OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked
-                or OcrQueueTaskState.Cancelled))
+            if (!OcrQueueLifecyclePolicy.IsRetryableState(task.State))
             {
                 return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState,
                     "Only failed, blocked, or cancelled OCR tasks can be retried.");
             }
 
-            DateTimeOffset now = _clock.UtcNow;
-            // A task reaches the Cancelled state only after its worker has quiesced (queued tasks
-            // flip immediately; running tasks flip in ExecuteAndCompleteAsync under _stateLock),
-            // so retrying here cannot race the old worker. A completed run is retained only when
-            // the retry keeps the same preset version (an explicit different version must
-            // re-recognize) and the bound run already covered every requested page — the executor
-            // revalidates coverage against the actual page results.
-            bool versionMatches = presetVersionId is null || presetVersionId == task.PresetVersionId;
-            bool preserveRunId = task.RunId is not null && versionMatches &&
-                                 task.FailedPageCount == 0 &&
-                                 task.CompletedPageCount >= task.PageIds.Count;
-            retry = task with
-            {
-                TaskId = OcrQueueTaskId.New(),
-                Priority = OcrQueuePriority.BackgroundRetry,
-                CreatedAt = now,
-                UpdatedAt = now,
-                State = OcrQueueTaskState.Queued,
-                AttemptCount = 0,
-                RetryOfTaskId = task.TaskId,
-                LastErrorCode = null,
-                LastErrorMessage = null,
-                ScheduledAfter = null,
-                RunId = preserveRunId ? task.RunId : null,
-                CompletedPageCount = preserveRunId ? task.CompletedPageCount : 0,
-                FailedPageCount = 0,
-                PresetVersionId = presetVersionId ?? task.PresetVersionId,
-                Source = OcrQueueSource.Retry
-            };
+            retry = OcrQueueLifecyclePolicy.CreateRetry(task, presetVersionId, OcrQueueTaskId.New(),
+                _clock.UtcNow);
         }
 
         // Recognition retries are new acceptances and pin a generation before becoming visible.
@@ -1206,13 +947,8 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         c.ThrowIfCancellationRequested();
         lock (_stateLock)
         {
-            OcrQueueTask[] tasks = _tasks.Values.Where(t =>
-                    (f.State is null || t.State == f.State) && (f.EngineId is null || t.EngineId == f.EngineId) &&
-                    (f.ProviderId is null || t.ProviderId == f.ProviderId) &&
-                    (f.IncludeCompleted ||
-                     t.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused))
-                .OrderByDescending(Score)
-                .ToArray();
+            OcrQueueTask[] tasks =
+                OcrQueueProjection.SelectForListing(_tasks.Values, f, _clock.UtcNow);
             return Task.FromResult(Result<IReadOnlyList<OcrQueueTask>>.Success(tasks));
         }
     }
@@ -1222,18 +958,8 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         c.ThrowIfCancellationRequested();
         lock (_stateLock)
         {
-            int Count(string state)
-            {
-                return _tasks.Values.Count(t => t.State == state);
-            }
-
-            OcrQueueTask[] running = _tasks.Values.Where(t => t.State == OcrQueueTaskState.Running).ToArray();
-            OcrQueueStatus status = new(_loopTask is { IsCompleted: false }, Count(OcrQueueTaskState.Queued),
-                Count(OcrQueueTaskState.Running), Count(OcrQueueTaskState.Succeeded), Count(OcrQueueTaskState.Failed),
-                Count(OcrQueueTaskState.Cancelled), Count(OcrQueueTaskState.Blocked), _pauses.ToArray(), _limits,
-                running.GroupBy(t => t.EngineId).ToDictionary(g => g.Key, g => g.Count()),
-                running.Where(t => t.ProviderId is not null).GroupBy(t => t.ProviderId!)
-                    .ToDictionary(g => g.Key, g => g.Count()));
+            OcrQueueStatus status = OcrQueueProjection.ProjectStatus(_loopTask is { IsCompleted: false },
+                _tasks.Values, _pauses.ToArray(), _limits);
             return Task.FromResult(Result<OcrQueueStatus>.Success(status));
         }
     }
@@ -1260,8 +986,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         lock (_stateLock)
         {
             removed = _tasks.Values
-                .Where(t => t.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
-                    or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+                .Where(t => OcrQueueLifecyclePolicy.IsTerminal(t.State))
                 .Select(t => t.TaskId)
                 .ToArray();
             foreach (OcrQueueTaskId id in removed)
@@ -1334,14 +1059,6 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         }
     }
 
-    private bool Paused(OcrQueueTask t)
-    {
-        return _pauses.Contains("global:") || _pauses.Contains("task:" + t.TaskId) ||
-               (_pauses.Contains("local:") && t.AdapterKind != OcrAdapterKind.CloudApi) ||
-               (_pauses.Contains("cloud:") && t.AdapterKind == OcrAdapterKind.CloudApi) ||
-               (!string.IsNullOrEmpty(t.ProviderId) && _pauses.Contains("provider:" + t.ProviderId));
-    }
-
     private void RefreshActivityStates()
     {
         if (_activityTracker is null)
@@ -1349,19 +1066,12 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             return;
         }
 
-        TaskActivityState[] desired;
+        OcrTaskActivityState[] desired;
         lock (_stateLock)
         {
             DateTimeOffset now = _clock.UtcNow;
-            HashSet<OcrQueueTaskId> retriedTaskIds = _tasks.Values
-                .Where(task => task.RetryOfTaskId is not null &&
-                               task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running)
-                .Select(task => task.RetryOfTaskId!.Value)
-                .ToHashSet();
-            desired = _tasks.Values
-                .Where(task => task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running ||
-                               (task.State == OcrQueueTaskState.Blocked && !retriedTaskIds.Contains(task.TaskId)))
-                .Select(task => CreateActivityState(task, now))
+            desired = OcrQueueActivityProjection.SelectVisible(_tasks.Values)
+                .Select(task => OcrQueueActivityProjection.Describe(task, now, _pauses))
                 .ToArray();
         }
 
@@ -1374,7 +1084,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
                 obsoleteScope?.Dispose();
             }
 
-            foreach (TaskActivityState state in desired)
+            foreach (OcrTaskActivityState state in desired)
             {
                 if (!_activityScopes.TryGetValue(state.TaskId, out IActivityScope? scope))
                 {
@@ -1393,33 +1103,6 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         }
     }
 
-    private TaskActivityState CreateActivityState(OcrQueueTask task, DateTimeOffset now)
-    {
-        if (task.State == OcrQueueTaskState.Blocked)
-        {
-            string reason = string.IsNullOrWhiteSpace(task.LastErrorMessage)
-                ? "需要人工处理后重试"
-                : $"需要人工处理：{task.LastErrorMessage}";
-            return new TaskActivityState(task.TaskId, "等待人工处理", true, reason, false, null);
-        }
-
-        bool isPaused = task.State == OcrQueueTaskState.Queued && Paused(task);
-        bool isWaitingRetry = task.State == OcrQueueTaskState.Queued && !isPaused &&
-                              task.ScheduledAfter is { } scheduledAfter && scheduledAfter > now;
-        string detail = task.State == OcrQueueTaskState.Running
-            ? "正在执行"
-            : isWaitingRetry
-                ? "等待延迟重试"
-                : isPaused
-                    ? "已暂停"
-                    : "等待调度";
-        string? retryReason = isWaitingRetry
-            ? $"将在 {task.ScheduledAfter!.Value:HH:mm:ss} 重试"
-            : null;
-        return new TaskActivityState(task.TaskId, detail, isPaused, isPaused ? "OCR 队列已暂停" : null,
-            isWaitingRetry, retryReason);
-    }
-
     private void ClearActivityScopes()
     {
         lock (_activityLock)
@@ -1431,62 +1114,6 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
 
             _activityScopes.Clear();
         }
-    }
-
-    private sealed record TaskActivityState(
-        OcrQueueTaskId TaskId,
-        string Detail,
-        bool IsPaused,
-        string? PauseReason,
-        bool IsWaitingRetry,
-        string? RetryReason);
-
-    private bool CanRun(OcrQueueTask t)
-    {
-        OcrQueueTask[] running = _tasks.Values.Where(x => x.State == OcrQueueTaskState.Running).ToArray();
-        if (running.Length >= _limits.GlobalMaxConcurrent)
-        {
-            return false;
-        }
-
-        bool local = t.AdapterKind != OcrAdapterKind.CloudApi;
-        if (local && running.Count(x => x.AdapterKind != OcrAdapterKind.CloudApi) >= _limits.LocalMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (!local && running.Count(x => x.AdapterKind == OcrAdapterKind.CloudApi) >= _limits.CloudMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (running.Count(x => x.EngineId == t.EngineId) >= _limits.PerEngineMaxConcurrent)
-        {
-            return false;
-        }
-
-        if (t.ProviderId is not null &&
-            running.Count(x => x.ProviderId == t.ProviderId) >= _limits.PerProviderMaxConcurrent)
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private int Score(OcrQueueTask t)
-    {
-        return Priority(t.Priority) * 1000 + (int)Math.Min(999, (_clock.UtcNow - t.CreatedAt).TotalMinutes / 10);
-    }
-
-    private static int Priority(string p)
-    {
-        return p switch
-        {
-            OcrQueuePriority.InteractiveCurrentPage => 6, OcrQueuePriority.InteractiveSelectedPages => 5,
-            OcrQueuePriority.UserStartedDocument => 4, OcrQueuePriority.BackgroundRetry => 3,
-            OcrQueuePriority.BatchCollection => 2, _ => 1
-        };
     }
 
     private void OnChanged(OcrQueueTask? task, string changeKind)

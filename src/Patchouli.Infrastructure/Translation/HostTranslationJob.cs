@@ -723,12 +723,25 @@ internal sealed class HostTranslationJob : ITranslationJob
         }
 
         _publish(outcome);
-        ReportStep(target.PageIndex, 1, outcome.State switch
+        ReportStep(target.PageIndex, 1, StepStateFor(outcome.State), outcome.ErrorMessage);
+    }
+
+    /// <summary>
+    /// The step label one settled page reports. A committed, partial or skipped page closes its single
+    /// attempt as "Completed" — partial and skipped are deliberately not surfaced as their own step
+    /// states — and any value outside the known enum keeps that same fallback.
+    /// </summary>
+    internal static string StepStateFor(TranslationPageRunState state)
+    {
+        return state switch
         {
             TranslationPageRunState.Failed => "Failed",
             TranslationPageRunState.Cancelled => "Cancelled",
+            TranslationPageRunState.Committed => "Completed",
+            TranslationPageRunState.Partial => "Completed",
+            TranslationPageRunState.Skipped => "Completed",
             _ => "Completed"
-        }, outcome.ErrorMessage);
+        };
     }
 
     private TranslationPageOutcome Failure(int slot, string errorCode, string errorMessage)

@@ -22,8 +22,15 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
     private readonly object _disposeGate = new();
     private readonly TaskCompletionSource _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _active;
-    private int _lifecycle; // 0 = running, 1 = draining, 2 = drained
+    private InvocationLifecycle _lifecycle;
     private Task? _disposeTask;
+
+    private enum InvocationLifecycle
+    {
+        Running,
+        Draining,
+        Drained
+    }
 
     internal ExtensionDomainRun(IExtensionLease lease, IExtensionResources capabilities,
         ExtensionConfigSnapshot config)
@@ -163,7 +170,7 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
         {
             if (_disposeTask is null)
             {
-                _lifecycle = 1;
+                _lifecycle = InvocationLifecycle.Draining;
                 // Lease callbacks may execute synchronously; do not invoke them under this lock.
                 _disposeTask = Task.Run(DisposeCore);
             }
@@ -179,9 +186,9 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
         Task? wait;
         lock (_disposeGate)
         {
-            if (_lifecycle == 0)
+            if (_lifecycle == InvocationLifecycle.Running)
             {
-                _lifecycle = 1;
+                _lifecycle = InvocationLifecycle.Draining;
             }
 
             wait = _active > 0 ? _drained.Task : null;
@@ -199,7 +206,7 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
     {
         lock (_disposeGate)
         {
-            if (_lifecycle != 0)
+            if (_lifecycle != InvocationLifecycle.Running)
             {
                 throw new ObjectDisposedException(nameof(ExtensionDomainRun));
             }
@@ -212,9 +219,9 @@ public sealed class ExtensionDomainRun : IAsyncDisposable
     {
         lock (_disposeGate)
         {
-            if (--_active == 0 && _lifecycle == 1)
+            if (--_active == 0 && _lifecycle == InvocationLifecycle.Draining)
             {
-                _lifecycle = 2;
+                _lifecycle = InvocationLifecycle.Drained;
                 _drained.TrySetResult();
             }
         }

@@ -81,6 +81,7 @@ public sealed class HostServices
                 $"Patchouli unexpected error at {boundary}/{operation}: {exception}");
 
     private readonly OcrRunEngine _ocrEngine;
+    private readonly HostLibraryServices _libraryServices;
     private readonly OnnxDocumentLayoutDetector _documentLayoutDetector = new();
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
@@ -97,21 +98,15 @@ public sealed class HostServices
     private AgentIntegrationAppSettings _agentSettings;
     private HttpClient? _cslCatalogHttpClient;
 
-    private readonly HttpMessageInvoker _extensionHttpInvoker = new(new SocketsHttpHandler
-    {
-        AutomaticDecompression = System.Net.DecompressionMethods.All
-    }, true);
+    private readonly HttpMessageInvoker _extensionHttpInvoker;
 
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
     private HttpClient? _rapidOcrModelHttpClient;
 
-    private readonly HttpClient _layoutModelHttpClient = new() { Timeout = TimeSpan.FromMinutes(10) };
-
-    // Issue #15: dedicated clients for update checks (short timeout) and installer
-    // downloads (long timeout for ~100MB installers).
-    private readonly HttpClient _updateApiHttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
-    private readonly HttpClient _updateDownloadHttpClient = new() { Timeout = TimeSpan.FromMinutes(15) };
+    private readonly HttpClient _layoutModelHttpClient;
+    private readonly HttpClient _updateApiHttpClient;
+    private readonly HttpClient _updateDownloadHttpClient;
     private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -120,8 +115,13 @@ public sealed class HostServices
     private HostServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
         IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null,
         IHostActivityTracker? activityTracker = null, HostOcrCompositionOptions? ocrComposition = null,
-        IAppPaths? appPaths = null)
+        IAppPaths? appPaths = null, HostInfrastructureOptions? infrastructure = null)
     {
+        HostHttpClientFactory httpClients = new(infrastructure?.HttpHandlerFactory);
+        _extensionHttpInvoker = httpClients.CreateExtensionInvoker();
+        _layoutModelHttpClient = httpClients.CreateClient(HostHttpPurpose.LayoutModel);
+        _updateApiHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateApi);
+        _updateDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateDownload);
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -129,7 +129,7 @@ public sealed class HostServices
         _llmSettings = settings.Llm;
         _agentSettings = settings.Agents;
         AgentPlatformEnvironment = new PlatformAgentEnvironment();
-        AgentProcessRunner = new SystemProcessRunner();
+        AgentProcessRunner = infrastructure?.ProcessRunner ?? new SystemProcessRunner();
         AgentInstallOffers = new AgentRegistryInstallOfferProvider(AgentRegistryLocations.Resolve(),
             AgentPlatformEnvironment);
         AgentDetection = new AgentDetectionService(AgentProcessRunner, AgentPlatformEnvironment, AgentInstallOffers);
@@ -142,21 +142,11 @@ public sealed class HostServices
         ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor);
         LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
-        Clock = new SystemClock();
+        Clock = infrastructure?.Clock ?? new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
-        Library = new LibraryIdentityService(ConnectionFactory, Clock);
-        LibraryRevisions = new LibraryRevisionService(ConnectionFactory);
-        LibraryItems = new LibraryItemQueryService(ConnectionFactory);
-        Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
-        Tags = new ItemTagService(ConnectionFactory, LibraryRevisions);
-        Collections = new CollectionService(ConnectionFactory, Library, Clock, LibraryRevisions);
-        LibraryItemCache = new LibraryItemCache(LibraryItems, Tags);
-        LibraryRevisionMonitor = new LibraryRevisionMonitor(LibraryRevisions, LibraryItemCache,
-            reportUnexpectedException: _reportUnexpectedException);
-        MergeItems = new ItemMergeService(ConnectionFactory, Clock, Library, LibraryRevisions);
-        DuplicateItemDetection = new DuplicateItemDetectionService(ConnectionFactory, Library);
-        _cslCatalogHttpClient = new HttpClient();
+        _libraryServices = new HostLibraryServices(ConnectionFactory, Clock, _reportUnexpectedException);
+        _cslCatalogHttpClient = httpClients.CreateClient(HostHttpPurpose.CslCatalog);
         CslCatalog = new CslStyleCatalog(ConnectionFactory, _cslCatalogHttpClient);
         CslStore = new CslStyleStore(ConnectionFactory, Clock, blockingOperations: BlockingOperations,
             revisions: LibraryRevisions);
@@ -165,8 +155,7 @@ public sealed class HostServices
         ItemTypeProfiles = new CslItemTypeProfileService();
         ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings.MetadataLookup);
-        // Every built-in metadata source is an FSX extension (issue #8); the baseline registry stays
-        // empty and the extension registry below supplies the active sources at call time.
+        // The extension registry below supplies active metadata sources at call time.
         MetadataSources = new MetadataSourceRegistry([]);
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
@@ -216,8 +205,7 @@ public sealed class HostServices
         ModelPathValidator = new OcrModelPathValidator();
         Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
-        // MinerU is the one explicit built-in transport; every other engine routes through the
-        // compiled-FSX extension runtime — no native/vision product adapters here.
+        // Other engines route through the compiled-extension runtime.
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
         // Optional test/embedder adapters are registered last so an explicit dependency wins over
         // a product adapter with the same engine id. Production composition passes none.
@@ -227,21 +215,18 @@ public sealed class HostServices
         }
 
         OcrAdapters = adapterRegistry;
-        _ndlKotenModelHttpClient = new HttpClient();
+        _ndlKotenModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlKotenModel);
         NdlKotenModelDownload =
             new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory);
-        _ndlLiteModelHttpClient = new HttpClient();
+        _ndlLiteModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlLiteModel);
         NdlLiteModelDownload =
             new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory);
-        _rapidOcrModelHttpClient = new HttpClient();
+        _rapidOcrModelHttpClient = httpClients.CreateClient(HostHttpPurpose.RapidOcrModel);
         RapidOcrModelDownload =
             new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory);
-        // Issue #31: one shared engine instance for rendering and metadata; every engine
-        // routes native work through the single process-wide PdfiumScheduler regardless.
-        PdfiumDocumentEngine pdfiumEngine = new();
-        PdfiumPdfPageRenderer pdfRenderer = new(pdfiumEngine);
-        PdfPreviewRenderer = pdfRenderer;
-        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
+        HostPdfServices pdf = infrastructure?.Pdf ?? HostPdfServices.CreateDefault();
+        PdfPreviewRenderer = pdf.PreviewRenderer;
+        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdf.Renderer, Clock,
             Path.Combine(storagePaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
         SourceFingerprintValidation = new SourceFingerprintValidationService();
         PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
@@ -260,17 +245,14 @@ public sealed class HostServices
         TranslationExtensions = new TranslationExtensionCatalog(
             Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
             () => LlmSettings, ExtensionResources);
-        // Issue #43: every non-MinerU OCR engine runs through the compiled-FSX runtime — the
-        // catalog supplies metadata, the lease registry pins engine + text-provider generations
-        // at queue acceptance, and the engine executes one task-level job per attempt.
+        // The lease registry pins engine and text-provider generations at queue acceptance.
         PdfTextLayerInputSource pdfTextLayerInputs = new(ConnectionFactory, FileResolution,
-            FileSearchRootAccess, new SourceValidationService(), pdfiumEngine, PageRenders,
+            FileSearchRootAccess, new SourceValidationService(), pdf.TextExtractor, PageRenders,
             _documentLayoutDetector);
         OcrExtensionEngineRuntime ocrEngineRuntime = new(TranslationExtensions, pdfTextLayerInputs,
             RecognizeBuiltInOcrRegionAsync, ExtensionFiles);
         OcrEngineRuntime = ocrEngineRuntime;
-        // The preset-picker catalog comes from the same runtime registration maps — composed
-        // here, after the runtime exists; never a host-local engine switch.
+        // Preset pickers and execution share the runtime registration maps.
         OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings,
             ocrEngineRuntime, (engineId, token) => new OcrPresetCompositionService(this, StartupSettings.MinerU)
                 .CaptureVersionAsync(engineId, null, cancellationToken: token));
@@ -301,9 +283,6 @@ public sealed class HostServices
             engineLeases: ocrEngineLeases);
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine,
             () => LlmSettings.OcrSelection.ProviderId, ocrEngineRuntime);
-        // The public start/cancel/retry orchestration behind send OCR Actions (issue #16): page
-        // ranges, engine/preset resolution with pinned versions, readiness preflight and atomic
-        // request dedup all live here; transports only speak IMcpOcrCommandApi.
         OcrCommands = new OcrCommandService(
             ocrQueueScheduler,
             _ocrEngine,
@@ -312,9 +291,6 @@ public sealed class HostServices
             adapterRegistry,
             () => StartupSettings.OcrEngines.DocumentOcrEngine,
             ct => OcrSelections.ResolveStoredSelectionAsync(OcrScope.Document, ct));
-        // Issue #20 (B1): the direct batch translation engine is host-owned state, not an Agent or
-        // workflow. Every run reads the live LLM/Translation settings when it starts; runs are
-        // volatile and keep the engine's per-page outcomes for MCP observation and cancellation.
         ExtensionDomains = new ExtensionDomainService(TranslationExtensions, Pages, PageRenders, DocumentTrees,
             ocrTreeImporter, Search);
         MetadataSources = new ExtensionMetadataRegistry(MetadataSources, () => TranslationExtensions.MetadataSources);
@@ -340,8 +316,7 @@ public sealed class HostServices
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
             DocumentPageMaps);
         CliPath = new CliPathService();
-        // Issue #28: endpoint descriptions enumerate each runs domain's implementations
-        // from the live registries (OCR adapters, extension catalog, metadata sources).
+        // Endpoint descriptions use the same live registries as execution.
         McpImplementationCatalog = new McpHostImplementationCatalogApi(
             OcrAdapters,
             () => StartupSettings.OcrEngines.DocumentOcrEngine,
@@ -382,25 +357,20 @@ public sealed class HostServices
             new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions,
                 logger);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
-        PdfMetadataReader pdfMetadata = new(pdfiumEngine);
-        PdfMetadata = pdfMetadata;
+        PdfMetadata = pdf.Metadata;
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
         PdfImport = new PdfImportWorkflow(
             new ImportBatchWriter(ConnectionFactory, LibraryRevisions),
-            pdfMetadata,
+            pdf.Metadata,
             Clock,
             Library,
             itemTypeInferenceService: ItemTypeInference,
             activityTracker: activityTracker,
             hostLifetime: LifetimeToken,
-            pageInfoReader: pdfMetadata,
+            pageInfoReader: pdf.PageInfo,
             maxFailedPageRatio: settings.Import.MaxFailedPageRatio);
-        // Issue #11: shared local file import core (MCP add, CLI, drag-drop). The behavior
-        // settings are device-local; the recovery store lives in the runtime database.
         FileHandlingBehaviorSettings =
             new FileHandlingBehaviorSettingsService(settingsPath, Clock);
-        // Issue #15: application auto-update (direct GitHub source; a future
-        // reverse proxy only needs to implement IUpdateSource).
         UpdateCheckSettings = new UpdateCheckSettingsService(settingsPath, Clock);
         UpdateSource = new GitHubReleaseSource(_updateApiHttpClient);
         UpdateCoordinator = new UpdateCoordinator(
@@ -411,7 +381,7 @@ public sealed class HostServices
             Clock,
             Core.BuildInfo.Version);
         CslLocalInstall = new CslLocalFileInstallService(CslStore);
-        // Issue #30: one claim registry for add and the watcher; the committed-location
+        // One claim registry for add and the watcher; the committed-location
         // probe lets import recovery avoid moving a file the database already references.
         FileOperations = new FileOperationCoordinator();
         FileImport = new FileImportService(
@@ -424,7 +394,6 @@ public sealed class HostServices
             Clock,
             FileOperations,
             new CommittedFileLocationLookup(ConnectionFactory));
-        // Issue #11: source-image reading for the view tool.
         PageImageView = new PageImageViewService(Pages, DocumentTrees, PageRenders);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
@@ -469,16 +438,16 @@ public sealed class HostServices
     public IClock Clock { get; }
     public IBlockingOperationService BlockingOperations { get; }
     public MigrationRunner MigrationRunner { get; }
-    public ILibraryIdentityService Library { get; }
-    public ILibraryRevisionService LibraryRevisions { get; }
-    public ILibraryItemQueryService LibraryItems { get; }
-    public IItemService Items { get; }
-    public IItemTagService Tags { get; }
-    public ICollectionService Collections { get; }
-    public LibraryItemCache LibraryItemCache { get; }
-    public LibraryRevisionMonitor LibraryRevisionMonitor { get; }
-    public IItemMergeService MergeItems { get; }
-    public IDuplicateItemDetectionService DuplicateItemDetection { get; }
+    public ILibraryIdentityService Library => _libraryServices.Identity;
+    public ILibraryRevisionService LibraryRevisions => _libraryServices.Revisions;
+    public ILibraryItemQueryService LibraryItems => _libraryServices.Queries;
+    public IItemService Items => _libraryServices.Items;
+    public IItemTagService Tags => _libraryServices.Tags;
+    public ICollectionService Collections => _libraryServices.Collections;
+    public LibraryItemCache LibraryItemCache => _libraryServices.Cache;
+    public LibraryRevisionMonitor LibraryRevisionMonitor => _libraryServices.RevisionMonitor;
+    public IItemMergeService MergeItems => _libraryServices.Merge;
+    public IDuplicateItemDetectionService DuplicateItemDetection => _libraryServices.Duplicates;
     public IItemPurgeService PurgeItems { get; }
     public IFileAssetGcService FileAssetGc { get; }
     public ICslStyleCatalog CslCatalog { get; }
@@ -857,7 +826,7 @@ public sealed class HostServices
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
         IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null,
         RuntimeHostLease? runtimeHostLease = null, HostOcrCompositionOptions? ocrComposition = null,
-        IAppPaths? appPaths = null)
+        IAppPaths? appPaths = null, HostInfrastructureOptions? infrastructure = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
@@ -880,7 +849,7 @@ public sealed class HostServices
 
         startupProgress?.Report(StartupStage.ComposingServices);
         HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected, activityTracker,
-            ocrComposition, appPaths);
+            ocrComposition, appPaths, infrastructure);
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.

@@ -30,30 +30,36 @@ public sealed class McpServerHostExceptionEventArgs(Exception exception, string 
 }
 
 /// <summary>
-/// Owns the MCP HTTP server lifecycle that used to live inline in <c>MainWindowViewModel</c>:
-/// settings load/validation, handler/server construction, background auto-start, stop/restart,
-/// and shutdown. UI concerns are surfaced through events instead of direct ViewModel/Dispatcher use.
+/// Owns MCP settings validation and listener lifecycle, publishing status through events.
 /// </summary>
 public sealed class McpServerHost : IAsyncDisposable
 {
-    private readonly HostServices _services;
+    private readonly McpServerHostDependencies _dependencies;
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
-    private McpHttpServer? _server;
+    private IMcpServerInstance? _server;
     private Task? _backgroundStartTask;
+    private McpServerHostStatusSnapshot _status = McpServerHostStatusSnapshot.Initial;
 
     public McpServerHost(HostServices services, Action<Exception, string, string?> reportUnexpectedException)
+        : this(McpServerHostDependencies.FromHostServices(services), reportUnexpectedException)
     {
-        _services = services;
+    }
+
+    public McpServerHost(McpServerHostDependencies dependencies,
+        Action<Exception, string, string?> reportUnexpectedException)
+    {
+        ArgumentNullException.ThrowIfNull(dependencies);
+        _dependencies = dependencies;
         _reportUnexpectedException = reportUnexpectedException;
     }
 
-    public McpHttpServer? Server => _server;
+    public McpHttpServer? Server => _server?.HttpServer;
     public bool IsRunning => _server?.IsRunning == true;
-    public long? RunningSettingsRevision { get; private set; }
-    public McpServerSettings? RunningSettings { get; private set; }
-    public string Endpoint { get; private set; } = $"http://localhost:{McpHttpServer.DefaultPort}/mcp";
-    public McpServerHostStatus Status { get; private set; } = McpServerHostStatus.Stopped;
-    public string StatusDetail { get; private set; } = "MCP HTTP 服务未启动。";
+    public long? RunningSettingsRevision => Volatile.Read(ref _status).RunningSettingsRevision;
+    public McpServerSettings? RunningSettings => Volatile.Read(ref _status).RunningSettings;
+    public string Endpoint => Volatile.Read(ref _status).Endpoint;
+    public McpServerHostStatus Status => Volatile.Read(ref _status).Status;
+    public string StatusDetail => Volatile.Read(ref _status).Detail;
 
     public event EventHandler<McpServerHostStatusChangedEventArgs>? StatusChanged;
     public event EventHandler? ConnectionCountsChanged;
@@ -171,7 +177,7 @@ public sealed class McpServerHost : IAsyncDisposable
         BlockingOperationId? operationId = null;
         if (recordProgress)
         {
-            Result<BlockingOperation> started = await _services.BlockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _dependencies.BlockingOperations.StartAsync(
                 BlockingOperationTypes.McpStartValidation,
                 BlockingOperationScopeTypes.McpServerSettings,
                 "default",
@@ -191,10 +197,11 @@ public sealed class McpServerHost : IAsyncDisposable
         {
             serverSettings = McpServerSettingsService.NormalizeLegacySettings(explicitSettings);
             Result explicitValidation =
-                await _services.McpSettings.ValidateSettingsAsync(serverSettings, cancellationToken);
+                await _dependencies.Settings.ValidateSettingsAsync(serverSettings, cancellationToken);
             if (explicitValidation.IsFailure)
             {
-                string message = McpOutputSanitizer.Sanitize(explicitValidation.ErrorMessage ?? "MCP 设置无效。");
+                string message =
+                    McpServerHostStatusProjection.ErrorDetail(explicitValidation.ErrorMessage, "MCP 设置无效。");
                 SetStatus(McpServerHostStatus.Error, message);
                 return;
             }
@@ -202,14 +209,15 @@ public sealed class McpServerHost : IAsyncDisposable
         else
         {
             Result<McpServerSettings> settingsResult =
-                await _services.McpSettings.GetSettingsAsync(cancellationToken);
+                await _dependencies.Settings.GetSettingsAsync(cancellationToken);
             if (settingsResult.IsFailure)
             {
-                string message = McpOutputSanitizer.Sanitize(settingsResult.ErrorMessage ?? "无法读取 MCP 设置。");
+                string message =
+                    McpServerHostStatusProjection.ErrorDetail(settingsResult.ErrorMessage, "无法读取 MCP 设置。");
                 if (operationId is not null)
                 {
-                    await _services.BlockingOperations.FailAsync(operationId.Value, settingsResult.ErrorCode!, message,
-                        cancellationToken: CancellationToken.None);
+                    await _dependencies.BlockingOperations.FailAsync(operationId.Value, settingsResult.ErrorCode!,
+                        message, cancellationToken: CancellationToken.None);
                 }
 
                 SetStatus(McpServerHostStatus.Error, message);
@@ -217,14 +225,15 @@ public sealed class McpServerHost : IAsyncDisposable
             }
 
             serverSettings = settingsResult.Value;
-            Result validation = await _services.McpSettings.ValidateSettingsAsync(serverSettings, cancellationToken);
+            Result validation = await _dependencies.Settings.ValidateSettingsAsync(serverSettings, cancellationToken);
             if (validation.IsFailure)
             {
-                string message = McpOutputSanitizer.Sanitize(validation.ErrorMessage ?? "MCP 设置无效。");
+                string message =
+                    McpServerHostStatusProjection.ErrorDetail(validation.ErrorMessage, "MCP 设置无效。");
                 if (operationId is not null)
                 {
-                    await _services.BlockingOperations.FailAsync(operationId.Value, validation.ErrorCode!, message,
-                        cancellationToken: CancellationToken.None);
+                    await _dependencies.BlockingOperations.FailAsync(operationId.Value, validation.ErrorCode!,
+                        message, cancellationToken: CancellationToken.None);
                 }
 
                 SetStatus(McpServerHostStatus.Error, message);
@@ -232,31 +241,24 @@ public sealed class McpServerHost : IAsyncDisposable
             }
         }
 
-        SetStatus(McpServerHostStatus.Starting,
-            $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}/mcp");
+        SetStatus(McpServerHostStatus.Starting, McpServerHostStatusProjection.StartingDetail(serverSettings));
 
-        McpProtocolHandler handler = new(_services.Mcp, _services.McpWrites, _services.BiblatexImport,
-            _services.Items, _services.VersionedEvidenceReader, _services.ConnectionFactory, serverSettings,
-            ReportMcpException, activityTracker: _services.ActivityTracker, hostLifetime: _services.LifetimeToken,
-            ocrRuns: new McpHostOcrRunsApi(_services.GetOcrQueueRowsAsync),
-            fileImport: _services.FileImport, pageView: _services.PageImageView,
-            ocrCommands: _services.OcrCommands,
-            translationRuns: new McpHostTranslationRunsApi(_services.TranslationRuns),
-            metadataRuns: new McpHostMetadataRunsApi(_services.MetadataRuns),
-            implementationCatalog: _services.McpImplementationCatalog);
-        McpHttpServer server = new(handler, serverSettings, ReportMcpException);
+        IMcpServerInstance server = _dependencies.ServerFactory.Create(serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnServerConnectionCountsChanged;
         try
         {
             await server.StartAsync(cancellationToken);
             _server = server;
-            RunningSettingsRevision = serverSettings.Revision;
-            RunningSettings = serverSettings;
-            Endpoint = server.Endpoint;
+            UpdateStatus(snapshot => snapshot with
+            {
+                RunningSettingsRevision = serverSettings.Revision,
+                RunningSettings = serverSettings,
+                Endpoint = server.Endpoint
+            });
             SetStatus(McpServerHostStatus.Running, BuildConnectionDetail());
             if (operationId is not null)
             {
-                await _services.BlockingOperations.CompleteAsync(operationId.Value, "MCP HTTP listener 已启动。",
+                await _dependencies.BlockingOperations.CompleteAsync(operationId.Value, "MCP HTTP listener 已启动。",
                     cancellationToken: CancellationToken.None);
             }
         }
@@ -276,7 +278,7 @@ public sealed class McpServerHost : IAsyncDisposable
             string message = McpOutputSanitizer.Sanitize(ex.Message);
             if (operationId is not null)
             {
-                await _services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
+                await _dependencies.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
                     "MCP HTTP listener 启动失败。", ["检查端口占用", "检查 bind 和鉴权设置"], CancellationToken.None);
             }
 
@@ -293,8 +295,11 @@ public sealed class McpServerHost : IAsyncDisposable
             _server = null;
         }
 
-        RunningSettingsRevision = null;
-        RunningSettings = null;
+        UpdateStatus(static snapshot => snapshot with
+        {
+            RunningSettingsRevision = null,
+            RunningSettings = null
+        });
         SetStatus(McpServerHostStatus.Stopped, detail);
     }
 
@@ -312,14 +317,24 @@ public sealed class McpServerHost : IAsyncDisposable
     {
         long active = _server?.ActiveConnectionCount ?? 0;
         long total = _server?.TotalConnectionCount ?? 0;
-        return $"连接数: {active} / {total}";
+        return McpServerHostStatusProjection.ConnectionDetail(active, total);
     }
 
     private void SetStatus(McpServerHostStatus status, string detail)
     {
-        Status = status;
-        StatusDetail = detail;
+        UpdateStatus(snapshot => snapshot with { Status = status, Detail = detail });
         StatusChanged?.Invoke(this, new McpServerHostStatusChangedEventArgs(status, detail));
+    }
+
+    private void UpdateStatus(Func<McpServerHostStatusSnapshot, McpServerHostStatusSnapshot> update)
+    {
+        McpServerHostStatusSnapshot current;
+        McpServerHostStatusSnapshot next;
+        do
+        {
+            current = Volatile.Read(ref _status);
+            next = update(current);
+        } while (!ReferenceEquals(Interlocked.CompareExchange(ref _status, next, current), current));
     }
 
     private void ReportMcpException(Exception exception, string operation)

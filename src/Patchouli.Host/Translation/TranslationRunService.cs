@@ -7,8 +7,6 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Infrastructure.Translation;
 using Patchouli.Llm;
-using Patchouli.Host.Extensions;
-using Patchouli.Extensions.Contracts;
 
 namespace Patchouli.Host.Translation;
 
@@ -32,7 +30,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     private readonly CancellationToken _hostLifetime;
     private readonly TranslationExtensionRunner _extensionRunner;
     private readonly Func<string, CancellationToken, Task>? _initializeEngine;
-    private readonly ConcurrentDictionary<Guid, RunState> _runs = new();
+    private readonly ConcurrentDictionary<Guid, TranslationRunTracker> _runs = new();
     private readonly object _startGate = new();
     private readonly SemaphoreSlim _requestGate = new(1, 1);
 
@@ -177,7 +175,8 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         CancellationTokenSource cancellation = _hostLifetime.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(_hostLifetime)
             : new CancellationTokenSource();
-        RunState state = new(runId, request.DocumentInstanceId, Interlocked.Increment(ref _runSequence), targets.Value,
+        TranslationRunTracker state = new(runId, request.DocumentInstanceId,
+            Interlocked.Increment(ref _runSequence), targets.Value,
             cancellation, request with { TargetLanguage = settings.TargetLanguage });
 
         bool rejected = false;
@@ -222,7 +221,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     public Task<Result<TranslationRunStatus>> GetAsync(Guid runId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_runs.TryGetValue(runId, out RunState? run)
+        return Task.FromResult(_runs.TryGetValue(runId, out TranslationRunTracker? run)
             ? Result<TranslationRunStatus>.Success(run.Snapshot())
             : Result<TranslationRunStatus>.Failure(
                 AppErrorCodes.NotFound,
@@ -233,7 +232,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     public Task<Result<TranslationRunStatus>> CancelAsync(Guid runId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!_runs.TryGetValue(runId, out RunState? run))
+        if (!_runs.TryGetValue(runId, out TranslationRunTracker? run))
         {
             return Task.FromResult(Result<TranslationRunStatus>.Failure(
                 AppErrorCodes.NotFound,
@@ -274,7 +273,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
 
             if (runId is { } id)
             {
-                if (!_runs.TryGetValue(id, out RunState? run))
+                if (!_runs.TryGetValue(id, out TranslationRunTracker? run))
                 {
                     return Task.FromResult(Result.Failure(AppErrorCodes.NotFound, "Translation run not found."));
                 }
@@ -299,7 +298,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
 
     private void UpdateExecutionGates()
     {
-        foreach (RunState run in _runs.Values)
+        foreach (TranslationRunTracker run in _runs.Values)
         {
             run.ExecutionGate.SetPaused(!_queueRunning || _globallyPaused || run.LocallyPaused);
         }
@@ -308,7 +307,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     public Task<Result<TranslationRunStatus>> RetryAsync(Guid runId,
         CancellationToken cancellationToken = default)
     {
-        if (!_runs.TryGetValue(runId, out RunState? run))
+        if (!_runs.TryGetValue(runId, out TranslationRunTracker? run))
         {
             return Task.FromResult(
                 Result<TranslationRunStatus>.Failure(AppErrorCodes.NotFound, "Translation run not found."));
@@ -339,7 +338,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        RunState[] runs;
+        TranslationRunTracker[] runs;
         lock (_startGate)
         {
             if (_disposed)
@@ -351,12 +350,12 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             runs = _runs.Values.ToArray();
         }
 
-        foreach (RunState run in runs)
+        foreach (TranslationRunTracker run in runs)
         {
             run.TryCancel();
         }
 
-        foreach (RunState run in runs)
+        foreach (TranslationRunTracker run in runs)
         {
             try
             {
@@ -371,13 +370,14 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             }
         }
 
-        foreach (RunState run in runs)
+        foreach (TranslationRunTracker run in runs)
         {
             run.DisposeCancellation();
         }
     }
 
-    private async Task ExecuteAsync(RunState state, TranslationRunRequest request, TranslationSettings initialSettings,
+    private async Task ExecuteAsync(TranslationRunTracker state, TranslationRunRequest request,
+        TranslationSettings initialSettings,
         bool hasExplicitTargetLanguage)
     {
         CancellationToken cancellationToken = state.Token;
@@ -544,7 +544,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
             wanted.Select(pageIndex => new TranslationPageTarget(pageByIndex[pageIndex].PageId, pageIndex)).ToArray());
     }
 
-    private sealed class RunProgress(RunState state) : IProgress<TranslationRunProgress>
+    private sealed class RunProgress(TranslationRunTracker state) : IProgress<TranslationRunProgress>
     {
         public void Report(TranslationRunProgress value)
         {
@@ -552,219 +552,11 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         }
     }
 
-    private sealed class StepProgress(RunState state) : IProgress<TranslationStepProgress>
+    private sealed class StepProgress(TranslationRunTracker state) : IProgress<TranslationStepProgress>
     {
         public void Report(TranslationStepProgress value)
         {
             state.RecordStep(value);
-        }
-    }
-
-    /// <summary>One volatile run: immutable identity plus a lock-guarded progress and lifecycle buffer.</summary>
-    private sealed class RunState
-    {
-        private readonly object _gate = new();
-        private readonly TranslationPageTarget[] _targets;
-        private readonly TranslationPageOutcome?[] _outcomes;
-        private readonly Dictionary<int, int> _slotByPageIndex;
-        private TranslationRunLifecycle _state = TranslationRunLifecycle.Running;
-        private string? _errorCode;
-        private string? _errorMessage;
-        private TranslationStepProgress? _currentStep;
-        private CancellationTokenSource? _cancellation;
-        private bool _cancellationDisposed;
-
-        public RunState(
-            Guid runId,
-            DocumentInstanceId documentInstanceId,
-            long sequence,
-            IReadOnlyList<TranslationPageTarget> targets,
-            CancellationTokenSource cancellation,
-            TranslationRunStartRequest request)
-        {
-            Request = request;
-            RunId = runId;
-            DocumentInstanceId = documentInstanceId;
-            Sequence = sequence;
-            _targets = [.. targets];
-            _outcomes = new TranslationPageOutcome?[_targets.Length];
-            _slotByPageIndex = new Dictionary<int, int>(_targets.Length);
-            for (int index = 0; index < _targets.Length; index++)
-            {
-                _slotByPageIndex[_targets[index].PageIndex] = index;
-            }
-
-            _cancellation = cancellation;
-            Token = cancellation.Token;
-            _currentStep = new TranslationStepProgress(
-                "initializing",
-                0,
-                _targets.Length,
-                "starting",
-                "Initializing translation engine...");
-        }
-
-        public int TotalPages => _targets.Length;
-        public TranslationRunStartRequest Request { get; set; }
-        public TranslationExtensionRun? ExtensionRun { get; set; }
-        public TranslationExecutionGate ExecutionGate { get; } = new();
-        public bool LocallyPaused { get; set; }
-        public Guid RunId { get; }
-        public DocumentInstanceId DocumentInstanceId { get; }
-        public long Sequence { get; }
-        public CancellationToken Token { get; }
-        public Task RunTask { get; set; } = Task.CompletedTask;
-
-        public bool IsCancellationRequested
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _state == TranslationRunLifecycle.Cancelled || Token.IsCancellationRequested;
-                }
-            }
-        }
-
-        public void RecordStep(TranslationStepProgress step)
-        {
-            lock (_gate)
-            {
-                _currentStep = step;
-            }
-        }
-
-        public void RecordProgress(TranslationRunProgress progress)
-        {
-            if (progress.Outcome is null)
-            {
-                return;
-            }
-
-            lock (_gate)
-            {
-                if (_slotByPageIndex.TryGetValue(progress.Outcome.PageIndex, out int slot))
-                {
-                    _outcomes[slot] = progress.Outcome;
-                }
-            }
-        }
-
-        public void Complete(TranslationRunResult result)
-        {
-            lock (_gate)
-            {
-                foreach (TranslationPageOutcome outcome in result.Pages)
-                {
-                    if (_slotByPageIndex.TryGetValue(outcome.PageIndex, out int slot))
-                    {
-                        _outcomes[slot] = outcome;
-                    }
-                }
-
-                _state = result.Cancelled ? TranslationRunLifecycle.Cancelled : TranslationRunLifecycle.Completed;
-                if (result.Cancelled)
-                {
-                    _errorCode = "cancelled";
-                    _errorMessage = "The translation run was cancelled.";
-                }
-                else
-                {
-                    _errorCode = null;
-                    _errorMessage = null;
-                }
-            }
-        }
-
-        public void CompleteCancelled()
-        {
-            lock (_gate)
-            {
-                _state = TranslationRunLifecycle.Cancelled;
-                _errorCode = "cancelled";
-                _errorMessage = "The translation run was cancelled.";
-            }
-        }
-
-        public void Fail(string errorCode, string errorMessage)
-        {
-            lock (_gate)
-            {
-                _state = TranslationRunLifecycle.Failed;
-                _errorCode = errorCode;
-                _errorMessage = errorMessage;
-            }
-        }
-
-        /// <summary>Marks a running run cancelled and signals cancellation.</summary>
-        public bool TryCancel()
-        {
-            lock (_gate)
-            {
-                if (_state != TranslationRunLifecycle.Running)
-                {
-                    return false;
-                }
-
-                _state = TranslationRunLifecycle.Cancelled;
-                _errorCode = "cancelled";
-                _errorMessage = "The translation run was cancelled.";
-                try
-                {
-                    if (!_cancellationDisposed && _cancellation is { } cts)
-                    {
-                        cts.Cancel();
-                    }
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-
-                return true;
-            }
-        }
-
-        public void DisposeCancellation()
-        {
-            CancellationTokenSource? cts = null;
-            lock (_gate)
-            {
-                if (!_cancellationDisposed)
-                {
-                    _cancellationDisposed = true;
-                    cts = _cancellation;
-                    _cancellation = null;
-                }
-            }
-
-            cts?.Dispose();
-        }
-
-        public TranslationRunStatus Snapshot()
-        {
-            lock (_gate)
-            {
-                TranslationPageOutcome[] settled = _outcomes
-                    .Where(static outcome => outcome is not null)
-                    .Cast<TranslationPageOutcome>()
-                    .ToArray();
-                return new TranslationRunStatus(
-                    RunId,
-                    DocumentInstanceId,
-                    _state,
-                    _targets.Length,
-                    settled.Length,
-                    settled.Count(static outcome => outcome.State == TranslationPageRunState.Committed),
-                    settled.Count(static outcome => outcome.State == TranslationPageRunState.Partial),
-                    settled.Count(static outcome => outcome.State == TranslationPageRunState.Failed),
-                    settled.Count(static outcome => outcome.State == TranslationPageRunState.Skipped),
-                    settled.Count(static outcome => outcome.State == TranslationPageRunState.Cancelled),
-                    settled,
-                    _errorCode,
-                    _errorMessage,
-                    IsPaused: _state == TranslationRunLifecycle.Running && ExecutionGate.IsPaused,
-                    CurrentStep: _currentStep);
-            }
         }
     }
 }

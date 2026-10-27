@@ -19,7 +19,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
     private const int BatchConcurrency = 3;
     private readonly IMetadataLookupService _lookup;
     private readonly CancellationToken _hostLifetime;
-    private readonly ConcurrentDictionary<Guid, BatchState> _tasks = new();
+    private readonly ConcurrentDictionary<Guid, MetadataBatchTracker> _tasks = new();
     private readonly SemaphoreSlim _startGate = new(1, 1);
 
     private readonly Dictionary<string, (string Fingerprint, MetadataBatchRunStatus Receipt)> _requests =
@@ -102,7 +102,8 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
             CancellationTokenSource cancellation = _hostLifetime.CanBeCanceled
                 ? CancellationTokenSource.CreateLinkedTokenSource(_hostLifetime)
                 : new CancellationTokenSource();
-            BatchState state = new(taskId, unique, Interlocked.Increment(ref _taskSequence), cancellation);
+            MetadataBatchTracker state = new(taskId, unique, Interlocked.Increment(ref _taskSequence),
+                cancellation);
             state.RunTask = Task.Run(() => ExecuteBatchAsync(state), CancellationToken.None);
             _tasks[taskId] = state;
             MetadataBatchRunStatus receipt = state.Snapshot();
@@ -136,7 +137,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_tasks.TryGetValue(taskId, out BatchState? task)
+        return Task.FromResult(_tasks.TryGetValue(taskId, out MetadataBatchTracker? task)
             ? Result<MetadataBatchRunStatus>.Success(task.Snapshot())
             : Result<MetadataBatchRunStatus>.Failure(AppErrorCodes.NotFound,
                 $"The metadata task '{taskId}' does not exist."));
@@ -147,7 +148,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!_tasks.TryGetValue(taskId, out BatchState? task))
+        if (!_tasks.TryGetValue(taskId, out MetadataBatchTracker? task))
         {
             return Task.FromResult(Result<MetadataBatchRunStatus>.Failure(AppErrorCodes.NotFound,
                 $"The metadata task '{taskId}' does not exist."));
@@ -165,7 +166,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
     public async Task<Result<MetadataBatchRunStatus>> RetryAsync(Guid taskId,
         CancellationToken cancellationToken = default)
     {
-        if (!_tasks.TryGetValue(taskId, out BatchState? task))
+        if (!_tasks.TryGetValue(taskId, out MetadataBatchTracker? task))
         {
             return Result<MetadataBatchRunStatus>.Failure(AppErrorCodes.NotFound,
                 $"The metadata task '{taskId}' does not exist.");
@@ -195,7 +196,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
     /// <summary>Cancels every in-flight task, waits for the background loops to settle, then releases tokens.</summary>
     public async ValueTask DisposeAsync()
     {
-        BatchState[] tasks;
+        MetadataBatchTracker[] tasks;
         await _startGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -212,7 +213,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
             _startGate.Release();
         }
 
-        foreach (BatchState task in tasks)
+        foreach (MetadataBatchTracker task in tasks)
         {
             if (task.TryMarkCancelled())
             {
@@ -220,7 +221,7 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
             }
         }
 
-        foreach (BatchState task in tasks)
+        foreach (MetadataBatchTracker task in tasks)
         {
             try
             {
@@ -235,13 +236,13 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
             }
         }
 
-        foreach (BatchState task in tasks)
+        foreach (MetadataBatchTracker task in tasks)
         {
             task.Cancellation.Dispose();
         }
     }
 
-    private async Task ExecuteBatchAsync(BatchState state)
+    private async Task ExecuteBatchAsync(MetadataBatchTracker state)
     {
         using SemaphoreSlim gate = new(BatchConcurrency, BatchConcurrency);
         try
@@ -298,143 +299,6 @@ public sealed class MetadataRunService : IMetadataRunService, IAsyncDisposable
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "host.metadata-run"))
         {
             state.Fail(AppErrorCodes.InvalidState, $"The metadata batch failed: {exception.Message}");
-        }
-    }
-
-    /// <summary>One volatile enrich_batch task: identity plus a lock-guarded per-item outcome buffer.</summary>
-    private sealed class BatchState
-    {
-        private readonly object _gate = new();
-        private readonly MetadataBatchItemResult?[] _items;
-        private MetadataRunState _state = MetadataRunState.Running;
-        private string? _errorCode;
-        private string? _errorMessage;
-
-        public BatchState(Guid taskId, IReadOnlyList<ItemId> itemIds, long sequence,
-            CancellationTokenSource cancellation)
-        {
-            TaskId = taskId;
-            ItemIds = [.. itemIds];
-            Sequence = sequence;
-            _items = new MetadataBatchItemResult?[ItemIds.Count];
-            Cancellation = cancellation;
-        }
-
-        public Guid TaskId { get; }
-        public IReadOnlyList<ItemId> ItemIds { get; }
-        public long Sequence { get; }
-        public CancellationTokenSource Cancellation { get; }
-        public Task RunTask { get; set; } = Task.CompletedTask;
-
-        public void RecordItem(int index, MetadataBatchItemResult result)
-        {
-            lock (_gate)
-            {
-                _items[index] = result;
-            }
-        }
-
-        public void Complete()
-        {
-            lock (_gate)
-            {
-                _state = MetadataRunState.Completed;
-                _errorCode = null;
-                _errorMessage = null;
-            }
-        }
-
-        public void CompleteCancelled()
-        {
-            lock (_gate)
-            {
-                _state = MetadataRunState.Cancelled;
-                _errorCode = "cancelled";
-                _errorMessage = "The metadata batch was cancelled.";
-                for (int i = 0; i < _items.Length; i++)
-                {
-                    _items[i] ??= new MetadataBatchItemResult(ItemIds[i], false, null, "cancelled",
-                        "The task was cancelled.");
-                }
-            }
-        }
-
-        public void Fail(string errorCode, string errorMessage)
-        {
-            lock (_gate)
-            {
-                _state = MetadataRunState.Failed;
-                _errorCode = errorCode;
-                _errorMessage = errorMessage;
-                for (int i = 0; i < _items.Length; i++)
-                {
-                    _items[i] ??= new MetadataBatchItemResult(ItemIds[i], false, null, errorCode, errorMessage);
-                }
-            }
-        }
-
-        public bool TryMarkCancelled()
-        {
-            lock (_gate)
-            {
-                if (_state != MetadataRunState.Running)
-                {
-                    return false;
-                }
-
-                _state = MetadataRunState.Cancelled;
-                _errorCode = "cancelled";
-                _errorMessage = "The metadata batch was cancelled.";
-                return true;
-            }
-        }
-
-        public MetadataBatchRunStatus Snapshot()
-        {
-            lock (_gate)
-            {
-                int completed = _items.Count(static result => result is not null);
-                int succeeded = _items.Count(static result => result?.IsSuccess == true);
-                int failed = _items.Count(static result => result is { IsSuccess: false, ErrorCode: not "cancelled" });
-
-                MetadataBatchItemResult[] items = _items
-                    .Select((result, index) =>
-                    {
-                        if (result is not null)
-                        {
-                            return result;
-                        }
-
-                        if (_state == MetadataRunState.Cancelled)
-                        {
-                            return new MetadataBatchItemResult(ItemIds[index], false, null, "cancelled",
-                                "The task was cancelled.");
-                        }
-
-                        if (_state == MetadataRunState.Failed)
-                        {
-                            return new MetadataBatchItemResult(ItemIds[index], false, null,
-                                _errorCode ?? AppErrorCodes.InvalidState,
-                                _errorMessage ?? "The metadata batch failed.");
-                        }
-
-                        // While Running (or uncompleted):
-                        // Do NOT mark as cancelled or failed!
-                        return new MetadataBatchItemResult(ItemIds[index], false, null, null, null);
-                    })
-                    .ToArray();
-
-                return new MetadataBatchRunStatus(
-                    TaskId,
-                    _state,
-                    ItemIds.Count,
-                    completed,
-                    succeeded,
-                    failed,
-                    items,
-                    _errorCode,
-                    _errorMessage);
-            }
         }
     }
 }

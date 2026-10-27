@@ -79,6 +79,25 @@ Rule: runtime logic belongs in `Patchouli.Host`, not in ViewModels. ViewModels s
 host's services and marshal events to the UI dispatcher; they never own watchers, timers, server
 lifecycles, or cache invalidation.
 
+Runtime composition seams:
+- `HostServices` retains its public facade; `HostLibraryServices` composes the catalog over one
+  connection factory and revision stream. `HostInfrastructureOptions` supplies optional clock,
+  process, HTTP transport and PDF capabilities without changing persisted settings or default policies.
+- MCP lifecycle consumes settings, progress records and a listener factory. Watcher orchestration
+  consumes explicit dependencies and a `TimeProvider`; `WatchLoopSchedule` contains pure timing
+  decisions, and `UnchangedFilePathLookup` owns the reconciliation SQL/filesystem lookup.
+- Translation and metadata trackers own synchronization, cancellation and outcome slots. Their
+  immutable phase values contain lifecycle decisions and status projections. Characterization tests
+  preserve existing terminal overwrite semantics; extracting these values does not fix late-result
+  cancellation races or establish a new shutdown protocol.
+- OCR dispatch, completion, run binding, pause and progress policies are pure decisions over caller-owned
+  snapshots. `OcrQueueScheduler` retains the state/progress locks, attempt resources, generation leases
+  and notification ordering. String states at the public boundary are unchanged.
+
+C# projects use C# 14 (individual projects may select an earlier version), with CS8509 treated as a
+compiler error. This checks non-exhaustive switch expressions; it does not close record hierarchies or
+detect newly added cases hidden by a default arm.
+
 Cross-process consistency: the desktop UI and the standalone MCP server share one SQLite database
 and remain coherent through the persistent `library_metadata.library_revision` counter.
 In-process commits publish via `ILibraryRevisionService.ChangeCommitted`; the revision monitor

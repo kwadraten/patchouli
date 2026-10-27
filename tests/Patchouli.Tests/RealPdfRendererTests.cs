@@ -136,9 +136,11 @@ public sealed class RealPdfRendererTests
     [Fact]
     public void Production_services_wire_pdfium_pdf_renderer()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Host", "Composition",
-                "HostServices.cs")).Should()
-            .Contain("PdfiumPdfPageRenderer");
+        HostPdfServices services = HostPdfServices.CreateDefault();
+        services.Renderer.Should().BeOfType<PdfiumPdfPageRenderer>();
+        services.PreviewRenderer.Should().BeSameAs(services.Renderer);
+        services.PageInfo.Should().BeSameAs(services.Metadata);
+        services.TextExtractor.Should().BeOfType<PdfiumDocumentEngine>();
     }
 
     [Fact]

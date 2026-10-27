@@ -1,7 +1,4 @@
-using System.Diagnostics;
 using System.Threading.Channels;
-using Dapper;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -17,11 +14,10 @@ namespace Patchouli.Host.Watching;
 
 /// <summary>
 /// Owns the <see cref="FileSystemWatcher"/> fleet for the configured file search roots plus the
-/// rescan pipeline that imports newly discovered PDFs. Issue #30: file events only reserve
+/// rescan pipeline that imports newly discovered PDFs. File events only reserve
 /// work in a dirty set consumed by a single watch loop (incremental import passes, with full
 /// reconciliation rescans at activation, on watcher errors and on a periodic interval);
-/// events never cancel a scan or import already running. Extracted from
-/// <c>MainWindowViewModel</c>; the service never touches the UI thread — subscribers react to
+/// events never cancel a scan or import already running. Subscribers react to
 /// <see cref="RescanCompleted"/>, <see cref="RescanFailed"/> and
 /// <see cref="SearchRootAvailabilityChanged"/> and marshal to the UI as needed.
 /// </summary>
@@ -30,8 +26,10 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     public const string ManualTrigger = "manual";
     public const string FileWatcherTrigger = "file-watcher";
 
-    private readonly HostServices _services;
+    private readonly FileSearchRootWatcherDependencies _dependencies;
     private readonly IAppLogger _logger;
+    private readonly TimeProvider _timeProvider;
+    private readonly WatchLoopSchedule _schedule;
 
     private readonly Dictionary<string, FileSystemWatcher> _fileSearchRootWatchers =
         new(StringComparer.OrdinalIgnoreCase);
@@ -46,15 +44,12 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     private long _fileSearchRootWatchGeneration;
     private bool _fileSearchRootWatchersActive;
 
-    // Issue #30: watcher scheduling is a single-consumer loop fed by a coalescing
+    // Watcher scheduling is a single-consumer loop fed by a coalescing
     // signal. File events only record dirty paths and signal the loop — they never
     // cancel a pending wait's replacement or, worse, a scan/import already running.
     // The loop alone decides between an incremental import pass over the dirty set
-    // and a full reconciliation rescan.
-    private static readonly TimeSpan QuietPeriod = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan DeferredRetryDelay = TimeSpan.FromSeconds(3);
+    // and a full reconciliation rescan. The pure cadence decisions live in
+    // WatchLoopSchedule; the production timing knobs are WatchScheduleOptions.Default.
     private static readonly TimeSpan StaleImportTempAge = TimeSpan.FromHours(1);
     private const int IncrementalImportConcurrency = 2;
 
@@ -75,9 +70,20 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     private bool _staleImportCleanupDone;
 
     public FileSearchRootWatcherService(HostServices services, IAppLogger logger)
+        : this(FileSearchRootWatcherDependencies.FromHostServices(services), logger)
     {
-        _services = services;
+    }
+
+    internal FileSearchRootWatcherService(
+        FileSearchRootWatcherDependencies dependencies,
+        IAppLogger logger,
+        TimeProvider? timeProvider = null,
+        WatchLoopSchedule? schedule = null)
+    {
+        _dependencies = dependencies;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _schedule = schedule ?? new WatchLoopSchedule(WatchScheduleOptions.Default);
     }
 
     /// <summary>Raised on the rescan task's thread after a successful rescan.</summary>
@@ -246,12 +252,12 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     {
         using CancellationTokenSource linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
-            _services.LifetimeToken);
+            _dependencies.LifetimeToken);
         cancellationToken = linkedCancellation.Token;
         await _fileSearchRootRescanGate.WaitAsync(cancellationToken);
         try
         {
-            using IActivityScope? activity = _services.ActivityTracker?.BeginScope(
+            using IActivityScope? activity = _dependencies.ActivityTracker?.BeginScope(
                 "扫描文件搜索根",
                 HostActivityKind.Scanning,
                 trigger == FileWatcherTrigger ? "文件变化触发" : "手动扫描");
@@ -282,7 +288,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         try
         {
             Result<IReadOnlyList<FileSearchRoot>> roots =
-                await _services.FileResolution.ListSearchRootsAsync(cancellationToken);
+                await _dependencies.FileResolution.ListSearchRootsAsync(cancellationToken);
             if (roots.IsFailure)
             {
                 return Result<FileSearchRootRescanSummary>.Failure(roots.ErrorCode!, roots.ErrorMessage!);
@@ -291,7 +297,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             await LogOperationAsync("file-scan",
                 $"Rescan started (trigger={trigger}): {roots.Value.Count} file search root(s).");
 
-            Result<BlockingOperation> started = await _services.BlockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _dependencies.BlockingOperations.StartAsync(
                 BlockingOperationTypes.FileSearchRootScan,
                 BlockingOperationScopeTypes.FileSearchRoot,
                 "all",
@@ -306,7 +312,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 operationId = started.Value.OperationId;
             }
 
-            HashSet<string> knownPaths = await LoadKnownFilePathsAsync(cancellationToken);
+            HashSet<string> knownPaths = await _dependencies.LoadKnownFilePaths(cancellationToken);
             Dictionary<string, long> changedPaths;
             lock (_fileSearchRootWatchSync)
             {
@@ -330,11 +336,11 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Invoke(processedRoots, roots.Value.Count, $"正在扫描：{root.RootPath}", null);
                 Result<ResolvedFileSearchRoot> reopened =
-                    await _services.FileSearchRootAccess.ReopenAsync(root, cancellationToken);
+                    await _dependencies.FileSearchRootAccess.ReopenAsync(root, cancellationToken);
                 if (reopened.IsFailure)
                 {
                     unavailableRoots++;
-                    await _services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, false,
+                    await _dependencies.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, false,
                         cancellationToken);
                     SearchRootAvailabilityChanged?.Invoke(this,
                         new SearchRootAvailabilityChanged(root.RootId, root.RootPath, false));
@@ -346,7 +352,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
                 using IDisposable? resolvedRoot = reopened.Value.AccessLease;
                 FileSearchRootScanResult scan =
-                    await _services.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
+                    await _dependencies.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
                 await LogOperationAsync("file-scan",
                     $"Root scan finished (trigger={trigger}): {root.RootPath} status={scan.ScanStatus}, " +
                     $"candidates={scan.Candidates.Count}, skippedDirectories={scan.SkippedDirectories.Count}, " +
@@ -359,7 +365,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
                 bool available = scan.ScanStatus == FileSearchRootScanStatuses.Complete &&
                                  scan.RootStatus == FileSearchRootStatuses.Available;
-                await _services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available,
+                await _dependencies.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available,
                     cancellationToken);
                 SearchRootAvailabilityChanged?.Invoke(this,
                     new SearchRootAvailabilityChanged(root.RootId, root.RootPath, available));
@@ -380,7 +386,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     foreach (IGrouping<string, FileSearchRootExcludedEntry> group in scan.ExcludedEntries.GroupBy(
                                  entry => entry.Rule, StringComparer.Ordinal))
                     {
-                        await _services.BlockingOperations.AddLogEntryAsync(operationId.Value, "info",
+                        await _dependencies.BlockingOperations.AddLogEntryAsync(operationId.Value, "info",
                             $"Excluded {group.Count()} path(s) by scan rule.", group.Key,
                             BlockingOperationScopeTypes.FileSearchRoot, root.RootId.ToString(), cancellationToken);
                     }
@@ -420,7 +426,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                         continue;
                     }
 
-                    FileLocalityAssessment locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+                    FileLocalityAssessment locality = _dependencies.AssessFileLocality(normalizedPath);
                     if (locality.Readiness == FileLocalityReadiness.CloudUnready)
                     {
                         progress?.Invoke(processedRoots, roots.Value.Count,
@@ -428,9 +434,9 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                         await LogOperationAsync("file-scan",
                             $"Hydrating cloud file (trigger={trigger}): {normalizedPath}");
                         Result materialized =
-                            await _services.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath,
+                            await _dependencies.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath,
                                 cancellationToken);
-                        locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+                        locality = _dependencies.AssessFileLocality(normalizedPath);
                         if (materialized.IsFailure)
                         {
                             failed++;
@@ -453,7 +459,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     // Issue #30: never import a path another importer currently owns
                     // (an in-flight add). Defer it into the watch loop's dirty set for
                     // re-evaluation instead of racing the owner's commit or rollback.
-                    IFileOperationLease? claim = _services.FileOperations.TryClaim([normalizedPath]);
+                    IFileOperationLease? claim = _dependencies.FileOperations.TryClaim([normalizedPath]);
                     if (claim is null)
                     {
                         skipped++;
@@ -467,7 +473,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     try
                     {
                         importedPdf =
-                            await _services.PdfImport.ImportPdfAsync(
+                            await _dependencies.PdfImport.ImportPdfAsync(
                                 new PdfImportRequest(normalizedPath, null, null, null),
                                 cancellationToken);
                     }
@@ -513,7 +519,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 processedRoots++;
                 if (operationId is not null)
                 {
-                    await _services.BlockingOperations.UpdateProgressAsync(
+                    await _dependencies.BlockingOperations.UpdateProgressAsync(
                         operationId.Value,
                         processedRoots,
                         progressLabel: $"已处理 {processedRoots}/{roots.Value.Count} 个文件搜索根，已扫描 {scanned} 个 PDF。",
@@ -548,7 +554,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 $"unavailableRoots={unavailableRoots}.");
             if (operationId is not null)
             {
-                await _services.BlockingOperations.CompleteAsync(operationId.Value, message, Array.Empty<string>(),
+                await _dependencies.BlockingOperations.CompleteAsync(operationId.Value, message, Array.Empty<string>(),
                     cancellationToken);
             }
 
@@ -559,7 +565,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             await LogOperationAsync("file-scan", $"Rescan cancelled (trigger={trigger}).");
             if (operationId is not null)
             {
-                await _services.BlockingOperations.CancelAsync(
+                await _dependencies.BlockingOperations.CancelAsync(
                     operationId.Value,
                     "文件重新扫描已取消。",
                     ["可稍后重新扫描"],
@@ -574,7 +580,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             string message = $"文件重新扫描失败：{ex.Message}";
             if (operationId is not null)
             {
-                await _services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
+                await _dependencies.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
                     "文件重新扫描失败。", ["检查文件搜索根权限", "重新扫描"], CancellationToken.None);
             }
 
@@ -607,74 +613,6 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             $"{completionMessage} 扫描 {summary.ScannedPdfCount} 个 PDF，新增 {summary.ImportedPdfCount} 个，已存在 {summary.SkippedKnownPdfCount} 个，失败 {summary.FailedPdfCount} 个；部分扫描 {summary.PartialRootCount} 个，不可用 {summary.UnavailableRootCount} 个，跳过目录 {summary.SkippedDirectoryCount} 个、文件 {summary.SkippedFileCount} 个。";
     }
 
-    private async Task<HashSet<string>> LoadKnownFilePathsAsync(CancellationToken cancellationToken)
-    {
-        await using SqliteConnection connection = _services.ConnectionFactory.CreateReadConnection();
-        await connection.OpenAsync(cancellationToken);
-        KnownPath[] paths = (await connection.QueryAsync<KnownPath>(new CommandDefinition(
-            """
-            select a.file_asset_id as FileAssetId, a.original_path as OriginalPath,
-                   a.original_path as Path, a.size_bytes as SizeBytes, a.mtime_utc as MtimeUtc,
-                   (select k.status from known_file_locations k
-                    where k.file_asset_id = a.file_asset_id and k.path = a.original_path) as PrimaryStatus
-            from file_assets a where a.status = 'available'
-            union all
-            select a.file_asset_id, a.original_path, k.path, a.size_bytes, a.mtime_utc,
-                   (select p.status from known_file_locations p
-                    where p.file_asset_id = a.file_asset_id and p.path = a.original_path)
-            from known_file_locations k join file_assets a on a.file_asset_id = k.file_asset_id
-            where k.status = 'available' and a.status = 'available';
-            """, cancellationToken: cancellationToken))).ToArray();
-        HashSet<string> unchanged = new(FileOperationCoordinator.PathComparer);
-        foreach (IGrouping<string, KnownPath> group in paths.GroupBy(path => path.FileAssetId))
-        {
-            // A remembered path is only a shortcut while the primary path and all remembered
-            // copies still exist. Otherwise reimport a discovered copy to reconcile old state.
-            if (group.First().PrimaryStatus != FileAssetStatus.Available ||
-                group.Any(path => !File.Exists(path.Path) && Directory.Exists(Path.GetDirectoryName(path.Path))) ||
-                !MatchesMetadata(group.First(), true))
-            {
-                continue;
-            }
-
-            foreach (KnownPath path in group.Where(path => MatchesMetadata(path, false)))
-            {
-                unchanged.Add(Path.GetFullPath(path.Path));
-            }
-        }
-
-        return unchanged;
-    }
-
-    private static bool MatchesMetadata(KnownPath path, bool primary)
-    {
-        try
-        {
-            FileInfo info = new(primary ? path.OriginalPath : path.Path);
-            return info.Exists && info.Length == path.SizeBytes &&
-                   DateTimeOffset.TryParse(path.MtimeUtc, out DateTimeOffset modified) &&
-                   info.LastWriteTimeUtc == modified.UtcDateTime;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
-
-    private sealed class KnownPath
-    {
-        public string FileAssetId { get; init; } = "";
-        public string OriginalPath { get; init; } = "";
-        public string Path { get; init; } = "";
-        public long SizeBytes { get; init; }
-        public string? MtimeUtc { get; init; }
-        public string? PrimaryStatus { get; init; }
-    }
-
     /// <summary>
     /// Issue #30: file events only make a reservation — record the dirty paths, stamp
     /// the event time and signal the watch loop. Nothing here cancels anything; a scan
@@ -693,7 +631,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
                 if (_changedPaths.Count == 0)
                 {
-                    Volatile.Write(ref _burstStartTimestamp, Stopwatch.GetTimestamp());
+                    Volatile.Write(ref _burstStartTimestamp, _timeProvider.GetTimestamp());
                 }
 
                 foreach (string path in changedPaths)
@@ -702,7 +640,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 }
             }
 
-            Volatile.Write(ref _lastFileEventTimestamp, Stopwatch.GetTimestamp());
+            Volatile.Write(ref _lastFileEventTimestamp, _timeProvider.GetTimestamp());
             _rescanSignal.Writer.TryWrite(0);
             _ = LogOperationAsync(FileWatcherTrigger, $"Change detected: {changeDescription}; rescan scheduled.");
         }
@@ -765,7 +703,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         {
             if (_changedPaths.Count == 0)
             {
-                Volatile.Write(ref _burstStartTimestamp, Stopwatch.GetTimestamp());
+                Volatile.Write(ref _burstStartTimestamp, _timeProvider.GetTimestamp());
             }
 
             _changedPaths[normalizedPath] = ++_fileChangeVersion;
@@ -798,7 +736,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                     // One failed pass (e.g. the database was briefly unavailable) must
                     // not kill the loop; the next signal or reconciliation retries.
                     UnexpectedExceptions.Sink.Report(exception, FileWatcherTrigger, "watch-loop");
-                    await Task.Delay(TimeSpan.FromSeconds(1), stopToken);
+                    await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, stopToken);
                 }
             }
         }
@@ -821,7 +759,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
         bool fullRequested = Interlocked.Exchange(ref _fullRescanRequested, 0) == 1;
         bool reconciliationDue =
-            DateTimeOffset.UtcNow - _lastFullRescanUtc >= ReconciliationInterval;
+            _schedule.IsReconciliationDue(_timeProvider.GetUtcNow(), _lastFullRescanUtc);
         if (!fullRequested && !reconciliationDue && !HasDirtyPaths)
         {
             ReportWatchLoopPhase(WatchLoopPhase.WaitingForSignal);
@@ -836,9 +774,9 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             return;
         }
 
-        if (fullRequested || reconciliationDue)
+        if (_schedule.SelectWorkAfterDebounce(fullRequested, reconciliationDue) == WatchLoopWork.FullRescan)
         {
-            _lastFullRescanUtc = DateTimeOffset.UtcNow;
+            _lastFullRescanUtc = _timeProvider.GetUtcNow();
             ReportWatchLoopPhase(WatchLoopPhase.FullRescan);
             await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", stopToken,
                 trigger: FileWatcherTrigger);
@@ -857,7 +795,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         {
             // Deferred paths were re-queued; retry on a bounded cadence rather
             // than spinning while their claim holder finishes.
-            await Task.Delay(DeferredRetryDelay, stopToken);
+            await Task.Delay(_schedule.Options.DeferredRetryDelay, _timeProvider, stopToken);
             if (HasDirtyPaths)
             {
                 _rescanSignal.Writer.TryWrite(0);
@@ -871,14 +809,15 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
     /// </summary>
     private async Task WaitForSignalAsync(CancellationToken stopToken)
     {
-        TimeSpan untilDue = ReconciliationInterval - (DateTimeOffset.UtcNow - _lastFullRescanUtc);
+        TimeSpan untilDue = _schedule.SignalWaitTimeout(_timeProvider.GetUtcNow(), _lastFullRescanUtc);
         if (untilDue <= TimeSpan.Zero)
         {
             return;
         }
 
-        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
-        timeout.CancelAfter(untilDue);
+        using CancellationTokenSource deadline = new(untilDue, _timeProvider);
+        using CancellationTokenSource timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(stopToken, deadline.Token);
         try
         {
             await _rescanSignal.Reader.WaitToReadAsync(timeout.Token);
@@ -891,35 +830,27 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
     /// <summary>
     /// Debounce as quiet-period re-evaluation: wait until no file event has arrived for
-    /// <see cref="QuietPeriod"/>, re-checking the remaining time whenever the delay
-    /// elapses. The delay is bound only to the stop token — new events extend the wait
-    /// by moving the last-event timestamp, never by cancelling it — and
-    /// <see cref="MaxWait"/> caps how long a continuous event stream can postpone work.
+    /// <see cref="WatchScheduleOptions.QuietPeriod"/>, re-checking the remaining time whenever
+    /// the delay elapses. The delay is bound only to the stop token — new events extend the
+    /// wait by moving the last-event timestamp, never by cancelling it — and
+    /// <see cref="WatchScheduleOptions.MaxWait"/> caps how long a continuous event stream can
+    /// postpone work.
     /// </summary>
     private async Task WaitQuietPeriodAsync(CancellationToken stopToken)
     {
         while (!stopToken.IsCancellationRequested)
         {
-            TimeSpan quietFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastFileEventTimestamp));
-            TimeSpan burstFor = Stopwatch.GetElapsedTime(Volatile.Read(ref _burstStartTimestamp));
-            if (quietFor >= QuietPeriod || burstFor >= MaxWait)
+            TimeSpan quietFor =
+                _timeProvider.GetElapsedTime(Volatile.Read(ref _lastFileEventTimestamp));
+            TimeSpan burstFor =
+                _timeProvider.GetElapsedTime(Volatile.Read(ref _burstStartTimestamp));
+            TimeSpan? delay = _schedule.EvaluateQuietWait(quietFor, burstFor);
+            if (delay is null)
             {
                 return;
             }
 
-            TimeSpan remaining = QuietPeriod - quietFor;
-            TimeSpan cap = MaxWait - burstFor;
-            if (cap < remaining)
-            {
-                remaining = cap;
-            }
-
-            if (remaining < TimeSpan.FromMilliseconds(20))
-            {
-                remaining = TimeSpan.FromMilliseconds(20);
-            }
-
-            await Task.Delay(remaining, stopToken);
+            await Task.Delay(delay.Value, _timeProvider, stopToken);
         }
     }
 
@@ -959,7 +890,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         await _fileSearchRootRescanGate.WaitAsync(stopToken);
         try
         {
-            using IActivityScope? activity = _services.ActivityTracker?.BeginScope(
+            using IActivityScope? activity = _dependencies.ActivityTracker?.BeginScope(
                 "扫描文件搜索根",
                 HostActivityKind.Scanning,
                 "文件变化触发");
@@ -1045,7 +976,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         // A reserved dirty path is evidence of a change even when size and mtime match.
         // Re-fingerprint this bounded dirty batch; only reconciliation scans may use the
         // unchanged-path shortcut. The import pipeline still deduplicates identical content.
-        FileLocalityAssessment locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+        FileLocalityAssessment locality = _dependencies.AssessFileLocality(normalizedPath);
         if (locality.Readiness != FileLocalityReadiness.CloudUnready && !CanOpenForRead(normalizedPath))
         {
             // Still being written by an external copy: defer quietly instead of
@@ -1054,7 +985,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             return IncrementalImportOutcome.Deferred;
         }
 
-        IFileOperationLease? lease = _services.FileOperations.TryClaim([normalizedPath]);
+        IFileOperationLease? lease = _dependencies.FileOperations.TryClaim([normalizedPath]);
         if (lease is null)
         {
             // An explicit import owns this path right now; re-evaluate after it
@@ -1070,8 +1001,8 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                 await LogOperationAsync("file-scan",
                     $"Hydrating cloud file (trigger={FileWatcherTrigger}): {normalizedPath}");
                 Result materialized =
-                    await _services.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath, stopToken);
-                locality = _services.FileSearchRootAccess.Assess(normalizedPath);
+                    await _dependencies.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath, stopToken);
+                locality = _dependencies.AssessFileLocality(normalizedPath);
                 if (materialized.IsFailure)
                 {
                     await LogOperationAsync("file-scan",
@@ -1084,7 +1015,7 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
             await LogOperationAsync("file-scan",
                 $"Importing (trigger={FileWatcherTrigger}): {normalizedPath}");
             PdfImportResult importedPdf =
-                await _services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
+                await _dependencies.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
                     stopToken);
             if (!importedPdf.Success)
             {
@@ -1146,8 +1077,9 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                                      SearchOption.AllDirectories))
                         {
                             if (IsImportTempFileName(Path.GetFileName(candidate)) &&
-                                !_services.FileOperations.IsClaimed(candidate) &&
-                                File.GetLastWriteTimeUtc(candidate) < DateTime.UtcNow - StaleImportTempAge)
+                                !_dependencies.FileOperations.IsClaimed(candidate) &&
+                                File.GetLastWriteTimeUtc(candidate) <
+                                _timeProvider.GetUtcNow().UtcDateTime - StaleImportTempAge)
                             {
                                 found.Add(candidate);
                             }
