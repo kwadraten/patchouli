@@ -296,7 +296,7 @@ public sealed class PdfImportWorkflow : IPdfImportWorkflow
             width,
             height,
             rotation,
-            "normalized",
+            CoordinateBasis.NormalizedPage,
             null,
             null,
             "import",

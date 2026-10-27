@@ -22,6 +22,13 @@ public enum PageImageViewContext
 /// <param name="IsTranslation">True when the caller addressed the translations/ tree.</param>
 /// <param name="Context">Page returns the whole page; region returns the bbox crop.</param>
 /// <param name="MaxEdge">Longest-edge pixel cap for the returned image.</param>
+/// <param name="NumberedBoxes">
+/// Issue #28: when true, every box of the page is outlined on the returned image with its
+/// sequence number. Numbers follow the page XML document order (depth-first over the
+/// sibling chains, exactly as <c>PageXmlCodec</c> emits <c>&lt;box&gt;</c> elements), and
+/// the result carries the number-to-box-id mapping. A page without a committed tree
+/// revision has no boxes: the image is returned unannotated with an empty mapping.
+/// </param>
 public sealed record PageImageViewRequest(
     DocumentInstanceId DocumentInstanceId,
     int PageIndex1Based,
@@ -29,7 +36,8 @@ public sealed record PageImageViewRequest(
     DocumentBoxId? BoxId,
     bool IsTranslation,
     PageImageViewContext Context,
-    int MaxEdge)
+    int MaxEdge,
+    bool NumberedBoxes = false)
 {
     public const int DefaultMaxEdge = 2048;
 
@@ -57,8 +65,15 @@ public sealed record PageImageViewRequest(
 /// <param name="Height">Actual image height in pixels.</param>
 /// <param name="CropRange">Actual crop range in page-normalized coordinates (reproducible).</param>
 /// <param name="ImageIndex">Index of the image content block; v1 fixed at 0.</param>
-/// <param name="UsedRevision">The tree revision actually used for this call.</param>
+/// <param name="UsedRevision">
+/// The tree revision actually used for this call; empty when the page has no committed
+/// tree revision (a tree-less page view, which never pins a revision in the canonical URI).
+/// </param>
 /// <param name="PngBytes">Encoded PNG bytes (never truncated).</param>
+/// <param name="BoxNumbers">
+/// Issue #28: the number-to-box-id mapping drawn onto the image; non-null only when the
+/// request asked for numbered boxes (empty when the page has no boxes).
+/// </param>
 public sealed record PageImageViewResult(
     string CanonicalUri,
     string ViewType,
@@ -68,7 +83,14 @@ public sealed record PageImageViewResult(
     NormalizedBBox CropRange,
     int ImageIndex,
     string UsedRevision,
-    byte[] PngBytes);
+    byte[] PngBytes,
+    IReadOnlyList<PageImageBoxNumber>? BoxNumbers = null);
+
+/// <summary>
+/// Issue #28: one numbered box overlay entry. <see cref="Index"/> is the one-based
+/// sequence number drawn on the image, assigned in page XML document order.
+/// </summary>
+public sealed record PageImageBoxNumber(int Index, DocumentBoxId BoxId);
 
 /// <summary>Stable error codes for page image view failures.</summary>
 public static class PageImageViewErrorCodes

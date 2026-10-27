@@ -6,6 +6,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Workflows;
@@ -284,27 +285,78 @@ public sealed class LibraryImportOrchestrator
     /// a usable document source are counted as skipped; per-item failures are collected in the
     /// summary instead of being reported through dialogs.
     /// </summary>
-    public async Task<Result<OcrEnqueueSummary>> EnqueueOcrForItemsAsync(
+    public Task<Result<OcrEnqueueSummary>> EnqueueOcrForItemsAsync(
         IReadOnlyList<OcrEnqueueItem> items,
         string engineId,
         string priority,
         string? minerUTokenOverride = null,
         CancellationToken cancellationToken = default)
     {
+        return EnqueueOcrForItemsCoreAsync(items, priority,
+            async ct => await EnsurePresetForEngineAsync(engineId, ct), minerUTokenOverride,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Enqueues document OCR under an explicitly chosen preset. The preset id is validated
+    /// library-safely by the caller's selection; here the frozen version supplies the engine,
+    /// so no same-engine preset can be substituted behind the user's back.
+    /// </summary>
+    public Task<Result<OcrEnqueueSummary>> EnqueueOcrForItemsAsync(
+        IReadOnlyList<OcrEnqueueItem> items,
+        OcrPresetId presetId,
+        string priority,
+        string? minerUTokenOverride = null,
+        CancellationToken cancellationToken = default)
+    {
+        return EnqueueOcrForItemsCoreAsync(items, priority,
+            ct => Task.FromResult(Result<OcrPresetId>.Success(presetId)), minerUTokenOverride,
+            cancellationToken);
+    }
+
+    private async Task<Result<OcrEnqueueSummary>> EnqueueOcrForItemsCoreAsync(
+        IReadOnlyList<OcrEnqueueItem> items,
+        string priority,
+        Func<CancellationToken, Task<Result<OcrPresetId>>> resolvePreset,
+        string? minerUTokenOverride,
+        CancellationToken cancellationToken)
+    {
         if (items.Count == 0)
         {
             return Result<OcrEnqueueSummary>.Failure(AppErrorCodes.ValidationFailed, "请先选择题录。");
         }
 
-        IRealOcrAdapter? adapter = _services.OcrAdapters.GetAdapter(engineId);
-        if (adapter is null)
+        Result<OcrPresetId> preset = await resolvePreset(cancellationToken);
+        if (preset.IsFailure)
+        {
+            return Result<OcrEnqueueSummary>.Failure(
+                preset.ErrorCode ?? AppErrorCodes.InvalidState,
+                $"OCR preset 不可用：{preset.ErrorMessage}");
+        }
+
+        Result<OcrPresetVersion> presetVersion =
+            await _services.OcrPresets.GetCurrentVersionAsync(preset.Value, cancellationToken);
+        if (presetVersion.IsFailure)
+        {
+            return Result<OcrEnqueueSummary>.Failure(
+                presetVersion.ErrorCode ?? AppErrorCodes.InvalidState,
+                $"OCR preset 不可用：{presetVersion.ErrorMessage}");
+        }
+
+        string engineId = presetVersion.Value.EngineId;
+        // Capability from registry metadata — extension/native engines resolve here without a
+        // registered adapter, and credential gating follows the declared definition rather than
+        // an unconditional MinerU preflight for every selected preset.
+        Result<OcrEngineDefinition> definition =
+            await _services.OcrDefaults.GetEngineDefinitionAsync(engineId, cancellationToken);
+        if (definition.IsFailure)
         {
             return Result<OcrEnqueueSummary>.Failure(
                 AppErrorCodes.NotFound,
                 $"未注册 OCR 引擎：{engineId}");
         }
 
-        if (RequiresMinerUToken(engineId, adapter.GetCapability()))
+        if (definition.Value.RequiresCredential)
         {
             string token = !string.IsNullOrWhiteSpace(minerUTokenOverride)
                 ? minerUTokenOverride.Trim()
@@ -313,16 +365,8 @@ public sealed class LibraryImportOrchestrator
             {
                 return Result<OcrEnqueueSummary>.Failure(
                     MinerUTokenRequiredErrorCode,
-                    "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
+                    $"运行 OCR 前需要 {engineId} 的 API token。请先在设置中完成配置。");
             }
-        }
-
-        Result<OcrPresetId> preset = await EnsurePresetForEngineAsync(engineId, cancellationToken);
-        if (preset.IsFailure)
-        {
-            return Result<OcrEnqueueSummary>.Failure(
-                preset.ErrorCode ?? AppErrorCodes.InvalidState,
-                $"OCR preset 不可用：{preset.ErrorMessage}");
         }
 
         int succeeded = 0;

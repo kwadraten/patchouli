@@ -170,6 +170,13 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             {
                 RuntimeDatabasePath = CreateDatabasePath("ui-page-ocr-working")
             };
+            // The built-in development engine keeps page OCR on the adapter path this fixture
+            // measures; extension engines (the NdlKoten default) run through compiled FSX jobs
+            // and never consult the adapter registry.
+            main.UpdateAppOptions(main.AppOptions with
+            {
+                OcrEngines = main.AppOptions.OcrEngines with { PageOcrEngine = OcrEngineIds.Mock }
+            });
             await OpenImportedItemAsync(main, CreatePdfPath());
             HostServices services = await main.ServicesAsync();
             services.OcrAdapters.RegisterAdapter(new WorkingPageAdapter());
@@ -265,7 +272,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
 
     private sealed class WorkingPageAdapter : IRealOcrAdapter
     {
-        public string EngineId => OcrEngineIds.NdlKoten;
+        public string EngineId => OcrEngineIds.Mock;
         public string DisplayName => "Working page test";
         public string Kind => OcrAdapterKind.LocalLibrary;
 
