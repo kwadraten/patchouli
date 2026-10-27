@@ -163,8 +163,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         OcrQueueTask task = new(
             OcrQueueTaskId.New(), LibraryId.New(), documentId, OcrPresetId.New(), [], OcrQueueTaskKind.Document,
             OcrEngineIds.MinerU, OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Running, 0, 0, null, null, null, null,
-            null, null);
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Running, 0, 0, null, null, null, null);
 
         vm.Shell.ApplyOcrQueueRunningState(task);
 
@@ -1857,19 +1856,38 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task QueueViewModel_enqueue_mock_adds_active_task_row_and_reports_status()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
-            await queue.PauseAsync(OcrPauseScope.Global);
-            await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    IOcrQueueScheduler queue =
+                        (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+                    await queue.PauseAsync(OcrPauseScope.Global);
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
 
-            vm.Status.Should().Contain("已加入模拟 OCR 任务");
-            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
-            vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
-            vm.Status.ToLowerInvariant().Should().NotContain("secret");
+                    vm.Status.Should().Contain("已加入模拟 OCR 任务");
+                    vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+                    vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
+                    vm.Status.ToLowerInvariant().Should().NotContain("secret");
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -1885,30 +1903,52 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task QueueViewModel_refresh_splits_active_and_finished_rows()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
-            await queue.PauseAsync(OcrPauseScope.Global);
-            await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-            await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    IOcrQueueScheduler queue =
+                        (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+                    await queue.PauseAsync(OcrPauseScope.Global);
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
 
-            vm.OcrQueue.ActiveTaskRows.Should().HaveCount(2);
-            vm.OcrQueue.HasActiveTasks.Should().BeTrue();
-            vm.OcrQueue.NoActiveTasks.Should().BeFalse();
-            vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
-            vm.OcrQueue.ActiveTabHeader.Should().Be("进行中 (2)");
-            vm.OcrQueue.ActiveTaskRows.Should().OnlyContain(row => row.State == OcrQueueTaskState.Queued);
+                    vm.OcrQueue.ActiveTaskRows.Should().HaveCount(2);
+                    vm.OcrQueue.HasActiveTasks.Should().BeTrue();
+                    vm.OcrQueue.NoActiveTasks.Should().BeFalse();
+                    vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
+                    vm.OcrQueue.ActiveTabHeader.Should().Be("进行中 (2)");
+                    vm.OcrQueue.ActiveTaskRows.Should()
+                        .OnlyContain(row => row.State == OcrQueueTaskState.Queued);
 
-            await vm.OcrQueue.ActiveTaskRows.First().CancelCommand.ExecuteAsync();
+                    await vm.OcrQueue.ActiveTaskRows.First().CancelCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
 
-            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
-            vm.OcrQueue.FinishedTaskRows.Should().ContainSingle(row => row.State == OcrQueueTaskState.Cancelled);
-            vm.OcrQueue.FinishedTabHeader.Should().Be("已完成 (1)");
-            vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
-            vm.Status.Should().Contain("已请求取消任务");
+                    vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+                    vm.OcrQueue.FinishedTaskRows.Should()
+                        .ContainSingle(row => row.State == OcrQueueTaskState.Cancelled);
+                    vm.OcrQueue.FinishedTabHeader.Should().Be("已完成 (1)");
+                    vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
+                    vm.Status.Should().Contain("已请求取消任务");
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -1924,22 +1964,43 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task QueueViewModel_start_pause_resume_stop_update_summary_and_toggles()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            await vm.OcrQueue.StartCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("运行中");
-            vm.OcrQueue.IsQueueRunning.Should().BeTrue();
-            await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("已暂停");
-            vm.OcrQueue.IsGloballyPaused.Should().BeTrue();
-            await vm.OcrQueue.ResumeGlobalCommand.ExecuteAsync();
-            vm.OcrQueue.IsGloballyPaused.Should().BeFalse();
-            await vm.OcrQueue.StopCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("已停止");
-            vm.OcrQueue.IsQueueRunning.Should().BeFalse();
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.StartCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
+                    vm.OcrQueue.StatusSummary.Should().Contain("运行中");
+                    vm.OcrQueue.IsQueueRunning.Should().BeTrue();
+                    await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
+                    vm.OcrQueue.StatusSummary.Should().Contain("已暂停");
+                    vm.OcrQueue.IsGloballyPaused.Should().BeTrue();
+                    await vm.OcrQueue.ResumeGlobalCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
+                    vm.OcrQueue.IsGloballyPaused.Should().BeFalse();
+                    await vm.OcrQueue.StopCommand.ExecuteAsync();
+                    await vm.OcrQueue.RefreshAsync();
+                    vm.OcrQueue.StatusSummary.Should().Contain("已停止");
+                    vm.OcrQueue.IsQueueRunning.Should().BeFalse();
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -1955,30 +2016,48 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task QueueViewModel_mock_task_execution_records_progress_snapshot_and_finished_time()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
 
-            // The mock preset/document ids do not resolve, so the task fails fast —
-            // but the executor still emits its simulated stage reports first.
-            OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
-                [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
-            await queue.StartAsync();
-            await queue.WaitForIdleAsync();
-            await vm.OcrQueue.RefreshAsync();
+                    // The mock preset/document ids do not resolve, so the task fails fast —
+                    // but the executor still emits its simulated stage reports first.
+                    OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+                        OcrPresetId.New(),
+                        [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
+                    await queue.StartAsync();
+                    await queue.WaitForIdleAsync();
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.RefreshAsync();
 
-            OcrTaskProgressReport? snapshot = queue.GetTaskProgress(task.TaskId);
-            snapshot.Should().NotBeNull();
-            snapshot!.Stage.Should().Be(OcrTaskStage.Preparing);
-            queue.GetTaskFinishedAt(task.TaskId).Should().NotBeNull();
-            vm.OcrQueue.ActiveTaskRows.Should().BeEmpty();
-            vm.OcrQueue.FinishedTaskRows.Should().ContainSingle();
-            vm.OcrQueue.HasRetryableTasks.Should().BeTrue();
+                    OcrTaskProgressReport? snapshot = queue.GetTaskProgress(task.TaskId);
+                    snapshot.Should().NotBeNull();
+                    snapshot!.Stage.Should().Be(OcrTaskStage.Preparing);
+                    queue.GetTaskFinishedAt(task.TaskId).Should().NotBeNull();
+                    vm.OcrQueue.ActiveTaskRows.Should().BeEmpty();
+                    vm.OcrQueue.FinishedTaskRows.Should().ContainSingle();
+                    vm.OcrQueue.HasRetryableTasks.Should().BeTrue();
 
-            await queue.StopAsync();
+                    await queue.StopAsync();
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -2013,8 +2092,6 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             null,
             null,
             null,
-            null,
-            null,
             null);
         OcrTaskProgressReport stage = new(taskId, OcrTaskStage.Recognizing, 0.5, "pages:1/2");
         OcrQueueTaskViewModel row = new(
@@ -2035,29 +2112,47 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     public async Task QueueViewModel_clear_finished_empties_history()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
 
-            OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
-                [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
-            await queue.StartAsync();
-            await queue.WaitForIdleAsync();
-            await vm.OcrQueue.RefreshAsync();
-            vm.OcrQueue.HasFinishedTasks.Should().BeTrue();
+                    OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+                        OcrPresetId.New(),
+                        [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
+                    await queue.StartAsync();
+                    await queue.WaitForIdleAsync();
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.RefreshAsync();
+                    vm.OcrQueue.HasFinishedTasks.Should().BeTrue();
 
-            await vm.OcrQueue.ClearFinishedCommand.ExecuteAsync();
+                    await vm.OcrQueue.ClearFinishedCommand.ExecuteAsync();
 
-            vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
-            vm.OcrQueue.HasFinishedTasks.Should().BeFalse();
-            (await queue.GetTaskAsync(task.TaskId)).IsFailure.Should().BeTrue();
-            queue.GetTaskProgress(task.TaskId).Should().BeNull();
-            queue.GetTaskFinishedAt(task.TaskId).Should().BeNull();
+                    vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
+                    vm.OcrQueue.HasFinishedTasks.Should().BeFalse();
+                    (await queue.GetTaskAsync(task.TaskId)).IsFailure.Should().BeTrue();
+                    queue.GetTaskProgress(task.TaskId).Should().BeNull();
+                    queue.GetTaskFinishedAt(task.TaskId).Should().BeNull();
 
-            await queue.StopAsync();
+                    await queue.StopAsync();
+                    return true;
+                }
+                finally
+                {
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -2101,33 +2196,53 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.sqlite");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.pdf");
+        MainWindowViewModel? vm = null;
+        HeadlessUnitTestSession session = headless.Session;
         try
         {
-            File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await vm.ServicesAsync();
-            PdfImportResult import =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
-            import.Success.Should().BeTrue(import.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
-            vm.Shell.MinerUToken = "token";
-            await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
+            await session.Dispatch(async () =>
+            {
+                try
+                {
+                    File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                    vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    HostServices services = await vm.ServicesAsync();
+                    PdfImportResult import =
+                        await services.PdfImport.ImportPdfAsync(
+                            new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
+                    import.Success.Should().BeTrue(import.ErrorMessage);
+                    await vm.Shell.RefreshItemsAsync();
+                    vm.Shell.MinerUToken = "token";
+                    await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
 
-            await vm.Shell.QuickFillOcrCommand.ExecuteAsync();
-            await vm.OcrQueue.RefreshAsync();
+                    await vm.Shell.QuickFillOcrCommand.ExecuteAsync();
+                    vm.OcrQueue.StartObserving();
+                    await vm.OcrQueue.RefreshAsync();
 
-            vm.Status.Should().Contain("快速补全 OCR：成功入队 1，失败 0，无可用文档源 0。");
-            vm.OcrQueue.StatusSummary.Should().Contain("运行中");
-            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
-            OcrQueueTaskViewModel row = vm.OcrQueue.ActiveTaskRows.Single();
-            row.DocumentTitle.Should().Be("Queued OCR Item");
-            row.Kind.Should().Be(OcrQueueTaskKind.Document);
-            row.Priority.Should().Be(OcrQueuePriority.BatchCollection);
-            row.PageCount.Should().Be(1);
+                    vm.Status.Should().Contain("快速补全 OCR：成功入队 1，失败 0，无可用文档源 0。");
+                    vm.OcrQueue.StatusSummary.Should().Contain("运行中");
+                    vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+                    OcrQueueTaskViewModel row = vm.OcrQueue.ActiveTaskRows.Single();
+                    row.DocumentTitle.Should().Be("Queued OCR Item");
+                    row.Kind.Should().Be(OcrQueueTaskKind.Document);
+                    row.Priority.Should().Be(OcrQueuePriority.BatchCollection);
+                    row.PageCount.Should().Be(1);
 
-            await vm.OcrQueue.StopCommand.ExecuteAsync();
+                    await vm.OcrQueue.StopCommand.ExecuteAsync();
+                    return true;
+                }
+                finally
+                {
+                    // Each Dispatch rebuilds the headless application/dispatcher. Drain this
+                    // VM before leaving its own dispatch, not in a second, reset application.
+                    if (vm is not null)
+                    {
+                        await vm.ShutdownAsync();
+                    }
+                }
+            }, CancellationToken.None);
         }
         finally
         {
@@ -2176,7 +2291,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                         OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, OcrEngineIds.MinerU,
                         OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
                         DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Failed, 1, 1, null,
-                        "upload_url_failed", "MinerU rejected model_version", null, null, null);
+                        "upload_url_failed", "MinerU rejected model_version", null);
 
                     typeof(OcrQueueViewModel).GetMethod("OnQueueChanged",
                             BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -2218,8 +2333,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
         queueType.GetMethod("EnsureAutoRefreshLoop", BindingFlags.Instance | BindingFlags.NonPublic)
             .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
-        queueType.GetField("_refreshRequests", BindingFlags.Instance | BindingFlags.NonPublic).Should().NotBeNull(
-            "the event-driven coalesced refresh stream must remain so bursts of queue events collapse into one refresh");
+        queueType.GetField("_scheduledRefresh", BindingFlags.Instance | BindingFlags.NonPublic).Should().NotBeNull(
+            "the event-driven coalesced refresh tick must remain so bursts of queue events collapse into one refresh");
     }
 
     [Fact]
@@ -2259,7 +2374,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                     DocumentInstanceId.Parse(item.DocumentInstanceId!), OcrPresetId.New(), [PageId.New()],
                     OcrQueueTaskKind.Document, OcrEngineIds.MinerU, OcrAdapterKind.CloudApi, ProviderIds.MinerU,
                     OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
-                    OcrQueueTaskState.Succeeded, 1, 1, null, null, null, null, null, null, OcrRunId.New());
+                    OcrQueueTaskState.Succeeded, 1, 1, null, null, null, null, OcrRunId.New());
 
                 typeof(OcrQueueViewModel).GetMethod("OnQueueChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .Invoke(vm.OcrQueue, [null, new OcrQueueChangedEventArgs(task, OcrQueueChangeKind.Updated)]);
@@ -2588,6 +2703,10 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             {
                 OcrEngines = new OcrEnginesAppSettings(OcrEngineIds.MinerU, OcrEngineIds.MinerU, OcrEngineIds.MinerU)
             });
+            // Preset selection is library-scoped; the credential gate runs only after a
+            // resolvable preset, so the shell needs a real library first.
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
             LibraryItemViewModel item = new(
                 "item-1",
                 "Needs OCR",
@@ -2613,7 +2732,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             vm.Shell.SelectedItem.OcrStatus.Should().Be(vm.Shell.SelectedItem.OcrIndexStateDetail);
             vm.IsSettingsVisible.Should().BeTrue();
             vm.ShowSettingsTab.Should().BeTrue();
-            vm.Settings.OcrProviderSettings.MinerUCredentialStatus.Should().Contain("未配置");
+            await vm.Settings.OcrEngineCatalog.LoadAsync();
+            vm.Settings.OcrEngineCatalog.Components.Should()
+                .ContainSingle(row => row.IsBuiltIn).Subject.StatusText.Should().Contain("未配置");
             vm.Status.Should().Contain("MinerU API token");
         }
         finally
@@ -2694,17 +2815,17 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OpenSettingsAsync("mineru");
-            object section = vm.Settings.OcrProviderSettings;
-            PropertyInfo? modelOptions = section.GetType().GetProperty("MinerUModelVersionOptions");
-            PropertyInfo? selectedModel = section.GetType().GetProperty("MinerUModelVersion");
-            modelOptions.Should().NotBeNull();
-            selectedModel.Should().NotBeNull();
-            ((IEnumerable<string>)modelOptions!.GetValue(section)!).Should().Equal("vlm", "pipeline");
-            selectedModel!.SetValue(section, "pipeline");
-            vm.Settings.OcrProviderSettings.MinerUTokenInput = "saved-token";
+            // MinerU is a component now: its credential/model live on the engine-catalog gear
+            // dialog, not on the OCR presets section.
+            MinerUConfigurationDialogViewModel dialog = new(vm);
+            await dialog.LoadAsync();
+            dialog.MinerUModelVersionOptions.Should().Equal("vlm", "pipeline");
+            dialog.MinerUModelVersion = "pipeline";
+            dialog.MinerUTokenInput = "saved-token";
 
-            await vm.Settings.SaveCommand.ExecuteAsync();
+            await dialog.SaveCommand.ExecuteAsync();
 
+            dialog.LastError.Should().BeNull();
             HostServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
                 .Be("saved-token");
@@ -2714,9 +2835,11 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             vm.Shell.MinerUToken.Should().Be("saved-token");
             vm.Status.Should().Contain("已保存");
             string xaml =
-                File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+                File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views",
+                    "Settings", "MinerUConfigurationDialog.axaml"));
             xaml.Should().Contain("ItemsSource=\"{Binding MinerUModelVersionOptions}\"");
             xaml.Should().Contain("SelectedItem=\"{Binding MinerUModelVersion}\"");
+            xaml.Should().Contain("Text=\"{Binding MinerUTokenInput}\"");
         }
         finally
         {
@@ -3632,9 +3755,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         xaml.Should().Contain("凭据");
         xaml.Should().Contain("运行状态");
         xaml.Should().Contain("Command=\"{Binding SaveAndRestartCommand}\"");
-        xaml.Should().Contain("Command=\"{Binding RemoveMinerUCredentialCommand}\"");
         xaml.Should().Contain("添加并扫描");
         xaml.Should().Contain("立即重新扫描");
+
+        // MinerU credential management lives in the dedicated configuration dialog.
+        string minerUDialog =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "Settings",
+                "MinerUConfigurationDialog.axaml"));
+        minerUDialog.Should().Contain("Command=\"{Binding RemoveCredentialCommand}\"");
     }
 
     [Fact]
@@ -3876,7 +4004,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             (await vm.SaveMinerUSettingsAsync("token-to-remove", "vlm", 300)).Should().BeTrue();
-            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeTrue();
+            MinerUConfigurationDialogViewModel beforeRemove = new(vm);
+            await beforeRemove.LoadAsync();
+            beforeRemove.HasPersistedCredential.Should().BeTrue();
 
             (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
 
@@ -3884,8 +4014,10 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).IsFailure.Should()
                 .BeTrue();
             vm.Shell.MinerUToken.Should().Be("");
-            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeFalse();
-            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().Be("");
+            MinerUConfigurationDialogViewModel afterRemove = new(vm);
+            await afterRemove.LoadAsync();
+            afterRemove.HasPersistedCredential.Should().BeFalse();
+            afterRemove.MinerUTokenInput.Should().Be("");
         }
         finally
         {
@@ -3922,7 +4054,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
                 .Be("token-to-keep");
             vm.Shell.MinerUToken.Should().Be("token-to-keep");
-            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeTrue();
+            MinerUConfigurationDialogViewModel dialog = new(vm);
+            await dialog.LoadAsync();
+            dialog.HasPersistedCredential.Should().BeTrue();
         }
         finally
         {
@@ -4227,6 +4361,26 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         public OcrPresetVersion Version { get; }
         public OcrRun Run { get; }
 
+        public Task<Result<OcrRun>> ExecuteAsync(OcrRunExecutionRequest request,
+            OcrRunExecutionContext? execution = null, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
+        {
+            request.Scope.Should().Be(OcrRunExecutionScope.Region);
+            request.DocumentInstanceId.Should().Be(Run.DocumentInstanceId);
+            request.PresetId.Should().Be(Version.PresetId);
+            request.PresetVersionId.Should().Be(Version.PresetVersionId);
+            request.PageIds.Should().Equal(_pageId);
+            request.RegionBBox.Should().NotBeNull();
+            if (execution is not null)
+            {
+                Result binding = execution.ReportRunCreated(Run.OcrRunId);
+                binding.IsSuccess.Should().BeTrue(binding.ErrorMessage);
+            }
+
+            return RunPresetOnRegionAsync(request.DocumentInstanceId, request.PresetId,
+                request.PageIds[0], request.RegionBBox!.Value, cancellationToken);
+        }
+
         public Task<Result<OcrPresetVersion>> ResolvePresetVersionAsync(OcrPresetId presetId,
             CancellationToken cancellationToken = default)
         {
@@ -4290,18 +4444,6 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
             CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
         }

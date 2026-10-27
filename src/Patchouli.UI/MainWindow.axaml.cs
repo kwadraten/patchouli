@@ -340,8 +340,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshOcrEngineMenuAsync, "ocr-engine-menu-refresh")
-            .Observe("ui-event", "ocr-engine-menu-refresh");
+        UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshOcrPresetMenuAsync, "ocr-preset-menu-refresh")
+            .Observe("ui-event", "ocr-preset-menu-refresh");
     }
 
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

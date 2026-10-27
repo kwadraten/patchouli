@@ -5,6 +5,7 @@
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+             xmlns:settingsViews="using:Patchouli.UI.Views.Settings"
              xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
              x:DataType="settings:SettingsViewModel">
   <Grid ColumnDefinitions="Auto,*">
@@ -82,68 +83,9 @@
             </Grid>
           </DataTemplate>
 
-          <DataTemplate DataType="settings:LlmOcrDefaultsViewModel">
-            <ContentControl Content="{Binding Settings}" Margin="32">
-              <ContentControl.ContentTemplate>
-                <DataTemplate DataType="settings:LlmSettingsViewModel">
-                  <StackPanel MaxWidth="720">
-                    <Border Classes="Card">
-                      <StackPanel Spacing="10">
-                        <TextBlock Text="默认 Provider 与模型" Classes="CardTitle" />
-                        <TextBlock Text="多模态 LLM OCR 默认使用的 provider 与模型；未配置时回落到翻译默认 Provider。"
-                                   FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                   TextWrapping="Wrap" />
-                        <Grid ColumnDefinitions="Auto,*,Auto,*" VerticalAlignment="Center" ColumnSpacing="8">
-                          <TextBlock Grid.Column="0" Text="默认 Provider" VerticalAlignment="Center" />
-                          <ComboBox Grid.Column="1" ItemsSource="{Binding OcrProviderOptions}"
-                                    DisplayMemberBinding="{Binding DisplayName}"
-                                    SelectedItem="{Binding SelectedOcrProvider}"
-                                    PlaceholderText="{Binding OcrProviderPlaceholder}"
-                                    HorizontalAlignment="Stretch" />
-                          <TextBlock Grid.Column="2" Text="默认模型" VerticalAlignment="Center" />
-                          <ComboBox Grid.Column="3" IsEditable="True" ItemsSource="{Binding OcrModelOptions}"
-                                    Text="{Binding OcrModel}" HorizontalAlignment="Stretch" />
-                        </Grid>
-                      </StackPanel>
-                    </Border>
-                    <Border Classes="Card" Margin="0,16,0,0">
-                      <StackPanel Spacing="10">
-                        <TextBlock Text="识别性能" Classes="CardTitle" />
-                        <TextBlock Text="推理强度（用于阅读顺序和文字识别）" />
-                        <ComboBox ItemsSource="{Binding OcrReasoningOptions}"
-                                  DisplayMemberBinding="{Binding DisplayName}"
-                                  SelectedItem="{Binding SelectedOcrReasoning}" HorizontalAlignment="Stretch" />
-                        <TextBlock Text="分块识别并发数（1–16）" />
-                        <NumericUpDown Value="{Binding OcrConcurrency}" Minimum="1" Maximum="16" Increment="1"
-                                       FormatString="0" />
-                        <TextBlock Text="默认关闭推理，并发识别 4 个区域。推理选项是否生效取决于服务商和模型；提高并发可能触发限流。"
-                                   TextWrapping="Wrap" FontSize="12"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        <TextBlock Text="版面识别" Classes="CardTitle" />
-                        <CheckBox Content="先进行本地版面识别，再分块识别文字（默认）"
-                                  IsChecked="{Binding OcrUseLocalLayout}" />
-                        <TextBlock Text="关闭后，整页交给多模态 LLM，直接输出边界框和文本。手动画框的区域始终跳过版面识别。"
-                                   TextWrapping="Wrap" FontSize="12"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        <StackPanel Spacing="10" IsEnabled="{Binding OcrUseLocalLayout}">
-                          <TextBlock Text="本地版面模型" />
-                          <ComboBox ItemsSource="{Binding OcrLayoutModelOptions}"
-                                    DisplayMemberBinding="{Binding DisplayName}"
-                                    SelectedItem="{Binding SelectedOcrLayoutModel}"
-                                    HorizontalAlignment="Stretch" />
-                          <TextBlock
-                            Text="权重不随应用提供；请在「本地文件」页点击「下载模型」，下载完成后即可使用。"
-                            TextWrapping="Wrap" FontSize="12"
-                            Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        </StackPanel>
-                        <TextBlock Text="{Binding OcrLayoutStatus}" TextWrapping="Wrap" FontSize="12"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                      </StackPanel>
-                    </Border>
-                  </StackPanel>
-                </DataTemplate>
-              </ContentControl.ContentTemplate>
-            </ContentControl>
+          <!-- OCR component catalogs (engines / text-layer providers) -->
+          <DataTemplate DataType="settings:OcrComponentCatalogSettingsViewModel">
+            <settingsViews:OcrComponentCatalogView Margin="32" MaxWidth="960" />
           </DataTemplate>
 
           <!-- Appearance Settings -->
@@ -653,74 +595,156 @@
             </StackPanel>
           </DataTemplate>
 
-          <!-- OCR Settings -->
+          <!-- OCR 预设编排 -->
           <DataTemplate DataType="settings:OcrProviderSettingsViewModel">
-            <StackPanel Spacing="20" MaxWidth="720" Margin="32">
+            <StackPanel Spacing="20" MaxWidth="1080" Margin="32">
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="OCR 通用配置" Classes="CardTitle" />
-                  <TextBlock Text="OCR 预设" FontSize="12" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding OcrConcurrencySummary}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                </StackPanel>
-              </Border>
+                  <TextBlock Text="OCR 预设选择" Classes="CardTitle" />
+                  <TextBlock Text="为每个作用域选择版本化预设；「自动」沿用引擎默认。预设保存为新版本，进行中的任务继续使用已固定的旧版本。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             TextWrapping="Wrap" />
 
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="默认 OCR 引擎" Classes="CardTitle" />
-                  <TextBlock Text="为不同作用域选择当前使用的 OCR 引擎。保存后生效。" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                   <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" VerticalAlignment="Center">
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="文档级 OCR" VerticalAlignment="Center"
-                               Margin="0,0,12,8" />
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DocumentPresetPicker.ScopeLabel}"
+                               VerticalAlignment="Center" Margin="0,0,12,8" />
                     <ComboBox Grid.Row="0" Grid.Column="1"
-                              ItemsSource="{Binding AvailableEngines}"
+                              ItemsSource="{Binding DocumentPresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
-                              SelectedValue="{Binding SelectedDocumentEngine}"
-                              SelectedValueBinding="{Binding EngineId}"
+                              SelectedItem="{Binding DocumentPresetPicker.SelectedOption}"
                               HorizontalAlignment="Stretch" Margin="0,0,0,8" />
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="页面级 OCR" VerticalAlignment="Center"
-                               Margin="0,0,12,8" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding PagePresetPicker.ScopeLabel}"
+                               VerticalAlignment="Center" Margin="0,0,12,8" />
                     <ComboBox Grid.Row="1" Grid.Column="1"
-                              ItemsSource="{Binding AvailableEngines}"
+                              ItemsSource="{Binding PagePresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
-                              SelectedValue="{Binding SelectedPageEngine}"
-                              SelectedValueBinding="{Binding EngineId}"
+                              SelectedItem="{Binding PagePresetPicker.SelectedOption}"
                               HorizontalAlignment="Stretch" Margin="0,0,0,8" />
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="区域级 OCR" VerticalAlignment="Center"
-                               Margin="0,0,12,0" />
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="{Binding RegionPresetPicker.ScopeLabel}"
+                               VerticalAlignment="Center" Margin="0,0,12,0" />
                     <ComboBox Grid.Row="2" Grid.Column="1"
-                              ItemsSource="{Binding AvailableEngines}"
+                              ItemsSource="{Binding RegionPresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
-                              SelectedValue="{Binding SelectedRegionEngine}"
-                              SelectedValueBinding="{Binding EngineId}"
+                              SelectedItem="{Binding RegionPresetPicker.SelectedOption}"
                               HorizontalAlignment="Stretch" />
                   </Grid>
                 </StackPanel>
               </Border>
 
-
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="云端版面解析 (MinerU)" Classes="CardTitle" />
-                  <TextBlock Text="解析模型" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <ComboBox ItemsSource="{Binding MinerUModelVersionOptions}"
-                            SelectedItem="{Binding MinerUModelVersion}" />
-                  <TextBlock Text="轮询超时（秒）" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <NumericUpDown Value="{Binding MinerUPollingTimeoutSeconds}" Minimum="30" Maximum="3600" />
-                  <TextBox Text="{Binding MinerUTokenInput}" PasswordChar="•" PlaceholderText="在此输入 Token" />
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                    <TextBlock Text="{Binding MinerUCredentialStatus}" FontSize="12" VerticalAlignment="Center"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <Button Grid.Column="1" Content="移除凭据" Classes="Danger"
-                            Command="{Binding RemoveMinerUCredentialCommand}"
-                            IsEnabled="{Binding HasPersistedCredential}" />
+                  <Grid ColumnDefinitions="*,Auto,Auto">
+                    <TextBlock Text="OCR 预设编排" Classes="CardTitle" />
+                    <Button Grid.Column="1" Command="{Binding RefreshPresetRowsCommand}"
+                            ToolTip.Tip="刷新预设列表" AutomationProperties.Name="刷新预设列表" Margin="0,0,8,0">
+                      <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
+                    </Button>
+                    <Button Grid.Column="2" Command="{Binding AddPresetRowCommand}"
+                            ToolTip.Tip="新建 OCR 预设" AutomationProperties.Name="新建 OCR 预设">
+                      <lucide:Lucide Icon="Plus" Width="14" Height="14" />
+                    </Button>
                   </Grid>
+                  <TextBlock Text="每行组合一个图像 OCR 引擎与一个独立的文本层提供器；组件参数在各自组件的配置对话框中编辑。变更组件组合会将当前组件配置冻结为新版本；仅改名不改动快照。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             TextWrapping="Wrap" />
+
+                  <DataGrid ItemsSource="{Binding PresetRows}" AutoGenerateColumns="False"
+                            IsReadOnly="False" GridLinesVisibility="Horizontal"
+                            CanUserResizeColumns="True" MinHeight="140" MaxHeight="360"
+                            HorizontalAlignment="Stretch">
+                    <DataGrid.Columns>
+                      <DataGridTemplateColumn Header="预设名称" Width="1.4*">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <TextBox Text="{Binding Name}" PlaceholderText="预设名称"
+                                     IsEnabled="{Binding CanEdit}" Margin="2"
+                                     VerticalAlignment="Center" />
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTemplateColumn Header="图像 OCR 引擎" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <ComboBox ItemsSource="{Binding EngineOptions}"
+                                      SelectedItem="{Binding SelectedEngine}"
+                                      IsEnabled="{Binding CanEdit}" Margin="2"
+                                      HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                              <ComboBox.ItemTemplate>
+                                <DataTemplate DataType="settings:OcrEngineOption">
+                                  <TextBlock Text="{Binding DisplayName}" />
+                                </DataTemplate>
+                              </ComboBox.ItemTemplate>
+                            </ComboBox>
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTemplateColumn Header="文本层提供器" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <ComboBox ItemsSource="{Binding ProviderOptions}"
+                                      SelectedItem="{Binding SelectedProvider}"
+                                      IsEnabled="{Binding CanEdit}" Margin="2"
+                                      HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                              <ComboBox.ItemTemplate>
+                                <DataTemplate DataType="settings:OcrTextLayerProviderOption">
+                                  <TextBlock Text="{Binding DisplayName}" />
+                                </DataTemplate>
+                              </ComboBox.ItemTemplate>
+                            </ComboBox>
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTemplateColumn Header="缺文本层回退" Width="Auto">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <CheckBox IsChecked="{Binding MissingTextFallback}"
+                                      IsEnabled="{Binding CanChooseMissingTextFallback}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Margin="4" ToolTip.Tip="页面没有可用原生文本层时，将该页交给图像 OCR 引擎识别（默认开启）；取消勾选则该页报告错误" />
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTemplateColumn Header="状态" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <TextBlock Text="{Binding StatusText}" FontSize="12" TextWrapping="Wrap"
+                                       VerticalAlignment="Center" Margin="4,2"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                      <DataGridTemplateColumn Header="操作" Width="Auto">
+                        <DataGridTemplateColumn.CellTemplate>
+                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                            <StackPanel Orientation="Horizontal" Spacing="4" Margin="2"
+                                        VerticalAlignment="Center">
+                              <Button Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"
+                                      ToolTip.Tip="保存预设（组件变更会冻结为新版本）"
+                                      AutomationProperties.Name="保存预设">
+                                <lucide:Lucide Icon="Save" Width="14" Height="14" />
+                              </Button>
+                              <Button Command="{Binding RefreshConfigCommand}"
+                                      IsEnabled="{Binding CanEdit}"
+                                      ToolTip.Tip="重新捕获当前组件配置为新版本"
+                                      AutomationProperties.Name="刷新组件配置">
+                                <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
+                              </Button>
+                              <Button Command="{Binding ArchiveCommand}" Classes="Danger"
+                                      ToolTip.Tip="归档预设（历史版本保留）"
+                                      AutomationProperties.Name="归档预设">
+                                <lucide:Lucide Icon="Archive" Width="14" Height="14" />
+                              </Button>
+                            </StackPanel>
+                          </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                      </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                  </DataGrid>
+                  <TextBlock Text="{Binding PresetStatus}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding PresetStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -813,6 +837,56 @@
                               ItemsSource="{Binding ChatModelOptions}"
                               Text="{Binding ChatModel}" HorizontalAlignment="Stretch" />
                   </Grid>
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="OCR 默认值" Classes="CardTitle" />
+                  <TextBlock Text="多模态 LLM OCR 默认使用的 provider 与模型；未配置时回落到翻译默认 Provider。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             TextWrapping="Wrap" />
+                  <Grid ColumnDefinitions="Auto,*,Auto,*" VerticalAlignment="Center" ColumnSpacing="8">
+                    <TextBlock Grid.Column="0" Text="默认 Provider" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding OcrProviderOptions}"
+                              DisplayMemberBinding="{Binding DisplayName}"
+                              SelectedItem="{Binding SelectedOcrProvider}"
+                              PlaceholderText="{Binding OcrProviderPlaceholder}"
+                              HorizontalAlignment="Stretch" />
+                    <TextBlock Grid.Column="2" Text="默认模型" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="3" IsEditable="True" ItemsSource="{Binding OcrModelOptions}"
+                              Text="{Binding OcrModel}" HorizontalAlignment="Stretch" />
+                  </Grid>
+                  <TextBlock Text="识别性能" Classes="CardTitle" />
+                  <TextBlock Text="推理强度（用于阅读顺序和文字识别）" />
+                  <ComboBox ItemsSource="{Binding OcrReasoningOptions}"
+                            DisplayMemberBinding="{Binding DisplayName}"
+                            SelectedItem="{Binding SelectedOcrReasoning}" HorizontalAlignment="Stretch" />
+                  <TextBlock Text="分块识别并发数（1–16）" />
+                  <NumericUpDown Value="{Binding OcrConcurrency}" Minimum="1" Maximum="16" Increment="1"
+                                 FormatString="0" />
+                  <TextBlock Text="默认关闭推理，并发识别 4 个区域。推理选项是否生效取决于服务商和模型；提高并发可能触发限流。"
+                             TextWrapping="Wrap" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="版面识别" Classes="CardTitle" />
+                  <CheckBox Content="先进行本地版面识别，再分块识别文字（默认）"
+                            IsChecked="{Binding OcrUseLocalLayout}" />
+                  <TextBlock Text="关闭后，整页交给多模态 LLM，直接输出边界框和文本。手动画框的区域始终跳过版面识别。"
+                             TextWrapping="Wrap" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <StackPanel Spacing="10" IsEnabled="{Binding OcrUseLocalLayout}">
+                    <TextBlock Text="本地版面模型" />
+                    <ComboBox ItemsSource="{Binding OcrLayoutModelOptions}"
+                              DisplayMemberBinding="{Binding DisplayName}"
+                              SelectedItem="{Binding SelectedOcrLayoutModel}"
+                              HorizontalAlignment="Stretch" />
+                    <TextBlock
+                      Text="权重不随应用提供；请在「本地文件」页点击「下载模型」，下载完成后即可使用。"
+                      TextWrapping="Wrap" FontSize="12"
+                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding OcrLayoutStatus}" TextWrapping="Wrap" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Border>
 

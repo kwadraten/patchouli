@@ -1,5 +1,9 @@
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Results;
+using Patchouli.Host;
+using Patchouli.Host.Composition;
+using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
@@ -106,19 +110,20 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
     }
 
     [Fact]
-    public async Task Ocr_engine_selection_save_persists_scope_engines()
+    public async Task Ocr_preset_selection_save_persists_the_scope_choice()
     {
-        string path = TempDbPath("ocr-engines");
+        string path = TempDbPath("ocr-presets");
         try
         {
             MainWindowViewModel vm = await OpenMainAsync(path);
+            HostServices services = await vm.ServicesAsync();
+            OcrPreset preset = (await services.OcrPresets.CreatePresetAsync("Preset A", null,
+                OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true)).Value;
             await vm.Settings.OcrProviderSettings.LoadAsync();
 
-            string originalDocument = vm.Settings.OcrProviderSettings.SelectedDocumentEngine;
-            string target = vm.Settings.OcrProviderSettings.AvailableEngines
-                .FirstOrDefault(option => option.EngineId != originalDocument)?.EngineId ?? originalDocument;
-
-            vm.Settings.OcrProviderSettings.SelectedDocumentEngine = target;
+            vm.Settings.OcrProviderSettings.DocumentPresetPicker.SelectedOption =
+                vm.Settings.OcrProviderSettings.DocumentPresetPicker.Options.Single(option =>
+                    option.PresetId == preset.PresetId.ToString());
             vm.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
 
             await vm.Settings.SaveCommand.ExecuteAsync();
@@ -126,8 +131,8 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
             vm.Settings.OcrProviderSettings.SaveState.Should()
                 .Be(SettingsSaveState.Saved, $"status: {vm.Settings.GlobalStatus}");
             vm.Settings.OcrProviderSettings.IsDirty.Should().BeFalse();
-            PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
-            loaded.OcrEngines.DocumentOcrEngine.Should().Be(target);
+            (await StoredSelectionsAsync(services)).DocumentPresetId.Should()
+                .Be(preset.PresetId.ToString());
         }
         finally
         {
@@ -136,33 +141,38 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
     }
 
     [Fact]
-    public async Task Ocr_engine_selection_save_with_persisted_mineru_token_keeps_new_value()
+    public async Task Ocr_preset_selection_save_keeps_persisted_mineru_settings_untouched()
     {
-        string path = TempDbPath("ocr-engines-token");
+        string path = TempDbPath("ocr-presets-token");
         try
         {
             MainWindowViewModel vm = await OpenMainAsync(path);
-            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().BeEmpty();
             (await vm.SaveMinerUSettingsAsync("persisted-token", "vlm", 300)).Should().BeTrue();
-            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().Be("persisted-token");
+            vm.Shell.MinerUToken.Should().Be("persisted-token");
+
+            HostServices services = await vm.ServicesAsync();
+            OcrPreset preset = (await services.OcrPresets.CreatePresetAsync("Preset A", null,
+                OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true)).Value;
             await vm.Settings.OcrProviderSettings.LoadAsync();
 
-            string originalDocument = vm.Settings.OcrProviderSettings.SelectedDocumentEngine;
-            string target = vm.Settings.OcrProviderSettings.AvailableEngines
-                .FirstOrDefault(option => option.EngineId != originalDocument)?.EngineId ?? originalDocument;
-
-            vm.Settings.OcrProviderSettings.SelectedDocumentEngine = target;
+            vm.Settings.OcrProviderSettings.DocumentPresetPicker.SelectedOption =
+                vm.Settings.OcrProviderSettings.DocumentPresetPicker.Options.Single(option =>
+                    option.PresetId == preset.PresetId.ToString());
             vm.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
 
             await vm.Settings.SaveCommand.ExecuteAsync();
 
             vm.Settings.OcrProviderSettings.SaveState.Should()
                 .Be(SettingsSaveState.Saved, $"status: {vm.Settings.GlobalStatus}");
-            vm.Settings.OcrProviderSettings.SelectedDocumentEngine.Should().Be(target);
             vm.Settings.OcrProviderSettings.IsDirty.Should().BeFalse();
-            vm.AppOptions.OcrEngines.DocumentOcrEngine.Should().Be(target);
+            (await StoredSelectionsAsync(services)).DocumentPresetId.Should()
+                .Be(preset.PresetId.ToString());
+
+            // The OCR scope save must not touch the persisted MinerU component state.
+            vm.Shell.MinerUToken.Should().Be("persisted-token");
             PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
-            loaded.OcrEngines.DocumentOcrEngine.Should().Be(target);
+            loaded.MinerU.ModelVersion.Should().Be("vlm");
+            loaded.MinerU.PollingTimeoutSeconds.Should().Be(300);
         }
         finally
         {
@@ -181,6 +191,15 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
         await vm.OpenDatabaseCommand.ExecuteAsync();
         await vm.Library.CreateCommand.ExecuteAsync();
         return vm;
+    }
+
+    private async Task<OcrPresetSelections> StoredSelectionsAsync(HostServices services)
+    {
+        OcrPresetSelectionService selectionService = new(
+            new OcrPresetSelectionStore(_settings.Path), services.OcrPresets, services.Library);
+        Result<OcrPresetSelections> stored = await selectionService.ReadStoredSelectionsAsync();
+        stored.IsSuccess.Should().BeTrue(stored.ErrorMessage);
+        return stored.Value;
     }
 
     private static string TempDbPath(string tag)

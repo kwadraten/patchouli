@@ -4,7 +4,8 @@
              x:Name="Root">
   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
     <TextBox Classes="FormField" Text="{Binding Path, ElementName=Root}"
-             PlaceholderText="{Binding PlaceholderText, ElementName=Root}" IsReadOnly="True" />
+             PlaceholderText="{Binding PlaceholderText, ElementName=Root}"
+             IsReadOnly="{Binding !IsEditable, ElementName=Root}" />
     <Button Classes="FormFieldAction" Grid.Column="1" Click="OnBrowseClick" Width="54" Padding="0">
       <PathIcon Data="{Binding IconData, ElementName=Root}" Width="16" Height="16"
                 Foreground="{DynamicResource OnSurfaceBrush}" />

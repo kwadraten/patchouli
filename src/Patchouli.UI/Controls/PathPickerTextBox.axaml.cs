@@ -30,6 +30,10 @@ public sealed partial class PathPickerTextBox : UserControl
     public static readonly StyledProperty<string?> PlaceholderTextProperty =
         AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(PlaceholderText));
 
+    /// <summary>When true the path text stays typeable (browse still applies); default keeps read-only.</summary>
+    public static readonly StyledProperty<bool> IsEditableProperty =
+        AvaloniaProperty.Register<PathPickerTextBox, bool>(nameof(IsEditable));
+
     public static readonly StyledProperty<PathPickerMode> PickerModeProperty =
         AvaloniaProperty.Register<PathPickerTextBox, PathPickerMode>(nameof(PickerMode), PathPickerMode.OpenFile);
 
@@ -58,6 +62,12 @@ public sealed partial class PathPickerTextBox : UserControl
     {
         get => GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
+    }
+
+    public bool IsEditable
+    {
+        get => GetValue(IsEditableProperty);
+        set => SetValue(IsEditableProperty, value);
     }
 
     public PathPickerMode PickerMode

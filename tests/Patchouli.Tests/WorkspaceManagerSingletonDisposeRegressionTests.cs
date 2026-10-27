@@ -1,4 +1,5 @@
 using System.Reflection;
+using Avalonia.Headless;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
@@ -63,11 +64,11 @@ public sealed class WorkspaceManagerSingletonDisposeRegressionTests : IDisposabl
     [Fact]
     public async Task Closing_ocr_queue_tab_does_not_dispose_singleton_and_maintains_reactivity_on_reopen()
     {
-        MainWindowViewModel? main = null;
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
         {
             string path = _settings.CreateDatabasePath("ocr-queue-singleton-dispose");
-            main = CreateMainWindow(path);
+            await using MainWindowViewModel main = CreateMainWindow(path);
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
 
@@ -102,6 +103,7 @@ public sealed class WorkspaceManagerSingletonDisposeRegressionTests : IDisposabl
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
             enqueued.IsSuccess.Should().BeTrue();
 
+            main.OcrQueue.StartObserving();
             await main.OcrQueue.RefreshAsync();
 
             // 6. 断言 HasActiveTasks 变为 true（即派生属性订阅仍然存活）
@@ -109,14 +111,8 @@ public sealed class WorkspaceManagerSingletonDisposeRegressionTests : IDisposabl
             main.OcrQueue.HasActiveTasks.Should().BeTrue();
             main.OcrQueue.NoActiveTasks.Should().BeFalse();
             main.OcrQueue.ActiveTabHeader.Should().Be("进行中 (1)");
-        }
-        finally
-        {
-            if (main is not null)
-            {
-                await main.ShutdownAsync();
-            }
-        }
+            return 0;
+        }, CancellationToken.None);
     }
 
     [Fact]

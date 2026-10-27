@@ -98,6 +98,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private IDisposable? _activitySubscription;
     private readonly string? _settingsPath;
     private readonly HostOcrCompositionOptions? _ocrComposition;
+    private readonly IAppPaths? _hostAppPaths;
     private int _libraryGeneration;
     private bool _queryRewriteEnabledPersisted = true;
     private bool _synchronizingToolbarSearch;
@@ -736,7 +737,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
         IHostActivityTracker? activityTracker = null,
-        HostOcrCompositionOptions? ocrComposition = null)
+        HostOcrCompositionOptions? ocrComposition = null, IAppPaths? appPaths = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
@@ -748,6 +749,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Register(_watcherSubscriptions);
         _settingsPath = settingsPath;
         _ocrComposition = ocrComposition;
+        _hostAppPaths = appPaths;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
         _settingsStore = settingsStore ?? new AppSettingsStore(settingsPath, _settings);
@@ -1374,6 +1376,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     private void AttachHostServices(HostServices services)
     {
+        OcrManagedFileDialogs.EnsureAttached(this, services);
         services.ObserveSettingsStore(_settingsStore);
         McpServerHost mcpHost = new(services, ReportUnexpectedException);
         _mcpHost = mcpHost;
@@ -2268,7 +2271,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             startupProgress: CreateStartupStageProgress(),
             activityTracker: _activityTracker,
             runtimeHostLease: _runtimeHostLease,
-            ocrComposition: _ocrComposition);
+            ocrComposition: _ocrComposition, appPaths: _hostAppPaths);
     }
 
     private async Task StopHostServicesAsync()
@@ -2624,7 +2627,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return false;
         }
 
-        RefreshOcrEngineMenuChecks();
+        RefreshOcrPresetMenuChecks();
         _settingsViewModel?.OcrProviderSettings.LoadPersistedToken(Shell.MinerUToken);
         Report("OCR 引擎选择已保存。");
         return true;

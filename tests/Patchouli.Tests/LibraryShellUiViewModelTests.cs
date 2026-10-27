@@ -102,7 +102,15 @@ public sealed class LibraryShellUiViewModelTests : IDisposable
         MainWindowViewModel viewModel = CreateMainWindow();
         LibraryShellViewModel shell = viewModel.Shell;
         ConcurrentQueue<string?> changes = new();
-        shell.PropertyChanged += (_, args) => changes.Enqueue(args.PropertyName);
+        // Deferred shell initialization keeps emitting unrelated property notifications on the
+        // dispatcher; only IsBusy events matter for proving the setter notifies on its own.
+        shell.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(LibraryShellViewModel.IsBusy))
+            {
+                changes.Enqueue(args.PropertyName);
+            }
+        };
 
         shell.IsBusy = true;
         shell.IsBusy = false;

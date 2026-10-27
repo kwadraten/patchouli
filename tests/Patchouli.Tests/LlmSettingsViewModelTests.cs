@@ -220,7 +220,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 section.ChatProviderId.Should().Be("openai");
                 section.OcrProviderId.Should().Be("openai");
                 section.IsDirty.Should().BeFalse("removing a credential already writes the credential store");
-                await vm.Settings.SelectSectionAsync("ocr_model");
+                // The OCR-domain defaults card lives in the llm section; the legacy
+                // ocr_model/multimodal ids now alias to the ocr_engines catalog.
+                await vm.Settings.SelectSectionAsync("llm");
                 Dispatcher.UIThread.RunJobs();
                 ComboBox ocr = page.GetVisualDescendants().OfType<ComboBox>()
                     .Single(combo => ReferenceEquals(combo.ItemsSource, section.OcrProviderOptions));

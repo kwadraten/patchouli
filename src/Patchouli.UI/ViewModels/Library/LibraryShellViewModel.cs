@@ -22,6 +22,7 @@ using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Library;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Import;
 using Patchouli.UI.Diagnostics;
@@ -2244,17 +2245,31 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         try
         {
             string documentEngine = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Document);
+            HostServices services = await _main.ServicesAsync();
             LibraryImportOrchestrator orchestrator = await _main.ImportOrchestratorAsync();
+            // Issue #43: the per-library document-scope preset choice wins; without one the
+            // legacy engine default is ensured. Stored ids are validated library-safely, so a
+            // preset UUID from another library errors instead of enqueueing silently. Selection
+            // and enqueue both hit SQLite/file IO — off the dispatcher, applied below.
+            Result<OcrPresetId> preset = await Task.Run(() => services.OcrSelections
+                .ResolveForScopeAsync(OcrScope.Document,
+                    ct => services.OcrDefaults.EnsurePresetAsync(documentEngine, ct)));
+            if (preset.IsFailure)
+            {
+                _main.ReportError($"OCR preset 不可用：{preset.ErrorMessage}");
+                return;
+            }
+
             OcrEnqueueItem[] enqueueItems = items
                 .Select(item => new OcrEnqueueItem(item.Title, item.DocumentInstanceId, item.SourcePath))
                 .ToArray();
             Result<OcrEnqueueSummary> result =
-                await orchestrator.EnqueueOcrForItemsAsync(
+                await Task.Run(() => orchestrator.EnqueueOcrForItemsAsync(
                     enqueueItems,
-                    documentEngine,
+                    preset.Value,
                     priority,
                     MinerUToken,
-                    CancellationToken.None);
+                    CancellationToken.None));
             if (result.IsFailure)
             {
                 if (result.ErrorCode == LibraryImportOrchestrator.MinerUTokenRequiredErrorCode)

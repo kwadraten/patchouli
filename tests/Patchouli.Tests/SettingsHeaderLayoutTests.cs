@@ -86,7 +86,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
     }
 
     [Theory]
-    [InlineData("import", 4)]
+    [InlineData("import", 5)]
     [InlineData("library", 2)]
     public async Task Every_settings_group_switches_one_subpage_at_a_time_in_the_fixed_header(string sectionId,
         int expectedHeaders)

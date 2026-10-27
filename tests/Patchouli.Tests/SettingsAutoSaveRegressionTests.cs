@@ -100,7 +100,6 @@ public sealed class SettingsAutoSaveRegressionTests
                 main.Settings.SyncSettings.SyncRoot = "";
             }
 
-            main.Settings.OcrProviderSettings.SelectedDocumentEngine = "";
             await main.Settings.SearchRewriteSettings.LoadAsync();
             main.Settings.SearchRewriteSettings.AddRule();
             main.Settings.SearchRewriteSettings.Rules.Single().Pattern = "draft";
@@ -108,6 +107,13 @@ public sealed class SettingsAutoSaveRegressionTests
             (await main.Settings.SaveAllDirtySectionsAsync()).Should().BeTrue(main.Settings.GlobalStatus);
             main.Settings.HasDirtySections.Should().BeFalse();
             main.Settings.GlobalStatus.Should().Contain("补全");
+            // OCR scope selections never silently reset: an explicit-but-unavailable stored
+            // choice keeps the section dirty across a save instead of mapping to 自动.
+            main.Settings.OcrProviderSettings.DocumentPresetPicker.SelectedOption =
+                OcrPresetOption.Unavailable("stale-preset-id");
+            main.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
+            await main.Settings.OcrProviderSettings.SaveAsync();
+            main.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
             main.AppOptions.FileScanning.ExclusionPatterns.Should().NotContain("[");
             main.AppOptions.Import.MaxFailedPageRatio.Should().Be(0.37);
         }
@@ -119,7 +125,9 @@ public sealed class SettingsAutoSaveRegressionTests
         await reopened.Settings.OcrProviderSettings.LoadAsync();
         reopened.Settings.LibrarySettings.ExclusionPatternsText.Should().Be("[");
         reopened.Settings.SyncSettings.DeviceName.Should().Be("未完成的同步设置");
-        reopened.Settings.OcrProviderSettings.SelectedDocumentEngine.Should().BeEmpty();
+        reopened.Settings.OcrProviderSettings.IsDirty.Should().BeFalse();
+        reopened.Settings.OcrProviderSettings.DocumentPresetPicker.SelectedOption.Should()
+            .BeSameAs(OcrPresetOption.Automatic);
         reopened.Settings.SearchRewriteSettings.Rules.Should().ContainSingle().Which.Pattern.Should().Be("draft");
         reopened.Settings.HasDirtySections.Should().BeFalse();
         reopened.Settings.SearchRewriteSettings.Rules.Single().Replacement = "complete";

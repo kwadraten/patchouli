@@ -176,63 +176,85 @@
             <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </MenuItem>
           <MenuItem Header="文献加工" SubmenuOpened="OnOcrMenuOpened">
-            <MenuItem Header="切换OCR引擎">
-              <MenuItem Header="文档级" Classes="ocrEngineScope" ItemsSource="{Binding DocumentOcrEngineMenuEntries}"
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="快速补全 OCR" Command="{Binding Shell.QuickFillOcrCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="选择 OCR 预设">
+              <MenuItem Header="文档级" Classes="ocrPresetScope"
+                        ItemsSource="{Binding DocumentOcrPresetMenuEntries}"
                         x:CompileBindings="False">
                 <MenuItem.ItemTemplate>
-                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                  <DataTemplate x:DataType="local:OcrPresetMenuEntryViewModel">
                     <TextBlock Text="{Binding Header}" />
                   </DataTemplate>
                 </MenuItem.ItemTemplate>
                 <MenuItem.Styles>
-                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                  <Style Selector="MenuItem.ocrPresetScope > MenuItem">
                     <Setter Property="ToggleType" Value="Radio" />
-                    <Setter Property="GroupName" Value="OcrEngineScope1" />
+                    <Setter Property="GroupName" Value="OcrPresetScope1" />
                     <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
                     <Setter Property="Command" Value="{Binding SelectCommand}" />
                   </Style>
                 </MenuItem.Styles>
               </MenuItem>
-              <MenuItem Header="页面级" Classes="ocrEngineScope" ItemsSource="{Binding PageOcrEngineMenuEntries}"
+              <MenuItem Header="页面级" Classes="ocrPresetScope"
+                        ItemsSource="{Binding PageOcrPresetMenuEntries}"
                         x:CompileBindings="False">
                 <MenuItem.ItemTemplate>
-                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                  <DataTemplate x:DataType="local:OcrPresetMenuEntryViewModel">
                     <TextBlock Text="{Binding Header}" />
                   </DataTemplate>
                 </MenuItem.ItemTemplate>
                 <MenuItem.Styles>
-                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                  <Style Selector="MenuItem.ocrPresetScope > MenuItem">
                     <Setter Property="ToggleType" Value="Radio" />
-                    <Setter Property="GroupName" Value="OcrEngineScope2" />
+                    <Setter Property="GroupName" Value="OcrPresetScope2" />
                     <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
                     <Setter Property="Command" Value="{Binding SelectCommand}" />
                   </Style>
                 </MenuItem.Styles>
               </MenuItem>
-              <MenuItem Header="区域级" Classes="ocrEngineScope" ItemsSource="{Binding RegionOcrEngineMenuEntries}"
+              <MenuItem Header="区域级" Classes="ocrPresetScope"
+                        ItemsSource="{Binding RegionOcrPresetMenuEntries}"
                         x:CompileBindings="False">
                 <MenuItem.ItemTemplate>
-                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                  <DataTemplate x:DataType="local:OcrPresetMenuEntryViewModel">
                     <TextBlock Text="{Binding Header}" />
                   </DataTemplate>
                 </MenuItem.ItemTemplate>
                 <MenuItem.Styles>
-                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                  <Style Selector="MenuItem.ocrPresetScope > MenuItem">
                     <Setter Property="ToggleType" Value="Radio" />
-                    <Setter Property="GroupName" Value="OcrEngineScope3" />
+                    <Setter Property="GroupName" Value="OcrPresetScope3" />
                     <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
                     <Setter Property="Command" Value="{Binding SelectCommand}" />
                   </Style>
                 </MenuItem.Styles>
               </MenuItem>
             </MenuItem>
-            <MenuItem Header="任务队列" Command="{Binding OpenOcrQueueCommand}" />
-            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="快速补全 OCR" Command="{Binding Shell.QuickFillOcrCommand}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <Separator />
             <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
                       ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
+            <MenuItem Header="切换翻译引擎" Classes="translationEngine"
+                      ItemsSource="{Binding TranslationEngineMenuEntries}"
+                      x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="local:TranslationEngineMenuEntryViewModel">
+                  <TextBlock Text="{Binding Header}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem.translationEngine > MenuItem">
+                  <Setter Property="ToggleType" Value="Radio" />
+                  <Setter Property="GroupName" Value="TranslationEngineGroup" />
+                  <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
+                  <Setter Property="Command" Value="{Binding SelectCommand}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <Separator />
+            <MenuItem Header="任务队列" Command="{Binding OpenOcrQueueCommand}" />
             <MenuItem Header="文献加工设置" Command="{Binding OpenProcessingSettingsCommand}" />
           </MenuItem>
           <MenuItem Header="搜索">

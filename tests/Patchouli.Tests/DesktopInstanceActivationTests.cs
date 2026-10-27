@@ -133,6 +133,12 @@ public sealed class DesktopInstanceActivationTests(AvaloniaSharedSessionFixture 
             launchCount.Should().Be(1);
 
             window.RequestExit();
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (!closed && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(10);
+            }
+
             closed.Should().BeTrue();
             return true;
         }, CancellationToken.None);

@@ -10,6 +10,7 @@ using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Extensions.Contracts;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
@@ -65,6 +66,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
+        OcrEngineCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.Ocr);
+        OcrTextLayerCatalog =
+            new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.PdfTextLayer);
         LlmSettings = new LlmSettingsViewModel(main);
         ExtensionSettings = new ExtensionSettingsViewModel(main);
         AgentIntegrationSettings = new AgentIntegrationSettingsViewModel(main);
@@ -86,6 +90,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         ISettingsSection[] sections =
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
+            OcrEngineCatalog, OcrTextLayerCatalog,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
             CaywSettings,
@@ -116,7 +121,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("library", "书库与源文件", LibrarySettings),
             new SettingsSectionEntryViewModel("local_files", "模型与临时文件", LocalFileManagement),
             new SettingsSectionEntryViewModel("import", "导入时设置", ImportSettings),
-            new SettingsSectionEntryViewModel("ocr", "OCR 引擎", OcrProviderSettings),
+            new SettingsSectionEntryViewModel("ocr_presets", "OCR 预设编排", OcrProviderSettings),
             new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
             new SettingsSectionEntryViewModel("extensions", "其他扩展", ExtensionSettings),
             new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
@@ -135,15 +140,26 @@ public sealed partial class SettingsViewModel : ViewModelBase
             _sectionTitles[(ISettingsSection)entry.Content] = entry.Title;
         }
 
+        // The two catalog tabs live only inside the recognition group (not in SectionEntries);
+        // give them titles so save/validation summaries never hit a missing-key lookup.
+        _sectionTitles[OcrEngineCatalog] = "OCR 引擎列表";
+        _sectionTitles[OcrTextLayerCatalog] = "文本层提取算法列表";
+
         SettingsSectionEntryViewModel Entry(string id)
         {
             return SectionEntries.Single(entry => entry.Id == id);
         }
 
         SettingsSectionGroupViewModel library = new(Entry("library"), Entry("local_files"));
-        SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr"),
-            new SettingsSectionEntryViewModel("ocr_model", "多模态 OCR", new LlmOcrDefaultsViewModel(LlmSettings)),
-            new SettingsSectionEntryViewModel("translation", "文献翻译", new TranslationDefaultsViewModel(LlmSettings)));
+        // User-specified order: import → preset composition → engine catalog → text-layer
+        // provider catalog → translation. The separate multimodal OCR page is gone; its
+        // configuration lives in the engine catalog's extension dialogs.
+        SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr_presets"),
+            new SettingsSectionEntryViewModel("ocr_engines", "OCR 引擎列表", OcrEngineCatalog),
+            new SettingsSectionEntryViewModel("ocr_textlayer", "文本层提取算法列表",
+                OcrTextLayerCatalog),
+            new SettingsSectionEntryViewModel("translation", "文献翻译",
+                new TranslationDefaultsViewModel(LlmSettings)));
         SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"), Entry("csl_cayw"));
@@ -203,6 +219,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
+    public OcrComponentCatalogSettingsViewModel OcrEngineCatalog { get; }
+    public OcrComponentCatalogSettingsViewModel OcrTextLayerCatalog { get; }
     public LlmSettingsViewModel LlmSettings { get; }
     public ExtensionSettingsViewModel ExtensionSettings { get; }
 
@@ -615,9 +633,22 @@ public sealed partial class SettingsViewModel : ViewModelBase
             id = "translation";
         }
 
+        // Legacy ids keep navigating: the old MinerU credential surface lives behind the
+        // built-in row's gear in the engine catalog; the old "ocr" entry is the composition tab.
         if (id.Equals("mineru", StringComparison.OrdinalIgnoreCase))
         {
-            id = "ocr";
+            id = "ocr_engines";
+        }
+
+        if (id.Equals("ocr", StringComparison.OrdinalIgnoreCase))
+        {
+            id = "ocr_presets";
+        }
+
+        if (id.Equals("ocr_model", StringComparison.OrdinalIgnoreCase) ||
+            id.Equals("multimodal", StringComparison.OrdinalIgnoreCase))
+        {
+            id = "ocr_engines";
         }
 
         if (!_sectionCategories.TryGetValue(id, out NavCategoryViewModel? category))
@@ -642,7 +673,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             return group.ActiveEntry.Content switch
             {
-                LlmOcrDefaultsViewModel ocr => [ocr.Settings],
                 TranslationDefaultsViewModel translation => [translation.Settings],
                 ISettingsSection selectedSection => [selectedSection],
                 _ => []
