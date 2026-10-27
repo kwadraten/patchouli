@@ -20,7 +20,7 @@ public sealed class OcrQueueSchedulerTests
             new FakeExecutor(),
             activityTracker: tracker);
 
-        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> queued = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
         tracker.Current.IsBusy.Should().BeTrue("ready queued OCR is immediately schedulable");
@@ -49,7 +49,7 @@ public sealed class OcrQueueSchedulerTests
             new FixedClock(DateTimeOffset.UtcNow),
             executor,
             activityTracker: tracker);
-        Result<OcrQueueTask> transient = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> transient = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
         await scheduler.RunOneSchedulingTickAsync();
@@ -59,7 +59,7 @@ public sealed class OcrQueueSchedulerTests
         tracker.Current.SleepReason.Should().Contain("重试");
 
         executor.Result = new OcrQueueExecutionResult(false, false, "missing_executable", "install it");
-        Result<OcrQueueTask> blocked = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> blocked = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(scheduler, blocked.Value.TaskId, OcrQueueTaskState.Blocked);
@@ -77,7 +77,7 @@ public sealed class OcrQueueSchedulerTests
     public async Task Enqueue_task_kinds_create_queued_tasks()
     {
         OcrQueueScheduler scheduler = Create(out _);
-        (await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
+        (await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
             OcrQueuePriority.UserStartedDocument)).Value.State.Should().Be(OcrQueueTaskState.Queued);
     }
 
@@ -95,9 +95,9 @@ public sealed class OcrQueueSchedulerTests
             new FixedClock(DateTimeOffset.UtcNow), new FakeExecutor(),
             loopInterval: TimeSpan.FromMilliseconds(5));
 
-        Result<OcrQueueTask> first = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> first = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-        Result<OcrQueueTask> second = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> second = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
         first.IsSuccess.Should().BeTrue(first.ErrorMessage);
@@ -120,7 +120,7 @@ public sealed class OcrQueueSchedulerTests
             new FixedClock(DateTimeOffset.UtcNow), new FakeExecutor(),
             loopInterval: TimeSpan.FromMilliseconds(5));
 
-        Result<OcrQueueTask> result = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> result = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
         result.IsFailure.Should().BeTrue();
@@ -139,7 +139,7 @@ public sealed class OcrQueueSchedulerTests
             new FixedClock(DateTimeOffset.UtcNow), new FakeExecutor(),
             loopInterval: TimeSpan.FromMilliseconds(5));
 
-        Task<Result<OcrQueueTask>> enqueue = scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Task<Result<OcrQueueTask>> enqueue = scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         Task clearFinished = Task.Run(scheduler.ClearFinishedTasks);
 
@@ -152,9 +152,9 @@ public sealed class OcrQueueSchedulerTests
     public async Task RunOneTick_starts_highest_priority_and_marks_success()
     {
         OcrQueueScheduler scheduler = Create(out FakeExecutor executor);
-        Result<OcrQueueTask> low = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> low = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.Maintenance);
-        Result<OcrQueueTask> high = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> high = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.InteractiveCurrentPage);
         await scheduler.RunOneSchedulingTickAsync();
         (await scheduler.GetTaskAsync(low.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Queued);
@@ -168,7 +168,7 @@ public sealed class OcrQueueSchedulerTests
     {
         FixedClock clock = new(DateTimeOffset.UtcNow);
         OcrQueueScheduler scheduler = Create(clock, out _);
-        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> task = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.Maintenance);
         clock.UtcNow = clock.UtcNow.AddHours(1);
         Result<IReadOnlyList<OcrQueueTask>> tasks = await scheduler.ListTasksAsync(new OcrQueueTaskFilter());
@@ -188,7 +188,7 @@ public sealed class OcrQueueSchedulerTests
         await scheduler.RunOneSchedulingTickAsync();
         (await scheduler.GetTaskAsync(cloud.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Queued);
         await scheduler.PauseAsync(OcrPauseScope.Global);
-        Result<OcrQueueTask> local = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> local = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         (await scheduler.GetTaskAsync(local.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Queued);
@@ -208,7 +208,7 @@ public sealed class OcrQueueSchedulerTests
         FakeExecutor executor = new()
             { Result = new OcrQueueExecutionResult(false, false, "network_timeout", "temporary") };
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
-        Result<OcrQueueTask> transient = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> transient = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
@@ -217,7 +217,7 @@ public sealed class OcrQueueSchedulerTests
         retried.AttemptCount.Should().Be(1);
         retried.ScheduledAfter.Should().NotBeNull();
         executor.Result = new OcrQueueExecutionResult(false, false, "missing_executable", "install it");
-        Result<OcrQueueTask> blocked = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> blocked = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
@@ -266,7 +266,7 @@ public sealed class OcrQueueSchedulerTests
                 runId, 3, 0)
         };
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
-        Result<OcrQueueTask> original = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> original = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New(), PageId.New(), PageId.New()],
             OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
@@ -292,7 +292,7 @@ public sealed class OcrQueueSchedulerTests
                 runId, 1, 2)
         };
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
-        Result<OcrQueueTask> original = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> original = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New(), PageId.New(), PageId.New()],
             OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
@@ -316,9 +316,9 @@ public sealed class OcrQueueSchedulerTests
         List<OcrQueueChangedEventArgs> events = [];
         scheduler.Changed += (_, e) => events.Add(e);
 
-        Result<OcrQueueTask> taskA = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> taskA = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-        Result<OcrQueueTask> taskB = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> taskB = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await WaitForAsync(() => executor.Executed.Length == 2);
@@ -367,7 +367,7 @@ public sealed class OcrQueueSchedulerTests
     public async Task Manual_retry_rejects_nonterminal_and_missing_tasks()
     {
         OcrQueueScheduler scheduler = Create(out _);
-        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> queued = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
         (await scheduler.RetryTaskAsync(queued.Value.TaskId)).ErrorCode.Should().Be(AppErrorCodes.InvalidState);
@@ -378,7 +378,7 @@ public sealed class OcrQueueSchedulerTests
     public async Task Cancel_queued_task_and_preset_pause_behave_explicitly()
     {
         OcrQueueScheduler scheduler = Create(out _);
-        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> task = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         (await scheduler.PauseAsync("preset")).ErrorCode.Should().Be("unsupported_operation");
         (await scheduler.CancelTaskAsync(task.Value.TaskId)).IsSuccess.Should().BeTrue();
@@ -393,25 +393,25 @@ public sealed class OcrQueueSchedulerTests
         FakeExecutor executor = new();
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
 
-        Result<OcrQueueTask> succeeded = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> succeeded = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
 
         executor.Result = new OcrQueueExecutionResult(false, false, "local_ocr_process_failed", "failed");
-        Result<OcrQueueTask> failed = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> failed = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
 
         executor.Result = new OcrQueueExecutionResult(false, false, "missing_executable", "blocked");
-        Result<OcrQueueTask> blocked = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> blocked = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
 
-        Result<OcrQueueTask> cancelled = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> cancelled = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         (await scheduler.CancelTaskAsync(cancelled.Value.TaskId)).IsSuccess.Should().BeTrue();
@@ -474,9 +474,9 @@ public sealed class OcrQueueSchedulerTests
         GatedExecutor executor = new();
         OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
             limits: new OcrQueueLimits(4, 4, 4, 4, 4), loopInterval: TimeSpan.FromMilliseconds(5));
-        Result<OcrQueueTask> first = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> first = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-        Result<OcrQueueTask> second = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> second = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await WaitForAsync(() => executor.Executed.Length == 2);
@@ -492,7 +492,7 @@ public sealed class OcrQueueSchedulerTests
     public async Task Local_pause_and_running_cancellation_are_honored()
     {
         OcrQueueScheduler scheduler = Create(out _);
-        Result<OcrQueueTask> local = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> local = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.PauseAsync(OcrPauseScope.Local);
         await scheduler.RunOneSchedulingTickAsync();
@@ -504,7 +504,7 @@ public sealed class OcrQueueSchedulerTests
 
         FakeExecutor blocking = new() { Block = true };
         OcrQueueScheduler secondScheduler = Create(new FixedClock(DateTimeOffset.UtcNow), blocking);
-        Result<OcrQueueTask> task = await secondScheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> task = await secondScheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await secondScheduler.RunOneSchedulingTickAsync();
         await WaitForAsync(() => blocking.Executed.Length == 1);
@@ -518,7 +518,7 @@ public sealed class OcrQueueSchedulerTests
     public async Task Queue_status_counts_and_excludes_completed_tasks_when_requested()
     {
         OcrQueueScheduler scheduler = Create(out _);
-        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> task = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
@@ -536,7 +536,7 @@ public sealed class OcrQueueSchedulerTests
         ThrowingExecutor executor = new();
         OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
             loopErrorLogger: ex => logged = ex);
-        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+        Result<OcrQueueTask> task = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
             [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();
@@ -578,7 +578,7 @@ public sealed class OcrQueueSchedulerTests
                 "PDF renderer timed out.")
         };
         OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
-        Result<OcrQueueTask> task = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+        Result<OcrQueueTask> task = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await scheduler.WaitForIdleAsync();

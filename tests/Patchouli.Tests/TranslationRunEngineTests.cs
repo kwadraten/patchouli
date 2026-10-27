@@ -242,7 +242,7 @@ public sealed class TranslationRunEngineTests
         }).RunAsync(
             Request(context, Settings(), Target(context.PageId, 1)), null, timeout.Token);
         await modelStarted.Task.WaitAsync(timeout.Token);
-        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(context.DocumentId, OcrPresetId.New(),
+        Result<OcrQueueTask> queued = await scheduler.EnqueueTestPagesAsync(context.DocumentId, OcrPresetId.New(),
             [context.PageId], OcrQueuePriority.UserStartedDocument);
         try
         {

@@ -212,7 +212,7 @@ public interface IOcrQueueScheduler
     Task<Result<OcrQueueTask>> EnqueueDocumentAsync(DocumentInstanceId d, OcrPresetId p, IReadOnlyList<PageId> pages,
         string engineId, string adapterKind, string? providerId, string priority, CancellationToken c = default);
 
-    Task<Result<OcrQueueTask>> EnqueueMockPagesAsync(DocumentInstanceId d, OcrPresetId p, IReadOnlyList<PageId> pages,
+    Task<Result<OcrQueueTask>> EnqueueTestPagesAsync(DocumentInstanceId d, OcrPresetId p, IReadOnlyList<PageId> pages,
         string priority, CancellationToken c = default);
 
     Task<Result<OcrQueueTask>> EnqueueRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,

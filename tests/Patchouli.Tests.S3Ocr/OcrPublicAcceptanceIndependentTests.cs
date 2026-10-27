@@ -92,7 +92,7 @@ public sealed class OcrPublicAcceptanceIndependentTests
         OcrQueueTask task = new(OcrQueueTaskId.New(), LibraryId.New(), context.Document.DocumentInstanceId,
             preset.PresetId, context.Pages.Select(page => page.PageId).ToArray(), OcrQueueTaskKind.Document,
             OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, now, now,
-            OcrQueueTaskState.Running, 1, 1, null, null, null, null, null, null);
+            OcrQueueTaskState.Running, 1, 1, null, null, null, null, null);
         OcrQueueTaskExecutor executor = new(context.Engine, context.Units, new FailingIndex());
 
         OcrQueueExecutionResult result = await executor.ExecuteAsync(task, default);

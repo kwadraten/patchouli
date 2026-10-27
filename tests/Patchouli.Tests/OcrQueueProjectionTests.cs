@@ -52,15 +52,15 @@ public sealed class OcrQueueProjectionTests
             await release.Task.WaitAsync(cancellationToken);
             return new OcrQueueExecutionResult(false, true);
         };
-        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         try
         {
             await context.Scheduler.RunOneSchedulingTickAsync();
             await context.Executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            Result<OcrQueueTask> scoped46 = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+            Result<OcrQueueTask> scoped46 = await context.Scheduler.EnqueueTestPagesAsync(documentId,
                 OcrPresetId.New(), pages.Take(46).ToArray(), OcrQueuePriority.UserStartedDocument);
-            Result<OcrQueueTask> scoped50 = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+            Result<OcrQueueTask> scoped50 = await context.Scheduler.EnqueueTestPagesAsync(documentId,
                 OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
 
             Result<IReadOnlyList<OcrQueueRow>> rows = await context.Rows.ListRowsAsync();
@@ -107,7 +107,7 @@ public sealed class OcrQueueProjectionTests
         await context.SeedRevisionAsync(documentId, pages[0], revision, true);
         await context.SetIndexStatusAsync(documentId, "current");
 
-        Result<OcrQueueTask> queued = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> queued = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
 
         Result<IReadOnlyList<OcrQueueRow>> rows = await context.Rows.ListRowsAsync();
@@ -132,7 +132,7 @@ public sealed class OcrQueueProjectionTests
         // Pages failed during recognition, so the retry must not keep the failed run.
         context.Executor.Handler = (_, _) => Task.FromResult(new OcrQueueExecutionResult(
             false, false, "ocr_error", "recognition failed", failedRun, 0, 2));
-        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, attempt.Value.TaskId, OcrQueueTaskState.Failed);
@@ -172,7 +172,7 @@ public sealed class OcrQueueProjectionTests
 
         context.Executor.Handler = (_, _) => Task.FromResult(new OcrQueueExecutionResult(
             false, false, "index_error", "index rebuild failed", committedRun, 3, 0));
-        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> attempt = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, attempt.Value.TaskId, OcrQueueTaskState.Failed);
@@ -267,14 +267,14 @@ public sealed class OcrQueueProjectionTests
 
         Dictionary<OcrQueueTaskId, OcrQueueExecutionResult> results = [];
         context.Executor.Handler = (task, _) => Task.FromResult(results[task.TaskId]);
-        Result<OcrQueueTask> supersededTask = await context.Scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> supersededTask = await context.Scheduler.EnqueueTestPagesAsync(
             documentId, OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         results[supersededTask.Value.TaskId] = new OcrQueueExecutionResult(true, false,
             RunId: supersededRun, CompletedPageCount: 2);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, supersededTask.Value.TaskId,
             OcrQueueTaskState.Succeeded);
-        Result<OcrQueueTask> indexedTask = await context.Scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> indexedTask = await context.Scheduler.EnqueueTestPagesAsync(
             documentId, OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         results[indexedTask.Value.TaskId] = new OcrQueueExecutionResult(true, false,
             RunId: indexedRun, CompletedPageCount: 2);
@@ -311,7 +311,7 @@ public sealed class OcrQueueProjectionTests
 
         context.Executor.Handler = (_, _) => Task.FromResult(new OcrQueueExecutionResult(
             true, false, RunId: run, CompletedPageCount: 2));
-        Result<OcrQueueTask> task = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> task = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, task.Value.TaskId, OcrQueueTaskState.Succeeded);
@@ -362,7 +362,7 @@ public sealed class OcrQueueProjectionTests
         List<OcrQueueTaskId> taskOrder = [];
         foreach (OcrRunId run in new[] { broken, scalar, mixed, nullEntry })
         {
-            Result<OcrQueueTask> task = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+            Result<OcrQueueTask> task = await context.Scheduler.EnqueueTestPagesAsync(documentId,
                 OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
             results[task.Value.TaskId] = new OcrQueueExecutionResult(true, false, RunId: run,
                 CompletedPageCount: 1);
@@ -419,14 +419,14 @@ public sealed class OcrQueueProjectionTests
 
         Dictionary<OcrQueueTaskId, OcrQueueExecutionResult> results = [];
         context.Executor.Handler = (task, _) => Task.FromResult(results[task.TaskId]);
-        Result<OcrQueueTask> supersededTask = await context.Scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> supersededTask = await context.Scheduler.EnqueueTestPagesAsync(
             documentId, OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         results[supersededTask.Value.TaskId] = new OcrQueueExecutionResult(true, false,
             RunId: supersededRun, CompletedPageCount: 2);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, supersededTask.Value.TaskId,
             OcrQueueTaskState.Succeeded);
-        Result<OcrQueueTask> indexedTask = await context.Scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> indexedTask = await context.Scheduler.EnqueueTestPagesAsync(
             documentId, OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         results[indexedTask.Value.TaskId] = new OcrQueueExecutionResult(true, false,
             RunId: indexedRun, CompletedPageCount: 2);
@@ -464,7 +464,7 @@ public sealed class OcrQueueProjectionTests
 
         context.Executor.Handler = (_, _) => Task.FromResult(new OcrQueueExecutionResult(
             false, false, "index_error", "x", run, 2, 0));
-        Result<OcrQueueTask> task = await context.Scheduler.EnqueueMockPagesAsync(documentId,
+        Result<OcrQueueTask> task = await context.Scheduler.EnqueueTestPagesAsync(documentId,
             OcrPresetId.New(), pages, OcrQueuePriority.UserStartedDocument);
         await context.Scheduler.RunOneSchedulingTickAsync();
         await WaitForStateAsync(context.Scheduler, task.Value.TaskId, OcrQueueTaskState.Failed);

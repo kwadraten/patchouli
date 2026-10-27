@@ -115,7 +115,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
             HostServices services = await main.ServicesAsync();
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
             await scheduler.PauseAsync(OcrPauseScope.Global);
-            (await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
+            (await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
                 OcrQueuePriority.UserStartedDocument)).IsSuccess.Should().BeTrue();
             OcrQueueViewModel queue = main.OcrQueue;
             queue.StartObserving();
@@ -522,7 +522,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
             await scheduler.PauseAsync(OcrPauseScope.Global);
 
-            Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
+            Result<OcrQueueTask> enqueued = await scheduler.EnqueueTestPagesAsync(
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
             enqueued.IsSuccess.Should().BeTrue();
 
@@ -589,7 +589,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
             await scheduler.PauseAsync(OcrPauseScope.Global);
 
-            Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
+            Result<OcrQueueTask> enqueued = await scheduler.EnqueueTestPagesAsync(
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
             enqueued.IsSuccess.Should().BeTrue();
 
@@ -643,7 +643,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
         queue.Dispose();
 
         // Fire a change on the scheduler
-        Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> enqueued = await scheduler.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         enqueued.IsSuccess.Should().BeTrue();
 
@@ -669,9 +669,9 @@ public sealed class OcrQueueReactivityTests : IDisposable
             await scheduler.PauseAsync(OcrPauseScope.Global);
 
             DocumentInstanceId docId = DocumentInstanceId.New();
-            Result<OcrQueueTask> task1 = await scheduler.EnqueueMockPagesAsync(
+            Result<OcrQueueTask> task1 = await scheduler.EnqueueTestPagesAsync(
                 docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
-            Result<OcrQueueTask> task2 = await scheduler.EnqueueMockPagesAsync(
+            Result<OcrQueueTask> task2 = await scheduler.EnqueueTestPagesAsync(
                 docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
 
             task1.IsSuccess.Should().BeTrue();

@@ -516,7 +516,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         Register(_scheduledRefresh);
 
         RefreshCommand = new AsyncCommand(() => RefreshAsync());
-        EnqueueMockCommand = new AsyncCommand(EnqueueMockAsync);
+        EnqueueTestCommand = new AsyncCommand(EnqueueTestTaskAsync);
         StartCommand = new AsyncCommand(StartAsync, () => IsQueueStopped);
         StopCommand = new AsyncCommand(StopAsync, () => IsQueueRunning);
         PauseGlobalCommand = new AsyncCommand(() => PauseAsync(OcrPauseScope.Global), () => IsGloballyResumed);
@@ -639,7 +639,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     }
 
     public AsyncCommand RefreshCommand { get; }
-    public AsyncCommand EnqueueMockCommand { get; }
+    public AsyncCommand EnqueueTestCommand { get; }
     public AsyncCommand StartCommand { get; }
     public AsyncCommand StopCommand { get; }
     public AsyncCommand PauseGlobalCommand { get; }
@@ -647,7 +647,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     public AsyncCommand ClearFinishedCommand { get; }
     public AsyncCommand RetryFailedCommand { get; }
 
-    private async Task EnqueueMockAsync()
+    private async Task EnqueueTestTaskAsync()
     {
         int generation = _main.LibraryGeneration;
         IOcrQueueScheduler? queue = await GetQueueAsync();
@@ -656,7 +656,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        Result<OcrQueueTask> result = await Task.Run(() => queue.EnqueueMockPagesAsync(
+        Result<OcrQueueTask> result = await Task.Run(() => queue.EnqueueTestPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument));
         if (_main.LibraryGeneration != generation)
         {

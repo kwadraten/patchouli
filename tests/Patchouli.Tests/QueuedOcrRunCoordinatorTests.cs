@@ -45,7 +45,7 @@ public sealed class QueuedOcrRunCoordinatorTests
     }
 
     [Fact]
-    public async Task Pages_run_enqueues_mock_pages_kind_with_selection_priority()
+    public async Task Pages_run_enqueues_pages_kind_with_selection_priority()
     {
         (QueuedOcrRunCoordinator facade, OcrQueueScheduler scheduler, FakeEngine engine) = Create();
 

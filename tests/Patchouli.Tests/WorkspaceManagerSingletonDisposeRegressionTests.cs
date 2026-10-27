@@ -99,7 +99,7 @@ public sealed class WorkspaceManagerSingletonDisposeRegressionTests : IDisposabl
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
             // Keep the test task queued while asserting the reopened view model updates.
             await scheduler.StopAsync();
-            Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
+            Result<OcrQueueTask> enqueued = await scheduler.EnqueueTestPagesAsync(
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
             enqueued.IsSuccess.Should().BeTrue();
 

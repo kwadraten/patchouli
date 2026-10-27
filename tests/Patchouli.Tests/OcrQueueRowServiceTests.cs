@@ -26,7 +26,7 @@ public sealed class OcrQueueRowServiceTests
         Result<Page> page = await context.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null,
             0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
         OcrPresetId presetId = OcrPresetId.New();
-        Result<OcrQueueTask> task = await context.Scheduler.EnqueueMockPagesAsync(document.Value.DocumentInstanceId,
+        Result<OcrQueueTask> task = await context.Scheduler.EnqueueTestPagesAsync(document.Value.DocumentInstanceId,
             presetId, [page.Value.PageId], OcrQueuePriority.UserStartedDocument);
 
         Result<IReadOnlyList<OcrQueueRow>> rows = await context.Rows.ListRowsAsync();

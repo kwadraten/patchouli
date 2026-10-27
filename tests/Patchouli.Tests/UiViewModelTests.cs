@@ -1871,7 +1871,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                         (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
                     await queue.PauseAsync(OcrPauseScope.Global);
                     vm.OcrQueue.StartObserving();
-                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+                    await vm.OcrQueue.EnqueueTestCommand.ExecuteAsync();
                     await vm.OcrQueue.RefreshAsync();
 
                     vm.Status.Should().Contain("已加入模拟 OCR 任务");
@@ -1918,8 +1918,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                         (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
                     await queue.PauseAsync(OcrPauseScope.Global);
                     vm.OcrQueue.StartObserving();
-                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-                    await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+                    await vm.OcrQueue.EnqueueTestCommand.ExecuteAsync();
+                    await vm.OcrQueue.EnqueueTestCommand.ExecuteAsync();
                     await vm.OcrQueue.RefreshAsync();
 
                     vm.OcrQueue.ActiveTaskRows.Should().HaveCount(2);
@@ -2031,7 +2031,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
                     // The mock preset/document ids do not resolve, so the task fails fast —
                     // but the executor still emits its simulated stage reports first.
-                    OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+                    OcrQueueTask task = (await queue.EnqueueTestPagesAsync(DocumentInstanceId.New(),
                         OcrPresetId.New(),
                         [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
                     await queue.StartAsync();
@@ -2125,7 +2125,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                     await vm.Library.CreateCommand.ExecuteAsync();
                     IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
 
-                    OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+                    OcrQueueTask task = (await queue.EnqueueTestPagesAsync(DocumentInstanceId.New(),
                         OcrPresetId.New(),
                         [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
                     await queue.StartAsync();

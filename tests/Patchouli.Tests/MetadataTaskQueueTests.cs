@@ -702,7 +702,7 @@ public sealed class MetadataTaskQueueTests : IDisposable
             return Task.FromResult(Result<OcrQueueTask>.Failure("unsupported", ""));
         }
 
-        public Task<Result<OcrQueueTask>> EnqueueMockPagesAsync(DocumentInstanceId d, OcrPresetId p,
+        public Task<Result<OcrQueueTask>> EnqueueTestPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages,
             string priority, CancellationToken c = default)
         {
