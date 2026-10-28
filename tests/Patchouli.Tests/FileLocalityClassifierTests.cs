@@ -48,6 +48,48 @@ public sealed class FileLocalityClassifierTests
     }
 
     [Fact]
+    public async Task Assess_and_scan_long_local_pdf_without_cloud_hydration()
+    {
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"long-local-{Guid.NewGuid():N}"))
+            .FullName;
+        string path = Path.Combine(root, new string('a', 230) + ".pdf");
+        try
+        {
+            path.Length.Should().BeGreaterThan(260);
+            File.WriteAllBytes(path, [0x25, 0x50, 0x44, 0x46]);
+
+            FileLocalityAssessment assessment = FileLocalityClassifier.Assess(path);
+            assessment.Readiness.Should().Be(FileLocalityReadiness.LocalReady);
+            assessment.IsCloudPath.Should().BeFalse();
+
+            FileSearchRootAccess access = new();
+            ResolvedFileSearchRoot resolved = new(root, root, root, FileSearchRootAuthorizationKinds.None);
+            FileSearchRootScanResult scan = await access.ScanPdfAsync(resolved);
+            scan.Candidates.Should().ContainSingle()
+                .Which.Readiness.Should().Be(FileLocalityReadiness.LocalReady);
+            scan.SkippedFiles.Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void Native_path_prefixes_long_drive_and_unc_paths_without_changing_short_or_prefixed_paths()
+    {
+        string drivePath = @"C:\books\" + new string('a', 250) + ".pdf";
+        string uncPath = @"\\server\share\" + new string('b', 250) + ".pdf";
+
+        FileLocalityClassifier.ToNativePath(drivePath).Should().Be(@"\\?\" + drivePath);
+        FileLocalityClassifier.ToNativePath(uncPath).Should().Be(@"\\?\UNC\" + uncPath[2..]);
+        FileLocalityClassifier.ToNativePath(@"C:\books\short.pdf").Should().Be(@"C:\books\short.pdf");
+        FileLocalityClassifier.ToNativePath(@"\\?\" + drivePath).Should().Be(@"\\?\" + drivePath);
+        FileLocalityClassifier.ToNativePath(@"\\?\UNC\" + uncPath[2..]).Should()
+            .Be(@"\\?\UNC\" + uncPath[2..]);
+    }
+
+    [Fact]
     public void Assess_does_not_use_path_names_to_decide_cloud()
     {
         // Ordinary local content under a folder named like a sync product stays local_ready.

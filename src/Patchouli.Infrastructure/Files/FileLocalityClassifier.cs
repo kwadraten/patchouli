@@ -72,13 +72,28 @@ public static class FileLocalityClassifier
             .ThenBy(item => fileNameSelector(item), StringComparer.OrdinalIgnoreCase);
     }
 
+    internal static string ToNativePath(string path)
+    {
+        if (path.Length < 260 ||
+            path.StartsWith(@"\\?\", StringComparison.Ordinal) ||
+            path.StartsWith(@"\\.\", StringComparison.Ordinal))
+        {
+            return path;
+        }
+
+        return path.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\?\UNC\" + path[2..]
+            : @"\\?\" + path;
+    }
+
     [SupportedOSPlatform("windows")]
     private static FileLocalityAssessment AssessWindows(string fullPath)
     {
         // FindFirstFile exposes enumeration-only bits such as RECALL_ON_OPEN and the
         // reparse tag in dwReserved0. GetFileAttributes fills gaps some providers report
         // only through the non-enumeration path. Merge cloud-relevant bits from both.
-        if (!NativeMethods.TryFindFirst(fullPath, out NativeMethods.Win32FindData findData))
+        string nativePath = ToNativePath(fullPath);
+        if (!NativeMethods.TryFindFirst(nativePath, out NativeMethods.Win32FindData findData))
         {
             return new FileLocalityAssessment(
                 FileLocalityReadiness.CloudUnready,
@@ -88,7 +103,7 @@ public static class FileLocalityClassifier
         }
 
         uint findAttributes = findData.FileAttributes;
-        uint getAttributes = NativeMethods.GetFileAttributesW(fullPath);
+        uint getAttributes = NativeMethods.GetFileAttributesW(nativePath);
         uint attributes = findAttributes;
         if (getAttributes != NativeMethods.InvalidFileAttributes)
         {
