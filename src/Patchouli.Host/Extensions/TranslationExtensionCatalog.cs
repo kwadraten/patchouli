@@ -627,6 +627,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             if (await CatalogDiagnostics.SegmentAsync("extension.catalog.restore", builtin.Id,
                     () => Manager.RestoreAsync(builtin.Id, cancellationToken)).ConfigureAwait(false))
             {
+                await UpgradeRestoredLegacyBuiltInAsync(builtin, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -685,6 +686,17 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             candidate = builtin;
         }
 
+        if (candidate.Fingerprint != builtin.Fingerprint &&
+            LegacyBuiltInExtensionFingerprints.IsKnownLegacy(builtin.Id, candidate.Fingerprint))
+        {
+            // A working copy byte-identical to a previously shipped built-in package carries no
+            // user edits, so the current bundled package replaces it in place. This also migrates
+            // retired package formats (e.g. extension.yml) that fail activation with EXT0014.
+            candidate = builtin;
+            preserveDraft = false;
+            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
+        }
+
         if (candidate.Fingerprint == builtin.Fingerprint)
         {
             await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
@@ -727,6 +739,28 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    ///     Replaces a restored generation that is byte-identical to a previously shipped built-in
+    ///     package with the current bundled package. User-edited working copies produce
+    ///     fingerprints outside the legacy manifest and keep running untouched.
+    /// </summary>
+    private async Task UpgradeRestoredLegacyBuiltInAsync(ExtensionPackageSnapshot builtin,
+        CancellationToken cancellationToken)
+    {
+        ExtensionGenerationInfo? restored = Manager.List().FirstOrDefault(item =>
+            string.Equals(item.Id, builtin.Id, StringComparison.Ordinal) && item.IsActive);
+        if (restored is null || restored.Fingerprint == builtin.Fingerprint ||
+            !LegacyBuiltInExtensionFingerprints.IsKnownLegacy(builtin.Id, restored.Fingerprint))
+        {
+            return;
+        }
+
+        Trace.WriteLine(
+            $"Upgrading built-in extension '{builtin.Id}' from legacy fingerprint {restored.Fingerprint} to bundled {builtin.Fingerprint}.");
+        await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
+        await Manager.ActivateAsync(builtin.Id, builtin, cancellationToken).ConfigureAwait(false);
     }
 
     private Task InstallMatchingBundledArtifactAsync(ExtensionPackageSnapshot package,
