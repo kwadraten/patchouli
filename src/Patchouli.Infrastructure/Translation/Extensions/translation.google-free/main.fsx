@@ -46,7 +46,7 @@ let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IEx
 }
 
 /// <summary>Google Free translation extension.</summary>
-/// <patchouli-extension id="translation.google-free" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="translation.google-free" kind="translation" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Google Free</name>
 /// </patchouli-extension>
 let extension =

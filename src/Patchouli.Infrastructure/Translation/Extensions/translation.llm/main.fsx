@@ -105,7 +105,7 @@ let translateBatch (resources: IExtensionResources) (llm: ILlmCapability)
 }
 
 /// <summary>Llm translation extension.</summary>
-/// <patchouli-extension id="translation.llm" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="translation.llm" kind="translation" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Llm</name>
 /// </patchouli-extension>
 let extension =

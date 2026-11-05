@@ -34,7 +34,7 @@ let failureFor (segmentId: string) (error: exn) =
     failure segmentId code error.Message
 
 /// <summary>Unofficial Tencent Transmart web translation with an automatically generated anonymous client identifier. Live availability is not guaranteed.</summary>
-/// <patchouli-extension id="translation.tencent-free" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="translation.tencent-free" kind="translation" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Tencent Transmart (free web)</name>
 /// </patchouli-extension>
 let extension =

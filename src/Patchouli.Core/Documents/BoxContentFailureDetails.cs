@@ -2,7 +2,10 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Core.Documents;
 
-public sealed record BoxContentError(string BoxId, string Message);
+public sealed record BoxContentError(
+    string BoxId,
+    string Message,
+    IReadOnlyList<TranslationStructureError>? StructureDiff = null);
 
 /// <summary>Identifies rejected members of an atomic box replacement batch.</summary>
 public sealed record BoxContentFailureDetails(IReadOnlyList<BoxContentError> Errors) : IResultFailureDetails

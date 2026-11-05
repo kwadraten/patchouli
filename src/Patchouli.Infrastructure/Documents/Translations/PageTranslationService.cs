@@ -164,16 +164,33 @@ public sealed class PageTranslationService : IPageTranslationService
 
         Dictionary<DocumentBoxId, DocumentBox> boxesById = boxesResult.Value.ToDictionary(box => box.BoxId);
         Dictionary<DocumentBoxId, string> translated = [];
+        List<BoxContentError> errors = [];
         foreach ((DocumentBoxId boxId, DocumentBoxPayload payload) in decoded.Value.TranslatedPayloads)
         {
+            if (DocumentBoxProjection.IsEmptyContinuation(boxesById[boxId]))
+            {
+                continue;
+            }
+
             Result<string> validated = ValidateBoxReplacement(boxesById[boxId], payload);
             if (validated.IsFailure)
             {
-                return Result<PageTranslationStatus>.Failure(
-                    validated.ErrorCode!, validated.ErrorMessage!, details: validated.Details);
+                if (validated.Details is BoxContentFailureDetails failure)
+                {
+                    errors.AddRange(failure.Errors);
+                }
+
+                continue;
             }
 
             translated.Add(boxId, validated.Value);
+        }
+
+        if (errors.Count > 0)
+        {
+            return Result<PageTranslationStatus>.Failure(AppErrorCodes.ValidationFailed,
+                string.Join(" ", errors.Select(error => $"Box {error.BoxId}: {error.Message}")),
+                details: new BoxContentFailureDetails(errors));
         }
 
         Result<PageTranslationStatus> persisted = await InTransactionAsync(async (connection, transaction) =>
@@ -327,6 +344,7 @@ public sealed class PageTranslationService : IPageTranslationService
 
         IReadOnlyList<DocumentBox> boxes = boxesResult.Value;
         Dictionary<DocumentBoxId, DocumentBox> boxesById = boxes.ToDictionary(box => box.BoxId);
+        bool translationChanged = false;
         Result<PageTranslationStatus> persisted = await InTransactionAsync(async (connection, transaction) =>
         {
             string pageIdValue = pageId.ToString();
@@ -363,8 +381,63 @@ public sealed class PageTranslationService : IPageTranslationService
                 }
 
                 currentVersion = realigned.Value.Version;
+                translationChanged = true;
             }
 
+            Dictionary<DocumentBoxId, string> validatedReplacements = [];
+            List<BoxContentError> errors = [];
+            foreach ((DocumentBoxId boxId, DocumentBoxPayload payload) in replacements)
+            {
+                if (!boxesById.TryGetValue(boxId, out DocumentBox? source))
+                {
+                    errors.Add(new BoxContentError(boxId.ToString(), "The box does not belong to the source page."));
+                    continue;
+                }
+
+                if (DocumentBoxProjection.Siblings(boxes, boxId).Any())
+                {
+                    errors.Add(new BoxContentError(boxId.ToString(),
+                        "The box has children and cannot be translated as a leaf."));
+                    continue;
+                }
+
+                if (DocumentBoxProjection.IsEmptyContinuation(source))
+                {
+                    continue;
+                }
+
+                Result<string> validated = ValidateBoxReplacement(source, payload);
+                if (validated.IsFailure)
+                {
+                    if (validated.Details is BoxContentFailureDetails failure)
+                    {
+                        errors.AddRange(failure.Errors);
+                    }
+
+                    continue;
+                }
+
+                validatedReplacements.Add(boxId, validated.Value);
+            }
+
+            if (errors.Count > 0)
+            {
+                return Result<PageTranslationStatus>.Failure(AppErrorCodes.ValidationFailed,
+                    string.Join(" ", errors.Select(error => $"Box {error.BoxId}: {error.Message}")),
+                    details: new BoxContentFailureDetails(errors));
+            }
+
+            if (validatedReplacements.Count == 0)
+            {
+                Dictionary<DocumentBoxId, string> unchanged = (await connection.QueryAsync<TranslationBoxRow>(
+                        "select box_id as BoxId, translated_md as TranslatedMd from translation_boxes where page_id = @PageId;",
+                        new { PageId = pageIdValue }, transaction))
+                    .ToDictionary(row => DocumentBoxId.Parse(row.BoxId), row => row.TranslatedMd);
+                return Result<PageTranslationStatus>.Success(BuildStatus(
+                    boxes, unchanged, expectedRevision, true, currentVersion, header?.TargetLanguage));
+            }
+
+            translationChanged = true;
             int nextVersion = currentVersion + 1;
             string? storedTargetLanguage = targetLanguage ?? header?.TargetLanguage;
             if (header is null)
@@ -381,25 +454,9 @@ public sealed class PageTranslationService : IPageTranslationService
                     }, transaction);
             }
 
-            foreach ((DocumentBoxId boxId, DocumentBoxPayload payload) in replacements)
+            foreach ((DocumentBoxId boxId, string translated) in validatedReplacements)
             {
-                if (!boxesById.TryGetValue(boxId, out DocumentBox? source))
-                {
-                    return PageWriteBoxFailure(boxId, "The box does not belong to the source page.");
-                }
-
-                if (DocumentBoxProjection.Siblings(boxes, boxId).Any())
-                {
-                    return PageWriteBoxFailure(boxId, "The box has children and cannot be translated as a leaf.");
-                }
-
-                Result<string> validated = ValidateBoxReplacement(source, payload);
-                if (validated.IsFailure)
-                {
-                    return Result<PageTranslationStatus>.Failure(
-                        validated.ErrorCode!, validated.ErrorMessage!, details: validated.Details);
-                }
-
+                DocumentBox source = boxesById[boxId];
                 string? existingOrdinal = await connection.QuerySingleOrDefaultAsync<string>(
                     "select cast(ordinal as text) from translation_boxes where page_id = @PageId and box_id = @BoxId;",
                     new { PageId = pageIdValue, BoxId = boxId.ToString() }, transaction);
@@ -422,7 +479,7 @@ public sealed class PageTranslationService : IPageTranslationService
                         PageId = pageIdValue,
                         BoxId = boxId.ToString(),
                         Ordinal = ordinal,
-                        TranslatedMd = validated.Value,
+                        TranslatedMd = translated,
                         SourceHash = TranslationRealigner.ComputeSourceHash(source)
                     }, transaction);
             }
@@ -445,7 +502,7 @@ public sealed class PageTranslationService : IPageTranslationService
             return Result<PageTranslationStatus>.Success(
                 BuildStatus(boxes, currentTranslations, expectedRevision, true, nextVersion,
                     storedTargetLanguage));
-        }, cancellationToken, TranslationChange(documentInstanceId, pageId));
+        }, cancellationToken, TranslationChange(documentInstanceId, pageId), () => translationChanged);
 
         if (persisted.IsSuccess)
         {
@@ -529,10 +586,29 @@ public sealed class PageTranslationService : IPageTranslationService
         DocumentBox changed = renderSource with { Payload = replacement with { Annotations = null } };
         CompiledMarkdown original = DocumentMarkdownRenderer.Render([renderSource], _markdown, true, false, null);
         string fragment = DocumentMarkdownRenderer.CompileBoxFragment(changed, false) ?? string.Empty;
-        TranslationValidationResult validation = _validator.Validate(original, fragment, [renderSource]);
+        TranslationValidationResult validation;
+        if (replacement is TextBoxPayload text && source.BoxType != DocumentBoxType.Title)
+        {
+            validation =
+                _validator.ValidateWithLiteralListFallback(original, fragment, [renderSource], out string normalized);
+            if (validation.IsValid)
+            {
+                replacement = text with { Markdown = normalized };
+            }
+        }
+        else
+        {
+            validation = _validator.Validate(original, fragment, [renderSource]);
+        }
+
         if (!validation.IsValid)
         {
-            return BoxPayloadFailure(source.BoxId, "The translated payload changes its markdown structure.");
+            const string message = "The translated payload changes its markdown structure.";
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                $"Box {source.BoxId}: {message}",
+                details: new BoxContentFailureDetails([
+                    new BoxContentError(source.BoxId.ToString(), message, validation.Errors)
+                ]));
         }
 
         if (!validation.BoxFragments.TryGetValue(source.BoxId, out string? storage))
@@ -547,15 +623,6 @@ public sealed class PageTranslationService : IPageTranslationService
     {
         BoxContentError error = new(boxId.ToString(), message);
         return Result<string>.Failure(
-            AppErrorCodes.ValidationFailed,
-            $"Box {boxId}: {message}",
-            details: new BoxContentFailureDetails([error]));
-    }
-
-    private static Result<PageTranslationStatus> PageWriteBoxFailure(DocumentBoxId boxId, string message)
-    {
-        BoxContentError error = new(boxId.ToString(), message);
-        return Result<PageTranslationStatus>.Failure(
             AppErrorCodes.ValidationFailed,
             $"Box {boxId}: {message}",
             details: new BoxContentFailureDetails([error]));
@@ -664,8 +731,8 @@ public sealed class PageTranslationService : IPageTranslationService
         }
 
         IReadOnlyList<DocumentBox> boxes = boxesResult.Value;
-        TranslationValidationResult validation = _validator.Validate(
-            compiledResult.Value, markdown ?? string.Empty, boxes);
+        TranslationValidationResult validation = _validator.ValidateWithLiteralListFallback(
+            compiledResult.Value, markdown ?? string.Empty, boxes, out _);
         if (!validation.IsValid)
         {
             return Result<PageTranslationStatus>.Failure(
@@ -849,7 +916,7 @@ public sealed class PageTranslationService : IPageTranslationService
         int version = 0,
         string? targetLanguage = null)
     {
-        DocumentBox[] contentBoxes = DocumentBoxProjection.ContentBoxes(boxes).ToArray();
+        DocumentBox[] contentBoxes = DocumentBoxProjection.TranslationContentBoxes(boxes).ToArray();
         List<DocumentBoxId> staleBoxIds = [];
         int translatedBoxCount = 0;
         foreach (DocumentBox box in contentBoxes)
@@ -872,7 +939,8 @@ public sealed class PageTranslationService : IPageTranslationService
     private async Task<Result<T>> InTransactionAsync<T>(
         Func<SqliteConnection, DbTransaction, Task<Result<T>>> action,
         CancellationToken cancellationToken,
-        LibraryChangeSet? changeSet = null)
+        LibraryChangeSet? changeSet = null,
+        Func<bool>? hasChanges = null)
     {
         try
         {
@@ -888,7 +956,7 @@ public sealed class PageTranslationService : IPageTranslationService
             }
 
             LibraryChangeSet? committedChanges = null;
-            if (changeSet is not null && _revisions is not null)
+            if (changeSet is not null && _revisions is not null && (hasChanges?.Invoke() ?? true))
             {
                 Result<LibraryChangeSet> incremented = await _revisions.IncrementInTransactionAsync(
                     connection, transaction, changeSet, cancellationToken);

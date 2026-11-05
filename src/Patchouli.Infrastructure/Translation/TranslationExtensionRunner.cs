@@ -91,6 +91,7 @@ public sealed class TranslationExtensionRunner
 
         public ILlmCapability Llm => new GatedLlmCapability(_inner.Llm, _gate);
         public HttpClient Http => _inner.Http;
+        public ILayoutRecognitionCapability LayoutRecognition => _inner.LayoutRecognition;
 
         public string ConfigurationFingerprint => _inner.ConfigurationFingerprint;
 

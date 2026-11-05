@@ -65,7 +65,7 @@ public sealed class PageTranslationCompiler : IPageTranslationCompiler
                 translations[DocumentBoxId.Parse(row.BoxId)] = row.TranslatedMd;
             }
 
-            DocumentBox[] contentBoxes = DocumentBoxProjection.ContentBoxes(boxes).ToArray();
+            DocumentBox[] contentBoxes = DocumentBoxProjection.TranslationContentBoxes(boxes).ToArray();
             List<DocumentBoxId> staleBoxIds = [];
             int translatedBoxCount = 0;
             foreach (DocumentBox box in contentBoxes)

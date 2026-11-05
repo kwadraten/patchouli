@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 
@@ -24,11 +25,69 @@ public sealed record TranslationValidationResult(
 /// </summary>
 public sealed class TranslationStructureValidator
 {
+    private static readonly Regex ListMarker = new(
+        @"(?m)^([ ]{0,3})([*+-]|[0-9]{1,9}[.)])(?=[ \t])",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
     private readonly IMarkdownEngine _markdown;
 
     public TranslationStructureValidator(IMarkdownEngine markdown)
     {
         _markdown = markdown;
+    }
+
+    /// <summary>
+    /// Escapes list punctuation only where the source requires ordinary paragraphs. Text and
+    /// spacing are preserved, and the fallback is accepted only if the full structure validates.
+    /// </summary>
+    public TranslationValidationResult ValidateWithLiteralListFallback(
+        CompiledMarkdown original,
+        string translatedMarkdown,
+        IReadOnlyList<DocumentBox> boxes,
+        out string normalizedMarkdown)
+    {
+        normalizedMarkdown = translatedMarkdown;
+        TranslationValidationResult initial = Validate(original, translatedMarkdown, boxes);
+        if (initial.IsValid)
+        {
+            return initial;
+        }
+
+        IReadOnlyList<MarkdownBlock> source = original.Document?.Blocks ?? [];
+        IReadOnlyList<MarkdownBlock> candidate = _markdown.Parse(translatedMarkdown).Blocks;
+        bool onlyParagraphs = source.Count > 0 && source.All(block => block.Kind == "paragraph");
+        string escaped = translatedMarkdown;
+        for (int index = candidate.Count - 1; index >= 0; index--)
+        {
+            MarkdownBlock block = candidate[index];
+            if (block.Kind != "list" ||
+                !(onlyParagraphs || (source.Count == candidate.Count && source[index].Kind == "paragraph")))
+            {
+                continue;
+            }
+
+            string slice = Slice(translatedMarkdown, block);
+            string literal = ListMarker.Replace(slice, match =>
+            {
+                string marker = match.Groups[2].Value;
+                return match.Groups[1].Value + marker[..^1] + "\\" + marker[^1];
+            });
+            escaped = escaped.Remove(block.Start, slice.Length).Insert(block.Start, literal);
+        }
+
+        if (escaped == translatedMarkdown)
+        {
+            return initial;
+        }
+
+        TranslationValidationResult corrected = Validate(original, escaped, boxes);
+        if (!corrected.IsValid)
+        {
+            return initial;
+        }
+
+        normalizedMarkdown = escaped;
+        return corrected;
     }
 
     public TranslationValidationResult Validate(

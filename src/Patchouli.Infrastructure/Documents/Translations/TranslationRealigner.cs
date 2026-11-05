@@ -47,7 +47,7 @@ public sealed class TranslationRealigner
             new { PageId = pageIdValue }, transaction);
         Dictionary<string, TableBoxPayload> priorTables = await LoadPriorTablePayloadsAsync(
             connection, transaction, priorRevisionId);
-        Dictionary<string, DocumentBox> currentBoxes = DocumentBoxProjection.ContentBoxes(boxes)
+        Dictionary<string, DocumentBox> currentBoxes = DocumentBoxProjection.TranslationContentBoxes(boxes)
             .ToDictionary(box => box.BoxId.ToString(), StringComparer.Ordinal);
         Dictionary<string, string> currentHashes = new(StringComparer.Ordinal);
         foreach ((string boxId, DocumentBox box) in currentBoxes)

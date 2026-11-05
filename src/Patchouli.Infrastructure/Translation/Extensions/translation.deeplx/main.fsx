@@ -49,7 +49,7 @@ let translateOne (common: CommonSettings) (job: ITranslationJob) (resources: IEx
 }
 
 /// <summary>Deeplx translation extension.</summary>
-/// <patchouli-extension id="translation.deeplx" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="translation.deeplx" kind="translation" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Deeplx</name>
 /// </patchouli-extension>
 let extension =

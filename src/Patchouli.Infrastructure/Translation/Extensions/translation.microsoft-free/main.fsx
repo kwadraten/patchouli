@@ -29,7 +29,7 @@ let failureFor (segmentId: string) (error: exn) =
     failure segmentId code error.Message
 
 /// <summary>Unofficial Microsoft Edge web translation. It is not Azure Translator and service availability is unverified.</summary>
-/// <patchouli-extension id="translation.microsoft-free" kind="translation" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="translation.microsoft-free" kind="translation" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Microsoft Edge (free web)</name>
 /// </patchouli-extension>
 let extension =
