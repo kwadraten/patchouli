@@ -122,7 +122,7 @@ public sealed class MultimodalOcrSession : IDisposable
     /// deliberately NOT probed here: this engine accepts direct-mode jobs and region-scoped jobs
     /// whose inputs never touch the detector, so a missing layout model must not block them.
     /// Whole-page local-layout inputs validate the weights when detection is actually required
-    /// (see <see cref="EnsureDetector"/>); callers that want a full-capability probe use
+    /// (see <see cref="ILayoutRecognitionCapability"/>); callers that want a full-capability probe use
     /// <see cref="CheckLayoutReadiness"/>.
     /// </summary>
     public static Result CheckReadiness(ExtensionConfigSnapshot config, IExtensionResources? resources = null)
@@ -174,7 +174,12 @@ public sealed class MultimodalOcrSession : IDisposable
         }
 
         return options.UseLocalLayout
-            ? VisionLayoutDetector.ValidateModel(options.LayoutModelId, options.LayoutModelPath ?? "")
+            ? VisionLayoutDetector.ValidateModel(options.LayoutModelId switch
+            {
+                "layout.pp-doclayout-v3" => "pp-doclayout-v3",
+                "layout.doclayout-yolo" => "doclayout-yolo",
+                _ => options.LayoutModelId
+            }, options.LayoutModelPath ?? "")
             : Result.Success();
     }
 
@@ -245,7 +250,7 @@ public sealed class MultimodalOcrSession : IDisposable
                                  ?? throw new InvalidOperationException(
                                      "Unable to decode the OCR input image bytes.");
         return await RecognizeWithLayoutAsync(page, input, decoded, imageBytes, llm, orderBase,
-            cancellationToken, progress).ConfigureAwait(false);
+            cancellationToken, progress, resources).ConfigureAwait(false);
     }
 
     /// <summary>The input's declared position in <paramref name="page"/>'s inputs, by id.</summary>
@@ -342,13 +347,24 @@ public sealed class MultimodalOcrSession : IDisposable
     /// </summary>
     private async Task<OcrExtensionBoxCandidate[]> RecognizeWithLayoutAsync(OcrJobPage page, OcrJobInput input,
         SKBitmap decoded, ReadOnlyMemory<byte> imageBytes, ILlmCapability llm, int orderBase,
-        CancellationToken cancellationToken, IProgress<ExtensionProgress>? progress)
+        CancellationToken cancellationToken, IProgress<ExtensionProgress>? progress, IExtensionResources resources)
     {
         ReportProgress(progress, page, input, "layout-detection", 0, 1);
-        IVisionLayoutDetector detector = EnsureDetector();
         byte[] surfacePng = VisionImaging.EncodePng(decoded);
-        Result<IReadOnlyList<VisionLayoutRegion>> layout =
-            await detector.DetectAsync(surfacePng, cancellationToken).ConfigureAwait(false);
+        Result<IReadOnlyList<VisionLayoutRegion>> layout;
+        if (_detector is { } detector)
+        {
+            layout = await detector.DetectAsync(surfacePng, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            IReadOnlyList<LayoutRecognitionRegion> regions = await LayoutRecognition.DetectAsync(
+                    resources.LayoutRecognition, _options.LayoutModelId, surfacePng, cancellationToken)
+                .ConfigureAwait(false);
+            layout = Result<IReadOnlyList<VisionLayoutRegion>>.Success(regions.Select(region =>
+                new VisionLayoutRegion(region.Label, region.BBox, region.Confidence, region.Order)).ToArray());
+        }
+
         if (layout.IsFailure)
         {
             throw new InvalidOperationException(layout.ErrorMessage);
@@ -507,35 +523,6 @@ public sealed class MultimodalOcrSession : IDisposable
         };
         LlmResponse response = await llm.CompleteAsync(request, cancellationToken).ConfigureAwait(false);
         return response.Text;
-    }
-
-    /// <summary>
-    /// Creates the layout detector on the first full-page layout input. This is the single point
-    /// where the pinned weights file is validated: a missing or unusable model fails the input
-    /// with the file-level diagnostic — never a silent switch to direct mode. Region inputs and
-    /// direct mode never reach this path and need no weights.
-    /// </summary>
-    private IVisionLayoutDetector EnsureDetector()
-    {
-        lock (_detectorGate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            if (_detector is null)
-            {
-                Result validated =
-                    VisionLayoutDetector.ValidateModel(_options.LayoutModelId,
-                        _options.LayoutModelPath ?? "");
-                if (validated.IsFailure)
-                {
-                    throw new InvalidOperationException(validated.ErrorMessage);
-                }
-
-                _detector = new VisionLayoutDetector(_options.LayoutModelId,
-                    _options.LayoutModelPath ?? "");
-            }
-
-            return _detector;
-        }
     }
 
     public void Dispose()

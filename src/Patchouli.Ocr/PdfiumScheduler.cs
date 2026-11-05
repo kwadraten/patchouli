@@ -199,7 +199,8 @@ public sealed class PdfiumScheduler
     private WorkItem DequeueNextLocked()
     {
         bool serveBackground = _background.Count > 0 &&
-                               (_interactive.Count == 0 || _consecutiveInteractive >= Math.Clamp(BackgroundAgingThreshold, 1, 64));
+                               (_interactive.Count == 0 || _consecutiveInteractive >=
+                                   Math.Clamp(BackgroundAgingThreshold, 1, 64));
         LinkedList<WorkItem> queue = serveBackground ? _background : _interactive;
         WorkItem item = queue.First!.Value;
         queue.RemoveFirst();

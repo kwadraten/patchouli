@@ -19,17 +19,28 @@ public interface IOcrRunCoordinator
     Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         CancellationToken cancellationToken = default, IProgress<OcrTaskStageProgress>? progress = null);
 
+    /// <param name="rotationDegrees">
+    /// Clockwise onscreen quarter turn (0/90/180/270). The provider sees the rotated page
+    /// image; returned geometry is normalized back into the unrotated document basis.
+    /// </param>
     Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-        IProgress<OcrTaskStageProgress>? progress = null);
+        IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0);
 
     /// <summary>Produces a working region result; a region must never be auto-adopted as a whole physical page.</summary>
+    /// <param name="rotationDegrees">
+    /// Clockwise onscreen quarter turn. <paramref name="regionBBox"/> stays in the unrotated
+    /// document basis; the provider sees the rotated region image and its boxes are mapped
+    /// back into document coordinates.
+    /// </param>
     Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default);
+        PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default,
+        int rotationDegrees = 0);
 
     /// <summary>Produces a temporary working result without adopting it, regardless of preset auto-apply.</summary>
+    /// <param name="rotationDegrees">Clockwise onscreen quarter turn (0/90/180/270).</param>
     Task<Result<OcrRun>> RunWorkingOnPageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        PageId pageId, CancellationToken cancellationToken = default)
+        PageId pageId, CancellationToken cancellationToken = default, int rotationDegrees = 0)
     {
         return Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
             "Working-only page OCR is not supported by this coordinator."));
@@ -42,9 +53,13 @@ public interface IOcrRunCoordinator
             "Working OCR output cleanup is not supported by this coordinator."));
     }
 
+    /// <param name="rotationDegrees">
+    /// Clockwise onscreen quarter turn. <paramref name="regionBBox"/> stays in the unrotated
+    /// document basis; the provider sees the rotated region image.
+    /// </param>
     Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
         OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, int rotationDegrees = 0);
 
     Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default);
 

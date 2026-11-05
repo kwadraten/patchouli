@@ -315,9 +315,16 @@ public sealed class ImportBatchWriter
 
         FileImpact[] impacts = (await connection.QueryAsync<FileImpact>(new CommandDefinition(
                 """
-                select d.item_id as ItemId, d.document_instance_id as DocumentInstanceId from document_instances d
-                where d.file_asset_id = @Id or exists (
-                    select 1 from known_file_locations k where k.file_asset_id = d.file_asset_id and k.path = @Path);
+                with affected_assets as (
+                    select @Id as file_asset_id
+                    union
+                    select k.file_asset_id
+                    from known_file_locations k
+                    where k.path = @Path
+                )
+                select distinct d.item_id as ItemId, d.document_instance_id as DocumentInstanceId
+                from affected_assets a
+                join document_instances d on d.file_asset_id = a.file_asset_id;
                 """,
                 new { Id = owner.FileAssetId, Path = normalizedPath }, transaction,
                 cancellationToken: cancellationToken)))
@@ -327,7 +334,7 @@ public sealed class ImportBatchWriter
             {
                 ItemIds = impacts.Select(impact => ItemId.Parse(impact.ItemId)).Distinct().ToArray(),
                 DocumentInstanceIds = impacts.Select(impact => DocumentInstanceId.Parse(impact.DocumentInstanceId))
-                    .ToArray()
+                    .Distinct().ToArray()
             }, cancellationToken);
         return revision.IsSuccess
             ? Result<LibraryChangeSet?>.Success(revision.Value)
@@ -353,9 +360,10 @@ public sealed class ImportBatchWriter
 
         FileImpact[] impacts = (await connection.QueryAsync<FileImpact>(new CommandDefinition(
             """
-            select d.item_id as ItemId, d.document_instance_id as DocumentInstanceId from document_instances d
-            where exists (select 1 from known_file_locations k
-                where k.file_asset_id = d.file_asset_id and k.path = @Path);
+            select distinct d.item_id as ItemId, d.document_instance_id as DocumentInstanceId
+            from known_file_locations k
+            join document_instances d on d.file_asset_id = k.file_asset_id
+            where k.path = @Path;
             """, new { Path = batch.NormalizedFilePath }, transaction,
             cancellationToken: cancellationToken))).ToArray();
         Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(

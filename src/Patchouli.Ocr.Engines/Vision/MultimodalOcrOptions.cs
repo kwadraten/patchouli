@@ -38,8 +38,13 @@ public sealed record MultimodalOcrOptions(
             ReadJsonString(parametersJson, "modelId"), ReadJsonString(parametersJson, "model"));
         string? layoutPath = FirstNonEmpty(GetValue(values, "model-path"),
             ReadJsonString(parametersJson, "modelPath"), ReadJsonString(parametersJson, "layoutModelPath"));
-        string layoutModel = VisionLayoutModels.Normalize(FirstNonEmpty(GetValue(values, "layout-model"),
-            ReadJsonString(parametersJson, "layoutModel")));
+        string layoutModel = FirstNonEmpty(GetValue(values, "layout-model"),
+            ReadJsonString(parametersJson, "layoutModel")) ?? "layout.pp-doclayout-v3";
+        if (layoutModel is "pp-doclayout-v3" or "doclayout-yolo")
+        {
+            layoutModel = "layout." + layoutModel;
+        }
+
         bool useLocalLayout = ReadBool(values, "use-local-layout",
             ReadJsonBool(parametersJson, "useLocalLayout", true));
         int concurrency = ReadInt(values, "concurrency",

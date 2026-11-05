@@ -206,11 +206,24 @@ public interface IPageRenderService
     Task<Result> ClearRenderCacheForDocumentAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// <paramref name="rotationDegrees"/> is the clockwise onscreen quarter turn (0/90/180/270):
+    /// the returned image holds pixels already rotated for provider inference. Geometry the
+    /// provider reports for that image is in the rotated image basis.
+    /// </summary>
     Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(DocumentInstanceId documentInstanceId,
-        PageId pageId, int dpi = 200, CancellationToken cancellationToken = default);
+        PageId pageId, int dpi = 200, CancellationToken cancellationToken = default,
+        int rotationDegrees = 0);
 
+    /// <summary>
+    /// <paramref name="region"/> is always in the unrotated document basis. With
+    /// <paramref name="rotationDegrees"/> the page renders, rotates clockwise, and the crop is
+    /// taken at the region's rotated-basis rect — the returned PNG is exactly what the viewport
+    /// shows for that region.
+    /// </summary>
     Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default);
+        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default,
+        int rotationDegrees = 0);
 
     Task<PdfRendererAvailability> GetRendererAvailabilityAsync(CancellationToken cancellationToken = default);
 

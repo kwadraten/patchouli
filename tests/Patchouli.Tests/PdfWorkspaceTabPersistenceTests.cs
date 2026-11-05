@@ -46,6 +46,8 @@ public sealed class PdfWorkspaceTabPersistenceTests : IDisposable
                 SetPrivateProperty(workspace, "Image", pdfBitmap);
                 SetPrivateProperty(workspace, "WidthPixels", 800);
                 SetPrivateProperty(workspace, "HeightPixels", 1800);
+                workspace.AdjustZoom(1 - workspace.Zoom);
+                window.UpdateLayout();
                 ScrollViewer pdfScroller = page.FindControl<ScrollViewer>("PdfScrollViewer")!;
                 pdfScroller.Offset = new Vector(0, 80);
                 window.UpdateLayout();

@@ -64,7 +64,7 @@ internal static class OcrQueueLifecyclePolicy
             request.Priority, now, now, OcrQueueTaskState.Queued, 0, Math.Max(1, request.MaxAttempts), null, null,
             null, null, RegionBBox: request.RegionBBox,
             CommitOnCompletion: request.CommitOnCompletion, PresetVersionId: request.PresetVersionId,
-            Source: request.Source);
+            Source: request.Source, RotationDegrees: request.RotationDegrees);
     }
 
     /// <summary>A claim keeps the retained run and completed-page count; failure tallies reset.</summary>

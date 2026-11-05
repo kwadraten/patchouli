@@ -66,7 +66,7 @@ public sealed class VisualGuidedTextLayerAnalyzer : IPdfTextLayerAnalyzer
                 "The visual-guided provider requires a page image; the host supplied none.");
         }
 
-        if (context.DetectLayoutAsync is null)
+        if (context.DetectLayoutAsync is null && context.LayoutRecognition is null)
         {
             return Result<PdfTextLayerResult>.Failure(
                 PdfTextLayerDiagnosticCodes.LayoutDetectorUnavailable,
@@ -74,7 +74,7 @@ public sealed class VisualGuidedTextLayerAnalyzer : IPdfTextLayerAnalyzer
         }
 
         if (string.IsNullOrWhiteSpace(options.LayoutModelId) ||
-            string.IsNullOrWhiteSpace(options.LayoutModelPath))
+            (context.LayoutRecognition is null && string.IsNullOrWhiteSpace(options.LayoutModelPath)))
         {
             return Result<PdfTextLayerResult>.Failure(PdfTextLayerDiagnosticCodes.LayoutModelMissing,
                 "The visual-guided provider requires a configured layout model (model-id and model-path).");
@@ -97,9 +97,26 @@ public sealed class VisualGuidedTextLayerAnalyzer : IPdfTextLayerAnalyzer
         }
 
         PdfTextPageImage image = await context.ReadPageImageAsync(options.LayoutDpi, cancellationToken);
-        Result<IReadOnlyList<PdfTextLayoutRegion>> detected =
-            await context.DetectLayoutAsync(image, options.LayoutModelId, options.LayoutModelPath,
+        Result<IReadOnlyList<PdfTextLayoutRegion>> detected;
+        if (context.LayoutRecognition is { } capability)
+        {
+            string id = options.LayoutModelId;
+            if (id is "pp-doclayout-v3" or "doclayout-yolo")
+            {
+                id = "layout." + id;
+            }
+
+            IReadOnlyList<LayoutRecognitionRegion> recognizedRegions = await LayoutRecognition.DetectAsync(
+                capability, id, image.PngBytes, cancellationToken).ConfigureAwait(false);
+            detected = Result<IReadOnlyList<PdfTextLayoutRegion>>.Success(recognizedRegions.Select(region =>
+                new PdfTextLayoutRegion(region.Label, region.BBox, region.Confidence, region.Order)).ToArray());
+        }
+        else
+        {
+            detected = await context.DetectLayoutAsync!(image, options.LayoutModelId, options.LayoutModelPath ?? "",
                 cancellationToken);
+        }
+
         if (detected.IsFailure)
         {
             return Result<PdfTextLayerResult>.Failure(detected.ErrorCode!, detected.ErrorMessage!);

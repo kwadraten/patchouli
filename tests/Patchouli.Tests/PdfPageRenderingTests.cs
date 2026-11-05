@@ -540,7 +540,10 @@ public sealed class PdfPageRenderingTests
                 "052_create_document_page_maps.sql",
                 "053_add_page_translation_target_language.sql",
                 "054_document_box_continuation_state.sql",
-                "055_normalize_page_coordinate_basis.sql");
+                "055_normalize_page_coordinate_basis.sql",
+                "056_index_file_location_paths.sql",
+                "057_sql_browse_indexes.sql",
+                "058_create_library_tag_definitions.sql");
     }
 
     private sealed class Context : IAsyncDisposable

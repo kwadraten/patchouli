@@ -116,7 +116,7 @@ public sealed class OcrHostCommandIndependentTests
             IReadOnlyList<Page> pages = (await context.Services.Pages.ListPagesAsync(context.DocumentId)).Value;
             Result<OcrQueueTask> accepted = await queue.EnqueueAsync(new OcrQueueTaskRequest(context.DocumentId,
                 auto.PresetId, pages.Select(page => page.PageId).ToArray(), OcrQueueTaskKind.Document,
-                OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, MaxAttempts: 1));
+                OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, 1));
             accepted.IsSuccess.Should().BeTrue(accepted.ErrorMessage);
 
             await queue.StartAsync();
@@ -336,7 +336,7 @@ public sealed class OcrHostCommandIndependentTests
             IReadOnlyList<Page> pages = (await context.Services.Pages.ListPagesAsync(context.DocumentId)).Value;
             Result<OcrQueueTask> accepted = await queue.EnqueueAsync(new OcrQueueTaskRequest(context.DocumentId,
                 context.Preset.PresetId, pages.Select(page => page.PageId).ToArray(), OcrQueueTaskKind.Document,
-                OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, MaxAttempts: 1));
+                OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, 1));
             accepted.IsSuccess.Should().BeTrue(accepted.ErrorMessage);
 
             await queue.StartAsync();
@@ -428,7 +428,7 @@ public sealed class OcrHostCommandIndependentTests
             Result<OcrQueueTask> accepted = await queue.EnqueueAsync(new OcrQueueTaskRequest(context.DocumentId,
                 context.Preset.PresetId,
                 pages.Select(page => page.PageId).ToArray(), OcrQueueTaskKind.Document, OcrEngineIds.Mock,
-                OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, MaxAttempts: 1));
+                OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, 1));
             accepted.IsSuccess.Should().BeTrue(accepted.ErrorMessage);
 
             await queue.StartAsync();
@@ -481,7 +481,8 @@ public sealed class OcrHostCommandIndependentTests
                 "Cannot index C:\\private\\cache; api_key=FAKE_SECRET_INDEPENDENT"));
         }
 
-        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
+        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default,
+            Action<SearchIndexRebuildProgress>? progress = null)
         {
             throw new NotSupportedException();
         }

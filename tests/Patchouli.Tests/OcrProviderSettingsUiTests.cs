@@ -47,7 +47,7 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
                 window.UpdateLayout();
 
                 OcrProviderSettingsViewModel settings = main.Settings.OcrProviderSettings;
-                window.GetVisualDescendants().OfType<CheckBox>().Should().Contain(checkBox =>
+                window.GetVisualDescendants().OfType<ToggleSwitch>().Should().Contain(checkBox =>
                     checkBox.Content != null && checkBox.Content.ToString() == "启用不同OCR预设并行");
                 settings.EnableDifferentOcrPresetsParallel = true;
                 OcrPresetScopePickerViewModel[] pickers =

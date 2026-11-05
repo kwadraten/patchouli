@@ -69,14 +69,14 @@ public interface IOcrRunEngine : IOcrRunCoordinator
                 request.PresetId, cancellationToken, progress),
             OcrRunExecutionScope.Pages when request.WorkingDraft => request.PageIds.Count == 1
                 ? RunWorkingOnPageAsync(request.DocumentInstanceId, request.PresetId, request.PageIds[0],
-                    cancellationToken)
+                    cancellationToken, request.RotationDegrees)
                 : Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
                     "Working-draft OCR runs on exactly one physical page.")),
             OcrRunExecutionScope.Pages => RunPresetOnPagesAsync(request.DocumentInstanceId,
-                request.PresetId, request.PageIds, cancellationToken, progress),
+                request.PresetId, request.PageIds, cancellationToken, progress, request.RotationDegrees),
             OcrRunExecutionScope.Region => request is { PageIds.Count: 1, RegionBBox: { } region }
                 ? RunPresetOnRegionAsync(request.DocumentInstanceId, request.PresetId, request.PageIds[0],
-                    region, cancellationToken)
+                    region, cancellationToken, request.RotationDegrees)
                 : Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed,
                     "Region OCR requires exactly one physical page and a normalized region.")),
             _ => Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,

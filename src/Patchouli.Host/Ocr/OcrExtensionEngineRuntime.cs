@@ -42,12 +42,12 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
     private readonly ConcurrentDictionary<string, PdfTextLayerDefinition>
         _providerDefinitions;
 
-    private readonly Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+    private readonly Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
         Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? _builtInRegionRunner;
 
     public OcrExtensionEngineRuntime(TranslationExtensionCatalog catalog,
         PdfTextLayerInputSource textLayerInputs,
-        Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+        Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
             Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? builtInRegionRunner = null,
         ExtensionManagedFileService? managedFiles = null)
     {
@@ -612,7 +612,7 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
         private readonly string? _acceptedScope;
         private string? _executionScope;
 
-        private readonly Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+        private readonly Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
             Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? _regionRunner;
 
         private readonly TaskCompletionSource _drain =
@@ -680,7 +680,7 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
             IExtensionResources? textLayerResources, IPdfTextLayerExtension? provider,
             IExtensionLease? providerLease, PdfTextLayerInputSource textLayerInputs,
             bool isBuiltIn,
-            Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+            Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
                 Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? builtInRegionRunner = null,
             ExtensionManagedFileService? managedFiles = null)
         {
@@ -772,7 +772,7 @@ public sealed class OcrExtensionEngineRuntime : IOcrEngineRuntime
         public string TextLayerMissingTextPolicy { get; init; } =
             TextLayerMissingTextPolicies.PageOcr;
 
-        public Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+        public Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
             Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? BuiltInRegionRunner =>
             _regionRunner;
 

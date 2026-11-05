@@ -8,13 +8,8 @@ using Patchouli.Ocr.Engines.Oxr;
 namespace Patchouli.Infrastructure.Ocr;
 
 /// <summary>
-/// FSX packages and engine metadata for the built-in OCR engines. Each package ships its
-/// attributed-settings <c>main.fsx</c>, the native packages also ship the shared
-/// <c>Support.fsx</c>, and every package carries the full support binary closure
-/// (Patchouli.Ocr.Engines plus its non-framework managed dependencies and the current RID's
-/// native libraries) collected from the real deployment — so a compiled artifact is
-/// self-contained for the collectible extension load context. Model weights stay in the
-/// configured model directories and are never part of a package.
+/// Source-only FSX packages for the built-in OCR engines. ONNX, Skia and OCR support
+/// assemblies are shared with the host through the extension SDK. Model weights stay external.
 /// </summary>
 public static class BuiltInOcrExtensions
 {
@@ -37,11 +32,6 @@ public static class BuiltInOcrExtensions
     // multimodal package is self-contained and ships its own sources alone.
     private static readonly HashSet<string> NativePackageIds =
         new(PackageIds.Take(3), StringComparer.Ordinal);
-
-    // Lazy so package construction can never observe the binary map before it exists — field
-    // initializer order would otherwise depend on declaration order.
-    private static readonly Lazy<IReadOnlyDictionary<string, ReadOnlyMemory<byte>>> SupportBinaries =
-        new(NativeOcrSupportFiles.CollectBinaries);
 
     private static readonly IReadOnlyList<ExtensionPackageSnapshot> BuiltInPackages =
         Array.AsReadOnly(PackageIds.Select(CreatePackage).ToArray());
@@ -79,7 +69,7 @@ public static class BuiltInOcrExtensions
             sources["Support.fsx"] = ReadResource(ResourcePrefix + "Support.fsx");
         }
 
-        return new ExtensionPackageSnapshot(id, sources, SupportBinaries.Value);
+        return new ExtensionPackageSnapshot(id, sources);
     }
 
     private static string ReadResource(string name)

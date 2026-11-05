@@ -574,7 +574,7 @@ public sealed class FileImportService : IFileImportService
 
             if (sameVolume)
             {
-                File.Move(source, target, overwrite: false);
+                File.Move(source, target, false);
                 return Result.Success();
             }
 
@@ -592,13 +592,13 @@ public sealed class FileImportService : IFileImportService
             try
             {
                 await using (FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.Read,
-                                 CopyBufferSize, useAsync: true))
+                                 CopyBufferSize, true))
                 await using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write,
-                                 FileShare.None, CopyBufferSize, useAsync: true))
+                                 FileShare.None, CopyBufferSize, true))
                 {
                     await input.CopyToAsync(output, cancellationToken);
                     await output.FlushAsync(cancellationToken);
-                    output.Flush(flushToDisk: true);
+                    output.Flush(true);
                 }
 
                 if (new FileInfo(tempPath).Length != sourceLength)
@@ -608,7 +608,7 @@ public sealed class FileImportService : IFileImportService
                         "Cross-volume copy verification failed; the source file was kept in place.");
                 }
 
-                File.Move(tempPath, target, overwrite: false);
+                File.Move(tempPath, target, false);
             }
             catch
             {

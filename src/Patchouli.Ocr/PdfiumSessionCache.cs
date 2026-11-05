@@ -322,8 +322,8 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
                     await running;
                 }
                 catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                                    exception, "ocr.pdfium-session-cache",
-                                                    "dispose-pending-open"))
+                                                      exception, "ocr.pdfium-session-cache",
+                                                      "dispose-pending-open"))
                 {
                 }
             }
@@ -353,7 +353,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
                 await drain;
             }
             catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                                exception, "ocr.pdfium-session-cache", "dispose-drain"))
+                                                  exception, "ocr.pdfium-session-cache", "dispose-drain"))
             {
             }
         }

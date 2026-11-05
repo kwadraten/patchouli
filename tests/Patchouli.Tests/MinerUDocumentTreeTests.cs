@@ -1386,6 +1386,36 @@ public sealed class MinerUDocumentTreeTests
         }
     }
 
+    [Theory]
+    [InlineData("{", "artifact_json_invalid")]
+    [InlineData("{}", "artifact_structure_unrecognized")]
+    [InlineData("{\"schema\":\"docvortex.middle\",\"schema_version\":\"9.0\",\"pages\":[]}",
+        "artifact_protocol_unsupported")]
+    public async Task Failed_preferred_artifact_does_not_stage_revisions_from_valid_fallback(string preferred,
+        string code)
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip(("middle_json.json", preferred),
+            ("content_list.json",
+                """[{"type":"text","page_idx":0,"bbox":[0,0,100,100],"text":"must not be staged"}]"""));
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(context.Database.ConnectionFactory,
+                context.Clock, new OcrDocumentTreeImporter(context.Trees)).ImportResultZipAsync(
+                new MinerUImportRequest(zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+            result.ErrorCode.Should().Be(code);
+            result.ErrorMessage.Should().Contain("middle_json.json").And.Contain("No fallback was attempted");
+            await using SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection();
+            await connection.OpenAsync();
+            (await connection.ExecuteScalarAsync<int>("select count(*) from document_boxes;")).Should().Be(0);
+            (await connection.ExecuteScalarAsync<int>("select count(*) from document_tree_revisions;")).Should().Be(0);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
     private static string CreateZip(string entryName, string content)
     {
         return CreateZip((entryName, content));

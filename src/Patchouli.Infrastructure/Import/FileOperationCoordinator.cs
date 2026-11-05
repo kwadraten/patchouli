@@ -85,8 +85,10 @@ public sealed class FileOperationCoordinator : IFileOperationCoordinator
         public int RefCount;
         public TaskCompletionSource Released = NewSignal();
 
-        public static TaskCompletionSource NewSignal() =>
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public static TaskCompletionSource NewSignal()
+        {
+            return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
     }
 
     private sealed class Lease : IFileOperationLease

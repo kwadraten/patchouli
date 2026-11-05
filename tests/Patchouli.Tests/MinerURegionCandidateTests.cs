@@ -184,7 +184,8 @@ public sealed class MinerURegionCandidateTests
         public NormalizedBBox? LastRegion { get; private set; }
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
+            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default,
+            int rotationDegrees = 0)
         {
             LastRegion = region;
             return Task.FromResult(Result<string>.Success(_regionPngPath));
@@ -216,7 +217,7 @@ public sealed class MinerURegionCandidateTests
 
         public Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
             DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }

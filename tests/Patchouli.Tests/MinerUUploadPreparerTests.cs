@@ -200,6 +200,72 @@ public sealed class MinerUUploadPreparerTests
         }
     }
 
+    [Theory]
+    [InlineData(false, "content_list.json", false)]
+    [InlineData(true, "content_list.json", false)]
+    [InlineData(false, "middle_json.json", false)]
+    [InlineData(true, "middle_json.json", false)]
+    [InlineData(false, "paper_middle.json", true)]
+    [InlineData(true, "paper_middle.json", true)]
+    public async Task Preparation_and_split_merging_share_filename_and_content_dispatch(
+        bool split, string name, bool layout)
+    {
+        string directory = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"mineru-dispatch-{Guid.NewGuid():N}")).FullName;
+        try
+        {
+            string json = layout
+                ? """{"pdf_info":[{"page_idx":0,"page_size":[1000,1000],"para_blocks":[{"type":"text","bbox":[0,0,100,100],"lines":[{"spans":[{"type":"text","content":"chunk"}]}]}]}]}"""
+                : """[{"type":"text","page_idx":0,"text":"chunk","bbox":[0,0,100,100]}]""";
+            CapturingMinerUClient client = new() { ResultEntries = [(name, json)] };
+            MinerUUploadPreparer preparer = new(client, new MinerUUploadLimits(split ? 1 : 200, 200 * 1024 * 1024));
+            Result<MinerUPreparedResult> result = await preparer.PrepareAndUploadAsync(
+                new OcrUploadSource.WholeDocument(TestFixtures.RealThreePagePdf), directory);
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.PageIndexMap.Should().Equal(split ? new[] { 0, 1, 2 } : new[] { 0 });
+            using MinerUZipReader reader = MinerUZipReader.Open(result.Value.ZipPath);
+            Result<MinerUResultArtifact> artifact = MinerUResultArtifactReader.Read(reader);
+            artifact.IsSuccess.Should().BeTrue(artifact.ErrorMessage);
+            artifact.Value.Format.Should()
+                .Be(layout ? MinerUResultArtifactFormat.Layout : MinerUResultArtifactFormat.ContentList);
+            artifact.Value.Document.Pages.SelectMany(page => page.Blocks).Should()
+                .OnlyContain(block => block.Text == "chunk");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preparation_and_split_merging_report_failed_preferred_artifact_without_fallback(bool split)
+    {
+        string directory = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"mineru-no-fallback-{Guid.NewGuid():N}")).FullName;
+        try
+        {
+            CapturingMinerUClient client = new()
+            {
+                ResultEntries =
+                [
+                    ("middle_json.json", "{"),
+                    ("content_list.json", """[{"type":"text","page_idx":0,"text":"projection","bbox":[0,0,100,100]}]""")
+                ]
+            };
+            MinerUUploadPreparer preparer = new(client, new MinerUUploadLimits(split ? 1 : 200, 200 * 1024 * 1024));
+            Result<MinerUPreparedResult> result = await preparer.PrepareAndUploadAsync(
+                new OcrUploadSource.WholeDocument(TestFixtures.RealThreePagePdf), directory);
+            result.ErrorCode.Should().Be("artifact_json_invalid");
+            result.ErrorMessage.Should().Contain("middle_json.json").And.Contain("No fallback was attempted");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     private sealed class CapturingMinerUClient : IMinerUClient
     {
         public MinerUUploadRequest? UploadRequest { get; private set; }
@@ -207,6 +273,7 @@ public sealed class MinerUUploadPreparerTests
         public List<string> UploadedLocalPaths { get; } = new();
         public bool WriteContentList { get; init; }
         public bool WriteContentListV2 { get; init; }
+        public (string Name, string Json)[]? ResultEntries { get; init; }
         public bool IsConfigured => true;
 
         public Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(
@@ -248,7 +315,15 @@ public sealed class MinerUUploadPreparerTests
             using (ZipArchive archive =
                    ZipFile.Open(zipPath, ZipArchiveMode.Create))
             {
-                if (WriteContentList)
+                if (ResultEntries is not null)
+                {
+                    foreach ((string name, string json) in ResultEntries)
+                    {
+                        using StreamWriter writer = new(archive.CreateEntry(name).Open());
+                        writer.Write(json);
+                    }
+                }
+                else if (WriteContentList)
                 {
                     ZipArchiveEntry entry = archive.CreateEntry("sample_content_list.json");
                     using StreamWriter writer = new(entry.Open());

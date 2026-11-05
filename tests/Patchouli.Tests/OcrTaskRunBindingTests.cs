@@ -973,19 +973,20 @@ public sealed class OcrTaskRunBindingTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages, CancellationToken c = default,
-            IProgress<OcrTaskStageProgress>? progress = null)
+            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
         {
             return Task.FromResult(Result<OcrRun>.Success(Run));
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p,
-            PageId page, NormalizedBBox bbox, CancellationToken c = default)
+            PageId page, NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
         {
             return Task.FromResult(Result<OcrRun>.Success(Run));
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d,
-            OcrPresetId p, PageId page, NormalizedBBox bbox, CancellationToken c = default)
+            OcrPresetId p, PageId page, NormalizedBBox bbox, CancellationToken c = default,
+            int rotationDegrees = 0)
         {
             return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "x"));
         }
@@ -1046,7 +1047,8 @@ public sealed class OcrTaskRunBindingTests
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
+        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default,
+            Action<Core.Search.SearchIndexRebuildProgress>? progress = null)
         {
             return Task.FromResult(Result.Success());
         }
@@ -1095,14 +1097,14 @@ public sealed class OcrTaskRunBindingTests
     {
         public Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
             DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             return Task.FromResult(Result<OcrInputDescriptor>.Success(new OcrInputDescriptor(pageId,
                 documentInstanceId, OcrInputKinds.PageImage, imagePath, null, null, "available", null)));
         }
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId d, PageId p,
-            NormalizedBBox region, int dpi = 200, CancellationToken c = default)
+            NormalizedBBox region, int dpi = 200, CancellationToken c = default, int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }

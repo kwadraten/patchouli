@@ -272,6 +272,13 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 "At least one physical page is required.");
         }
 
+        Result<int> rotation = OcrImageRotation.Normalize(request.RotationDegrees);
+        if (rotation.IsFailure)
+        {
+            return Result<OcrRun>.Failure(rotation.ErrorCode!, rotation.ErrorMessage!);
+        }
+
+        int rotationDegrees = rotation.Value;
         OcrPresetVersion? resolvedVersion = null;
         if (request.PresetVersionId is { } presetVersionId)
         {
@@ -333,7 +340,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
             try
             {
                 return await RunExtensionJobAsync(request, extensionLease, allowAutoCommit,
-                    resolvedVersion, execution, progress, cancellationToken);
+                    resolvedVersion, execution, progress, rotationDegrees, cancellationToken);
             }
             finally
             {
@@ -365,7 +372,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 return pages.IsFailure
                     ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
                     : await RunPagesAsync(request.DocumentInstanceId, request.PresetId, pages.Value, null,
-                        cancellationToken, progress, allowAutoCommit, resolvedVersion, execution);
+                        cancellationToken, progress, allowAutoCommit, resolvedVersion, execution,
+                        rotationDegrees);
             }
             case OcrRunExecutionScope.Region:
             {
@@ -387,7 +395,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
                     : await RunPagesAsync(request.DocumentInstanceId, request.PresetId, pages.Value,
                         request.RegionBBox, cancellationToken, progress, false, resolvedVersion,
-                        execution);
+                        execution, rotationDegrees);
             }
             default:
             {
@@ -414,10 +422,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds,
         CancellationToken cancellationToken = default,
-        IProgress<OcrTaskStageProgress>? progress = null)
+        IProgress<OcrTaskStageProgress>? progress = null,
+        int rotationDegrees = 0)
     {
         return await ExecuteAsync(
-            new OcrRunExecutionRequest(documentInstanceId, presetId, pageIds, OcrRunExecutionScope.Pages),
+            new OcrRunExecutionRequest(documentInstanceId, presetId, pageIds, OcrRunExecutionScope.Pages,
+                rotationDegrees: rotationDegrees),
             null, cancellationToken, progress);
     }
 
@@ -440,21 +450,22 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetId presetId,
         PageId pageId,
         NormalizedBBox regionBBox,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         return await ExecuteAsync(
             new OcrRunExecutionRequest(documentInstanceId, presetId, [pageId], OcrRunExecutionScope.Region,
-                regionBBox: regionBBox),
+                regionBBox: regionBBox, rotationDegrees: rotationDegrees),
             null, cancellationToken);
     }
 
     public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
         DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, int rotationDegrees = 0)
     {
         return await ExecuteAsync(
             new OcrRunExecutionRequest(documentInstanceId, presetId, [pageId],
-                OcrRunExecutionScope.Pages, workingDraft: true),
+                OcrRunExecutionScope.Pages, workingDraft: true, rotationDegrees: rotationDegrees),
             null, cancellationToken);
     }
 
@@ -493,13 +504,22 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetId presetId,
         PageId pageId,
         NormalizedBBox regionBBox,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         Result region = regionBBox.Validate();
         if (region.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(region.ErrorCode!, region.ErrorMessage!);
         }
+
+        Result<int> rotation = OcrImageRotation.Normalize(rotationDegrees);
+        if (rotation.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(rotation.ErrorCode!, rotation.ErrorMessage!);
+        }
+
+        rotationDegrees = rotation.Value;
 
         Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
         if (pages.IsFailure)
@@ -522,7 +542,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (version.Value.EngineId == OcrEngineIds.MinerU)
         {
             return await RecognizeRegionWithMinerUAsync(
-                documentInstanceId, pages.Value.Single(), regionBBox, version.Value, cancellationToken);
+                documentInstanceId, pages.Value.Single(), regionBBox, version.Value, rotationDegrees,
+                cancellationToken);
         }
 
         // Extension engines run the ephemeral region through the same one-job path as the queue —
@@ -544,13 +565,14 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 if (!held.IsBuiltIn)
                 {
                     return await RecognizeRegionWithExtensionJobAsync(documentInstanceId,
-                        pages.Value.Single(), regionBBox, version.Value, held, cancellationToken);
+                        pages.Value.Single(), regionBBox, version.Value, held, rotationDegrees,
+                        cancellationToken);
                 }
             }
         }
 
         Result<OcrEnginePageResult> output = await RunEngineAsync(
-            pages.Value.Single(), version.Value, regionBBox, cancellationToken);
+            pages.Value.Single(), version.Value, regionBBox, rotationDegrees, cancellationToken);
         if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
         {
             return Result<OcrRegionCandidate>.Failure(
@@ -1001,7 +1023,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IProgress<OcrTaskStageProgress>? progress = null,
         bool allowAutoCommit = true,
         OcrPresetVersion? resolvedVersion = null,
-        OcrRunExecutionContext? execution = null)
+        OcrRunExecutionContext? execution = null,
+        int rotationDegrees = 0)
     {
         Result<OcrPresetVersion> version = resolvedVersion is not null
             ? Result<OcrPresetVersion>.Success(resolvedVersion)
@@ -1026,7 +1049,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         {
             return await RunMinerUDocumentAsync(
                 documentInstanceId, presetId, version.Value, pages, region, cancellationToken,
-                progress, execution);
+                progress, execution, rotationDegrees);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
@@ -1057,7 +1080,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
                 Result<OcrEnginePageResult> output = await RunEngineAsync(
-                    page, version.Value, region, cancellationToken);
+                    page, version.Value, region, rotationDegrees, cancellationToken);
                 if (output.IsFailure || !output.Value.Succeeded)
                 {
                     failures++;
@@ -1201,6 +1224,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         OcrPresetVersion? resolvedVersion,
         OcrRunExecutionContext? execution,
         IProgress<OcrTaskStageProgress>? progress,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         Result<OcrPresetVersion> versionResult = resolvedVersion is not null
@@ -1306,7 +1330,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 new NormalizedBBox(0, 0, 1, 1),
                 "image/png", OcrInputKinds.PageImage);
             loaders[pageInput.Id] = ct => ReadPageImageAsync(pageInput.Id,
-                request.DocumentInstanceId, target, dpi, ct);
+                request.DocumentInstanceId, target, dpi, rotationDegrees, ct);
             jobPages.Add(new OcrJobPage(
                 new ExtensionPageIdentity(request.DocumentInstanceId, target.PageId,
                     targetBaseline, target.PageIndex),
@@ -1411,13 +1435,20 @@ public sealed class OcrRunEngine : IOcrRunEngine
                             baseline, page.PageIndex),
                         provider.RequiredOcrRegions.Select((region, index) =>
                         {
+                            // The input region travels in the recognizer's own basis: rotated
+                            // for extension engines (their geometry maps straight into it), and
+                            // unrotated for the built-in transport, which rotates internally.
+                            NormalizedBBox inputRegion = lease.IsBuiltIn || rotationDegrees == 0
+                                ? region.Region
+                                : OcrImageRotation.RotateIntoImageBasis(region.Region, rotationDegrees);
                             OcrJobInput input = new(new OcrInputId($"region-{page.PageIndex}-{index}"),
-                                region.Region, "image/png", OcrInputKinds.RegionImage);
+                                inputRegion, "image/png", OcrInputKinds.RegionImage);
                             regionAnchors[input.Id] = region.Anchors is { Count: > 0 }
                                 ? region.Anchors[0].StartCharIndex
                                 : int.MaxValue;
                             loaders[input.Id] = ct => ReadRegionImageAsync(input.Id,
-                                request.DocumentInstanceId, page, region.Region, dpi, ct);
+                                request.DocumentInstanceId, page, region.Region, dpi, rotationDegrees,
+                                ct);
                             return input;
                         }).ToList()));
                     continue;
@@ -1425,10 +1456,17 @@ public sealed class OcrRunEngine : IOcrRunEngine
 
                 if (request.Scope is OcrRunExecutionScope.Region)
                 {
+                    // Same basis rule as provider-declared regions: rotated for extension
+                    // engines, unrotated for the built-in transport (which rotates internally).
+                    NormalizedBBox inputRegion = lease.IsBuiltIn || rotationDegrees == 0
+                        ? request.RegionBBox!.Value
+                        : OcrImageRotation.RotateIntoImageBasis(request.RegionBBox!.Value,
+                            rotationDegrees);
                     OcrJobInput regionInput = new(new OcrInputId("region"),
-                        request.RegionBBox!.Value, "image/png", OcrInputKinds.RegionImage);
+                        inputRegion, "image/png", OcrInputKinds.RegionImage);
                     loaders[regionInput.Id] = ct => ReadRegionImageAsync(regionInput.Id,
-                        request.DocumentInstanceId, page, request.RegionBBox.Value, dpi, ct);
+                        request.DocumentInstanceId, page, request.RegionBBox.Value, dpi,
+                        rotationDegrees, ct);
                     jobPages.Add(new OcrJobPage(
                         new ExtensionPageIdentity(request.DocumentInstanceId, page.PageId,
                             baseline, page.PageIndex),
@@ -1509,7 +1547,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                                 $"pages:{recognizedPages}/{pages.Length};page:{jobPage.Page.PageIndex + 1}")));
                         Result<IReadOnlyList<OcrExtensionBoxCandidate>> recognized =
                             await lease.BuiltInRegionRunner(jobPage, input, version,
-                                cancellationToken);
+                                rotationDegrees, cancellationToken);
                         if (recognized.IsFailure)
                         {
                             pageFailures[jobPage.Page.PageId] =
@@ -1568,7 +1606,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
                                 jobSeeds[settlement.Page.PageId] =
                                     accepted.TryGetValue(settlement.Page.PageId,
                                         out OcrExtensionCandidate? full)
-                                        ? full.Boxes.Select(box => (box.InputId, box.Candidate)).ToList()
+                                        ? full.Boxes.Select(box => (box.InputId,
+                                            UnrotateSeed(box.Candidate, rotationDegrees))).ToList()
                                         : [];
                                 break;
                             case OcrPageSettlementState.Accepted:
@@ -1774,17 +1813,32 @@ public sealed class OcrRunEngine : IOcrRunEngine
             DocumentTreeRevisionId.Parse(current), identity.PageIndex);
     }
 
+    /// <summary>
+    /// Inverse-rotates one extension candidate's geometry from the rotated image basis back
+    /// into the unrotated document basis. Built-in transport results arrive unrotated already.
+    /// </summary>
+    private static DocumentBoxSeed UnrotateSeed(DocumentBoxSeed seed, int rotationDegrees)
+    {
+        return rotationDegrees == 0
+            ? seed
+            : seed with
+            {
+                BBox = OcrImageRotation.UnrotateFromImageBasis(seed.BBox, rotationDegrees)
+            };
+    }
+
     /// <summary>Host-mediated lazy image materialization for a full-page job input.</summary>
     private async Task<OcrInputImage> ReadPageImageAsync(
         OcrInputId inputId,
         DocumentInstanceId documentInstanceId,
         Page page,
         int dpi,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         Result<OcrInputDescriptor> rendered =
             await _pageRenderService!.BuildOcrInputFromRenderedPageAsync(
-                documentInstanceId, page.PageId, dpi, cancellationToken);
+                documentInstanceId, page.PageId, dpi, cancellationToken, rotationDegrees);
         if (rendered.IsFailure || rendered.Value.ImagePath is not { } imagePath)
         {
             throw new InvalidOperationException(
@@ -1801,10 +1855,11 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         NormalizedBBox region,
         int dpi,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         Result<string> rendered = await _pageRenderService!.RenderRegionPngAsync(
-            documentInstanceId, page.PageId, region, dpi, cancellationToken);
+            documentInstanceId, page.PageId, region, dpi, cancellationToken, rotationDegrees);
         if (rendered.IsFailure)
         {
             throw new InvalidOperationException(rendered.ErrorMessage ?? "Region rendering failed.");
@@ -1910,6 +1965,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         NormalizedBBox regionBBox,
         OcrPresetVersion version,
         IOcrEngineLease lease,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         Result ready = await lease.EnsureManagedFilesAsync(OcrRunExecutionScope.Region, cancellationToken);
@@ -1927,11 +1983,17 @@ public sealed class OcrRunEngine : IOcrRunEngine
             await CapturePageRevisionBaselinesAsync(documentInstanceId, [page], cancellationToken);
         baselines.TryGetValue(page.PageId, out DocumentTreeRevisionId baseline);
         int dpi = 200;
-        OcrJobInput input = new(new OcrInputId("region"), regionBBox, "image/png", OcrInputKinds.RegionImage);
+        // The issued input region is expressed in the rotated image basis so the extension's
+        // geometry maps into the pixels it actually receives.
+        NormalizedBBox inputRegion = rotationDegrees == 0
+            ? regionBBox
+            : OcrImageRotation.RotateIntoImageBasis(regionBBox, rotationDegrees);
+        OcrJobInput input = new(new OcrInputId("region"), inputRegion, "image/png",
+            OcrInputKinds.RegionImage);
         Dictionary<OcrInputId, Func<CancellationToken, Task<OcrInputImage>>> loaders = new()
         {
             [input.Id] = ct => ReadRegionImageAsync(input.Id, documentInstanceId, page, regionBBox,
-                dpi, ct)
+                dpi, rotationDegrees, ct)
         };
         OcrDomainJobRequest job = new(
             $"ocr-region-{page.PageId}", documentInstanceId,
@@ -2044,7 +2106,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         NormalizedBBox? region,
         CancellationToken cancellationToken,
         IProgress<OcrTaskStageProgress>? progress = null,
-        OcrRunExecutionContext? execution = null)
+        OcrRunExecutionContext? execution = null,
+        int rotationDegrees = 0)
     {
         if (_minerUResultImporter is null || _minerUClientFactory is null || _credentialResolver is null)
         {
@@ -2057,7 +2120,16 @@ public sealed class OcrRunEngine : IOcrRunEngine
         {
             return await RunMinerURegionAsync(
                 documentInstanceId, presetId, version, pages.Single(), region.Value, cancellationToken,
-                execution);
+                execution, rotationDegrees);
+        }
+
+        // A rotated run cannot upload the source PDF: the provider must see the rotated pixels,
+        // so every page renders, rotates and uploads as an image under this same run.
+        if (rotationDegrees != 0)
+        {
+            return await RunMinerURotatedPagesAsync(
+                documentInstanceId, presetId, version, pages, rotationDegrees, cancellationToken,
+                progress, execution);
         }
 
         Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
@@ -2255,7 +2327,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         NormalizedBBox regionBBox,
         CancellationToken cancellationToken,
-        OcrRunExecutionContext? execution = null)
+        OcrRunExecutionContext? execution = null,
+        int rotationDegrees = 0)
     {
         if (_pageRenderService is null)
         {
@@ -2292,7 +2365,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         try
         {
             crop = await _pageRenderService.RenderRegionPngAsync(
-                documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken);
+                documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken,
+                rotationDegrees: rotationDegrees);
         }
         catch (OperationCanceledException)
         {
@@ -2309,9 +2383,151 @@ public sealed class OcrRunEngine : IOcrRunEngine
             return await FailMinerURunAsync(run, [page], crop.ErrorCode, crop.ErrorMessage, cancellationToken);
         }
 
-        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, regionBBox);
+        // The uploaded image is the rotated region crop; its declared extent is the rotated
+        // region rect, and parsed geometry is mapped back into the document basis afterwards.
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200,
+            rotationDegrees == 0
+                ? regionBBox
+                : OcrImageRotation.RotateIntoImageBasis(regionBBox, rotationDegrees));
         return await RunMinerUImageRunAsync(
-            run, version, page, new OcrUploadSource.RegionImage(crop.Value, context), client, cancellationToken);
+            run, version, page, new OcrUploadSource.RegionImage(crop.Value, context), client,
+            rotationDegrees, cancellationToken);
+    }
+
+    /// <summary>
+    /// Rotated variant of the MinerU document run: each requested page renders and rotates its
+    /// pixels before upload (the provider never sees the PDF), while the run row, baselines,
+    /// import and completion follow the same durable path as PDF uploads.
+    /// </summary>
+    private async Task<Result<OcrRun>> RunMinerURotatedPagesAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        OcrPresetVersion version,
+        IReadOnlyList<Page> pages,
+        int rotationDegrees,
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress,
+        OcrRunExecutionContext? execution)
+    {
+        if (_pageRenderService is null)
+        {
+            return Result<OcrRun>.Failure(
+                AppErrorCodes.UnsupportedOperation,
+                "MinerU rotated page OCR requires page rendering.");
+        }
+
+        Result<string> secret = await _credentialResolver!(ProviderIds.MinerU, cancellationToken);
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return Result<OcrRun>.Failure(
+                secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                secret.ErrorMessage ?? "MinerU credential is unavailable.");
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        if (!client.IsConfigured)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "MinerU client is not configured.");
+        }
+
+        OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
+        await InsertRunAsync(run, cancellationToken);
+        await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
+        Result<OcrRun>? rejected = await RejectRunWhenBindingFailsAsync(execution, run, pages,
+            cancellationToken);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
+        IReadOnlyDictionary<PageId, DocumentTreeRevisionId> baselines =
+            await CapturePageRevisionBaselinesAsync(documentInstanceId, pages, cancellationToken);
+        int failures = 0;
+        int processedPages = 0;
+        DocumentTreeRevisionId? firstWorking = null;
+        ReportPageProgress(progress, processedPages, pages.Count);
+        try
+        {
+            foreach (Page page in pages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing,
+                    null, null, null);
+                Result<OcrInputDescriptor> rendered = await _pageRenderService
+                    .BuildOcrInputFromRenderedPageAsync(documentInstanceId, page.PageId,
+                        cancellationToken: cancellationToken, rotationDegrees: rotationDegrees);
+                if (rendered.IsFailure || rendered.Value.ImagePath is not { } imagePath)
+                {
+                    failures++;
+                    await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Failed,
+                        null, rendered.ErrorCode ?? AppErrorCodes.InvalidState,
+                        rendered.ErrorMessage ?? "PDF page rendering failed.");
+                    ReportPageProgress(progress, ++processedPages, pages.Count);
+                    continue;
+                }
+
+                OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, null);
+                Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client,
+                        _minerUUploadLimits)
+                    .PrepareAndUploadAsync(new OcrUploadSource.PageImage(imagePath, context),
+                        Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString(), $"p{page.PageIndex}"),
+                        cancellationToken);
+                Result<OcrDocumentTreeCandidate> candidate = prepared.IsFailure
+                    ? Result<OcrDocumentTreeCandidate>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!)
+                    : new MinerUResultParser().ParseImageStructuredTree(prepared.Value, page);
+                Result<OcrDocumentTreeImportResult> working = candidate.IsFailure
+                    ? Result<OcrDocumentTreeImportResult>.Failure(candidate.ErrorCode!,
+                        candidate.ErrorMessage!)
+                    : await _treeImporter.BeginWorkingAsync(
+                        new OcrDocumentTreeImportRequest(documentInstanceId,
+                            UnrotateCandidate(candidate.Value, rotationDegrees),
+                            ExpectedParentTreeRevisionIds: baselines),
+                        cancellationToken);
+                if (working.IsFailure)
+                {
+                    failures++;
+                    await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Failed,
+                        null, working.ErrorCode, working.ErrorMessage);
+                    ReportPageProgress(progress, ++processedPages, pages.Count);
+                    continue;
+                }
+
+                DocumentTreeRevisionId revisionId = working.Value.WorkingRevisionIds.Single();
+                firstWorking ??= revisionId;
+                await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Succeeded,
+                    revisionId, null, null);
+                ReportPageProgress(progress, ++processedPages, pages.Count);
+            }
+
+            return await FinalizeRunAsync(run, pages, version, failures, firstWorking, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, pages, exception);
+        }
+    }
+
+    /// <summary>Maps every parsed box from the rotated image basis back into document coordinates.</summary>
+    private static OcrDocumentTreeCandidate UnrotateCandidate(OcrDocumentTreeCandidate candidate,
+        int rotationDegrees)
+    {
+        return rotationDegrees == 0
+            ? candidate
+            : candidate with
+            {
+                Pages = candidate.Pages.Select(page => page with
+                {
+                    Boxes = page.Boxes.Select(box => box with
+                    {
+                        BBox = OcrImageRotation.UnrotateFromImageBasis(box.BBox, rotationDegrees)
+                    }).ToArray()
+                }).ToArray()
+            };
     }
 
     private async Task<Result<OcrRun>> RunMinerUImageRunAsync(
@@ -2320,6 +2536,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         OcrUploadSource uploadSource,
         IMinerUClient client,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<Page> pages = [page];
@@ -2339,6 +2556,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
 
             Result<OcrDocumentTreeCandidate> candidate =
                 new MinerUResultParser().ParseImageStructuredTree(prepared.Value, page);
+            if (candidate.IsSuccess)
+            {
+                candidate = Result<OcrDocumentTreeCandidate>.Success(
+                    UnrotateCandidate(candidate.Value, rotationDegrees));
+            }
+
             if (candidate.IsFailure)
             {
                 return await FailMinerURunAsync(
@@ -2430,7 +2653,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         PageId pageId,
         NormalizedBBox regionBBox,
         OcrPresetVersion version,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int rotationDegrees = 0)
     {
         Result region = regionBBox.Validate();
         if (region.IsFailure)
@@ -2454,7 +2678,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         return version.EngineId switch
         {
             OcrEngineIds.MinerU => await RecognizeRegionWithMinerUAsync(
-                documentInstanceId, page, regionBBox, version, cancellationToken),
+                documentInstanceId, page, regionBBox, version, rotationDegrees, cancellationToken),
             _ => Result<OcrRegionCandidate>.Failure(AppErrorCodes.UnsupportedOperation,
                 $"Engine '{version.EngineId}' has no built-in region transport.")
         };
@@ -2472,7 +2696,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         PageId pageId,
         OcrInputId inputId,
         OcrPresetVersion version,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int rotationDegrees = 0)
     {
         if (!string.Equals(version.EngineId, OcrEngineIds.MinerU, StringComparison.Ordinal))
         {
@@ -2512,7 +2737,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
 
         const int dpi = 200;
         Result<OcrInputDescriptor> rendered = await _pageRenderService
-            .BuildOcrInputFromRenderedPageAsync(documentInstanceId, pageId, dpi, cancellationToken);
+            .BuildOcrInputFromRenderedPageAsync(documentInstanceId, pageId, dpi, cancellationToken,
+                rotationDegrees);
         if (rendered.IsFailure || rendered.Value.ImagePath is not { } imagePath)
         {
             return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
@@ -2559,8 +2785,11 @@ public sealed class OcrRunEngine : IOcrRunEngine
         return Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Success(
             pageCandidate.Boxes.Select(box => new OcrExtensionBoxCandidate(inputId,
                     new DocumentBoxSeed(box.PreassignedBoxId, box.ParentLogicalPageBoxId,
-                        box.SourceOrder, box.BoxType, box.SubType, box.BBox, box.Payload,
-                        box.HeadingLevel, box.CodeLanguage, box.Confidence, box.Suppressed,
+                        box.SourceOrder, box.BoxType, box.SubType,
+                        rotationDegrees == 0
+                            ? box.BBox
+                            : OcrImageRotation.UnrotateFromImageBasis(box.BBox, rotationDegrees),
+                        box.Payload, box.HeadingLevel, box.CodeLanguage, box.Confidence, box.Suppressed,
                         box.ContinuesFromBoxId, box.ContinuationState)))
                 .ToArray());
     }
@@ -2570,6 +2799,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         NormalizedBBox regionBBox,
         OcrPresetVersion version,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
@@ -2589,7 +2819,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
 
         Result<string> crop = await _pageRenderService.RenderRegionPngAsync(
-            documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken);
+            documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken,
+            rotationDegrees: rotationDegrees);
         if (crop.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(crop.ErrorCode!, crop.ErrorMessage!);
@@ -2602,7 +2833,10 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 "MinerU client is not configured.");
         }
 
-        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, regionBBox);
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200,
+            rotationDegrees == 0
+                ? regionBBox
+                : OcrImageRotation.RotateIntoImageBasis(regionBBox, rotationDegrees));
         Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits)
             .PrepareAndUploadAsync(new OcrUploadSource.RegionImage(crop.Value, context),
                 Path.Combine(_minerUCacheRoot, "regions"), cancellationToken);
@@ -3002,6 +3236,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Page page,
         OcrPresetVersion version,
         NormalizedBBox? region,
+        int rotationDegrees,
         CancellationToken cancellationToken)
     {
         UiThreadExecutionGuard.Check(UiThreadExecutionGuard.Ocr);
@@ -3015,7 +3250,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (_pageRenderService is not null)
         {
             Result<OcrInputDescriptor> rendered = await _pageRenderService.BuildOcrInputFromRenderedPageAsync(
-                page.DocumentInstanceId, page.PageId, cancellationToken: cancellationToken);
+                page.DocumentInstanceId, page.PageId, cancellationToken: cancellationToken,
+                rotationDegrees: rotationDegrees);
             if (rendered.IsFailure)
             {
                 return Result<OcrEnginePageResult>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
@@ -3024,7 +3260,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
             input = rendered.Value with
             {
                 InputKind = region is null ? rendered.Value.InputKind : OcrInputKinds.RegionImage,
-                RegionBBox = region
+                // The adapter crops and reports inside the rotated image it receives, so the
+                // descriptor's region travels in the rotated image basis while `region` stays
+                // unrotated for the caller-facing result mapping.
+                RegionBBox = region is null || rotationDegrees == 0
+                    ? region
+                    : OcrImageRotation.RotateIntoImageBasis(region.Value, rotationDegrees)
             };
         }
         else
@@ -3035,9 +3276,65 @@ public sealed class OcrRunEngine : IOcrRunEngine
         }
 
         Result inputValidation = await adapter.ValidateInputAsync(input, cancellationToken);
-        return inputValidation.IsFailure
-            ? Result<OcrEnginePageResult>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!)
-            : await adapter.RunPageAsync(input, version, cancellationToken);
+        if (inputValidation.IsFailure)
+        {
+            return Result<OcrEnginePageResult>.Failure(inputValidation.ErrorCode!,
+                inputValidation.ErrorMessage!);
+        }
+
+        Result<OcrEnginePageResult> output = await adapter.RunPageAsync(input, version, cancellationToken);
+        return rotationDegrees == 0 || output.IsFailure
+            ? output
+            : Result<OcrEnginePageResult>.Success(
+                UnrotateEngineResult(output.Value, rotationDegrees));
+    }
+
+    /// <summary>
+    /// Adapter geometry describes the rotated image it recognized; map it back into the
+    /// unrotated document basis before resolution and import. An image-pixel source box
+    /// normalizes against the rotated image's own dimensions first.
+    /// </summary>
+    private static OcrEnginePageResult UnrotateEngineResult(OcrEnginePageResult output,
+        int rotationDegrees)
+    {
+        static NormalizedBBox Unrotate(NormalizedBBox box, int degrees)
+        {
+            return OcrImageRotation.UnrotateFromImageBasis(box, degrees);
+        }
+
+        SourceBBox? source = output.SourceBBox;
+        if (source is { CoordinateSystem: SourceBBoxCoordinateSystem.NormalizedPage } or
+            { CoordinateSystem: SourceBBoxCoordinateSystem.ImagePixels, BasisWidth: > 0, BasisHeight: > 0 })
+        {
+            NormalizedBBox normalized = source.CoordinateSystem == SourceBBoxCoordinateSystem.ImagePixels &&
+                                        source.BasisWidth is > 0 && source.BasisHeight is > 0
+                ? new NormalizedBBox(source.X / source.BasisWidth.Value,
+                    source.Y / source.BasisHeight.Value,
+                    source.Width / source.BasisWidth.Value,
+                    source.Height / source.BasisHeight.Value)
+                : new NormalizedBBox(source.X, source.Y, source.Width, source.Height);
+            NormalizedBBox transformed = Unrotate(normalized, rotationDegrees);
+            source = source with
+            {
+                X = transformed.X,
+                Y = transformed.Y,
+                Width = transformed.Width,
+                Height = transformed.Height,
+                CoordinateSystem = SourceBBoxCoordinateSystem.NormalizedPage,
+                BasisWidth = null,
+                BasisHeight = null
+            };
+        }
+
+        return output with
+        {
+            BBox = output.BBox is { } bbox ? Unrotate(bbox, rotationDegrees) : null,
+            SourceBBox = source,
+            TextBoxes = output.TextBoxes?.Select(box => box with
+            {
+                BBox = Unrotate(box.BBox, rotationDegrees)
+            }).ToArray()
+        };
     }
 
     private async Task<Result<Page[]>> GetPagesAsync(

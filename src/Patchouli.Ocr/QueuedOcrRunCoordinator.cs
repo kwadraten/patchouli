@@ -114,7 +114,8 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds,
         CancellationToken cancellationToken = default,
-        IProgress<OcrTaskStageProgress>? progress = null)
+        IProgress<OcrTaskStageProgress>? progress = null,
+        int rotationDegrees = 0)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -128,7 +129,7 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
                 new OcrQueueTaskRequest(documentInstanceId, presetId, pageIds, OcrQueueTaskKind.Pages,
                     version.Value.EngineId, adapter, provider,
                     PriorityFor(pageIds), PresetVersionId: version.Value.PresetVersionId,
-                    Source: OcrQueueSource.UiPages),
+                    Source: OcrQueueSource.UiPages, RotationDegrees: rotationDegrees),
                 cancellationToken),
             cancellationToken);
     }
@@ -138,7 +139,8 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         OcrPresetId presetId,
         PageId pageId,
         NormalizedBBox regionBBox,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -153,14 +155,14 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
                     version.Value.EngineId, adapter, provider,
                     OcrQueuePriority.InteractiveCurrentPage, RegionBBox: regionBBox,
                     CommitOnCompletion: false, PresetVersionId: version.Value.PresetVersionId,
-                    Source: OcrQueueSource.UiRegion),
+                    Source: OcrQueueSource.UiRegion, RotationDegrees: rotationDegrees),
                 cancellationToken),
             cancellationToken);
     }
 
     public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
         DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, int rotationDegrees = 0)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -173,7 +175,8 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
                 new OcrQueueTaskRequest(documentInstanceId, presetId, [pageId], OcrQueueTaskKind.Pages,
                     version.Value.EngineId, adapter, provider,
                     OcrQueuePriority.InteractiveCurrentPage, CommitOnCompletion: false,
-                    PresetVersionId: version.Value.PresetVersionId, Source: OcrQueueSource.UiWorking),
+                    PresetVersionId: version.Value.PresetVersionId, Source: OcrQueueSource.UiWorking,
+                    RotationDegrees: rotationDegrees),
                 cancellationToken),
             cancellationToken);
     }
@@ -188,13 +191,14 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         OcrPresetId presetId,
         PageId pageId,
         NormalizedBBox regionBBox,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         // Region candidates are ephemeral: the engine persists no run for them, so there is no
         // status to track and queueing is not required for status correctness. The facade still
         // owns a real background boundary for synchronous adapters and post-HTTP parsing.
         return Task.Run(() => _engine.RecognizeRegionCandidateAsync(documentInstanceId, presetId, pageId,
-            regionBBox, cancellationToken), cancellationToken);
+            regionBBox, cancellationToken, rotationDegrees), cancellationToken);
     }
 
     public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)

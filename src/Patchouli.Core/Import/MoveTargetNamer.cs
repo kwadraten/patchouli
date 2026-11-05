@@ -48,7 +48,7 @@ public static class MoveTargetNamer
         string stem = Path.GetFileNameWithoutExtension(fileName);
         string extension = Path.GetExtension(fileName);
 
-        for (int suffix = 1; ; suffix++)
+        for (int suffix = 1;; suffix++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             string candidateName = suffix == 1 ? fileName : $"{stem}-{suffix}{extension}";

@@ -33,7 +33,8 @@ public sealed record OcrRunExecutionRequest
         OcrPresetVersionId? presetVersionId = null,
         NormalizedBBox? regionBBox = null,
         bool workingDraft = false,
-        IOcrEngineLease? engineLease = null)
+        IOcrEngineLease? engineLease = null,
+        int rotationDegrees = 0)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
         DocumentInstanceId = documentInstanceId;
@@ -44,6 +45,7 @@ public sealed record OcrRunExecutionRequest
         RegionBBox = regionBBox;
         WorkingDraft = workingDraft;
         EngineLease = engineLease;
+        RotationDegrees = rotationDegrees;
     }
 
     public DocumentInstanceId DocumentInstanceId { get; }
@@ -65,6 +67,13 @@ public sealed record OcrRunExecutionRequest
     /// acceptance-time selection — the engine never resolves a newer generation inside the run.
     /// </summary>
     public IOcrEngineLease? EngineLease { get; }
+
+    /// <summary>
+    /// The frozen clockwise onscreen quarter turn (0/90/180/270) accepted with the request.
+    /// Providers receive pixels rotated by this amount; every accepted region parameter stays
+    /// in the unrotated document basis and provider geometry is mapped back into it.
+    /// </summary>
+    public int RotationDegrees { get; }
 }
 
 /// <summary>

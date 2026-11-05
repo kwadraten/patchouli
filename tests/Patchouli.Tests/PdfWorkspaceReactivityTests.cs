@@ -24,6 +24,69 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         _settings.Dispose();
     }
 
+    [Fact]
+    public void Viewport_fit_modes_follow_resize_rotation_and_page_dimensions()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        SetProperty(workspace, nameof(workspace.WidthPixels), 1000);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 2000);
+
+        workspace.UpdateViewportSize(848, 1048);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitHeight);
+        workspace.Zoom.Should().BeApproximately(0.5, 0.0001);
+
+        workspace.CycleFitModeCommand.Execute(null);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitWidth);
+        workspace.Zoom.Should().BeApproximately(0.8, 0.0001);
+
+        workspace.RotatePageCommand.Execute(null);
+        workspace.ViewportRotationAngle.Should().Be(90);
+        workspace.Zoom.Should().BeApproximately(0.4, 0.0001);
+
+        workspace.UpdateViewportSize(1248, 1048);
+        workspace.Zoom.Should().BeApproximately(0.6, 0.0001);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 3000);
+        workspace.Zoom.Should().BeApproximately(0.4, 0.0001);
+
+        workspace.CycleFitModeCommand.Execute(null);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
+        workspace.UpdateViewportSize(848, 1048);
+        workspace.Zoom.Should().BeApproximately(0.4, 0.0001);
+    }
+
+    [Fact]
+    public void Manual_zoom_leaves_fit_mode_even_when_the_zoom_value_does_not_change()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        SetProperty(workspace, nameof(workspace.WidthPixels), 1000);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 2000);
+        workspace.UpdateViewportSize(848, 1048);
+
+        workspace.AdjustZoom(0);
+
+        workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
+        workspace.Zoom.Should().BeApproximately(0.5, 0.0001);
+    }
+
+    [Fact]
+    public void Manual_zoom_does_not_enlarge_a_small_fitted_page_when_zooming_out()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        SetProperty(workspace, nameof(workspace.WidthPixels), 1000);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 2000);
+        workspace.UpdateViewportSize(248, 248);
+        workspace.Zoom.Should().BeApproximately(0.1, 0.0001);
+
+        workspace.AdjustZoom(-0.1);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
+        workspace.Zoom.Should().BeApproximately(0.1, 0.0001);
+        workspace.AdjustZoom(0.1);
+        workspace.Zoom.Should().BeApproximately(0.2, 0.0001);
+    }
+
     private sealed class FakeClipboard : IClipboardService
     {
         public Task<string?> GetTextAsync()
@@ -275,11 +338,11 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         bbox.BoxColor.Should().Be(Brushes.Gray);
         bbox.IsCode.Should().BeTrue();
 
-        // IsSelected -> ZIndex
+        // Selection does not change the reading-order stacking of overlapping boxes.
         bbox.IsSelected = true;
-        bbox.ZIndex.Should().Be(1);
+        bbox.ZIndex.Should().Be(bbox.ReadingOrder);
         bbox.IsSelected = false;
-        bbox.ZIndex.Should().Be(0);
+        bbox.ZIndex.Should().Be(bbox.ReadingOrder);
 
         // IsTreeExpanded -> TreeChevronAngle
         bbox.IsTreeExpanded = true;
@@ -362,9 +425,9 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         pdf.PreviousPageCommand.CanExecute(null).Should().BeTrue();
         pdf.NextPageCommand.CanExecute(null).Should().BeFalse();
 
-        // While in edit mode, page navigation is disallowed
+        // Edit mode preserves the page navigation boundaries.
         SetProperty(pdf, nameof(pdf.IsEditMode), true);
-        pdf.PreviousPageCommand.CanExecute(null).Should().BeFalse();
+        pdf.PreviousPageCommand.CanExecute(null).Should().BeTrue();
         pdf.NextPageCommand.CanExecute(null).Should().BeFalse();
 
         SetProperty(pdf, nameof(pdf.IsEditMode), false);

@@ -133,7 +133,8 @@ public sealed class OcrPublicAcceptanceIndependentTests
             throw new NotSupportedException();
         }
 
-        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
+        public Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default,
+            Action<SearchIndexRebuildProgress>? progress = null)
         {
             throw new NotSupportedException();
         }

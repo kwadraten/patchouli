@@ -521,8 +521,14 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
 
     public async Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
         DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, int rotationDegrees = 0)
     {
+        Result<int> rotation = OcrImageRotation.Normalize(rotationDegrees);
+        if (rotation.IsFailure)
+        {
+            return Result<OcrInputDescriptor>.Failure(rotation.ErrorCode!, rotation.ErrorMessage!);
+        }
+
         Result<PageRenderResult> rendered = await RenderPageAsync(
             new PageRenderRequest(documentInstanceId, pageId, Dpi: dpi, Purpose: PageRenderPurpose.Ocr),
             cancellationToken);
@@ -545,13 +551,26 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
                 rendered.Value.Warning ?? $"Page render is not ready: {rendered.Value.Status}.");
         }
 
+        string? imagePath = rendered.Value.CacheImagePath;
+        if (rotation.Value != 0 && imagePath is not null)
+        {
+            Result<string> rotated = RotateRenderedPage(imagePath, rotation.Value);
+            if (rotated.IsFailure)
+            {
+                return Result<OcrInputDescriptor>.Failure(rotated.ErrorCode!, rotated.ErrorMessage!);
+            }
+
+            imagePath = rotated.Value;
+        }
+
         return Result<OcrInputDescriptor>.Success(new OcrInputDescriptor(pageId, documentInstanceId,
-            OcrInputKinds.PageImage, rendered.Value.CacheImagePath, null, null, rendered.Value.SourceFileStatus,
+            OcrInputKinds.PageImage, imagePath, null, null, rendered.Value.SourceFileStatus,
             rendered.Value.Warning));
     }
 
     public async Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
+        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         Result validation = region.Validate();
         if (validation.IsFailure)
@@ -559,8 +578,14 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
             return Result<string>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
         }
 
+        Result<int> rotation = OcrImageRotation.Normalize(rotationDegrees);
+        if (rotation.IsFailure)
+        {
+            return Result<string>.Failure(rotation.ErrorCode!, rotation.ErrorMessage!);
+        }
+
         Result<OcrInputDescriptor> input = await BuildOcrInputFromRenderedPageAsync(
-            documentInstanceId, pageId, dpi, cancellationToken);
+            documentInstanceId, pageId, dpi, cancellationToken, rotation.Value);
         if (input.IsFailure || string.IsNullOrWhiteSpace(input.Value.ImagePath))
         {
             return Result<string>.Failure(
@@ -568,8 +593,13 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
                 input.ErrorMessage ?? "Rendered OCR input is unavailable.");
         }
 
+        // The crop happens in the image's own basis: the unrotated document region is first
+        // mapped into the rotated frame so the cropped pixels match the rotated viewport.
+        NormalizedBBox imageRegion = rotation.Value == 0
+            ? region
+            : OcrImageRotation.RotateIntoImageBasis(region, rotation.Value);
         string fullPagePath = input.Value.ImagePath;
-        string cropPath = RegionCropPath(fullPagePath, region);
+        string cropPath = RegionCropPath(fullPagePath, imageRegion);
         if (File.Exists(cropPath))
         {
             return Result<string>.Success(cropPath);
@@ -577,12 +607,47 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
 
         try
         {
-            RegionImageCrop.CropPngToFile(fullPagePath, region, cropPath);
+            RegionImageCrop.CropPngToFile(fullPagePath, imageRegion, cropPath);
             return Result<string>.Success(cropPath);
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render"))
         {
             return Result<string>.Failure(AppErrorCodes.InvalidState, $"Region crop failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Materializes the clockwise-rotated variant of a cached page render next to the cached
+    /// file; the rotated sibling is reused like every other render artifact.
+    /// </summary>
+    private static Result<string> RotateRenderedPage(string fullPagePath, int rotationDegrees)
+    {
+        string rotatedPath = Path.Combine(Path.GetDirectoryName(fullPagePath)!,
+            $"{Path.GetFileNameWithoutExtension(fullPagePath)}.rot{rotationDegrees}.png");
+        if (File.Exists(rotatedPath))
+        {
+            return Result<string>.Success(rotatedPath);
+        }
+
+        string temporaryPath = $"{rotatedPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            OcrImageRotation.RotatePngFile(fullPagePath, temporaryPath, rotationDegrees);
+            File.Move(temporaryPath, rotatedPath, true);
+            return Result<string>.Success(rotatedPath);
+        }
+        catch (IOException) when (File.Exists(rotatedPath))
+        {
+            return Result<string>.Success(rotatedPath);
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render"))
+        {
+            return Result<string>.Failure(AppErrorCodes.InvalidState,
+                $"Rotated page render failed: {ex.Message}");
+        }
+        finally
+        {
+            File.Delete(temporaryPath);
         }
     }
 

@@ -1,18 +1,13 @@
 using System.Reflection;
 using System.Text;
 using Patchouli.Extensions.Contracts;
-using Patchouli.Ocr.Engines;
 using Patchouli.Ocr.Engines.PdfText;
 
 namespace Patchouli.Infrastructure.Ocr;
 
 /// <summary>
-/// FSX package snapshots for the built-in PDF text-layer providers. Each package ships its
-/// attributed-settings <c>main.fsx</c> and the same support binary closure the OCR engine
-/// packages carry (<c>lib/Patchouli.Ocr.Engines.dll</c> plus its managed/native dependencies),
-/// so compiled artifacts resolve <c>#r "lib/Patchouli.Ocr.Engines.dll"</c> package-locally.
-/// The packages contain no model weights: visual-guided reads the user-configured layout model
-/// directory at run time.
+/// Source-only PDF text-layer packages. Support assemblies and native libraries are resolved
+/// from the host through the extension SDK; model weights stay outside packages.
 /// </summary>
 public static class BuiltInPdfTextLayerExtensions
 {
@@ -54,7 +49,7 @@ public static class BuiltInPdfTextLayerExtensions
         {
             ["main.fsx"] = ReadResource(ResourcePrefix + id + ".main.fsx")
         };
-        return new ExtensionPackageSnapshot(id, sources, NativeOcrSupportFiles.CollectBinaries());
+        return new ExtensionPackageSnapshot(id, sources);
     }
 
     private static string ReadResource(string name)

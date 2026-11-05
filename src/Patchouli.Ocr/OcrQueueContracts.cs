@@ -110,7 +110,8 @@ public sealed record OcrQueueTask(
     NormalizedBBox? RegionBBox = null,
     bool CommitOnCompletion = true,
     OcrPresetVersionId? PresetVersionId = null,
-    string Source = OcrQueueSource.Unknown);
+    string Source = OcrQueueSource.Unknown,
+    int RotationDegrees = 0);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -125,7 +126,9 @@ public sealed record OcrQueueTaskRequest(
     NormalizedBBox? RegionBBox = null,
     bool CommitOnCompletion = true,
     OcrPresetVersionId? PresetVersionId = null,
-    string Source = OcrQueueSource.Unknown);
+    string Source = OcrQueueSource.Unknown,
+    /// <summary>Frozen clockwise onscreen quarter turn (0/90/180/270) for rotated interactive OCR.</summary>
+    int RotationDegrees = 0);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,

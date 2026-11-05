@@ -265,6 +265,7 @@ public sealed class PdfTextLayerCorpusTests(ITestOutputHelper output)
         async Task RunAsync(string dir)
         {
             HostExtensionResources resources = CreateHostResources();
+            resources.BindLayoutRecognition(new OnnxLayoutCapability(modelId, modelPath!));
             await using IExtensionManager manager = new ExtensionManager(dir,
                 resources, new FileExtensionStore(dir),
                 new CompiledExtensionGenerationLoader(dir));
@@ -290,37 +291,8 @@ public sealed class PdfTextLayerCorpusTests(ITestOutputHelper output)
                 PdfTextLayerContext context = CorpusContext(
                     PdfTextCoordinates.ToDisplayGlyphs(page), page,
                     (_, _) => ValueTask.FromResult(image),
-                    async (_, requestedId, requestedPath, token) =>
+                    config: new ExtensionConfigSnapshot(new Dictionary<string, string>
                     {
-                        // The closure owns its detector: construction is cheap and the
-                        // inference session is created lazily inside DetectAsync.
-                        using OnnxDocumentLayoutDetector detector = new();
-                        Result validation = detector.ValidateModel(requestedId, requestedPath);
-                        if (validation.IsFailure)
-                        {
-                            return Result<IReadOnlyList<PdfTextLayoutRegion>>.Failure(
-                                PdfTextLayerDiagnosticCodes.LayoutModelMissing,
-                                validation.ErrorMessage!);
-                        }
-
-                        Result<IReadOnlyList<DocumentLayoutRegion>> detected =
-                            await detector.DetectAsync(image.PngBytes, requestedId,
-                                requestedPath, token);
-                        if (detected.IsFailure)
-                        {
-                            return Result<IReadOnlyList<PdfTextLayoutRegion>>.Failure(
-                                PdfTextLayerDiagnosticCodes.LayoutDetectionFailed,
-                                detected.ErrorMessage!);
-                        }
-
-                        return Result<IReadOnlyList<PdfTextLayoutRegion>>.Success(
-                            detected.Value.Select(region => new PdfTextLayoutRegion(
-                                region.Label, region.BBox, region.Confidence,
-                                region.Order)).ToArray());
-                    },
-                    new ExtensionConfigSnapshot(new Dictionary<string, string>
-                    {
-                        ["model-path"] = modelPath!,
                         ["model-id"] = modelId
                     }, 0));
 
@@ -501,6 +473,53 @@ public sealed class PdfTextLayerCorpusTests(ITestOutputHelper output)
         {
             throw new InvalidOperationException(
                 "pdf-text-layer providers make no network requests");
+        }
+    }
+
+    /// <summary>Adapts the staged ONNX layout model to the shared layout-recognition capability
+    /// the visual-guided provider consumes; the detector is cheap to construct and the inference
+    /// session opens lazily inside DetectAsync.</summary>
+    private sealed class OnnxLayoutCapability(string modelId, string modelPath)
+        : ILayoutRecognitionCapability
+    {
+        public Task<IReadOnlyList<ExtensionDescriptor>> ListAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<ExtensionDescriptor>>([]);
+        }
+
+        public async Task RunAsync(string extensionId, ILayoutRecognitionJob job,
+            CancellationToken cancellationToken = default)
+        {
+            using OnnxDocumentLayoutDetector detector = new();
+            Result validation = detector.ValidateModel(modelId, modelPath);
+            if (validation.IsFailure)
+            {
+                throw new InvalidOperationException(validation.ErrorMessage);
+            }
+
+            while (true)
+            {
+                LayoutRecognitionInput? input = await job.NextInputAsync(cancellationToken);
+                if (input is null)
+                {
+                    return;
+                }
+
+                Result<IReadOnlyList<DocumentLayoutRegion>> detected =
+                    await detector.DetectAsync(input.Image.ToArray(), modelId, modelPath,
+                        cancellationToken);
+                if (detected.IsFailure)
+                {
+                    throw new InvalidOperationException(detected.ErrorMessage);
+                }
+
+                IReadOnlyList<LayoutRecognitionRegion> regions = detected.Value
+                    .Select(region => new LayoutRecognitionRegion(
+                        region.Label, region.BBox, region.Confidence, region.Order))
+                    .ToArray();
+                await job.SubmitAsync(input, regions, cancellationToken);
+            }
         }
     }
 }

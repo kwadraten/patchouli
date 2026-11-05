@@ -13,6 +13,7 @@ using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
+using SkiaSharp;
 
 namespace Patchouli.Tests;
 
@@ -36,6 +37,62 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
     public void Dispose()
     {
         _settings.Dispose();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Viewport_rotation_reaches_region_and_current_page_recognition(bool fullPage)
+    {
+        await DispatchAndShutdownAsync(headless.Session, async () =>
+        {
+            MainWindowViewModel main = CreateMainWindow(new AutoCloseDialogService());
+            main.UpdateAppOptions(main.AppOptions with
+            {
+                OcrEngines = main.AppOptions.OcrEngines with { PageOcrEngine = OcrEngineIds.Mock }
+            });
+            PdfWorkspaceViewModel workspace = await OpenEditingWorkspaceAsync(main, true);
+            HostServices services = await main.ServicesAsync();
+            DocumentInstanceId documentId = DocumentInstanceId.Parse(workspace.Item.DocumentInstanceId!);
+            double originalAspect = await Task.Run(async () =>
+            {
+                Page page = (await services.Pages.ListPagesAsync(documentId)).Value[0];
+                OcrInputDescriptor input = (await services.PageRenders.BuildOcrInputFromRenderedPageAsync(
+                    documentId, page.PageId)).Value;
+                using SKBitmap bitmap = SKBitmap.Decode(input.ImagePath) ??
+                                        throw new InvalidOperationException(
+                                            "The source page image could not be decoded.");
+                return (double)bitmap.Width / bitmap.Height;
+            });
+            using BlockingRegionAdapter adapter = new("rotated page text") { AutoRelease = true };
+            services.OcrAdapters.RegisterAdapter(adapter);
+            workspace.RotatePageCommand.Execute(null);
+            if (fullPage)
+            {
+                await workspace.CancelEditModeCommand.ExecuteAsync();
+                workspace.IsEditMode.Should().BeFalse();
+                await workspace.RunCurrentPageOcrCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+                workspace.BoundingBoxes.Should().Contain(box => box.Text == "rotated page text");
+            }
+            else
+            {
+                workspace.SelectedBox = workspace.BoundingBoxes.Single();
+                await workspace.RunLocalOcrCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+                workspace.LocalOcrCandidate.Should().NotBeNull();
+            }
+
+            workspace.IsEditMode.Should().BeTrue();
+            adapter.LastInput.Should().NotBeNull();
+            string imagePath = adapter.LastInput!.ImagePath!;
+            double recognizedAspect = await Task.Run(() =>
+            {
+                using SKBitmap bitmap = SKBitmap.Decode(imagePath) ??
+                                        throw new InvalidOperationException(
+                                            "The OCR input image could not be decoded.");
+                return (double)bitmap.Width / bitmap.Height;
+            });
+            recognizedAspect.Should().BeApproximately(1 / originalAspect, .005);
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -411,6 +468,7 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
         public bool RanOnUiThread { get; private set; }
         public int RunCalls { get; private set; }
         public CancellationToken ObservedToken { get; private set; }
+        public OcrInputDescriptor? LastInput { get; private set; }
 
         public string EngineId => OcrEngineIds.Mock;
 
@@ -451,6 +509,7 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
             OcrPresetVersion presetVersion, CancellationToken cancellationToken = default)
         {
             RunCalls++;
+            LastInput = input;
             RanOnUiThread = Dispatcher.UIThread.CheckAccess();
             ObservedToken = cancellationToken;
             Started.TrySetResult(true);

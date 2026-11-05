@@ -35,6 +35,13 @@ internal sealed class MinerUZipReader : IDisposable
             e.Name.EndsWith(fileNamePattern, StringComparison.OrdinalIgnoreCase));
     }
 
+    public string ReadEntryContent(string fullName)
+    {
+        ZipArchiveEntry entry = _archive.Entries.Single(entry => entry.FullName == fullName);
+        using StreamReader reader = new(entry.Open());
+        return reader.ReadToEnd();
+    }
+
     public IReadOnlyList<string> GetFileNames()
     {
         return _archive.Entries.Select(e => e.FullName).ToArray();

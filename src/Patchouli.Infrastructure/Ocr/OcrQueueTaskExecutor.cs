@@ -210,7 +210,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             ? null
             : new OcrRunExecutionRequest(task.DocumentInstanceId, task.PresetId, task.PageIds, scope,
                 task.PresetVersionId, task.RegionBBox, !task.CommitOnCompletion,
-                _engineLeases?.Get(task.TaskId));
+                _engineLeases?.Get(task.TaskId), task.RotationDegrees);
     }
 
     private sealed class StageProgressForwarder(

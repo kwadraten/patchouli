@@ -327,17 +327,17 @@ public sealed class MinerUUploadPreparer
         try
         {
             using MinerUZipReader reader = MinerUZipReader.Open(download.Value.ZipPath);
-            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
-                                      ?? reader.ReadFileContent("_content_list.json");
-            string? middleJson = reader.ReadFileContent("middle_json.json");
-            MinerUContentListDocument? document = middleJson is not null
-                ? MinerUMiddleJsonParser.Parse(middleJson)
-                : contentListJson is null
-                    ? null
-                    : new MinerUContentListParser().Parse(contentListJson);
-            IReadOnlyList<int> pageIndexMap = document is null
-                ? []
-                : document.Pages.Select(page => page.PageNum - 1).Distinct().OrderBy(index => index).ToArray();
+            Result<MinerUResultArtifact> artifact = MinerUResultArtifactReader.Read(reader);
+            if (artifact.IsFailure)
+            {
+                return artifact.ErrorCode == "tree_artifact_required"
+                    ? Result<MinerUPreparedResult>.Success(new MinerUPreparedResult(download.Value.ZipPath, [],
+                        imageContext))
+                    : Result<MinerUPreparedResult>.Failure(artifact.ErrorCode!, artifact.ErrorMessage!);
+            }
+
+            IReadOnlyList<int> pageIndexMap = artifact.Value.Document.Pages
+                .Select(page => page.PageNum - 1).Distinct().OrderBy(index => index).ToArray();
             return Result<MinerUPreparedResult>.Success(
                 new MinerUPreparedResult(download.Value.ZipPath, pageIndexMap, imageContext));
         }
@@ -501,16 +501,36 @@ public sealed class MinerUUploadPreparer
             StringBuilder markdown = new();
             JsonObject? middle = null;
             JsonArray middlePages = [];
+            JsonObject? layout = null;
+            JsonArray layoutPages = [];
             bool hasLegacyChunk = false;
+            bool hasUnstructuredChunk = false;
 
             foreach ((int pageIndexOffset, MinerUDownloadedResult download) in downloads)
             {
                 using MinerUZipReader reader = MinerUZipReader.Open(download.ZipPath);
-                string? middleText = reader.ReadFileContent("middle_json.json");
-                if (middleText is not null)
+                Result<MinerUResultArtifact> artifact = MinerUResultArtifactReader.Read(reader);
+                if (artifact.IsFailure)
                 {
-                    _ = MinerUMiddleJsonParser.Parse(middleText);
-                    JsonObject chunk = JsonNode.Parse(middleText)!.AsObject();
+                    if (artifact.ErrorCode == "tree_artifact_required")
+                    {
+                        // Download-only workflows may retain Markdown, but never substitute it for a failed tree.
+                        hasUnstructuredChunk = true;
+                        string? text = reader.ReadFileContent("full.md");
+                        if (!string.IsNullOrWhiteSpace(text))
+                        {
+                            markdown.AppendLine(text.Trim()).AppendLine();
+                        }
+
+                        continue;
+                    }
+
+                    return Result<string>.Failure(artifact.ErrorCode!, artifact.ErrorMessage!);
+                }
+
+                if (artifact.Value.Format == MinerUResultArtifactFormat.Middle)
+                {
+                    JsonObject chunk = JsonNode.Parse(artifact.Value.Json)!.AsObject();
                     middle ??= chunk.DeepClone().AsObject();
                     foreach (JsonNode? page in chunk["pages"]!.AsArray())
                     {
@@ -522,17 +542,31 @@ public sealed class MinerUUploadPreparer
                     continue;
                 }
 
-                hasLegacyChunk = true;
-                string? contentListJson = reader.ReadFileContent("_content_list.json");
-                if (!string.IsNullOrWhiteSpace(contentListJson))
+                if (artifact.Value.Format == MinerUResultArtifactFormat.Layout)
                 {
-                    AppendShiftedContentItems(contentItems, contentListJson, pageIndexOffset);
+                    JsonObject chunk = JsonNode.Parse(artifact.Value.Json)!.AsObject();
+                    layout ??= chunk.DeepClone().AsObject();
+                    int ordinal = 0;
+                    foreach (JsonNode? page in chunk["pdf_info"]!.AsArray())
+                    {
+                        JsonObject shifted = page!.DeepClone().AsObject();
+                        shifted["page_idx"] = (ReadInt(shifted, "page_idx") ?? ordinal) + pageIndexOffset;
+                        layoutPages.Add(shifted);
+                        ordinal++;
+                    }
+
+                    continue;
                 }
 
-                string? contentListV2Json = reader.ReadFileContent("_content_list_v2.json");
-                if (!string.IsNullOrWhiteSpace(contentListV2Json))
+                hasLegacyChunk = true;
+                JsonNode? content = JsonNode.Parse(artifact.Value.Json);
+                if (content is JsonArray { Count: > 0 } array && array[0] is JsonArray)
                 {
-                    AppendContentListV2Pages(contentListV2Pages, contentListV2Json, pageIndexOffset);
+                    AppendContentListV2Pages(contentListV2Pages, artifact.Value.Json, pageIndexOffset);
+                }
+                else
+                {
+                    AppendShiftedContentItems(contentItems, artifact.Value.Json, pageIndexOffset);
                 }
 
                 string? md = reader.ReadFileContent("full.md");
@@ -547,10 +581,14 @@ public sealed class MinerUUploadPreparer
                 }
             }
 
-            if (middle is not null && hasLegacyChunk)
+            if ((middle is not null && (hasLegacyChunk || layout is not null)) ||
+                (layout is not null && hasLegacyChunk) ||
+                (hasUnstructuredChunk && (middle is not null || layout is not null || hasLegacyChunk)) ||
+                (contentItems.Count > 0 && contentListV2Pages.Count > 0))
             {
                 return Result<string>.Failure("mixed_result_formats",
-                    "Cannot merge Middle JSON and legacy content-list chunks.");
+                    "Cannot merge different MinerU tree artifact formats without losing structure. " +
+                    "No fallback was attempted.");
             }
 
             using ZipArchive archive = ZipFile.Open(mergedPath, ZipArchiveMode.Create);
@@ -560,6 +598,14 @@ public sealed class MinerUUploadPreparer
                 ZipArchiveEntry entry = archive.CreateEntry("middle_json.json");
                 using StreamWriter writer = new(entry.Open(), Encoding.UTF8);
                 writer.Write(middle.ToJsonString());
+            }
+
+            if (layout is not null)
+            {
+                layout["pdf_info"] = layoutPages;
+                ZipArchiveEntry entry = archive.CreateEntry("layout.json");
+                using StreamWriter writer = new(entry.Open(), Encoding.UTF8);
+                writer.Write(layout.ToJsonString());
             }
 
             if (contentItems.Count > 0)

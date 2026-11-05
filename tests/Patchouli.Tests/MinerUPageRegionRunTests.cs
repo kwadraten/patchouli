@@ -762,7 +762,8 @@ public sealed class MinerUPageRegionRunTests
         public List<NormalizedBBox> Regions { get; } = [];
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
+            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default,
+            int rotationDegrees = 0)
         {
             LastRegion = region;
             Regions.Add(region);
@@ -795,7 +796,7 @@ public sealed class MinerUPageRegionRunTests
 
         public Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
             DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }
@@ -929,25 +930,26 @@ public sealed class MinerUPageRegionRunTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-            IProgress<OcrTaskStageProgress>? progress = null)
+            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
         {
-            return _engine.RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken, progress);
+            return _engine.RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken,
+                progress, rotationDegrees);
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             return _engine.RunPresetOnRegionAsync(documentInstanceId, presetId, pageId, regionBBox,
-                cancellationToken);
+                cancellationToken, rotationDegrees);
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             return _engine.RecognizeRegionCandidateAsync(documentInstanceId, presetId, pageId, regionBBox,
-                cancellationToken);
+                cancellationToken, rotationDegrees);
         }
 
         public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)

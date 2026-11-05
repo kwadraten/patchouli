@@ -42,6 +42,11 @@ public sealed class PdfTextLayerExtension<TSettings> : IPdfTextLayerExtension, I
         ArgumentNullException.ThrowIfNull(context);
         TSettings settings = ConfigSettings.Read<TSettings>(context.Config);
         PdfTextLayerParseOptions options = _mapOptions(settings);
+        if (ProviderDefinition.RequiresLayoutModel)
+        {
+            context = context with { LayoutRecognition = resources.LayoutRecognition };
+        }
+
         return _analyzer.AnalyzeAsync(context, options, cancellationToken);
     }
 }

@@ -122,7 +122,7 @@ public static class PageMapInvalidation
         // Pause computation for the affected rule but keep the original definition.
         List<MapDiagnostic> paused = new(diagnostics)
         {
-            new("rule_paused",
+            new MapDiagnostic("rule_paused",
                 "Computation for this logical_page rule is paused until it is repaired; the original " +
                 "definition is kept.")
         };

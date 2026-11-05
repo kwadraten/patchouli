@@ -759,7 +759,7 @@ public sealed class OcrRuntimeExtensionJobTests
                     new PdfTextRequiredRegion(region, "non_textual_content",
                         Anchors: [new PdfTextAnchor(50, 1)])
                 ], []),
-            BuiltInRegionRunner = (jobPage, input, _, _) =>
+            BuiltInRegionRunner = (jobPage, input, _, _, _) =>
                 Task.FromResult(Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Success(
                 [
                     new OcrExtensionBoxCandidate(input.Id,
@@ -943,7 +943,7 @@ public sealed class OcrRuntimeExtensionJobTests
         public string EngineId { get; } = engineId;
         public bool IsBuiltIn { get; init; }
 
-        public Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+        public Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
             Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? BuiltInRegionRunner { get; init; }
 
         public TaskCompletionSource? DisposeGate { get; init; }
@@ -1094,7 +1094,7 @@ public sealed class OcrRuntimeExtensionJobTests
 
         public Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
             DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             RenderCalls++;
             return Task.FromResult(Result<OcrInputDescriptor>.Success(new OcrInputDescriptor(
@@ -1104,7 +1104,7 @@ public sealed class OcrRuntimeExtensionJobTests
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId,
             PageId pageId, NormalizedBBox region, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             RenderCalls++;
             return Task.FromResult(Result<string>.Success(imagePath));

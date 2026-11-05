@@ -17,7 +17,8 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
     }
 
     public async Task<Result<PhysicalPageOcrResult>> RunPageEditAsync(OcrPresetId presetId,
-        PageEditSessionId sessionId, CancellationToken cancellationToken = default)
+        PageEditSessionId sessionId, CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         if (_trees is not IDocumentTreeEditor editor)
         {
@@ -45,7 +46,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         if (roots.Length == 0)
         {
             Result<IReadOnlyList<DocumentBox>> recognized = await RecognizeWorkingBoxesAsync(
-                session, presetId, null, runIds, cancellationToken);
+                session, presetId, null, runIds, rotationDegrees, cancellationToken);
             if (recognized.IsFailure)
             {
                 return Result<PhysicalPageOcrResult>.Failure(recognized.ErrorCode!, recognized.ErrorMessage!);
@@ -61,7 +62,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             foreach (DocumentBox root in Order(roots))
             {
                 Result<IReadOnlyList<DocumentBox>> recognized = await RecognizeWorkingBoxesAsync(
-                    session, presetId, root, runIds, cancellationToken);
+                    session, presetId, root, runIds, rotationDegrees, cancellationToken);
                 if (recognized.IsFailure)
                 {
                     return Result<PhysicalPageOcrResult>.Failure(recognized.ErrorCode!, recognized.ErrorMessage!);
@@ -106,12 +107,14 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
     }
 
     private async Task<Result<IReadOnlyList<DocumentBox>>> RecognizeWorkingBoxesAsync(PageEditSession session,
-        OcrPresetId presetId, DocumentBox? logicalPage, List<OcrRunId> runIds, CancellationToken cancellationToken)
+        OcrPresetId presetId, DocumentBox? logicalPage, List<OcrRunId> runIds, int rotationDegrees,
+        CancellationToken cancellationToken)
     {
         Result<OcrRun> run = logicalPage is null
-            ? await _ocr.RunWorkingOnPageAsync(session.DocumentInstanceId, presetId, session.PageId, cancellationToken)
+            ? await _ocr.RunWorkingOnPageAsync(session.DocumentInstanceId, presetId, session.PageId,
+                cancellationToken, rotationDegrees)
             : await _ocr.RunPresetOnRegionAsync(session.DocumentInstanceId, presetId, session.PageId,
-                logicalPage.BBox, cancellationToken);
+                logicalPage.BBox, cancellationToken, rotationDegrees);
         if (run.IsFailure)
         {
             return Result<IReadOnlyList<DocumentBox>>.Failure(run.ErrorCode!, run.ErrorMessage!);
@@ -159,7 +162,8 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         OcrPresetId presetId,
         PageId pageId,
         IReadOnlyList<LogicalPageOcrTarget> targets,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int rotationDegrees = 0)
     {
         if (targets.Count == 0 || targets.Select(target => target.LogicalPageBoxId).Distinct().Count() != targets.Count)
         {
@@ -201,7 +205,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         foreach (LogicalPageOcrTarget target in targets)
         {
             Result<OcrRun> run = await _ocr.RunPresetOnRegionAsync(
-                documentInstanceId, presetId, pageId, target.BBox, cancellationToken);
+                documentInstanceId, presetId, pageId, target.BBox, cancellationToken, rotationDegrees);
             if (run.IsFailure)
             {
                 return Result<LogicalPageOcrResult>.Failure(run.ErrorCode!, run.ErrorMessage!);

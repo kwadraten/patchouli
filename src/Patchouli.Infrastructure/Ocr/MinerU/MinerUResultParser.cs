@@ -79,43 +79,10 @@ internal sealed class MinerUResultParser
         try
         {
             using MinerUZipReader reader = MinerUZipReader.Open(zipPath);
-            string? middleJson = reader.ReadFileContent("middle_json.json");
-            if (middleJson is not null)
-            {
-                return Result<MinerUContentListDocument>.Success(MinerUMiddleJsonParser.Parse(middleJson));
-            }
-
-            // v3 layout.json 是中间产物：para_blocks 的 lines_deleted 显式标记与
-            // preproc_blocks 的各框原文足以落地 v4 模型，优先于信息更少的 content_list 投影。
-            string? layoutJson = reader.ReadFileContent("layout.json");
-            if (layoutJson is not null)
-            {
-                MinerUContentListDocument? layout = MinerULayoutJsonParser.Parse(layoutJson);
-                if (layout is not null)
-                {
-                    return Result<MinerUContentListDocument>.Success(layout);
-                }
-            }
-
-            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
-                                      ?? reader.ReadFileContent("_content_list.json");
-            if (contentListJson is null)
-            {
-                return Result<MinerUContentListDocument>.Failure(
-                    "tree_artifact_required",
-                    "MinerU result has no verifiable content-list tree artifact; full.md cannot be imported as a pseudo box.");
-            }
-
-            MinerUContentListDocument? contentList = new MinerUContentListParser().Parse(contentListJson);
-            return contentList is null || contentList.Pages.Count == 0
-                ? Result<MinerUContentListDocument>.Failure("no_content", "MinerU content list is empty.")
-                : Result<MinerUContentListDocument>.Success(contentList);
-        }
-        catch (UnsupportedMiddleJsonSemanticsException exception)
-        {
-            return Result<MinerUContentListDocument>.Failure(
-                "unsupported_middle_semantics",
-                exception.Message);
+            Result<MinerUResultArtifact> artifact = MinerUResultArtifactReader.Read(reader);
+            return artifact.IsFailure
+                ? Result<MinerUContentListDocument>.Failure(artifact.ErrorCode!, artifact.ErrorMessage!)
+                : Result<MinerUContentListDocument>.Success(artifact.Value.Document);
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
                                        "infrastructure.mineru-result-parser"))

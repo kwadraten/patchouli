@@ -35,7 +35,7 @@ public class PdfTextLayerPackageProtocolTests
         Assert.Contains($"id=\"{packageId}\"", source);
         Assert.Contains("kind=\"pdf-text-layer\"", source);
         Assert.Contains($"host-api=\"{ExtensionHostApi.Current}\"", source);
-        Assert.Contains("#r \"lib/Patchouli.Ocr.Engines.dll\"", source);
+        Assert.DoesNotContain("#r \"lib/Patchouli.Ocr.Engines.dll\"", source);
         Assert.Contains("[<Settings>]", source);
         Assert.Contains("IPdfTextLayerExtension", source);
     }

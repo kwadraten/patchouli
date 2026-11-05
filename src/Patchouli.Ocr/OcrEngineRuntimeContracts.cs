@@ -188,9 +188,12 @@ public interface IOcrEngineLease : IAsyncDisposable
     /// inputs explicitly forwarded to image OCR under the same accepted task — never an
     /// undeclared fallback. Null on extension engines and on built-ins that cannot recognize
     /// such inputs; callers must fail those inputs honestly instead of silently substituting
-    /// another engine.
+    /// another engine. The <c>int</c> argument is the accepted run's clockwise onscreen quarter
+    /// turn (0/90/180/270): the runner renders its own rotated input, while
+    /// <see cref="OcrJobInput.Region"/> and every returned candidate stay in the unrotated
+    /// document basis.
     /// </summary>
-    Func<OcrJobPage, OcrJobInput, OcrPresetVersion, CancellationToken,
+    Func<OcrJobPage, OcrJobInput, OcrPresetVersion, int, CancellationToken,
         Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>>>? BuiltInRegionRunner => null;
 }
 
