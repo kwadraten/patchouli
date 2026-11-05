@@ -1,5 +1,19 @@
 # 更新日志
 
+## 0.3.16
+
+发布：2026-11-06 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.16) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.15...0.3.16)
+
+- 扩展平台升级到 `patchouli.extensions/4`，保留 `/3` 兼容；内置扩展按 SemVer 替换，随应用分发编译制品和只读源码模板；用户可从模板复制为独立 ID 的自定义扩展，NuGet 依赖提供 .NET SDK 检查与安装提示。
+- 版面识别模型成为独立扩展目录（PP-DocLayoutV3、DocLayout-YOLO），多模态 OCR 与视觉引导文字层通过统一能力调用；设置页提供独立模型目录和管理入口。
+- 全文搜索分词升级为 Unicode/符号感知并重建 FTS 缓存；工具栏支持按工作区选择文档内/全局搜索，整书搜索结果可直接跳转到页面和框，手动重建 FTS 在 Blocking 弹窗中显示逐阶段和批次进度，启动时缓存重建在 loading 页内完成。
+- MCP/CLI 响应明确 `meta.outcome` 与摘要，错误可保留内容但始终视为失败；`library.yml` 支持原子管理集合和标签目录，题录 YAML 管理归属，空标签可持久化并随快照同步；浏览和过滤查询使用新索引降低全库扫描。
+- PDF 工作台支持旋转页面的框选、侧边栏与视口坐标对齐，改进编辑中导航确认、整书搜索与框交互；OCR 输入按旋转后图像基座传递并回落到未旋转坐标。
+- MinerU 结果按内容校验并优先使用信息更完整的树产物，拒绝同名误认和格式混用，不再用 Markdown 或旧投影冒充结构化树。
+- 翻译写入跳过旧版空接续框，结构失败返回逐框 `structure_diff`；普通段落译文意外形成列表时，在完整校验通过的前提下自动转义并保留文字。
+- Windows、macOS 和 Linux 发布将 UI、CLI 与扩展编译器共享同一套依赖和运行时目录，安装器迁移旧 PATH 并清理重复运行时；新增 0.3.16 数据库索引、题录目录和标签定义迁移。
+- 设置页、状态栏、滚动条、开关和对话框交互统一视觉与控件规范，减少解释性文案并改进分组、图标工具栏和可见状态。
+
 ## 0.3.15
 
 发布：2026-10-28 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.15) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.14...0.3.15)

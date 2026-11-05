@@ -15,7 +15,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.15");
+        BuildInfo.Version.Should().Be("0.3.16");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -119,7 +119,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.15").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.16").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -133,7 +133,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.15");
+        BuildInfo.Version.Should().Be("0.3.16");
     }
 
     [Fact]
@@ -151,7 +151,7 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.15").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.16").And.NotContain("0.3.5");
         }
     }
 
@@ -210,11 +210,11 @@ public sealed class AlphaPackagingTests
             }
         }
 
-        commands.Should().HaveCount(6);
+        commands.Should().HaveCount(3);
         commands.Count(command => command.Contains("Patchouli.UI.csproj", StringComparison.Ordinal))
             .Should().Be(3);
         commands.Count(command => command.Contains("Patchouli.Cli.csproj", StringComparison.Ordinal))
-            .Should().Be(3);
+            .Should().Be(0);
         foreach (string command in commands)
         {
             command.Should().Contain("-m:1").And.Contain("-p:BuildInParallel=false")
