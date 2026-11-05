@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Text;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Ocr.Engines;
+using Patchouli.Ocr.Engines.OvisOcr3;
+using Patchouli.Ocr.Engines.Oxr;
 
 namespace Patchouli.Infrastructure.Ocr;
 
@@ -24,7 +26,9 @@ public static class BuiltInOcrExtensions
         "ocr.rapidocr",
         "ocr.ndlocr-lite",
         "ocr.ndlkotenocr-lite",
-        "ocr.multimodal"
+        "ocr.multimodal",
+        "ocr.ovisocr3",
+        "ocr.oxr"
     ];
 
     // ocr.multimodal's main.fsx is owned by the vision worker; this registry only embeds and
@@ -49,7 +53,9 @@ public static class BuiltInOcrExtensions
             ["ocr.ndlocr-lite"] = NativeOcrSession.GetDefinition(NativeOcrSession.NdlOcrLiteEngineId),
             ["ocr.ndlkotenocr-lite"] =
                 NativeOcrSession.GetDefinition(NativeOcrSession.NdlKotenLiteEngineId),
-            ["ocr.multimodal"] = MultimodalOcrSession.GetDefinition()
+            ["ocr.multimodal"] = MultimodalOcrSession.GetDefinition(),
+            ["ocr.ovisocr3"] = OvisOcr3OnnxSession.GetDefinition(),
+            ["ocr.oxr"] = OxrOnnxSession.GetDefinition()
         };
 
     /// <summary>The immutable package snapshots; the same list feeds schema generation and install.</summary>

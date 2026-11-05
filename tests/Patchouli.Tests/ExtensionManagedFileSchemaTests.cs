@@ -122,6 +122,59 @@ public sealed class ExtensionManagedFileSchemaTests
     }
 
     [Fact]
+    public async Task OvisOcr3_declares_the_pinned_onnx_and_preprocessing_files()
+    {
+        IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(
+            BuiltInOcrExtensions.Packages.Single(p => p.Id == "ocr.ovisocr3"));
+
+        ConfigFieldDescriptor path = fields.Single(field => field.Key == "model-path");
+        path.Kind.Should().Be(ConfigValueKind.DirectoryPath);
+        IReadOnlyList<ExtensionManagedFile> files = path.ManagedFiles;
+        files.Select(file => file.RelativePath).Should()
+            .BeEquivalentTo("ovisocr3_int4_single.onnx", "tokenizer.json", "document_structured.txt");
+        files.Should().AllSatisfy(file =>
+        {
+            file.DownloadUrl.Should().Contain("/resolve/");
+            file.Sha256.Should().MatchRegex("^[0-9a-f]{64}$");
+            file.ExpectedBytes.Should().BeGreaterThan(0);
+            file.DirectoryKind.Should().Be("ovisocr3-models");
+        });
+        files.Single(file => file.RelativePath.EndsWith(".onnx", StringComparison.Ordinal))
+            .Sha256.Should().Be("7bafbef06e85847963d46fe520ba9767d18c7d2abdad91a25ce2f036558bcb3e");
+    }
+
+    [Fact]
+    public async Task Oxr_declares_public_pinned_onnx_and_license_files()
+    {
+        IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(
+            BuiltInOcrExtensions.Packages.Single(package => package.Id == "ocr.oxr"));
+        ConfigFieldDescriptor path = fields.Single(field => field.Key == "model-path");
+        path.Kind.Should().Be(ConfigValueKind.DirectoryPath);
+        IReadOnlyList<ExtensionManagedFile> files = path.ManagedFiles;
+        files.Select(file => file.RelativePath).Should().BeEquivalentTo(
+            "oxr-vision-448.onnx", "oxr-vision-448.onnx.data",
+            "oxr-text-embedding.onnx", "oxr-text-embedding.onnx.data",
+            "oxr-language.onnx", "oxr-language.onnx.data",
+            "oxr-layout.onnx", "oxr-indicators.f32", "oxr-prompt.json",
+            "tokenizer.json", "layout-metadata.json",
+            "LICENSE", "NOTICE", "LICENSES/Apache-2.0.txt",
+            "LICENSES/D-FINE-NOTICES.md");
+        files.Should().AllSatisfy(file =>
+        {
+            file.DownloadUrl.Should().StartWith(
+                "https://huggingface.co/kwadraten/OXR-1.0-ONNX/resolve/" +
+                "f6a1cd8115cd4ff3d34b6e0a7d366677a8f7cee2/");
+            file.Sha256.Should().MatchRegex("^[0-9a-f]{64}$");
+            file.ExpectedBytes.Should().BeGreaterThan(0);
+            file.DirectoryKind.Should().Be("oxr-models");
+        });
+        files.Single(file => file.RelativePath == "oxr-vision-448.onnx.data")
+            .Sha256.Should().Be("d8e46e2e061276b18553106fbff7a4e60c374a41f11cd97204381c1833c804da");
+        files.Single(file => file.RelativePath == "oxr-language.onnx.data")
+            .Sha256.Should().Be("c4f3d40e82573811af472aeccfefa97d05881efa5463175e7d02564c5d1cc962");
+    }
+
+    [Fact]
     public async Task NdlKoten_declares_its_manifest_with_honest_optional_hashes()
     {
         IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(

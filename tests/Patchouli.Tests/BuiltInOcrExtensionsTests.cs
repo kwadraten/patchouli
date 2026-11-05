@@ -9,7 +9,7 @@ using Xunit;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Built-in OCR package registry coverage: the four engine packages ship real embedded FSX
+/// Built-in OCR package registry coverage: the five engine packages ship real embedded FSX
 /// sources plus the genuine support binary closure (managed dependencies, ONNX Runtime and
 /// SkiaSharp native libraries) under <c>lib/</c>, content-fingerprinted for the collectible
 /// artifact loader. These tests assert delivery shape only — compiled-package activation is a
@@ -22,11 +22,13 @@ public sealed class BuiltInOcrExtensionsTests
         "ocr.rapidocr",
         "ocr.ndlocr-lite",
         "ocr.ndlkotenocr-lite",
-        "ocr.multimodal"
+        "ocr.multimodal",
+        "ocr.ovisocr3",
+        "ocr.oxr"
     ];
 
     [Fact]
-    public void Packages_exposes_all_four_ocr_packages()
+    public void Packages_exposes_all_six_ocr_packages()
     {
         BuiltInOcrExtensions.Packages.Select(static package => package.Id)
             .Should().BeEquivalentTo(ExpectedPackageIds);
@@ -37,9 +39,9 @@ public sealed class BuiltInOcrExtensionsTests
     {
         foreach (ExtensionPackageSnapshot package in BuiltInOcrExtensions.Packages)
         {
-            // The three native ONNX packages load the shared helper; the self-contained
-            // multimodal package ships only its vision-owned main.fsx.
-            string[] expectedSources = package.Id == "ocr.multimodal"
+            // The three existing native ONNX packages load the shared helper; the self-contained
+            // multimodal and OvisOCR3 packages ship only their main.fsx.
+            string[] expectedSources = package.Id is "ocr.multimodal" or "ocr.ovisocr3" or "ocr.oxr"
                 ? ["main.fsx"]
                 : ["main.fsx", "Support.fsx"];
             package.Sources.Keys.Should().BeEquivalentTo(expectedSources);
@@ -51,9 +53,12 @@ public sealed class BuiltInOcrExtensionsTests
                     $"{package.Id} ships '{key}' as a binary payload, but textual paths must stay in Sources so the persisted generation round-trips the same partition"));
             package.BinaryFiles.Keys.Should().Contain("lib/" + NativeOcrSupportFiles.SupportAssemblyFileName,
                 $"{package.Id}'s #r \"lib/{NativeOcrSupportFiles.SupportAssemblyFileName}\" must resolve package-locally");
-            // The GapTree MIT notice travels as a comment in every package's main.fsx — the
+            // The GapTree MIT notice travels as a comment in the existing packages' main.fsx — the
             // support assembly carries the ported code, so the license stays package-local.
-            package.Sources["main.fsx"].Should().Contain("MIT License").And.Contain("hiroi-sora");
+            if (package.Id is not ("ocr.ovisocr3" or "ocr.oxr"))
+            {
+                package.Sources["main.fsx"].Should().Contain("MIT License").And.Contain("hiroi-sora");
+            }
         }
     }
 
@@ -167,6 +172,8 @@ public sealed class BuiltInOcrExtensionsTests
         definitions["ocr.ndlocr-lite"].EngineId.Should().Be(NativeOcrSession.NdlOcrLiteEngineId);
         definitions["ocr.ndlkotenocr-lite"].EngineId.Should().Be(NativeOcrSession.NdlKotenLiteEngineId);
         definitions["ocr.multimodal"].EngineId.Should().Be("multimodal-llm");
+        definitions["ocr.ovisocr3"].EngineId.Should().Be("ovisocr3");
+        definitions["ocr.oxr"].EngineId.Should().Be("oxr");
         definitions.Values.Should().AllSatisfy(d => d.DisplayName.Should().NotBeNullOrWhiteSpace());
 
         // The native three come straight from the support facade; no duplicated metadata.

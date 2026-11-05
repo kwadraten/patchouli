@@ -605,7 +605,7 @@ public sealed class AlphaPackagingTests
             services.OcrEngineRuntime.ListDefinitions().Select(definition => definition.EngineId).Should()
                 .BeEquivalentTo([
                     OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten,
-                    OcrEngineIds.NdlLite, OcrEngineIds.RapidOcr
+                    OcrEngineIds.NdlLite, OcrEngineIds.RapidOcr, "ovisocr3", "oxr"
                 ]);
             services.OcrAdapters.GetAdapter(OcrEngineIds.Mock).Should().BeNull();
             services.OcrAdapters.GetAdapter(OcrEngineIds.LocalPlaceholder).Should().BeNull();

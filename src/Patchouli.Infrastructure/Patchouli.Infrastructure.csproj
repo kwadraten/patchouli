@@ -168,6 +168,10 @@
                       LogicalName="Patchouli.Infrastructure.Ocr.Extensions.ocr.ndlkotenocr-lite.main.fsx" />
     <EmbeddedResource Include="Ocr\Extensions\ocr.multimodal\main.fsx"
                       LogicalName="Patchouli.Infrastructure.Ocr.Extensions.ocr.multimodal.main.fsx" />
+    <EmbeddedResource Include="Ocr\Extensions\ocr.ovisocr3\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Ocr.Extensions.ocr.ovisocr3.main.fsx" />
+    <EmbeddedResource Include="Ocr\Extensions\ocr.oxr\main.fsx"
+                      LogicalName="Patchouli.Infrastructure.Ocr.Extensions.ocr.oxr.main.fsx" />
     <EmbeddedResource Include="Ocr\Extensions\pdf-text.native-xycut\main.fsx"
                       LogicalName="Patchouli.Infrastructure.Ocr.Extensions.pdf-text.native-xycut.main.fsx" />
     <EmbeddedResource Include="Ocr\Extensions\pdf-text.native-gaptree\main.fsx"
