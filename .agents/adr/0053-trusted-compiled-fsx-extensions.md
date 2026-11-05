@@ -3,6 +3,11 @@
 - Status: Accepted for implementation; implementation and acceptance are in progress.
 - Date: 2026-10-23
 
+Partially superseded in the planned implementation by [ADR 0055](0055-versioned-binary-built-in-extensions.md)
+(2026-11-05): built-ins ship compiled binaries plus read-only source templates and upgrade by SemVer;
+new `/4` hosts retain `/3` declaration compatibility. User FSX compilation, trusted execution,
+generation leases and explicit LKG remain. Implementation and acceptance are pending.
+
 ## Context
 
 The current FSX extension execution design uses worker/FSI machinery that the product no longer

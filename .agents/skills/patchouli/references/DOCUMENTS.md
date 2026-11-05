@@ -29,6 +29,9 @@
 - 正文修改会创建新的已提交页面修订和一次文献级提交。若用户正在桌面端编辑同一页（存在未保存草稿），写入会被拒绝。
 - 收到 `REVISION_CONFLICT` 时重新 `fetch`，在新版本上重做修改再提交。
 - 没有译文的页面会返回 `translation_version` 为 0、以原文填充的可编辑视图。
+- MinerU v3 遗留的空接续框由宿主自动跳过，不计入翻译完成率；保留原框与接续关系，不必补写或重复前框内容。
+- 原框为普通段落、译文因 `* `、`12) `、`2. ` 等行首标记意外成为列表时，宿主会尝试转义标记，保留文字与空格，并在完整结构校验通过后直接提交。原文已有的列表不会被自动扁平化；其余不匹配仍返回结构 diff。
+- 译文改变 Markdown 结构时，`box_errors[].structure_diff` 返回 `{block_index, expected, actual}`；`block_index` 从 0 开始，指该框渲染后的 Markdown block 位置。依差异修正列表、标题、段落或表格结构，再提交；同页批次校验失败不会写入任何框。
 - CLI 用 `--boxes-from <json>` 提交 `{source_revision, translation_version?, boxes:[…]}`。
 
 ## 导入文件

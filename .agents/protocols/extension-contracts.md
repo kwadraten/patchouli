@@ -8,6 +8,43 @@ acceptance of this redesign.
 Author-facing guidance (SDK usage, nullability rules, examples) lives in the distributed skill's
 [EXTENDING reference](../skills/patchouli/references/EXTENDING.md); keep it consistent with this contract.
 
+## Compatible protocol revision (2026-11-05)
+
+[ADR 0055](../adr/0055-versioned-binary-built-in-extensions.md) defines the next revision
+for [issue #8](https://github.com/kwadraten/patchouli/issues/8). It takes precedence over
+editable-built-in/source-preservation statements below. `/4` compatibility, version selection
+and source preflight are integrated; actual verification and remaining acceptance limits are
+recorded in the validation document.
+
+- New declarations use `patchouli.extensions/4`; the new host accepts both `/3` and `/4`
+  through the same domain interfaces. Parsing, compilation, cached artifacts, restoration
+  and loading must share compatibility checks. Do not just change `Current` and reject `/3`.
+- `/4` entrypoint XML declares a strict [SemVer 2.0.0](https://semver.org/) package `version`.
+  Higher versions replace lower versions of the same ID after candidate validation;
+  comparison is numeric with prerelease ordering, ignoring build metadata for precedence.
+  Equal-precedence/different published content is a conflict. Preserve `/3` validation.
+- Built-ins ship compiled binaries, read-only FSX/helper templates and build-derived entrypoint/configuration
+  metadata; their FSX also remains in Git. Do not allow source save/apply for built-ins or rebuild their
+  identities from the current deployment directory. Reserve built-in IDs; custom extensions
+  must use independent IDs and can continue to use source compilation.
+- A higher-version trusted built-in directly replaces an older built-in under that reserved
+  ID, including an old locally edited copy; historical source fingerprint lists are unnecessary.
+  Preserve old local source once for recovery, stable-key settings, immutable snapshots and
+  running generation leases. Failed candidates do not displace Active/LKG. Lower versions
+  do not automatically downgrade; explicit recovery remains separate.
+- The host validates generic declared contracts and candidate results without owning extension
+  algorithms. Source preflight identifies actual `#r "nuget: ..."` directives, including helper
+  inputs, and verifies a usable SDK. If absent, show install/retry guidance and block required
+  compilation/restore; verified binaries/cache hits remain usable without SDK. Comments and
+  string contents are not directives. Configuration reads do not start compilers or SDK probes.
+- All extension lists expose icon-only Add/toolbar actions; Add selects an existing same-kind
+  template and a new ID, creates an independent source draft and opens its editor without activation.
+- Skill examples use installed read-only built-in sources to implement an independent extension. Community
+  repository/store support is future work; origin/ID/version/protocol/artifact metadata should
+  permit it without implementing store discovery or update UI in this batch.
+
+Implementation order, legacy migration details and required acceptance cases are in ADR 0055.
+
 | Boundary | Extension owns | Host owns | Required failure behavior |
 | --- | --- | --- | --- |
 | Package | Source files, implementation, stable extension ID | Immutable snapshots, fingerprint, compiler, generation leases and compiled-DLL cache | Invalid candidates leave Active usable |
@@ -22,12 +59,12 @@ Author-facing guidance (SDK usage, nullability rules, examples) lives in the dis
 
 ## Authoring
 
-The host API remains `patchouli.extensions/3`. The task-level OCR job and declarative
-managed-file schema add capabilities to the existing extension system; migrating the former
-built-in OCR backends is not a breaking migration of existing non-OCR extensions. Existing
-translation, metadata and retrieval packages remain accepted without implementing OCR or
-rewriting their entry metadata. Derived artifacts still undergo normal source/reference
-identity validation. This does not claim that the in-progress #43 migration has passed acceptance.
+New entry declarations use `patchouli.extensions/4`; the host also accepts `patchouli.extensions/3`
+without rewriting those packages or tightening their legacy version syntax. `/4` requires strict
+SemVer 2.0.0. Package protocol compatibility is checked separately from artifact/compiler/ABI
+identity: older source can be recompiled when an artifact is stale. The task-level translation,
+metadata, OCR and retrieval interfaces are unchanged by this revision. This is not a claim
+that every engine's independent #43 production acceptance has completed.
 
 Package identity is authored once in the `///` XML documentation attached to the
 column-zero top-level `let extension` binding in `main.fsx` (ADR
@@ -68,6 +105,26 @@ Progress completed counts describe the named collection or step, not relative ex
 cost. Generated output and committed pages have separate events. Translation uses complete
 responses without streaming or provisional content previews; generated candidates do not
 establish that validation or commit succeeded.
+
+## Host-shared libraries
+
+Every extension kind can use the host's ONNX Runtime, SkiaSharp, System.Numerics.Tensors
+and Patchouli.Ocr.Engines APIs without `#r`, NuGet restore, or package-local copies.
+The SDK exposes `Patchouli.Extensions.Onnx` and `Patchouli.Extensions.Skia` F# aliases
+and factories; the original library namespaces remain available for the complete API.
+Returned objects are the original host library types, and extensions dispose objects they own.
+This shares assemblies and native runtimes, not mutable inference sessions or bitmaps.
+
+The compiler references the host-shared managed assemblies explicitly. The extension ALC
+resolves those names to the default host context before package-local probing, including
+when an older package still carries a duplicate. Their native calls therefore use host-side
+library resolution. Unrelated package-local and NuGet dependencies keep ordinary resolution.
+Host-shared libraries use host-pinned versions; packages cannot override these libraries.
+
+Built-in OCR/PDF packages contain sources and compiled extension artifacts only, with no
+support/native library copies. The toolchain identity includes the OCR support public ABI,
+shared library package versions and compiler format revision 7, invalidating earlier compiled
+artifacts while preserving source/LKG snapshots and both supported declaration protocols.
 
 ## Task-level translation job
 
@@ -323,3 +380,27 @@ when collection cannot be confirmed and suggest restart, but do not block activa
 compiled code is not a security sandbox.
 Workflow replay and durable run recovery remain outside this contract. The removed built-in
 Agent, chat and workflow scheduler remain removed.
+
+## Shared layout recognition jobs
+
+`kind="layout-recognition"` packages export `ILayoutRecognitionExtension.RunAsync` through
+`Extension.createLayoutRecognition<Settings>`. Settings and managed model files belong to the
+model package, independently of OCR and PDF text-layer consumers. The 文献加工 → 版面识别模型列表
+catalog exposes bundled and user packages with the shared configuration/source editor.
+
+Host callers use `HostServices.LayoutRecognition`; all extension kinds use
+`IExtensionResources.LayoutRecognition.RunAsync(extensionId, job, token)`. A job supplies
+caller-owned image inputs through `NextInputAsync` and accepts image-relative regions through
+`SubmitAsync`. Inputs carry no document, page, OCR or plugin identity. Models must exhaust the
+input stream and submit each input exactly once; an empty region collection is valid. Exceptions
+and cancellation fail the invocation rather than becoming successful empty detections. The host
+pins the model generation and resolves its frozen configuration/managed files for the invocation,
+rejects foreign/duplicate submissions and invalid geometry/confidence, and drains job callbacks
+before releasing the generation. Recursive model invocation is rejected.
+`LayoutRecognition.DetectAsync` is the single-image convenience job.
+
+The bundled `layout.pp-doclayout-v3` and `layout.doclayout-yolo` FSX packages own their model
+files and inference session lifetimes. The multimodal OCR and visual-guided text-layer packages
+select a model by extension id; their old short built-in ids remain recognized. Model discovery,
+configuration and downloads do not require a document or OCR task. AI integration no longer
+shows the OCR defaults card; OCR policy is configured through the corresponding extension.

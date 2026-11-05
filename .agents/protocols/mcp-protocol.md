@@ -25,8 +25,15 @@ Legacy compatibility remains implemented until a separate 0.4.0 removal change.
 
 Item YAML uses profile `patchouli-item-1`, with native CSL fields in `csl` and application data
 in `extensions.patchouli`. URI identity and citation keys cannot be changed through replacement.
-Collections remain read-only; hidden tags are preserved. YAML has one document, unique mapping
+Native item YAML edits membership through `extensions.patchouli.tags` and `collections` (collection UUID strings). Omitted membership fields and hidden categories are preserved; explicit [] clears membership. Categories must already exist; create them through library.yml. YAML has one document, unique mapping
 keys, JSON-shaped scalar types, and no custom tags or aliases.
+
+Item types use the CSL-JSON type values, plus Patchouli's `general` for unclassified
+items. Public item creation, update/replacement, merge and type-inference writes reject
+non-standard values with `ValidationFailed` and CSL-JSON guidance before changing metadata.
+Type keys are case-sensitive after trimming surrounding whitespace; `newspaper` and `web`
+are not aliases. Use `article-newspaper` for a newspaper article, `periodical` for a complete
+issue, and `webpage` for a web page.
 
 CSL dates retain the complete nested `date-parts` array, including both range endpoints.
 Rendering and projections also accept older flat stored dates; new YAML writes normalize to
@@ -151,7 +158,7 @@ RULES
   Resources are always identified by URI.
 ```
 
-**Help 与初次握手**：CLI `--help` 和 MCP 的初次握手/initialize 响应必须明确说明统一响应外壳及 `message` 的 Unix 哲学：正常且没有需要报告事项的成功响应**不返回 `message` 字段**；调用方看到没有 `message` 即可将该响应视为干净成功，不应期待成功文本。只有有稳定 warning 或 error 需要机器处理时才返回 `message`；warning 不改变成功 exit/error code，error 则按错误码决定失败。帮助、握手、示例与工具 schema 均不得把空字符串、`"OK"`、空 `message` object 或人类成功文案当作成功信号。
+**Help 与初次握手**：每个响应必须在 `meta.outcome` 显式返回 `success` 或 `error`，并以 `meta.summary` 简短说明实际结果。成功不能依靠缺少 `message` 推断；warning 不改变成功状态。失败可以保留可用 entries 或安全截断的内容，但仍是 error，MCP `isError=true`、CLI 非零退出。超限应明确要求缩小范围或使用返回的续读位置。握手、帮助和 Skill 必须说明相同规则。
 
 **三个操作界面、一个 Library runtime host**：桌面 UI、`patchouli-cli` 和 MCP 是同一 Library 的不同操作界面；Library 数据库、cursor、revision 与领域规则的唯一运行时权威是 .NET **宿主**。桌面宿主承载全功能人类 UI 与本地 MCP HTTP 端点；MCP 是供 agent 在本地或远程协作时使用的网络前端；CLI 同时面向人类和 agent，是该本地 MCP HTTP 端点的瘦客户端。三者因此在构造上共用同一次服务端 URI 解析、投影、校验、revision、错误和写入语义。
 
@@ -195,9 +202,9 @@ RESOURCE TREE
 
 无参数 `find` 是 VFS 根目录发现，返回 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs` 五个既有 directory 与 `/library.yml` file 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/collections`、`profiles` 或其他虚拟 skill 文件；集合与标签只通过 `patchouli://library.yml` 投影暴露，没有独立的 collection URI 或 VFS 目录。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
 
-`patchouli://library.yml` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该资源内容使用 YAML，外层 MCP envelope 仍使用 TOON（或请求的 JSON）。MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.yml` 是只读资源，任何 `put` 返回 `PERMISSION_DENIED`。集合是只读关系：MCP 不能创建、重命名、解散集合，也不能改成员。
+`patchouli://library.yml` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该资源内容使用 YAML，外层 MCP envelope 仍使用 TOON（或请求的 JSON）。MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.yml` 支持原子 put 来替换集合与标签目录，受 library.yml.put 和工具 put 权限控制。省略一个类别会保留它，[] 明确清空该类别。新集合省略 collection_id，现有集合保留其 ID；同 ID 改名保留成员。删除集合只解散关系，不删除题录。标签按名称识别，改名视为删除旧标签并新建，旧标签关系移除。题录归属通过题录 YAML 修改。library_id 与 display_name 不可编辑，item_count 是派生输出。legacy library.toon 仍只读。
 
-`ExposeLibraryTags` / `ExposeLibraryCollections` 是设备本地的暴露策略，而不是数据作用域。关闭标签暴露时，`library.yml` 不返回 `tags`，native item YAML 不暴露 `extensions.patchouli.tags`，legacy BibLaTeX 不输出 `keywords`，agent `put` 保留既有标签并忽略传入 tags/keywords，且 `tag` 过滤返回 `PERMISSION_DENIED`。关闭集合暴露时，`library.yml` 不返回 `collections`，且 `collection_id` 过滤返回 `PERMISSION_DENIED`。固定的 `library_id` 与 `display_name` 永不被隐藏。
+`ExposeLibraryTags` / `ExposeLibraryCollections` 是设备本地的暴露策略，而不是数据作用域。关闭标签暴露时，`library.yml` 不返回 `tags`，native item YAML 不暴露 `extensions.patchouli.tags`，legacy BibLaTeX 不输出 `keywords`，agent `put` 保留既有标签并忽略传入 tags/keywords，且 `tag` 过滤返回 `PERMISSION_DENIED`。关闭集合暴露时，library.yml 和题录 YAML 都不返回 collections，put 保留集合目录与既有成员并忽略传入 collections，且 collection_id 过滤返回 PERMISSION_DENIED。固定的 `library_id` 与 `display_name` 永不被隐藏。
 
 `page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.xml` 是人类报告和程序调用共用的第一页。Legacy `page-1.md` 地址仍可用于兼容请求，并在响应中给出 canonical `.xml` URI 与 `[obsoleted]` warning。`?rev=&box=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证 `tree_revision_id`/`box_id` 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
 
@@ -297,7 +304,7 @@ DEFAULT RESULTS
   meta.shown_total: entries returned in this page.
   meta.library_revision: the current persistent Library revision.
   continuation: next cursor or null.
-  message: omitted for a clean success; when present, contains stable warnings and/or an error.
+  meta.outcome: success or error; meta.summary describes the actual result. message contains warnings and/or an error.
   entries: exactly uri, title, type; type is file or directory.
 
 DETAILED RESULTS (--long)
@@ -439,9 +446,9 @@ READ-ONLY
 
 BEHAVIOUR
   put replaces exactly one resource.
-  put never creates, deletes, or renames resources.
+  put replaces one resource atomically. library.yml replacement may create, rename, or dissolve catalog entries; it never deletes Items.
   For item YAML, the URI is authoritative: item identity and citation_key remain fixed;
-  native CSL and permitted Patchouli fields are editable, while collections remain read-only.
+  native CSL fields and permitted tag/collection membership fields are editable. Collection membership uses stable collection IDs, never names.
   `content` and `boxes` are mutually exclusive. A `boxes` array contains 1–100 objects with
   `box_id` and the complete fetched `<box>` XML element with edited payload in `content`;
   it cannot replace page structure or change identity and structural attributes.
@@ -474,7 +481,7 @@ BEHAVIOUR
 
 **`general` 题录的 agent 可访问性**：为消除 agent 与人类之间的信息不对称，`general` 类型题录对 CLI/MCP 可读可写。Canonical YAML 用 `patchouli.item` extension 显式保留 `general` 类型，CSL 字段仍可按 profile 修改；legacy `.bib` fetch/put 继续以 `@misc` 投影表示并保留原 `general` 类型。若 agent 明确将 CSL `type` 或 legacy BibLaTeX 类型改为受支持的非 general 类型，这是显式类型修正，应按新类型映射并持久化；不受支持或仍映射为 `general` 的类型必须失败。Legacy `@misc` 投影路径不得改变 UI 的 `general` 导出/导入限制。`general` 可以在具备最低可渲染字段时通过显式 `@misc` fallback 参与 `cite`，响应必须带有 `general_as_misc` warning；字段不足或 renderer 拒绝时返回 `NOT_CITABLE`，不得静默把它当作 `book`、`article` 或其他类型。`put` 不得绕过该限制把它当作可渲染类型。
 
-**可写 MCP 产品意图**（ADR `0023`，经 ADR `0044` 修订）：`put` 保持窄范围、原子性，不创建/删除/重命名资源，也不触发 OCR、编辑 bbox 或重建索引。Item YAML、CSL styles 和 legacy `.bib`/`.md` whole-resource aliases use complete replacements; canonical page XML additionally supports same-page box payload batches. Canonical source and translation XML writes use `source_revision`; translations also use `translation_version`, while item/style and legacy whole-resource compatibility writes do not use page CAS. Source box writes create committed page history and a document commit; active UI drafts block them. Settings can disable writes and preserve the text-only, no-path/secret/image boundary. Directories, evidence, library and runs remain read-only; document/page `cite` behavior is unchanged.
+**可写 MCP 产品意图**（ADR `0023`，经 ADR `0044` 修订）：`put` 保持窄范围和原子性；library.yml 目录替换可建立、重命名和删除分类，其余资源写入不创建或删除资源，也不触发 OCR、编辑 bbox 或重建索引。Item YAML、CSL styles 和 legacy `.bib`/`.md` whole-resource aliases use complete replacements; canonical page XML additionally supports same-page box payload batches. Canonical source and translation XML writes use `source_revision`; translations also use `translation_version`, while item/style and legacy whole-resource compatibility writes do not use page CAS. Source box writes create committed page history and a document commit; active UI drafts block them. Settings can disable writes and preserve the text-only, no-path/secret/image boundary. Directories, evidence, legacy library.toon and runs remain read-only; document/page `cite` behavior is unchanged.
 
 ## 6 `cite`
 
@@ -736,7 +743,7 @@ CLI 是本地 MCP HTTP 端点的客户端，七个 CLI 动词分别映射为七�
 
 ```json
 {
-  "meta": { "library_revision": "lib:42" },
+  "meta": { "library_revision": "lib:42", "outcome": "success", "summary": "Returned 0 matching entries." },
   "continuation": null,
   "entries": []
 }
@@ -748,7 +755,7 @@ CLI 是本地 MCP HTTP 端点的客户端，七个 CLI 动词分别映射为七�
 
 ```text
 Response<TMeta, TEntry> = {
-  meta: TMeta & { library_revision: LibraryRevision },
+  meta: TMeta & { library_revision: LibraryRevision, outcome: "success" | "error", summary: String },
   continuation: String | null,
   message?: {
     error: String | null,
@@ -758,7 +765,7 @@ Response<TMeta, TEntry> = {
 }
 ```
 
-`LibraryRevision` 是 `"lib:<positive decimal integer>"`。`message` 遵循 Unix 哲学：当且仅当没有 warning 且没有 request-level error 时必须省略；没有 `message` 即表示干净成功。存在 warning 时 `message.error` 为 null，仍可为成功；存在 request-level error 时 `message.error` 非 null。逐项操作的失败保留在相应 entry 的同格式 `error` 字符串；只有所有逐项操作均失败、请求本身无效，或必须以非零状态报告的 partial/truncated 情况，才同时在 `message.error` 给出对应错误。warning 与 error 都是供人和 agent 直接读取的终端式诊断，不承载成功文案或本地实现细节。`message.error` 非 null 时，MCP tool response 必须标记 `isError=true` 并保留可用的 partial `entries`；CLI 将结构化响应写入 stdout，并从错误文本中的 `[code N]` 使用相应非零退出码报告错误。
+`LibraryRevision` 是 `"lib:<positive decimal integer>"`。`meta.outcome` 严格二分为 `success` / `error`，`meta.summary` 必须简短描述实际完成的操作或失败及补救方式。没有 `message` 只表示没有诊断，不能代替显式成功结果。任何一个请求项失败或因大小限制截断，整次调用均为 error；保留的成功 entries 或安全截断内容不构成 partial success。`message.error` 为稳定错误行；MCP 必须 `isError=true`，CLI 保留 stdout 内容并非零退出。warning 本身不改变 outcome。同步写入仍原子提交；允许分批提交、后台执行和业务部分完成的操作归 runs，由 send 控制，任务状态与本次调用结果独立。
 
 **旧 envelope 清理**：实现必须删除 `McpEnvelope<T>.Revision` 及其序列化顶层 `revision` 字段，并将 CLI、MCP transport、契约测试和所有调用方迁移为读取 `meta.library_revision`。依照 ADR `0027`/`0028`，不得以旧字段替代或重新引入 `fetch --revision`、`resource_revision` 或其他资源级历史版本选择字段。
 
@@ -768,7 +775,7 @@ Response<TMeta, TEntry> = {
 |---|---|---|
 | `find` | `meta` 为 `{ library_revision: LibraryRevision, domain_total: NonNegativeInt, filtered_total: NonNegativeInt, shown_total: NonNegativeInt }`；`entries` 为 `FindEntry[]` | 默认 `FindEntry` **严格只有** `{ "uri": Uri, "title": String, "type": "file" \| "directory" }`。`detail=long` 使用按资源种类判别的精确投影：`ItemLongEntry = { uri, title, type: "file", item_status, primary_document_ocr_index_status, citable }`；`TextLongEntry = { uri, title, type: "file"\|"directory", item_uri, item_status, document_status, source_status, ocr_index_status, citable }`；`StyleLongEntry = { uri, title, type: "file", style_enabled }`。除 `item_status` 可为 `"unset"` 外，三个 `*_status` 均为对应实体的原始持久化值；没有关联 FileAsset 的 text 资源使用 `source_status: "unavailable"`。字段只在其适用 variant 中出现，严禁用 null 填充其他 variant，也不得重复 URI 已表达的 document/page/evidence locator。`meta.shown_total` 必须等于 entries 长度。 |
 | `fetch` | `meta` 为 `{ library_revision: LibraryRevision }`；`entries` 为 `FetchResult[]` | 每个输入 URI 产生一个同序 `FetchResult`，不得因其他 URI 失败而丢失。见下方 discriminated variant。 |
-| `put` | `meta` 为 `{ library_revision: LibraryRevision }`；成功时 `entries` 为单元素 `PutResult[]`，批次内容校验失败可保留 `committed: false` 与 `box_errors` 诊断；其他失败、取消或超限写入时为 `[]` | `PutResult = { uri: Uri, resource_type: "item_yaml" \| "item_bib" \| "csl_style" \| "text_page" \| "translation_page", committed: Boolean, content_bytes: NonNegativeInt, source_revision?: String, translation_version?: NonNegativeInt, modified_box_ids?: String[], box_errors?: { box_id: String, message: String }[] }`。`item_bib` 表示显式 legacy `.bib` 请求；失败详情由 `message.error` 表达。`content_bytes` 是本次提交 content 或完整 box XML 片段的实际 UTF-8 字节数。 |
+| `put` | `meta` 为 `{ library_revision: LibraryRevision }`；成功时 `entries` 为单元素 `PutResult[]`，批次内容校验失败可保留 `committed: false` 与 `box_errors` 诊断；其他失败、取消或超限写入时为 `[]` | `PutResult = { uri: Uri, resource_type: "item_yaml" \| "item_bib" \| "csl_style" \| "text_page" \| "translation_page", committed: Boolean, content_bytes: NonNegativeInt, source_revision?: String, translation_version?: NonNegativeInt, modified_box_ids?: String[], box_errors?: { box_id: String, message: String, structure_diff?: { block_index: NonNegativeInt, expected: String, actual: String }[] }[] }`。`item_bib` 表示显式 legacy `.bib` 请求；失败详情由 `message.error` 表达。`content_bytes` 是本次提交 content 或完整 box XML 片段的实际 UTF-8 字节数。 |
 | `cite` | `meta` 为 `{ library_revision: LibraryRevision, effective_style_uri: Uri, effective_locale: String, render_format: "text" \| "html", bibliography: String\|null }`；`entries` 为 `CitationResult[]` | 每个输入 REF 产生一个同序 result；可渲染 result 与不可解析/不可引用 result 可以共存。`bibliography` 仅在请求时为 String，否则为 null；其去重不影响 entries 长度与顺序。 |
 | `send` | `meta` 为 `{ library_revision, action, state }`；成功 entries 为单元素，失败为空 | `SendResult = { state: "completed" | "started", result?: typed action result, run_uri?: Uri }`。仅后台受理返回 run_uri；见第 7、10 节。 |
 
@@ -806,7 +813,7 @@ CitationResult = {
 }
 ```
 
-`ResourceType` 含 Action 描述投影及 `item_yaml`、legacy `item_bib`、`text_document`、`text_page`、`evidence`、`csl_style`、`library_yaml`、legacy `library_toon` 或 `run_status`。`patchouli://library.yml` fetch 返回 YAML 投影全文（受 `limit_bytes` 限制；外层 MCP envelope 仍是 TOON/JSON）。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED [code 7]: …`，但仍保留完整 `entries`；通常 `FailedFetch.error` 不包含 `[code 7]`，唯一例外是 XML 内容不可安全分片（例如单个 box 超过响应上限），此时该 entry 可用 `FailedFetch` 携带 `RESPONSE_TRUNCATED [code 7]` 与所需大小，且不返回部分 XML。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 为终端错误行。若所有 citation result 均失败，`message.error` 为相应错误；否则 `message.error` 为 null（若也没有 warning，省略 `message`）。错误码、schema 或类型新增/变更均为协议 revision 变更。历史文本只由 URI 的 `rev` 选择；独立 `fetch --revision` 不属于协议（ADR `0028`）。
+`ResourceType` 含 Action 描述投影及 `item_yaml`、legacy `item_bib`、`text_document`、`text_page`、`evidence`、`csl_style`、`library_yaml`、legacy `library_toon` 或 `run_status`。`patchouli://library.yml` fetch 返回 YAML 投影全文（受 `limit_bytes` 限制；外层 MCP envelope 仍是 TOON/JSON）。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED [code 7]: …`，但仍保留完整 `entries`；通常 `FailedFetch.error` 不包含 `[code 7]`，唯一例外是 XML 内容不可安全分片（例如单个 box 超过响应上限），此时该 entry 可用 `FailedFetch` 携带 `RESPONSE_TRUNCATED [code 7]` 与所需大小，且不返回部分 XML。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 为终端错误行。任一 citation result 失败，或请求的 bibliography 渲染失败，整次调用均为 error 并设置 `message.error`，同时保留已渲染引用。错误码、schema 或类型新增/变更均为协议 revision 变更。历史文本只由 URI 的 `rev` 选择；独立 `fetch --revision` 不属于协议（ADR `0028`）。
 
 `meta.library_revision` 是当前 Library 的宿主权威 revision，格式固定为 `lib:<十进制正整数>`；它持久化于该 Library，且每次成功、会改变协议可见资源或关系的 Library 写入后严格单调递增，即使桌面/headless 宿主交接也不得回退或复用。它不是默认 `find` entry 的资源 revision，也不是 `put` 的写前置条件。客户端保存的 fetch 内容只是该 revision 时的本地快照；v3 不推送或撤回其已交付内容。cursor 继续按实时语义读取，且其创建 revision 与当前 revision 不同时继续在 `message.warnings` 返回 `RESULT_SET_MAY_HAVE_CHANGED`。MCP 会话中宿主发现上一次已观察 revision 已落后于当前 revision 时，也必须在 `message.warnings` 追加 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`；无会话或断线客户端可通过 `meta.library_revision` 自行检测陈旧性并按需重新 fetch。
 
@@ -876,7 +883,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC9 | 多 URI fetch 与多 REF cite 采用逐项结果语义；单项失败不丢弃同一请求中的成功结果，并对实际使用的 CSL style 返回 effective style |
 | V3-AC10 | 裸 `find` 返回 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs` 五个 VFS 根 directory、经授权过滤的 `/actions` directory（仅当存在可见 Action）与 `/library.yml` 一个根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、evidence 根、`/workflows` 和 shell 入口，均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
-| V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`（`patchouli://translations/` 与其 document 目录例外，见 ADR `0034`：它们必须携带翻译进度/状态）；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
+| V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`（`patchouli://translations/` 与其 document 目录例外，见 ADR `0034`：它们必须携带翻译进度/状态）；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，每次响应显式返回 `meta.outcome` 与 `meta.summary`；无诊断时可省略 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
 | V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据（翻译目录条目例外，见 ADR `0034`）；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
 | V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行五个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
@@ -922,3 +929,72 @@ must be preserved exactly in a source/translation box replacement. Native reader
 render that region from their existing page bitmap. Typed `annotation` siblings carry
 caption/footnote Markdown and are also preserved exactly during payload writes.
 No image paths or OCR producer identity are exposed or added to canonical storage.
+
+## Explicit call receipts
+
+This receipt schema supersedes the former Unix silence convention. Every tool shares
+`meta.outcome: success|error` and a nonempty `meta.summary` in TOON and JSON. No third
+partial outcome exists. Diagnostic-free responses may still omit `message`; explicit
+success lives in meta. Any failed requested read/citation or size-truncated response is
+an error with usable content, never partial success. Explicit range reads and find pages
+may succeed when their requested scope was fully returned. XML size fallback returns
+whole boxes, `truncated: true`, an error, and a next range when possible.
+
+Receipts describe completed facts: add reports committed/reused resources and their URIs;
+put reports the saved resource and box count when known; find reports the effective scope,
+counts and continuation; fetch reports completed reads; cite reports rendered references
+and requested bibliography; view reports the returned image. Send distinguishes accepted
+or replayed background work, read-only lookup, committed metadata, and processed cancellation.
+A cancellation receipt never promises worker termination; poll the task state. Reading a
+failed or partially completed run may itself succeed. Add and synchronous metadata writes
+report the post-operation Library revision. Summaries never expose local paths or secrets.
+
+## Page-write diagnostics revision: page-write-diff-v1 (2026-11-05)
+
+Canonical translation box batches and full XML writes retain every rejected box's
+Markdown structure mismatches in `box_errors[].structure_diff` as
+`{ block_index, expected, actual }`. `block_index` is zero-based within that box's
+rendered Markdown; `end of markdown` represents an added or missing block. A failed
+batch writes nothing. JSON and TOON carry the same diagnostics; this revision does
+not change the negotiated MCP transport protocolVersion.
+
+Before rejecting paragraph-to-list mismatches, the host may escape the candidate's
+accidental line-leading `*`, `+`, `-`, `N.` or `N)` list punctuation. It preserves
+text, whitespace and inline markup and accepts the normalized payload only after
+the complete original structure validates. Actual source lists are not flattened;
+code, headings, tables and remaining mismatches keep their ordinary validation.
+Failed normalization returns the original candidate's diff and writes nothing.
+
+MinerU v3's empty continuation followers are automatically skipped during translation
+writes, including when a client submits a candidate for them. Their original payload,
+box identity and continuation metadata remain intact. They are excluded from translation
+totals and stale/missing-box lists in page fetches, compiled reads and directory progress.
+Nonempty continuations retain ordinary validation. This compatibility policy does not
+require rebuilding historical source text and will disappear with the legacy data.
+
+## Collection and tag catalogs
+
+Edit `patchouli://library.yml` to manage categories. Fetch it first; retain `library_id`,
+`display_name`, and the IDs of existing collections. Add `{name: ...}` without an ID to
+create a collection; remove an entry to dissolve it. Read the updated library.yml for
+generated collection IDs. Malformed collection IDs and UUIDs absent from the current
+Library are ignored and treated as omitted IDs; new collections always receive host-generated
+IDs. Duplicate existing IDs remain invalid. Item membership still rejects unknown collection
+IDs. `tags` keeps the existing `{tag, item_count}` projection;
+new tags need only `{tag: ...}`. item_count is derived and is never written. Declared tags
+persist even without members and are included in snapshots. Existing item tags remain
+discoverable, including inactive-only names with an active item_count of zero.
+
+Omitted categories are preserved; [] clears the visible category. Hidden categories are
+preserved even if supplied. A single transaction validates names, identities and unique
+collection IDs, replaces the catalog, removes dissolved collection relationships and
+deleted tag relationships (including trash/merged Items), and publishes one LibraryRevision.
+Items, documents and source files are never deleted. Errors roll the whole replacement back.
+
+Edit native item YAML `extensions.patchouli.tags` (strings) and `.collections` (collection
+UUID strings) to replace that item's membership. [] clears membership; an omitted field
+preserves it. Unknown categories are rejected before committing metadata or relationships.
+Native and legacy MCP item writes cannot create unknown tags. Desktop/import tag creation
+retains its existing behavior. The legacy collections_json mirror is never authoritative.
+Library put receipts report category/relationship counts; item put receipts report the
+saved Item and supplied collection-membership count. Both use explicit success/error outcomes.

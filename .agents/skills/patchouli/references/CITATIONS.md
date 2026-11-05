@@ -23,6 +23,7 @@ patchouli-cli cite <REF>... [--style <csl-style-uri>] [--locale <locale>] [--bib
 - `put` 以完整 YAML 替换。URI 决定身份：Item 身份和 citation key 不能通过替换修改；集合关系只读；用户设置不暴露标签时，传入的标签会被忽略。
 - YAML 只能有一个文档，键不能重复，不支持自定义 tag 或锚点。日期使用 CSL 嵌套的 `date-parts` 数组，可以表示区间；纯文本日期可以不写 `date-parts`。
 - 把 CSL `type` 改成受支持的其他类型属于显式类型修正，宿主会按新类型保存。
+- 类型键与 CSL-JSON 一致（另有未分类类型 `general`），区分大小写；报纸文章用 `article-newspaper`、整期刊物用 `periodical`、网页用 `webpage`。`newspaper`、`web` 等非标准类型不是别名，写入会失败并提示修正。
 - 回收站中的题录返回 `ITEM_IN_TRASH`；已合并的题录返回 `ITEM_MERGED`，诊断中给出合并目标。
 
 ## 在线补全元数据：`runs/metadata/control`
@@ -52,3 +53,11 @@ patchouli-cli cite <REF>... [--style <csl-style-uri>] [--locale <locale>] [--bib
 - `put` 提交完整 YAML，宿主做全量校验后原子替换；提交空定义即清空映射。需要 `texts` 域的 put 授权。
 - 逻辑页被删除、移动或重排后，相关规则会被标记为待修复并暂停推算，但不会删除定义；map 的其余部分照常可用。
 - 没有有效 map 时，印刷页码未知：不要用物理页码冒充印刷页码。
+
+## 分类归属
+
+集合/标签目录通过 `put patchouli://library.yml` 建立或删除；题录 YAML 中的
+`extensions.patchouli.collections` 使用集合 UUID 字符串数组，`tags` 使用标签名数组。
+分类须先存在；未知引用使题录与归属修改一起失败。省略归属字段会保留，[] 清空，
+隐藏类别不会被修改。解散集合、删除标签均不删除题录。集合改名保留 ID 和成员；
+标签没有稳定 ID，在 library.yml 改标签名属于删除旧标签并新建，不自动迁移成员。

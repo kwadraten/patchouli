@@ -8,6 +8,10 @@ Issues and PRDs are tracked in GitHub Issues. See `.agents/issue-tracker.md`.
 
 This repo uses a single-context domain-doc layout under `.agents/`; agent-readable Markdown belongs there rather than in the repo root or `docs/`. See `.agents/domain.md`.
 
+### UI design
+
+Make interface usage intuitive through layout, grouping, control placement, concise labels, and visible interaction states. Minimize explanatory UI prose. Use brief tooltips or contextual feedback when needed, and prefer improving the interaction design over adding instructions that explain it.
+
 ### Repository automation
 
 `scripts/` is the single root for repository automation, including PowerShell/Python scripts and compiled build-time utilities such as `scripts/Patchouli.ExtensionSchemas`. Do not create or restore a repository-root `tools/` directory. Application sidecars remain under `sidecar/`; temporary downloads and experiments belong under `.tmp/`.

@@ -122,10 +122,14 @@ requires parsing TOON and never changes fields, pagination, warnings, errors,
 or the requested default/detailed projection. TOON and both JSON projections
 share the mcp-protocol closed response shape: `meta`, `continuation`, optional
 `message`, and `entries`; there is no separate `data` envelope. `message`
-contains stable warning codes and/or the request-level error, and is omitted
-for a clean success. CLI help and the MCP initialize response state this Unix
-convention explicitly: no `message` is the success signal, rather than an
-empty object or a human-readable `OK` text.
+contains stable warnings and/or the request-level error and may be omitted when there
+are no diagnostics. Every response explicitly carries `meta.outcome` (`success` or
+`error`) and a nonempty `meta.summary` describing actual results. This supersedes
+the Unix silence convention: absence of diagnostics is not the success signal.
+Errors may retain usable entries or safe truncated content, but always remain
+errors (`isError=true`, nonzero CLI exit). Any failed requested entry, bibliography
+render, or size truncation makes the call an error. Background business partial
+completion belongs to runs; task state is independent of call outcome.
 
 The implementation removes the legacy serialized `McpEnvelope<T>.Revision`
 field and migrates all clients and contract tests to `meta.library_revision`.
@@ -213,14 +217,19 @@ and `collections` arrays with item counts. Collections are included even when
 empty. The projection is produced by the same production TOON encoder as every
 other read and is also used by the desktop live preview, so the preview cannot
 drift from the agent-visible bytes. There is no `/collections` VFS directory and
-no collection URI; Collections remain MCP write-protected and are discovered
-only through this projection.
+no collection URI. Native library.yml now accepts atomic catalog replacement;
+new collections omit their ID, rename retains the ID and members, and removal only
+dissolves relationships. Tags use name identity: deleting a tag removes its Item
+relationships; replacing its name is delete/create. Native Item YAML replaces
+collection/tag membership. Unknown categories fail atomically. Omitted or hidden
+categories and membership fields are preserved. Legacy library.toon stays read-only.
+Explicit tag definitions persist empty tags and are included in snapshots.
 
 Device-local exposure is a policy, not a data scope. Hiding tags removes them
 from `library.toon` and from BibLaTeX `keywords` output, makes an agent `put`
 preserve the existing tags and ignore incoming keywords, and makes the `tag`
 filter return `PERMISSION_DENIED`. Hiding collections removes them from
-`library.toon` and makes the `collection_id` filter return
+`library.toon` and native item YAML, preserves collection writes while hidden, and makes the `collection_id` filter return
 `PERMISSION_DENIED`. The fixed `library_id` and `display_name` are never hidden.
 
 The item scope gains two exact, case-sensitive relation filters that intersect

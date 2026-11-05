@@ -4,6 +4,11 @@ Date: 2026-10-23
 
 ## Status
 
+Partially superseded in the planned implementation by [ADR 0055](0055-versioned-binary-built-in-extensions.md)
+(2026-11-05): compatible `/4` declarations, SemVer replacement and compiled built-in
+distribution. `/3` user extensions remain accepted by the new host; source entry metadata
+stays the authoring authority. This records a target, not completed runtime behavior.
+
 Accepted by explicit user direction. Implementation and verification are in progress;
 this decision is not a claim that the migration or online-provider acceptance has completed.
 

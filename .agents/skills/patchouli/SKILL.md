@@ -16,7 +16,8 @@ Patchouli 是个人文献管理器。每个书库只有一个运行中的 .NET �
 ## 每个任务都适用的规则
 
 - **URI 即身份**：资源一律用 `patchouli://` URI 指称。URI 未知用 `find`，已知用 `fetch`；`fetch` 从不搜索，也不自动跟随链接。
-- **没有 `message` 就是干净成功**：有 `message.warnings` 时逐条阅读（例如 `[obsoleted]` 指出应改用的 canonical URI）；`message.error` 形如 `NAME [code N]: detail`。
+- **分类管理**：编辑 `library.yml` 建立/删除集合与标签；编辑题录 YAML 的 tags/collections 修改归属。集合改名保留 ID；解散集合不删除题录。省略字段保留，[] 明确清空，引用未知分类会失败。详见 MCP-CLI。
+- **显式结果**：先读 `meta.outcome`（`success` 或 `error`）和 `meta.summary`，了解实际完成了什么。错误时仍可能返回有用内容或截断内容，这不代表部分成功；按错误说明缩小范围或使用续读位置。有 `message.warnings` 时逐条阅读（例如 `[obsoleted]` 指出应改用的 canonical URI）；`message.error` 形如 `NAME [code N]: detail`。
 - **写入带版本前提**：先 `fetch` 得到版本，再带同一版本 `put`。`REVISION_CONFLICT` 表示别人先改了：重新 `fetch`，在新内容上重做修改，绝不盲目重试旧内容。
 - **权限归用户**：`PERMISSION_DENIED` 是用户的选择。告诉用户需要打开哪个开关或授权，然后停下；不要换一种调用绕过它。
 - **受理不等于完成**：`send` 返回 `started` 只表示任务已入队，用返回的 `run_uri` 轮询状态。`runs/` 下的状态只存在于宿主内存中，宿主重启后会消失。

@@ -1,5 +1,85 @@
 # FSX extension and HTML table validation
 
+## Read-only built-in sources and template creation UI (2026-11-05)
+
+Implemented in the working tree: translation, metadata, OCR and PDF text-layer lists expose
+icon-only Add/toolbar actions. The shared dialog filters templates by kind and creates a new-ID
+source draft without activation or configuration copying. Built-in sources stay readable in
+the editor, but save/check/apply paths reject modification; custom drafts remain editable.
+Existing non-empty legacy source drafts remain visible. Metadata fixture owners are disposed
+before cleanup, using the repository's bounded cleanup retry for transient file locks.
+
+- JetBrains Cleanup Code 2026.1.4 ran on changed C#/AXAML; the initial SettingsViewModel save
+  warning was resolved by the recorded cleanup recheck.
+- Final normal test-project build: 0 warnings, 0 errors
+  (`.tmp/extension-template-verified-build.log`).
+- Recorded focused run `extension-template-ui-verified-20261105`: **77 passed, 0 failed,
+  0 skipped**, covering template payload/ID rules, actual read-only controls, all four lists,
+  cancellation, existing editor/OCR/metadata behavior and bundled artifact installation.
+  Results are under `.tmp/test-runs/extension-template-ui-verified-20261105/`.
+- Rendered previews of the translation toolbar and creation dialog were inspected under
+  `.tmp/ui/extension-dialog/`; the distributed Skill passes `quick_validate.py` in UTF-8 mode.
+
+This is focused UI/source-management evidence. Protocol/version verification is recorded below;
+this earlier run alone does not establish Full-suite, live OCR or installer acceptance.
+
+## Compatible `/4`, SemVer upgrade and NuGet/SDK preflight (2026-11-05)
+
+[ADR 0055](../adr/0055-versioned-binary-built-in-extensions.md) is implemented in the working tree:
+new declarations use `/4`, while entry parsing, compilation, cache loading and persisted state
+continue to accept `/3`. The 31 built-ins declare `1.1.0` and `/4`. Version selection uses strict
+SemVer precedence, preserves newer installed versions, rejects equal-version content conflicts,
+archives old working source under `.generations/`, and retains configuration, old leases and
+explicit LKG recovery. Historical fingerprint upgrade tables are removed.
+
+The compiler sidecar parses actual compiler-active `#r` / `#load` directives with FCS; comments,
+strings, inactive branches and unreachable helpers do not trigger NuGet. Package source and
+reference options are preserved. SDK discovery skips runtime-only and incompatible candidates;
+missing, incompatible and failed probes produce localized diagnostics and an explicit official
+SDK download action. Verified artifacts and built-ins bypass SDK restoration.
+
+Recorded evidence:
+
+- Earlier integrated test-project build: 0 warnings, 0 errors
+  (`.tmp/protocol4-acceptance-build.log`), before the unrelated concurrent source changes below.
+- Final compiler-sidecar build: **0 warnings, 0 errors**
+  (`.tmp/protocol4-final-compiler-build.log`).
+- Separate F# SDK run `protocol4-sdk-20261105`: **112 passed, 0 failed**.
+- Real isolated local NuGet package restore/compile/load/cache plus parser/preflight run
+  `protocol4-nuget-20261105`: **7 passed, 0 failed**. Final named-Version coverage is also
+  included in the integrated acceptance run below.
+- A real `win-x64` self-contained Host probe activated **31/31** bundled packages with .NET
+  host lookup environment cleared: `Activated=31; FCS=False; Protocol=patchouli.extensions/4`.
+  Output and publish evidence are in `.tmp/protocol4-selfcontained-probe.log` and
+  `.tmp/protocol4-deployment-publish.log`. No installed application was replaced.
+- Skill validation passes in UTF-8 mode. Cleanup ran on changed C#/AXAML with JetBrains 2026.1.4.
+- Current protocol/NuGet isolation: **59 passed, 0 failed, 0 skipped** in
+  `protocol4-core-verified-20261105`, linking the repository test sources in
+  `.tmp/protocol4-validation/` against the freshly built SDK/compiler and a matching toolchain
+  stamp. This includes both protocols' compilation/cache/restart/LKG, real local NuGet restore,
+  named `Version=`, retained reference options, and the parser/preflight cases. The temporary
+  support project imports `tests/Directory.Build.props`; this is focused evidence, not Full.
+- All **7 built-in upgrade regressions passed** in the earlier integrated
+  `protocol4-focused-20261105` run, covering modified old source archival, leases/config/LKG,
+  newer versions and equal-precedence conflicts. That 105-case run initially had two NuGet
+  failures, subsequently repaired; it is not described as a wholly green run.
+- JetBrains inspection script exited successfully with **0 blocking report items**; evidence
+  is `.tmp/protocol4-acceptance-inspection.log` and `.tmp/protocol4-acceptance-inspectcode.sarif`.
+  Its log also contains an internal buffer-offset LoggerException during concurrent edits;
+  this caveat is retained rather than calling the tool run clean. No suppressions were added.
+- **Full acceptance remains blocked.** `protocol4-full-20261105` was stopped after mixed
+  shared-output assemblies produced MissingMethodException. The isolated whole-project rebuild
+  then encountered unrelated in-flight `TagInfo` changes and missing MinerU artifact types
+  (`MinerUResultArtifact`, `MinerUResultArtifactReader`, `MinerUResultArtifactFormat`); see
+  `.tmp/protocol4-isolated-build.log` and `.tmp/protocol4-isolated-rebuild.log`.
+  Combining older embedded built-ins with the newer SDK ABI in the temporary probe correctly
+  produced EXT0040 in four upgrade cases (`protocol4-isolated-final-20261105`); these failed
+  packaging experiments are not counted as successful acceptance. No unrelated business-code
+  fixes or installed-app replacement were made to bypass these gates.
+
+This validates extension distribution and compatibility, not live OCR model inference, an
+installer release, Plugin VFS, WebView or the future community repository/store.
+
 ## OCR production integration (#43, 2026-10-25, pending acceptance)
 
 The continuation after the foundation below adds production task-level dispatch, a standalone
@@ -730,3 +810,23 @@ MinerU schema and producer evidence, including the difference between native PDF
 styles and scanned-table OCR output, is recorded in
 [OCR normalization](ocr-normalization.md). Tests must not infer arbitrary styled OCR
 output from a generic HTML whitelist.
+
+
+## Independent layout recognition registry (2026-11-05)
+
+The desktop/test projects build with zero compiler warnings and errors. The recorded focused
+run `.tmp/test-runs/20261105-230610-c4a88d/` passes all 85 cases covering layout model jobs,
+compiled custom models, frozen configuration, empty/invalid/duplicate/unfinished results,
+cancellation, translation resource forwarding, template copying, multimodal OCR, PDF text-layer
+packages, SDK execution and settings routing/layout. The separate F# SDK run
+`.tmp/test-runs/20261105-225930-a6b4bb/` passes all 112 cases.
+
+The headless settings fixture captures `.tmp/layout-recognition/settings.png`; visual inspection
+confirms the separate processing tab and both model rows with configuration/source controls.
+These are offline contract and UI checks, not a live ONNX-weight or remote-provider acceptance run.
+The JetBrains 2026.1.4 cleanup scripts were run for the changed C#/AXAML files.
+The final InspectCode run used a fresh cache (`.tmp/build/layout-inspection-clean-caches`)
+and the existing compiled F# assembly. Its report (`.tmp/inspectcode.sarif`, generated
+2026-11-05 23:15 local time) has zero errors and zero blocking findings under the
+repository inspection rules. The earlier 17 translation-test type-resolution errors
+did not recur with the fresh cache. The inspection log is `.tmp/layout-inspection-clean.log`.

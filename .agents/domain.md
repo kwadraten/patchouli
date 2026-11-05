@@ -117,6 +117,17 @@ without blocking activation. External BCL, package DLLs and NuGet are allowed. C
 requires an installed SDK; BCL, package-local DLLs and verified compiled cache hits bypass that
 restore requirement. See [ADR 0053](adr/0053-trusted-compiled-fsx-extensions.md) and the
 [extension contract](protocols/extension-contracts.md); this is not an acceptance claim.
+
+[ADR 0055](adr/0055-versioned-binary-built-in-extensions.md) records the implemented protocol/version transition
+for issue #8: `/4` declarations retain `/3` compatibility; built-ins ship compiled binaries
+and read-only FSX/helper templates
+and replace older versions by SemVer under reserved IDs. User extensions keep independent IDs
+and source compilation. Host composition owns generic discovery, staging and activation, not
+extension algorithms; NuGet source checks surface missing-SDK guidance without making SDK a
+binary activation requirement. The ADR owns the migration contract; recorded checks and acceptance limits live in
+[extension validation](protocols/extension-validation.md). The community repository/store remain future work. Extension lists expose a template-based Add
+dialog; the shared editor permits source changes only for independent user extensions.
+
 `Patchouli.Core/Agents` owns the compiled catalog (`AgentCatalog.g.cs`), detection, launch
 and integration-settings contracts. `Patchouli.Terminal` owns the PTY session and embedded
 terminal host. `Patchouli.Host/Agents` owns workspace location, launch preparation and
@@ -220,3 +231,15 @@ one LibraryRevision; original source files are never deleted by this operation.
 Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in protocols/, runtime ownership in this document, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
 
 The shared composition layer and ADR `0024` one-host-per-Library target are implemented. A device-local lifetime lock keyed before SQLite open by the canonical database path elects exactly one Desktop or Headless owner; an atomic discovery record publishes the live process identity, Library ID and MCP endpoint, and the authenticated local lifecycle channel performs Desktop takeover. Normal UI, CLI and MCP writes therefore share the in-process revision event path. `LibraryRevisionMonitor` remains available for explicit abnormal external-write recovery, but the Desktop no longer starts its polling loop during normal operation. Full incremental cache invalidation remains V3-T7 work.
+
+## Published process layout
+
+Desktop publishing also publishes the CLI and extension compiler into the same directory.
+`Patchouli.UI`, `patchouli-cli`, and `Patchouli.Extensions.Compiler` retain separate apphosts,
+DLLs, `.deps.json` and `.runtimeconfig.json` files, while sharing one copy of managed/native
+dependencies and the self-contained .NET runtime. The compiler remains an independent process;
+extension execution still belongs to the host. Development builds retain the
+`extension-compiler/` sidecar directory as a fallback. Windows installs use the application
+root for CLI PATH registration; Linux launchers point into `/usr/lib/patchouli/`.
+macOS keeps native apphosts in `Contents/MacOS` and shared managed payloads in
+`Contents/Resources`, with the existing relative symlinks preserving dependency resolution.

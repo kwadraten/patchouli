@@ -12,8 +12,9 @@
 
 ## 扩展包与生命周期
 
-- 每个扩展包有 `main.fsx` 入口，可 `#load` 包内 `.fsx`；包源码位于应用数据目录下的 `extensions/{extension-id}/`。入口 XML 文档仍是必需契约：在 `let extension` 前使用 `/// <patchouli-extension id="…" kind="…" version="…" host-api="patchouli.extensions/3">`，并包含 `<name>`。它不是 attribute 元数据。可参考随包 `main.fsx`。
-- OCR Job 与托管文件声明属于现有扩展能力的增量扩张，Host API 保持 `patchouli.extensions/3`；既有翻译、元数据和 retrieval 扩展不因此被拒绝，也不需要新增 OCR 实现。新 OCR 源码仍在验收中。
+- 每个扩展包有 `main.fsx` 入口，可 `#load` 包内 `.fsx`；包源码位于应用数据目录下的 `extensions/{extension-id}/`。入口 XML 文档仍是必需契约：在 `let extension` 前使用 `/// <patchouli-extension id="…" kind="…" version="1.0.0" host-api="patchouli.extensions/4">`，并包含 `<name>` 与入口文档 `<summary>`。它不是 attribute 元数据。可参考随包 `main.fsx`。
+- 新扩展使用 `/4` 与严格 SemVer 2.0.0（支持预发布和构建元数据），发布后修改内容须提高版本。新宿主继续接受 `/3`，既有扩展不需要改入口协议或新增 OCR 接口；旧缓存若与编译器/ABI 不匹配则需要重新编译，不代表拒绝 `/3`。
+- 内置包采用 `1.1.0` 起的新版本；同 ID 较新版本会替换旧实现，旧工作文件保留为 `.generations/{fingerprint}/` 中的非活动快照，配置和 LKG 保留。同版本不同内容会报告冲突，构建元数据不影响版本排序；不会自动降级。已开始的任务保留原 generation。
 - FSX 源码编译为 DLL，按 generation 缓存并在宿主内 collectible `AssemblyLoadContext` 执行。允许外部 BCL、包内 DLL 和 NuGet 依赖。NuGet 冷还原需要已安装的 .NET SDK；只有 runtime 的安装不能替代 SDK。包内 DLL、BCL 引用和已验证编译产物缓存命中不需要 NuGet SDK 还原。依赖版本由仓库中央管理：`FSharp.Core` 10.1.401、`FSharp.Compiler.Service` 43.12.401。可信代码不是沙箱。
 - 同目录下的 `.generations/`（运行中的不可变快照）、`.lkg/`（恢复快照）、`config.json` 和 `extension-state.json` 由 Patchouli 管理，不要编辑；`.lkg/AGENTS.md` 也说明了这一点。只修改包根目录下的源码。
 - 桌面入口：“文献加工 → 文献翻译”的引擎列表，以及“元数据来源”的每一行，都有齿轮按钮，打开扩展配置窗口。
@@ -21,7 +22,9 @@
   2. **应用源码**：再次检查后，原子切换到新的运行版本（generation）。已经开始的任务继续使用原来的版本。
   3. **将运行版本保存为恢复副本**：显式更新 LKG（last-known-good）。加载成功不会自动更新 LKG。
   4. **回滚**：从 LKG 恢复运行版本。它不撤销书库中已提交的数据，也不覆盖源码草稿。
-- 高级操作可以把现有扩展复制为新 ID。样例试跑不切换运行版本，也不写入书库。静态检查与样例试跑都不能证明线上服务可用。
+- 翻译、元数据、OCR 和 PDF 文本层扩展列表右上角的“添加”图标打开新建弹窗：选择一个已有扩展作为基础，填写独立的新 ID。创建后进入源码编辑器；此时只是源码草稿，不会编译或激活，仍需显式检查并应用。
+- 内置扩展保留 `main.fsx` 和辅助源码供只读参考；配置可修改，源码不可在编辑器中保存或应用。Agent 可以参看现有内置源码和 SDK，自行实现新扩展，必须使用新的扩展 ID，不要覆盖内置包或修改 `.generations/`、`.lkg/`。模板内的业务身份（如模型、来源或引擎标识）按新实现需要调整；新包 ID 不会自动重写这些业务常量。
+- 样例试跑不切换运行版本，也不写入书库。静态检查与样例试跑都不能证明线上服务可用。
 - 普通打开配置窗口不等于检查或激活源码。已验证的 Active 描述与随包构建索引可直接显示字段；未知或不匹配的源码可能显示“未检查 / schema 不可用”，此时显式检查后再配置，不通过反复打开窗口触发编译。
 
 ## 编译规则
@@ -32,11 +35,35 @@
   - 向契约写回可选值时用 `Option.toObj`。
 - 配置使用带 `[<Settings>]` 的 F# record；普通字段用 `[<Field(...)>]`，可选默认值用 `[<Default(...)>]`，数值约束用 `[<Range(min, max)>]`，模型用 `[<Model(...)]`。嵌套公共设置 record 可放在 `Common` 字段上，并通过父字段的 `[<Override("key", value)>]` 覆盖该包的默认值。配置由 `ConfigSettings.Read<Settings>` 读取；元数据 schema 由宿主读取，不执行属性之外的脚本逻辑。保留编译器警告和 schema 校验。
 
+### 宿主共享库
+
+所有类型的扩展都可直接使用宿主的 ONNX Runtime、SkiaSharp、System.Numerics.Tensors 和
+`Patchouli.Ocr.Engines`，无需 `#r`、NuGet 还原或附带 DLL。SDK 沿用 `Patchouli.Extensions`
+命名空间，提供 `Onnx` 和 `Skia` 类型别名及工厂；完整 API 仍可通过原库命名空间调用。
+
+```fsharp
+open Patchouli.Extensions
+
+let render () =
+    use bitmap = Skia.createBitmap 64 64
+    use canvas = new Skia.Canvas(bitmap)
+    canvas.Clear(SkiaSharp.SKColors.White)
+
+let loadModel path =
+    use options = new Onnx.SessionOptions()
+    Onnx.createSession path options // 调用者负责释放返回的 session
+```
+
+共享的是宿主程序集及原生库，不是可变 session 或图像实例；自行创建的对象仍由扩展释放。
+这些库固定使用宿主版本，包内同名 DLL 不能覆盖宿主版本。其他第三方依赖仍可按下述规则随包
+提供或通过 NuGet 获取。内置 OCR/PDF 扩展不再附带这些共享库的副本。
+
 ### NuGet 引用与 SDK 要求
 
 - `#r "nuget: Package.Id, 1.2.3"` 的冷依赖解析会调用 FCS 43.12.401 的 NuGet dependency manager，由它发起 SDK/MSBuild 还原。NuGet 全局包缓存本身不保证能在没有 SDK 时解析；即使 FCS 没有报告选项错误，也必须确认每条声明确实产生了对应的解析引用。
+- 预检按编译条件解析入口及实际 `#load` 的辅助源码；注释、字符串和未启用的条件分支不算 NuGet 引用。缺少 dotnet、只有 runtime、SDK 版本不支持当前宿主或探测失败时，会显示安装/修复与重试指引；配置窗口的“安装 .NET SDK”打开官方页面，不会自动安装。已验证二进制/缓存命中仍可在无 SDK 时使用。
 - 只有 .NET runtime 的机器不满足冷 NuGet 还原要求。无 SDK 时可用的路径是 BCL 引用、包内真实 DLL（例如 `#r "lib/Dependency.dll"`），或已验证编译产物缓存命中；这不等于支持离线 NuGet 还原。
-- Compiler sidecar 的 SDK 定位顺序是：`DOTNET_HOST_PATH`、当前进程/运行时对应的 dotnet host、按顺序搜索 PATH 目录、Windows `ProgramW6432` 与 `ProgramFiles` 目录，随后尝试 `/usr/share/dotnet`、`/usr/local/share/dotnet` 和 `~/.dotnet`。候选必须通过 `dotnet --list-sdks` 确认有 SDK；runtime-only host 不算 SDK。选中的 host 只在编译 sidecar 进程内设为 `DOTNET_HOST_PATH`，令 FCS 使用同一 host。
+- Compiler sidecar 的 SDK 定位顺序是：`DOTNET_HOST_PATH`、当前进程/运行时对应的 dotnet host、按顺序搜索 PATH 目录、Windows `ProgramW6432` 与 `ProgramFiles` 目录，随后尝试 `/usr/share/dotnet`、`/usr/local/share/dotnet` 和 `~/.dotnet`。逐个候选通过 `dotnet --list-sdks` 查找支持当前宿主目标框架的 SDK；跳过只有 runtime 或 SDK 过旧的 host，继续搜索。选中的 host 只在编译 sidecar 进程内设为 `DOTNET_HOST_PATH`，令 FCS 使用同一 host。
 - 这是 Patchouli 的明确查找顺序，不宣称完整复刻 FCS 内部所有平台查找分支。只读检查依据 pinned `FSharp.Compiler.Service` 43.12.401 nuspec 指向的 `dotnet/dotnet` source commit `e34a38d2ae1fc26406a317517196e55c68ff83ab`；反射 `Internal.Utilities.FSharpEnvironment.getDotnetHostPath`、其 continuation、`probePathForDotnetHost` 和 `getDotnetGlobalHostPath` 确认包含 `DOTNET_HOST_PATH`、PATH probe 以及 Windows `ProgramW6432` / `ProgramFiles` fallback。Patchouli 显式优先相同的 `DOTNET_HOST_PATH`，并额外提供当前 dotnet runtime host 与常见 Unix 安装位置候选。
 
 ## 配置与托管能力
@@ -142,3 +169,17 @@
 ## 证据边界
 
 静态检查只证明脚本能通过编译器；fixture 测试只证明在模拟响应下请求与解析逻辑正确；一次线上探测只证明那一次的结果。报告扩展可用性时，注明是否为线上验证、验证时间、状态码和解析结果，并且不要输出凭据。
+
+## 版面识别模型
+
+“文献加工 → 版面识别模型列表”管理独立的 `layout-recognition` FSX 扩展。
+用 `Extension.createLayoutRecognition<Settings>` 创建入口，回调接收
+`ILayoutRecognitionJob`、资源和取消令牌；通过 `job.NextInputAsync` 取图，
+`job.SubmitAsync(input, regions, token)` 返回相对此图的归一化区域。
+正常完成时必须取到 null，并为每个输入提交一次；无区域时提交空列表。
+模型扩展管理自己的配置、模型文件和推理资源，不依赖调用方的文献或 OCR 身份。
+
+宿主和其他扩展都可通过 `IExtensionResources.LayoutRecognition` 调用模型 job；
+单图可使用 `LayoutRecognition.DetectAsync(resources.LayoutRecognition, extensionId, image, token)`。
+内置模型 ID 是 `layout.pp-doclayout-v3` 和 `layout.doclayout-yolo`。
+多模态 OCR 与视觉引导文本层扩展只选择模型 ID，模型文件在模型扩展自身配置中管理。

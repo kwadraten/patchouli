@@ -37,8 +37,8 @@ URI 可以写成完整 `patchouli://…`、相对根的路径或前导 `/`。宿
 
 所有工具的响应都由 `meta`、`continuation`、可选的 `message` 和 `entries` 组成。默认编码是 TOON；需要交给程序处理时，用 MCP `format=json` 或 CLI `--json` 取得等价 JSON。
 
-- 没有 `message` 表示干净成功。warning 不改变成功语义，但要阅读：`[obsoleted]` 给出替代 URI；`RESULT_SET_MAY_HAVE_CHANGED` 表示分页期间书库可能已变化；`LIBRARY_CHANGED_SINCE_LAST_RESPONSE` 表示之前读到的内容可能已过期。
-- `fetch` 和 `cite` 逐项返回：一个 URI 失败不影响其他结果，每个 entry 有自己的 `error`。
+- 每次响应都有 `meta.outcome`（`success` / `error`）和 `meta.summary`。先读取它们确认实际结果，不以缺少 `message` 判断成功。error 可以保留成功条目或安全截断的内容，但仍是失败；请按提示缩小范围或续读。warning 不改变成功语义，但要阅读：`[obsoleted]` 给出替代 URI；`RESULT_SET_MAY_HAVE_CHANGED` 表示分页期间书库可能已变化；`LIBRARY_CHANGED_SINCE_LAST_RESPONSE` 表示之前读到的内容可能已过期。
+- `fetch` 和 `cite` 保留逐项结果，但任一 URI/REF 失败就使整次调用为 error；每个 entry 仍有自己的 `error`。请求的 bibliography 生成失败也为 error。
 - `meta.library_revision` 单调递增，可用来判断本地缓存的内容是否过期。
 
 ## find 与 fetch
@@ -89,3 +89,17 @@ patchouli.send { "endpoint": "runs/ocr/control", "action": "start",
 | 1 | `INTERNAL` | 宿主内部错误；记录可选的 correlation id，告知用户 |
 
 单个 MCP 请求默认上限为 1 MiB（硬上限 4 MiB），超限时在调用工具前就被拒绝。
+
+## 管理集合与标签
+
+先 fetch `patchouli://library.yml`，编辑 tags/collections 后 put 同一 URI。
+新增集合写 `{name: 待读}`，不填 collection_id；保存后重新 fetch 取得生成的 ID。
+新集合误填的 collection_id（格式无效或不属于当前书库）会被忽略，宿主重新生成 ID。
+现有集合保留 ID，改 name 会保留成员；删除条目只解散集合，不删除题录。
+新增标签写 `{tag: 待读}`，空标签也会持久保存。标签以名称为身份，改标签名会按
+删除旧标签、创建新标签处理，并移除旧归属；不会自动迁移归属。
+
+编辑题录 YAML 的 `extensions.patchouli.tags: [标签名]` 和
+`extensions.patchouli.collections: [集合UUID]` 修改归属。引用的分类必须先存在。
+目录与归属字段省略时保留，[] 明确清空；隐藏类别始终保留。library_id/display_name
+不可修改，item_count 是只读计数。任何校验失败都整笔回滚。

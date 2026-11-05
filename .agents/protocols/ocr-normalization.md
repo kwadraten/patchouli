@@ -51,6 +51,26 @@ the adapter never invents local text. The older `_content_list_v2.json` /
 through `MinerUContentListParser`; their adapter records are not a second
 provider-defined document model.
 
+Artifact discovery accepts bare names and underscore-prefixed document names, including
+`content_list.json`, `content_list_v2.json`, `middle.json`, `layout.json`, and
+`middle_json.json`, in nested ZIP directories and without case sensitivity. Preference
+is Middle JSON name, layout name, legacy middle name, v2 content-list name, then
+content-list name. Equally preferred entries are ambiguous and rejected, including
+duplicate ZIP entry names. Unrelated suffixes such as `notcontent_list.json` do not match.
+Names select a candidate; its content selects the adapter: explicit schema/version
+declarations use the versioned Middle parser, `pdf_info` uses the legacy layout parser,
+and content-list arrays or `pages` objects use the content-list parser. Unknown declared
+protocols never enter a legacy adapter. Result parsing, upload preparation and split
+result merging share this selection and dispatch boundary.
+
+A failed preferred artifact does not silently fall back to a poorer projection.
+Diagnostics identify the selected ZIP entry and distinguish invalid JSON, unsupported
+protocol, unrecognized/invalid structure, unsupported Middle semantics and empty content.
+Mixed split-result formats are rejected when merging would discard a representation.
+Download-only Markdown results remain downloadable but cannot substitute for a failed
+tree or be adopted as a pseudo box. Candidate geometry, typed payload, page identity and
+revision consistency checks remain in force after artifact parsing.
+
 Text-only OCR engines produce only text blocks, geometry, order and confidence;
 normalization must not infer tables or formulas that those engines did not identify.
 Full structured OCR extensions need the shared document candidate fields, including
