@@ -5,7 +5,7 @@
   #define OutputDir "..\..\.tmp\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.15"
+  #define AppVersion "0.3.16"
 #endif
 #ifndef AppId
   #define AppId "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
@@ -53,6 +53,9 @@ Name: "addtopath"; Description: "Add patchouli-cli to the user PATH"; GroupDescr
 ; Wipe the migrations folder on upgrade so removed SQL files cannot survive side-by-side installs.
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\migrations"
+; Retire the duplicated dependency/runtime trees from earlier packages.
+Type: filesandordirs; Name: "{app}\cli"
+Type: filesandordirs; Name: "{app}\extension-compiler"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -65,15 +68,13 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-const
-  CliRelativeDir = 'cli';
-
-procedure SetPathEntry(AddPath: Boolean);
+procedure SetPathEntry(AddPath, MigrateLegacy: Boolean);
 var
-  PathValue, Entry, NewPath, Part, Remainder: string;
+  PathValue, Entry, LegacyEntry, NewPath, Part, Remainder: string;
   Position, Separator: Integer;
 begin
-  Entry := ExpandConstant('{app}\' + CliRelativeDir);
+  Entry := ExpandConstant('{app}');
+  LegacyEntry := ExpandConstant('{app}\cli');
   if not RegQueryStringValue(HKCU, 'Environment', 'Path', PathValue) then
     PathValue := '';
   NewPath := '';
@@ -91,7 +92,9 @@ begin
       Part := Copy(Remainder, 1, Separator - 1);
       Remainder := Copy(Remainder, Separator + 1, Length(Remainder) - Separator);
     end;
-    if (CompareText(Part, Entry) <> 0) and (Trim(Part) <> '') then
+    if MigrateLegacy and ((CompareText(Part, Entry) = 0) or (CompareText(Part, LegacyEntry) = 0)) then
+      AddPath := True;
+    if (CompareText(Part, Entry) <> 0) and (CompareText(Part, LegacyEntry) <> 0) and (Trim(Part) <> '') then
       NewPath := NewPath + Part + ';';
   end;
   if AddPath then
@@ -107,12 +110,12 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
-    SetPathEntry(True);
+  if CurStep = ssPostInstall then
+    SetPathEntry(WizardIsTaskSelected('addtopath'), True);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    SetPathEntry(False);
+    SetPathEntry(False, False);
 end;

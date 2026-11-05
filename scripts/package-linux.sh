@@ -5,14 +5,13 @@
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.3.15, must match Changelog.md)
+#   VERSION       Application version (default: 0.3.16, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
 #
 # Prerequisites (built by default unless SKIP_PUBLISH=1):
-#   .tmp/publish/linux-x64            self-contained Patchouli.UI publish
-#   .tmp/publish/linux-x64-cli        self-contained patchouli-cli publish
+#   .tmp/publish/linux-x64            shared self-contained UI/CLI/compiler publish
 #   sidecar/biblatex-helper/target/release/biblatex-helper
 #
 # Outputs land in .tmp/installer/.
@@ -24,11 +23,11 @@ export TMPDIR="$root/.tmp"
 # A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
 mkdir -p "$TMPDIR"
 
-version="${VERSION:-0.3.15}"
+version="${VERSION:-0.3.16}"
 runtime="${RUNTIME:-linux-x64}"
+[[ "$runtime" =~ ^linux-[a-z0-9]+$ ]] || { echo "Invalid Linux runtime: $runtime" >&2; exit 2; }
 skip_publish="${SKIP_PUBLISH:-0}"
 publish_ui="$root/.tmp/publish/$runtime"
-publish_cli="$root/.tmp/publish/$runtime-cli"
 helper_src="$root/sidecar/biblatex-helper/target/release/biblatex-helper"
 stage="$root/.tmp/linux-stage"
 out="$root/.tmp/installer"
@@ -50,6 +49,8 @@ publish() {
   if [[ "$skip_publish" == "1" ]]; then
     echo "SKIP_PUBLISH=1: reusing existing publish output."
   else
+    # Start clean so older cli/ and extension-compiler/ runtime copies cannot survive.
+    rm -rf "$publish_ui"
     echo "Publishing Patchouli.UI ($runtime)..."
     dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
       -m:1 \
@@ -57,19 +58,17 @@ publish() {
       -p:Version="$version" -p:DebugType=None -p:DebugSymbols=false \
       -p:BuildInParallel=false -p:UseSharedCompilation=false \
       -o "$publish_ui"
-    echo "Publishing patchouli-cli ($runtime)..."
-    dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
-      -m:1 \
-      -c Release -r "$runtime" --self-contained true \
-      -p:Version="$version" -p:DebugType=None -p:DebugSymbols=false \
-      -p:BuildInParallel=false -p:UseSharedCompilation=false \
-      -o "$publish_cli"
     echo "Building biblatex-helper..."
     cargo build --release --manifest-path "$root/sidecar/biblatex-helper/Cargo.toml"
   fi
 
   [[ -x "$publish_ui/Patchouli.UI" ]] || { echo "Missing $publish_ui/Patchouli.UI" >&2; exit 1; }
-  [[ -x "$publish_cli/patchouli-cli" ]] || { echo "Missing $publish_cli/patchouli-cli" >&2; exit 1; }
+  for entry in patchouli-cli Patchouli.Extensions.Compiler; do
+    [[ -x "$publish_ui/$entry" && -f "$publish_ui/$entry.dll" &&
+       -f "$publish_ui/$entry.deps.json" && -f "$publish_ui/$entry.runtimeconfig.json" ]] || {
+      echo "Missing published process entry: $entry" >&2; exit 1;
+    }
+  done
   [[ -x "$helper_src" ]] || { echo "Missing $helper_src" >&2; exit 1; }
 }
 
@@ -86,21 +85,18 @@ normalize_perms() {
 stage_tree() {
   echo "Staging install tree..."
   rm -rf "$stage"
-  mkdir -p "$stage/usr/lib/patchouli" "$stage/usr/lib/patchouli-cli" \
+  mkdir -p "$stage/usr/lib/patchouli" \
            "$stage/usr/bin" "$stage/usr/share/applications" \
            "$stage/usr/share/metainfo"
 
   cp -R "$publish_ui/." "$stage/usr/lib/patchouli/"
-  cp -R "$publish_cli/." "$stage/usr/lib/patchouli-cli/"
   cp "$helper_src" "$stage/usr/lib/patchouli/biblatex-helper"
-  cp "$helper_src" "$stage/usr/lib/patchouli-cli/biblatex-helper"
   chmod +x "$stage/usr/lib/patchouli/Patchouli.UI" \
-           "$stage/usr/lib/patchouli-cli/patchouli-cli" \
-           "$stage/usr/lib/patchouli/biblatex-helper" \
-           "$stage/usr/lib/patchouli-cli/biblatex-helper"
+           "$stage/usr/lib/patchouli/patchouli-cli" \
+           "$stage/usr/lib/patchouli/biblatex-helper"
 
   ln -s ../lib/patchouli/Patchouli.UI "$stage/usr/bin/patchouli"
-  ln -s ../lib/patchouli-cli/patchouli-cli "$stage/usr/bin/patchouli-cli"
+  ln -s ../lib/patchouli/patchouli-cli "$stage/usr/bin/patchouli-cli"
 
   # Icons (hicolor)
   for size in 16 32 48 64 128 256 512; do

@@ -8,7 +8,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.3.15}"
+version="${VERSION:-0.3.16}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/.tmp/publish/$runtime"
 app_dir="$root/.tmp/macos/Patchouli.NET.app"
@@ -67,26 +67,12 @@ fi
 cp "$helper_bin" "$macos_dir/biblatex-helper"
 chmod +x "$macos_dir/biblatex-helper"
 
-cli_dir="$root/.tmp/cli-publish"
-rm -rf "$cli_dir"
-dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
-  -m:1 \
-  -c "$configuration" \
-  -r "$runtime" \
-  --self-contained true \
-  -p:Version="$version" \
-  -p:DebugType=None \
-  -p:DebugSymbols=false \
-  -p:BuildInParallel=false \
-  -p:UseSharedCompilation=false \
-  -o "$cli_dir"
-cli_bin="$cli_dir/patchouli-cli"
-if [[ ! -x "$cli_bin" ]]; then
-  echo "patchouli-cli was not found at $cli_bin" >&2
-  exit 1
-fi
-cp "$cli_bin" "$macos_dir/patchouli-cli"
-chmod +x "$macos_dir/patchouli-cli"
+for entry in patchouli-cli Patchouli.Extensions.Compiler; do
+  [[ -x "$macos_dir/$entry" && -f "$macos_dir/$entry.dll" &&
+     -f "$macos_dir/$entry.deps.json" && -f "$macos_dir/$entry.runtimeconfig.json" ]] || {
+    echo "Missing published process entry: $entry" >&2; exit 1;
+  }
+done
 
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
   echo "Published appsettings.json was not found in Contents/MacOS." >&2

@@ -36,18 +36,19 @@
   </Target>
   <Target Name="PublishExtensionCompilerBundle" AfterTargets="Publish"
           Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
+    <!-- Independent apphosts and manifests share one dependency/runtime directory. -->
     <PropertyGroup>
-      <_ExtensionHostPublishDirectory>$([System.IO.Path]::GetFullPath('$(PublishDir)', '$(MSBuildProjectDirectory)'))</_ExtensionHostPublishDirectory>
-      <_ExtensionCompilerPublishDirectory>$([System.IO.Path]::Combine('$(_ExtensionHostPublishDirectory)', 'extension-compiler'))/</_ExtensionCompilerPublishDirectory>
+      <_SharedPublishDirectory>$([System.IO.Path]::GetFullPath('$(PublishDir)', '$(MSBuildProjectDirectory)'))/</_SharedPublishDirectory>
     </PropertyGroup>
     <MSBuild Projects="$(MSBuildThisFileDirectory)sidecar/Patchouli.Extensions.Compiler/Patchouli.Extensions.Compiler.fsproj"
-             Targets="Publish" BuildInParallel="false"
-             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishDir=$(_ExtensionCompilerPublishDirectory)" />
+             Targets="Restore;Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishSingleFile=false;PublishDir=$(_SharedPublishDirectory)" />
   </Target>
-  <Target Name="PublishExtensionToolchainStamp" AfterTargets="Publish"
+  <Target Name="PublishCliBundle" AfterTargets="Publish"
           DependsOnTargets="PublishExtensionCompilerBundle"
-          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI' or '$(MSBuildProjectName)' == 'Patchouli.McpServer'">
-    <Copy SourceFiles="$(PublishDir)ExtensionToolchain.json"
-          DestinationFiles="$(PublishDir)extension-compiler/ExtensionToolchain.json" SkipUnchangedFiles="true" />
+          Condition="'$(MSBuildProjectName)' == 'Patchouli.UI'">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)src/Patchouli.Cli/Patchouli.Cli.csproj"
+             Targets="Restore;Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);UseAppHost=true;PublishSingleFile=false;PublishDir=$(_SharedPublishDirectory)" />
   </Target>
 </Project>

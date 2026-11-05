@@ -1,7 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.3.15",
+    [string]$Version = "0.3.16",
     [switch]$Smoke,
     [string]$PublishDirectory = '',
     [string]$InstallerDirectory = '',
@@ -72,7 +72,7 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXIT
 
 foreach ($compilerFile in @('Patchouli.Extensions.Compiler.exe', 'Patchouli.Extensions.Compiler.dll',
         'Patchouli.Extensions.Compiler.runtimeconfig.json', 'Patchouli.Extensions.Compiler.deps.json')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $publishDir "extension-compiler/$compilerFile"))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $publishDir $compilerFile))) {
         throw "Published extension compiler component was not found: $compilerFile"
     }
 }
@@ -93,22 +93,11 @@ if ($legacyPresent) {
     throw "Published migrations still contain legacy layout schema files: $($legacyPresent -join ', ')"
 }
 
-$cliDir = Join-Path $publishDir "cli"
-dotnet publish (Join-Path $root "src\Patchouli.Cli\Patchouli.Cli.csproj") `
-    -m:1 `
-    -c $Configuration `
-    -r $Runtime `
-    --self-contained true `
-    -p:Version=$Version `
-    -p:DebugType=None `
-    -p:DebugSymbols=false `
-    -p:BuildInParallel=false `
-    -p:UseSharedCompilation=false `
-    -o $cliDir @buildProperties
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish (CLI) failed with exit code $LASTEXITCODE." }
-$cliExe = Join-Path $cliDir "patchouli-cli.exe"
-if (-not (Test-Path -LiteralPath $cliExe)) {
-    throw "CLI was not published to '$cliExe'."
+foreach ($cliFile in @('patchouli-cli.exe', 'patchouli-cli.dll',
+        'patchouli-cli.runtimeconfig.json', 'patchouli-cli.deps.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $publishDir $cliFile))) {
+        throw "Published CLI component was not found: $cliFile"
+    }
 }
 
 $helperName = "biblatex-helper.exe"

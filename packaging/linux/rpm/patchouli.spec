@@ -36,12 +36,10 @@ rm "$RPM_BUILD_ROOT/LICENSE"
 # liblttng-ust.so.0 which is not available on Fedora 44 (provides only so.1).
 # The normal tested runtime (libcoreclr.so) does not need it; it is only
 # loaded when LTTng-based diagnostics are explicitly enabled.
-rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
-      "$RPM_BUILD_ROOT"/usr/lib/patchouli-cli/libcoreclrtraceptprovider.so
+rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so
 
 %files
 /usr/lib/patchouli/
-/usr/lib/patchouli-cli/
 /usr/bin/patchouli
 /usr/bin/patchouli-cli
 /usr/share/applications/io.github.kwadraten.patchouli.desktop
@@ -50,6 +48,13 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Fri Nov 06 2026 kwadraten <schild0van0man@duck.com> - 0.3.16-1
+- Upgrade the extension platform to patchouli.extensions/4 with versioned built-ins, compiled artifacts and read-only source templates
+- Move layout recognition models into dedicated extension packages and share layout detection across multimodal OCR and the visual-guided text layer
+- Rebuild the full-text search index with Unicode-aware tokenization, per-workspace search scope and staged progress in blocking dialogs
+- Add rotated-page box selection, MinerU artifact validation, translation structure safeguards and settings UI refinements
+- Share one runtime across UI, CLI and the extension compiler in all installers, with PATH migration and new database migrations
+
 * Wed Oct 28 2026 kwadraten <schild0van0man@duck.com> - 0.3.15-1
 - Add composed OCR presets, task-level extension engines and native PDF text-layer providers
 - Fix MinerU compatibility, page coordinates, UI responsiveness and guarded document deletion
