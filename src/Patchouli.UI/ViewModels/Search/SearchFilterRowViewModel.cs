@@ -6,7 +6,8 @@ namespace Patchouli.UI.ViewModels;
 public enum SearchMode
 {
     Bibliographic,
-    FullText
+    FullText,
+    DocumentFullText
 }
 
 public sealed record SearchModeOption

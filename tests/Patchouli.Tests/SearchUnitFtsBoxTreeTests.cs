@@ -23,6 +23,32 @@ namespace Patchouli.Tests;
 public sealed class SearchUnitFtsBoxTreeTests
 {
     [Fact]
+    public async Task Whole_book_search_can_return_every_matching_box_on_a_page()
+    {
+        await using Context context = await Context.CreateAsync();
+        string[] texts = Enumerable.Range(0, 12).Select(index => $"bookmatch paragraph {index}").ToArray();
+        DocumentTreeRevision revision = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            texts.Select((text, ordinal) => new DocumentBoxSeed(null, null, ordinal, DocumentBoxType.Text, null,
+                new NormalizedBBox(.1, .05 + ordinal * .05, .8, .04), new TextBoxPayload(text))).ToArray(),
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(revision.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        await context.Index.RebuildFtsForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+
+        SearchResultPage preview = (await context.Search.SearchLibraryAsync(
+            new SearchRequest("bookmatch", context.Document.DocumentInstanceId))).Value;
+        SearchResultPage complete = (await context.Search.SearchLibraryAsync(
+            new SearchRequest("bookmatch", context.Document.DocumentInstanceId, IncludeAllMatchedUnits: true))).Value;
+
+        preview.Results.Single().MatchedUnits.Should().HaveCount(5);
+        preview.Results.Single().MatchedUnitsHasMore.Should().BeTrue();
+        complete.Results.Single().MatchedUnits.Select(unit => unit.Text).Should().Equal(texts);
+        complete.Results.Single().MatchedUnitsHasMore.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Fts_indexes_current_non_suppressed_box_leaves_in_sibling_order()
     {
         await using Context context = await Context.CreateAsync();
@@ -291,6 +317,41 @@ public sealed class SearchUnitFtsBoxTreeTests
             .ToArray();
         plan.Should().Contain(detail =>
             detail.Contains("idx_search_units_page_revision_status_order", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Library_rebuild_reports_every_phase_and_unit_counts()
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentTreeRevision revision = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("progress first")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, new NormalizedBBox(.1, .3, .8, .1),
+                    new TextBoxPayload("progress second"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(revision.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        List<SearchIndexRebuildProgress> updates = [];
+
+        (await context.Index.RebuildFtsForLibraryAsync(progress: updates.Add)).IsSuccess.Should().BeTrue();
+
+        updates.Select(update => update.Phase).Should().Equal(
+            SearchIndexRebuildPhase.Preparing,
+            SearchIndexRebuildPhase.ClearingCache,
+            SearchIndexRebuildPhase.CountingUnits,
+            SearchIndexRebuildPhase.WritingEntries,
+            SearchIndexRebuildPhase.WritingEntries,
+            SearchIndexRebuildPhase.Committing,
+            SearchIndexRebuildPhase.UpdatingStatus,
+            SearchIndexRebuildPhase.Completed);
+        updates.Where(update => update.Phase == SearchIndexRebuildPhase.WritingEntries)
+            .Select(update => update.ProcessedUnits).Should().Equal(0, 2);
+        updates.Where(update => update.Phase == SearchIndexRebuildPhase.WritingEntries)
+            .Select(update => update.TotalUnits).Should().Equal(2, 2);
     }
 
     private sealed class Context : IAsyncDisposable

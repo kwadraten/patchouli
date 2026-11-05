@@ -9,7 +9,7 @@ namespace Patchouli.Infrastructure.Search;
 internal static class SearchFtsCacheWriter
 {
     private const int BatchSize = 500;
-    private const int CurrentCacheVersion = 1;
+    internal const int CurrentCacheVersion = 2;
 
     /// <returns>True only when this call rebuilt the cache; false for an already-ready cache.</returns>
     internal static async Task<bool> EnsureReadyAsync(
@@ -67,9 +67,12 @@ internal static class SearchFtsCacheWriter
     internal static async Task RebuildAllAsync(
         SqliteConnection connection,
         DbTransaction transaction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<SearchIndexRebuildProgress>? progress = null)
     {
+        progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.Preparing));
         await EnsureSchemaAsync(connection, transaction, cancellationToken);
+        progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.ClearingCache));
         await connection.ExecuteAsync(new CommandDefinition(
             "delete from search_units_fts;",
             transaction: transaction,
@@ -79,6 +82,17 @@ internal static class SearchFtsCacheWriter
             transaction: transaction,
             cancellationToken: cancellationToken));
 
+        progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.CountingUnits));
+        int totalUnits = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            """
+            select count(*)
+            from search_units
+            where status = @Status and length(trim(resolved_text)) > 0;
+            """,
+            new { Status = SearchUnitStatus.Current },
+            transaction,
+            cancellationToken: cancellationToken));
+        progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.WritingEntries, 0, totalUnits));
         IEnumerable<SearchFtsUnitRow> units = await connection.QueryAsync<SearchFtsUnitRow>(new CommandDefinition(
             """
             select unit_id as UnitId, document_instance_id as DocumentInstanceId,
@@ -90,10 +104,14 @@ internal static class SearchFtsCacheWriter
             transaction,
             cancellationToken: cancellationToken));
 
+        int processedUnits = 0;
         foreach (SearchFtsUnitRow[] chunk in units.Chunk(BatchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
             await InsertBatchAsync(connection, transaction, chunk, cancellationToken);
+            processedUnits += chunk.Length;
+            progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.WritingEntries,
+                processedUnits, totalUnits));
         }
 
         await connection.ExecuteAsync(new CommandDefinition(

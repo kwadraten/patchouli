@@ -94,6 +94,7 @@ public sealed class HostServices
     private long _metadataLookupApplyGeneration;
     private Task _metadataLookupApplyTask = Task.CompletedTask;
     private Task? _shutdownTask;
+    private readonly IAppLogger _logger;
     private LlmAppSettings _llmSettings;
     private AgentIntegrationAppSettings _agentSettings;
     private HttpClient? _cslCatalogHttpClient;
@@ -117,6 +118,7 @@ public sealed class HostServices
         IHostActivityTracker? activityTracker = null, HostOcrCompositionOptions? ocrComposition = null,
         IAppPaths? appPaths = null, HostInfrastructureOptions? infrastructure = null)
     {
+        _logger = logger;
         HostHttpClientFactory httpClients = new(infrastructure?.HttpHandlerFactory);
         _extensionHttpInvoker = httpClients.CreateExtensionInvoker();
         _layoutModelHttpClient = httpClients.CreateClient(HostHttpPurpose.LayoutModel);
@@ -234,7 +236,7 @@ public sealed class HostServices
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock, activityTracker, LifetimeToken);
         OcrDocumentTreeImporter ocrTreeImporter = new(DocumentTrees);
-        SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock, new OpenccTextConverter());
+        SearchProfileService searchProfiles = _libraryServices.SearchProfiles;
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
@@ -245,6 +247,8 @@ public sealed class HostServices
         TranslationExtensions = new TranslationExtensionCatalog(
             Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
             () => LlmSettings, ExtensionResources);
+        LayoutRecognition = new LayoutRecognitionService(TranslationExtensions, ExtensionFiles);
+        ExtensionResources.BindLayoutRecognition(LayoutRecognition);
         // The lease registry pins engine and text-provider generations at queue acceptance.
         PdfTextLayerInputSource pdfTextLayerInputs = new(ConnectionFactory, FileResolution,
             FileSearchRootAccess, new SourceValidationService(), pdf.TextExtractor, PageRenders,
@@ -319,7 +323,7 @@ public sealed class HostServices
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache, PageTranslations, DocumentPageMaps);
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations, DocumentTrees,
-            DocumentPageMaps);
+            DocumentPageMaps, new LibraryCatalogService(ConnectionFactory, Library, Clock, LibraryRevisions));
         CliPath = new CliPathService();
         // Endpoint descriptions use the same live registries as execution.
         McpImplementationCatalog = new McpHostImplementationCatalogApi(
@@ -511,6 +515,7 @@ public sealed class HostServices
     public IMcpImplementationCatalogApi McpImplementationCatalog { get; }
     public TranslationExtensionCatalog TranslationExtensions { get; }
     public ExtensionDomainService ExtensionDomains { get; }
+    public LayoutRecognitionService LayoutRecognition { get; }
     public HostExtensionResources ExtensionResources { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
@@ -858,96 +863,93 @@ public sealed class HostServices
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.
-        await Task.Run(async () =>
+        try
         {
-            startupProgress?.Report(StartupStage.ApplyingMigrations);
-            await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
-            if (runtimeHostLease is not null)
+            await Task.Run(async () =>
             {
-                try
-                {
-                    await PageEditSessionRecovery.RecoverAsync(services.ConnectionFactory, runtimeHostLease, path);
-                }
-                catch
-                {
-                    await services.ShutdownAsync();
-                    throw;
-                }
-            }
-
-            Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
-            if (ftsCache.IsFailure)
-            {
-                try
-                {
-                    await startupLogger.LogAsync("search-index",
-                        ftsCache.ErrorMessage ?? "FTS cache initialization failed.");
-                }
-                catch (Exception exception)
-                {
-                    reportUnexpected(exception, "operation-log", "search-index-cache");
-                }
-            }
-
-            if (services.FileResolution is FileResolutionService fileResolution)
-            {
-                startupProgress?.Report(StartupStage.AdoptingRootBindings);
-                Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
-                if (adopted.IsFailure)
+                startupProgress?.Report(StartupStage.ApplyingMigrations);
+                await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+                if (runtimeHostLease is not null)
                 {
                     try
                     {
-                        await startupLogger.LogAsync("migration",
-                            adopted.ErrorMessage ?? "Legacy root binding migration failed.");
+                        await PageEditSessionRecovery.RecoverAsync(services.ConnectionFactory, runtimeHostLease, path);
+                    }
+                    catch
+                    {
+                        await services.ShutdownAsync();
+                        throw;
+                    }
+                }
+
+                startupProgress?.Report(StartupStage.PreparingSearchCache);
+                await services.InitializeSearchCacheAsync();
+
+                if (services.FileResolution is FileResolutionService fileResolution)
+                {
+                    startupProgress?.Report(StartupStage.AdoptingRootBindings);
+                    Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
+                    if (adopted.IsFailure)
+                    {
+                        try
+                        {
+                            await startupLogger.LogAsync("migration",
+                                adopted.ErrorMessage ?? "Legacy root binding migration failed.");
+                        }
+                        catch (Exception exception)
+                        {
+                            reportUnexpected(exception, "operation-log", "legacy-root-binding-migration");
+                        }
+                    }
+                }
+
+                startupProgress?.Report(StartupStage.ReconcilingOcrRuns);
+                Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
+                if (ocrReconcile.IsFailure)
+                {
+                    try
+                    {
+                        await startupLogger.LogAsync("ocr-reconcile",
+                            ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
                     }
                     catch (Exception exception)
                     {
-                        reportUnexpected(exception, "operation-log", "legacy-root-binding-migration");
+                        reportUnexpected(exception, "operation-log", "ocr-reconcile");
                     }
                 }
-            }
 
-            startupProgress?.Report(StartupStage.ReconcilingOcrRuns);
-            Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
-            if (ocrReconcile.IsFailure)
-            {
                 try
                 {
-                    await startupLogger.LogAsync("ocr-reconcile",
-                        ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
+                    ImportResidueGcService importResidueGc = new(
+                        services.ConnectionFactory,
+                        services.Clock,
+                        services.LibraryRevisions,
+                        services.FileAssetGc,
+                        startupLogger);
+                    ImportResidueGcResult residueResult = await importResidueGc.RunOnceAsync();
+                    await startupLogger.LogAsync("import-residue-gc",
+                        $"Startup import residue GC finished: instancesRemoved={residueResult.InstancesRemoved}, " +
+                        $"itemsRemoved={residueResult.ItemsRemoved}, fileAssetsRemoved={residueResult.FileAssetsRemoved}.");
                 }
-                catch (Exception exception)
+                catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                      exception,
+                                                      "host.composition",
+                                                      "import-residue-gc"))
                 {
-                    reportUnexpected(exception, "operation-log", "ocr-reconcile");
                 }
-            }
 
-            try
-            {
-                ImportResidueGcService importResidueGc = new(
-                    services.ConnectionFactory,
-                    services.Clock,
-                    services.LibraryRevisions,
-                    services.FileAssetGc,
-                    startupLogger);
-                ImportResidueGcResult residueResult = await importResidueGc.RunOnceAsync();
-                await startupLogger.LogAsync("import-residue-gc",
-                    $"Startup import residue GC finished: instancesRemoved={residueResult.InstancesRemoved}, " +
-                    $"itemsRemoved={residueResult.ItemsRemoved}, fileAssetsRemoved={residueResult.FileAssetsRemoved}.");
-            }
-            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                                  exception,
-                                                  "host.composition",
-                                                  "import-residue-gc"))
-            {
-            }
+                startupProgress?.Report(StartupStage.StartingOcrQueue);
+                await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
 
-            startupProgress?.Report(StartupStage.StartingOcrQueue);
-            await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
-
-            startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
-            await services.ApplySyncedMetadataLookupAsync(settings);
-        });
+                startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
+                await services.ApplySyncedMetadataLookupAsync(settings);
+            });
+        }
+        catch
+        {
+            await services.ShutdownAsync();
+            throw;
+        }
 
         try
         {
@@ -959,6 +961,25 @@ public sealed class HostServices
         }
 
         return services;
+    }
+
+    private async Task InitializeSearchCacheAsync()
+    {
+        try
+        {
+            Result result = await SearchIndex.EnsureCacheAsync(LifetimeToken);
+            if (result.IsFailure)
+            {
+                await _logger.LogAsync("search-index", result.ErrorMessage ?? "FTS cache initialization failed.");
+            }
+        }
+        catch (OperationCanceledException) when (LifetimeToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _reportUnexpectedException(exception, "search-index-cache", "initialize");
+        }
     }
 
     private async Task<Result<string?>> ResolveSelectedDocumentOcrEngineAsync(CancellationToken cancellationToken)
@@ -999,6 +1020,7 @@ public sealed class HostServices
         }
 
         _lifetimeCancellation.Cancel();
+
         Task metadataSettings;
         lock (_settingsCommitGate)
         {
@@ -1053,18 +1075,19 @@ public sealed class HostServices
     /// fallback.
     /// </summary>
     private async Task<Result<IReadOnlyList<OcrExtensionBoxCandidate>>> RecognizeBuiltInOcrRegionAsync(
-        OcrJobPage jobPage, OcrJobInput input, OcrPresetVersion version,
+        OcrJobPage jobPage, OcrJobInput input, OcrPresetVersion version, int rotationDegrees,
         CancellationToken cancellationToken)
     {
         if (string.Equals(input.Kind, OcrInputKinds.PageImage, StringComparison.OrdinalIgnoreCase))
         {
             return await _ocrEngine.RecognizePageForVersionAsync(
                 jobPage.Page.DocumentId, jobPage.Page.PageId, input.Id, version,
-                cancellationToken);
+                cancellationToken, rotationDegrees);
         }
 
         Result<OcrRegionCandidate> recognized = await _ocrEngine.RecognizeRegionForVersionAsync(
-            jobPage.Page.DocumentId, jobPage.Page.PageId, input.Region, version, cancellationToken);
+            jobPage.Page.DocumentId, jobPage.Page.PageId, input.Region, version, cancellationToken,
+            rotationDegrees);
         return recognized.IsFailure
             ? Result<IReadOnlyList<OcrExtensionBoxCandidate>>.Failure(
                 recognized.ErrorCode!, recognized.ErrorMessage!)

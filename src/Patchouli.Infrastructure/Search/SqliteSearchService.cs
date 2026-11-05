@@ -80,20 +80,27 @@ public sealed class SqliteSearchService : ISearchService
                     indexStatus, status?.Reason ?? status?.AffectedScopesSummary));
             }
 
-            int pageSize = Math.Clamp(request.PageSize <= 0 ? 20 : request.PageSize, 1, 100);
-            int offset = DecodeCursor(request.Cursor);
+            int? cacheVersion = await connection.ExecuteScalarAsync<int?>(
+                new CommandDefinition("select cache_version from fts_cache_state where state_id = 1 limit 1;",
+                    cancellationToken: cancellationToken));
+            int effectiveCacheVersion = cacheVersion ?? 0;
+            bool includeAllDocumentPages = request.IncludeAllDocumentPages && request.DocumentInstanceId is not null;
+            int pageSize = includeAllDocumentPages
+                ? int.MaxValue
+                : Math.Clamp(request.PageSize <= 0 ? 20 : request.PageSize, 1, 100);
+            int offset = includeAllDocumentPages ? 0 : DecodeCursor(request.Cursor);
             string[] queries = (plan?.ExpandedQueries ?? [request.Query])
                 .Select(query => query.Trim())
                 .Where(query => query.Length > 0)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             string[] ftsQueries = queries
-                .Select(BuildFtsQuery)
+                .Select(q => BuildFtsQuery(q, effectiveCacheVersion))
                 .Where(query => query is not null)
                 .Cast<string>()
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            bool useFtsCandidates = ftsQueries.Length == queries.Length;
+            bool useFtsCandidates = effectiveCacheVersion > 0 && ftsQueries.Length == queries.Length;
             string match = string.Join(" OR ", ftsQueries.Select(query => $"({query})"));
             string candidateSource = useFtsCandidates
                 ? "from search_units_fts join fts_row_map fm on fm.fts_row_id = search_units_fts.rowid " +
@@ -115,109 +122,144 @@ public sealed class SqliteSearchService : ISearchService
             (string filterSql, Dictionary<string, object?> filterParameters) =
                 LibraryItemQueryService.BuildFilterSql(request.ItemFilters ?? Array.Empty<BibliographicSearchFilter>(),
                     "ItemFilter");
-            DynamicParameters pageParameters = new();
+            DynamicParameters queryParameters = new();
             if (useFtsCandidates)
             {
-                pageParameters.Add("Match", match);
+                queryParameters.Add("Match", match);
             }
 
-            AddExactQueryParameters(pageParameters, queries);
-            pageParameters.Add("Status", SearchUnitStatus.Current);
+            AddExactQueryParameters(queryParameters, queries);
+            queryParameters.Add("Status", SearchUnitStatus.Current);
             if (request.DocumentInstanceId is not null)
             {
-                pageParameters.Add("DocumentInstanceId", request.DocumentInstanceId.ToString());
+                queryParameters.Add("DocumentInstanceId", request.DocumentInstanceId.ToString());
             }
 
-            pageParameters.Add("IncludeDeprecated", request.IncludeDeprecatedInstances ? 1 : 0);
-            pageParameters.Add("Limit", pageSize + 1);
-            pageParameters.Add("Offset", offset);
+            queryParameters.Add("IncludeDeprecated", request.IncludeDeprecatedInstances ? 1 : 0);
+            queryParameters.Add("Limit", includeAllDocumentPages ? -1 : pageSize + 1);
+            queryParameters.Add("Offset", offset);
+            queryParameters.Add("PageSize", pageSize);
+            queryParameters.Add("MaxUnitsPerPage", request.IncludeAllMatchedUnits ? -1 : MatchedUnitsPerPage);
             foreach (KeyValuePair<string, object?> pair in filterParameters)
             {
-                pageParameters.Add(pair.Key, pair.Value);
+                queryParameters.Add(pair.Key, pair.Value);
             }
 
-            PageHitRow[] pageRows = (await connection.QueryAsync<PageHitRow>(
-                $"""
-                 with matched_pages as (
-                     select su.page_id as PageId, min(p.page_index) as PageIndex, count(*) as MatchCount
-                     {candidateSource}
-                     join pages p on p.page_id = su.page_id
-                     join document_instances di on di.document_instance_id = su.document_instance_id
-                     join items i on i.item_id = di.item_id
-                     where {candidatePredicate}
-                       {ftsDocumentScopePredicate}
-                       and ({exactPredicate})
-                       and su.status = @Status
-                       {documentScopePredicate}
-                       and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
-                       and i.deleted_at is null
-                       and i.merged_into_item_id is null
-                       {filterSql}
-                     group by su.page_id
-                 )
-                 select PageId, PageIndex, MatchCount
-                 from matched_pages
-                 order by PageIndex, PageId
-                 limit @Limit offset @Offset;
-                 """,
-                pageParameters)).ToArray();
-
-            PageHitRow[] selectedPages = pageRows.Take(pageSize).ToArray();
-            List<SearchPageResult> results = new();
-            foreach (PageHitRow page in selectedPages)
-            {
-                DynamicParameters unitParameters = new();
-                if (useFtsCandidates)
-                {
-                    unitParameters.Add("Match", match);
-                }
-
-                AddExactQueryParameters(unitParameters, queries);
-                if (request.DocumentInstanceId is not null)
-                {
-                    unitParameters.Add("DocumentInstanceId", request.DocumentInstanceId.ToString());
-                }
-
-                unitParameters.Add("PageId", page.PageId);
-                unitParameters.Add("Status", SearchUnitStatus.Current);
-                unitParameters.Add("Limit", MatchedUnitsPerPage + 1);
-                UnitHitRow[] matchedRows = (await connection.QueryAsync<UnitHitRow>(
+            BatchSearchRow[] batchRows = (await connection.QueryAsync<BatchSearchRow>(
+                new CommandDefinition(
                     $"""
-                     select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
-                            su.resolved_text as Text, su.box_type as BoxType,
-                            su.ordinal as Ordinal, su.tree_revision_id as TreeRevisionId,
-                            i.item_id as ItemId, i.title as ItemTitle, di.document_instance_id as DocumentInstanceId,
-                            p.page_label as PageLabel, p.page_index as PageIndex
-                     {candidateSource}
-                     join pages p on p.page_id = su.page_id
-                     join document_instances di on di.document_instance_id = su.document_instance_id
-                     join items i on i.item_id = di.item_id
-                     where {candidatePredicate}
-                       {ftsDocumentScopePredicate}
-                       and ({exactPredicate})
-                       and su.page_id = @PageId
-                       and su.status = @Status
-                       {documentScopePredicate}
-                       and i.deleted_at is null
-                       and i.merged_into_item_id is null
-                     order by su.ordinal, su.unit_id
-                     limit @Limit;
+                     with matched_candidates as materialized (
+                         select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
+                                su.resolved_text as Text, su.box_type as BoxType,
+                                su.ordinal as Ordinal, su.tree_revision_id as TreeRevisionId,
+                                i.item_id as ItemId, i.title as ItemTitle, di.document_instance_id as DocumentInstanceId,
+                                p.page_label as PageLabel, p.page_index as PageIndex
+                         {candidateSource}
+                         join pages p on p.page_id = su.page_id
+                         join document_instances di on di.document_instance_id = su.document_instance_id
+                         join items i on i.item_id = di.item_id
+                         where {candidatePredicate}
+                           {ftsDocumentScopePredicate}
+                           and ({exactPredicate})
+                           and su.status = @Status
+                           {documentScopePredicate}
+                           and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
+                           and i.deleted_at is null
+                           and i.merged_into_item_id is null
+                           {filterSql}
+                     ),
+                     matched_pages as (
+                         select PageId, min(PageIndex) as PageIndex, count(*) as MatchCount
+                         from matched_candidates
+                         group by PageId
+                     ),
+                     page_slice as (
+                         select PageId, PageIndex, MatchCount
+                         from matched_pages
+                         order by PageIndex, PageId
+                         limit @Limit offset @Offset
+                     ),
+                     selected_pages as (
+                         select PageId, PageIndex, MatchCount,
+                                row_number() over (order by PageIndex, PageId) as PageBatchRowNumber
+                         from page_slice
+                     ),
+                     ranked_units as (
+                         select sp.PageId as PageId,
+                                sp.PageIndex as PageIndex,
+                                sp.PageBatchRowNumber as PageBatchRowNumber,
+                                sp.MatchCount as MatchCount,
+                                c.UnitId as UnitId,
+                                c.BoxId as BoxId,
+                                c.Text as Text,
+                                c.BoxType as BoxType,
+                                c.Ordinal as Ordinal,
+                                c.TreeRevisionId as TreeRevisionId,
+                                c.ItemId as ItemId,
+                                c.ItemTitle as ItemTitle,
+                                c.DocumentInstanceId as DocumentInstanceId,
+                                c.PageLabel as PageLabel,
+                                row_number() over (partition by sp.PageId order by c.Ordinal, c.UnitId) as UnitRank
+                         from selected_pages sp
+                         left join matched_candidates c on c.PageId = sp.PageId and sp.PageBatchRowNumber <= @PageSize
+                     )
+                     select PageId, PageIndex, PageBatchRowNumber, MatchCount,
+                            UnitId, BoxId, Text, BoxType, Ordinal, TreeRevisionId,
+                            ItemId, ItemTitle, DocumentInstanceId, PageLabel, UnitRank
+                     from ranked_units
+                     where PageBatchRowNumber > @PageSize or @MaxUnitsPerPage = -1 or UnitRank <= @MaxUnitsPerPage + 1
+                     order by PageIndex, PageId, Ordinal, UnitId;
                      """,
-                    unitParameters)).ToArray();
-                UnitHitRow first = matchedRows.First();
+                    queryParameters,
+                    cancellationToken: cancellationToken))).ToArray();
+
+            bool hasMorePages = false;
+            List<SearchPageResult> results = new();
+            Dictionary<string, List<BatchSearchRow>> unitsByPage = new(StringComparer.Ordinal);
+            List<BatchSearchRow> orderedPages = new();
+
+            foreach (BatchSearchRow row in batchRows)
+            {
+                if (row.PageBatchRowNumber > pageSize)
+                {
+                    hasMorePages = true;
+                    continue;
+                }
+
+                if (!unitsByPage.TryGetValue(row.PageId, out List<BatchSearchRow>? pageUnits))
+                {
+                    pageUnits = new List<BatchSearchRow>();
+                    unitsByPage[row.PageId] = pageUnits;
+                    orderedPages.Add(row);
+                }
+
+                if (!string.IsNullOrEmpty(row.UnitId))
+                {
+                    pageUnits.Add(row);
+                }
+            }
+
+            foreach (BatchSearchRow pageRow in orderedPages)
+            {
+                List<BatchSearchRow> pageUnits = unitsByPage[pageRow.PageId];
+                bool matchedUnitsHasMore = !request.IncludeAllMatchedUnits && pageUnits.Count > MatchedUnitsPerPage;
+                IEnumerable<BatchSearchRow> selectedUnits = request.IncludeAllMatchedUnits
+                    ? pageUnits
+                    : pageUnits.Take(MatchedUnitsPerPage);
+
                 results.Add(new SearchPageResult(
-                    ItemId.Parse(first.ItemId),
-                    first.ItemTitle,
-                    DocumentInstanceId.Parse(first.DocumentInstanceId),
-                    PageId.Parse(first.PageId),
-                    first.PageLabel,
-                    first.PageIndex,
-                    matchedRows.Take(MatchedUnitsPerPage).Select(row => row.ToMatchedUnit(true)).ToArray(),
-                    matchedRows.Length > MatchedUnitsPerPage,
+                    ItemId.Parse(pageRow.ItemId),
+                    pageRow.ItemTitle,
+                    DocumentInstanceId.Parse(pageRow.DocumentInstanceId),
+                    PageId.Parse(pageRow.PageId),
+                    pageRow.PageLabel,
+                    pageRow.PageIndex,
+                    selectedUnits.Select(row => row.ToMatchedUnit(true)).ToArray(),
+                    matchedUnitsHasMore,
                     indexStatus));
             }
 
-            string? nextCursor = pageRows.Length > pageSize ? EncodeCursor(offset + pageSize) : null;
+            string? nextCursor = hasMorePages ? EncodeCursor(offset + pageSize) : null;
             return Result<SearchResultPage>.Success(new SearchResultPage(results, nextCursor, null, indexStatus,
                 status?.AffectedScopesSummary ?? status?.Reason, request.IncludeRewritePlan ? plan : null));
         }
@@ -324,10 +366,10 @@ public sealed class SqliteSearchService : ISearchService
         return row?.ToStatus();
     }
 
-    private static string? BuildFtsQuery(string query)
+    private static string? BuildFtsQuery(string query, int cacheVersion)
     {
         string raw = query.Trim();
-        string[] tokens = SearchTextAnalyzer.BuildQueryTokens(raw).Select(QuoteFts).ToArray();
+        string[] tokens = SearchTextAnalyzer.BuildQueryTokens(raw, cacheVersion).Select(QuoteFts).ToArray();
         if (tokens.Length == 0)
         {
             return null;
@@ -373,11 +415,30 @@ public sealed class SqliteSearchService : ISearchService
         }
     }
 
-    private sealed class PageHitRow
+    private sealed class BatchSearchRow
     {
         public string PageId { get; set; } = "";
         public int PageIndex { get; set; }
+        public int PageBatchRowNumber { get; set; }
         public int MatchCount { get; set; }
+        public string? UnitId { get; set; }
+        public string? BoxId { get; set; }
+        public string? Text { get; set; }
+        public string? BoxType { get; set; }
+        public int Ordinal { get; set; }
+        public string? TreeRevisionId { get; set; }
+        public string ItemId { get; set; } = "";
+        public string ItemTitle { get; set; } = "";
+        public string DocumentInstanceId { get; set; } = "";
+        public string? PageLabel { get; set; }
+        public int UnitRank { get; set; }
+
+        public SearchMatchedUnit ToMatchedUnit(bool isMatch)
+        {
+            return new SearchMatchedUnit(SearchUnitId.Parse(UnitId!), Core.Ids.PageId.Parse(PageId),
+                DocumentBoxId.Parse(BoxId!), Text ?? "", BoxType ?? "", Ordinal,
+                DocumentTreeRevisionId.Parse(TreeRevisionId!), isMatch);
+        }
     }
 
     private sealed class UnitHitRow

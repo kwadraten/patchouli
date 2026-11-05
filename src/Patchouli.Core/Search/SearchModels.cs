@@ -36,7 +36,9 @@ public sealed record SearchRequest(
     bool PreviewRewriteOnly = false,
     bool IncludeRewritePlan = true,
     IReadOnlyList<BibliographicSearchFilter>? ItemFilters = null,
-    bool DisableQueryRewrite = false);
+    bool DisableQueryRewrite = false,
+    bool IncludeAllMatchedUnits = false,
+    bool IncludeAllDocumentPages = false);
 
 public sealed record SearchPageResult(
     ItemId ItemId,
@@ -96,6 +98,22 @@ public interface ISearchDirtyMarker
         CancellationToken cancellationToken = default);
 }
 
+public enum SearchIndexRebuildPhase
+{
+    Preparing,
+    ClearingCache,
+    CountingUnits,
+    WritingEntries,
+    Committing,
+    UpdatingStatus,
+    Completed
+}
+
+public sealed record SearchIndexRebuildProgress(
+    SearchIndexRebuildPhase Phase,
+    int? ProcessedUnits = null,
+    int? TotalUnits = null);
+
 public interface ISearchIndexRebuilder
 {
     Task<Results.Result> EnsureCacheAsync(CancellationToken cancellationToken = default);
@@ -103,7 +121,8 @@ public interface ISearchIndexRebuilder
     Task<Results.Result> RebuildFtsForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Results.Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default);
+    Task<Results.Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default,
+        Action<SearchIndexRebuildProgress>? progress = null);
 
     Task<Results.Result> SetIndexUnavailableAsync(string scopeType, string scopeId, string reason,
         CancellationToken cancellationToken = default);

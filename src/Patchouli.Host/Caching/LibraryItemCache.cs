@@ -67,7 +67,7 @@ public sealed class LibraryItemCache
         await _refreshGate.WaitAsync(cancellationToken);
         try
         {
-            if (!IsLoaded || changes.IsEmpty ||
+            if (!IsLoaded || changes.IsEmpty || changes.TagCatalogChanged ||
                 (changes.ItemIds.Count == 0 && changes.DocumentInstanceIds.Count == 0 &&
                  (changes.PageIds.Count > 0 || changes.OcrRunIds.Count > 0)))
             {
@@ -111,6 +111,8 @@ public sealed class LibraryItemCache
             }
 
             Snapshot previous = GetSnapshot();
+            HashSet<string> declaredTags = previous.Tags.Where(tag => tag.IsDeclared).Select(tag => tag.Name)
+                .ToHashSet(StringComparer.Ordinal);
             Dictionary<ItemId, LibraryItemRow> rows = previous.Rows.ToDictionary(row => row.ItemId);
             Dictionary<string, int> counts = previous.Tags.ToDictionary(tag => tag.Name, tag => tag.Count,
                 StringComparer.Ordinal);
@@ -131,10 +133,10 @@ public sealed class LibraryItemCache
 
             LibraryItemRow[] ordered = rows.Values.OrderByDescending(row => row.CreatedAt, StringComparer.Ordinal)
                 .ThenByDescending(row => row.ItemId.ToString(), StringComparer.Ordinal).ToArray();
-            TagInfo[] tags = counts.Where(pair => pair.Value > 0)
+            TagInfo[] tags = counts.Where(pair => pair.Value > 0 || declaredTags.Contains(pair.Key))
                 .OrderBy(pair => pair.Key, TagNameOrder)
                 .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => new TagInfo(pair.Key, pair.Value)).ToArray();
+                .Select(pair => new TagInfo(pair.Key, pair.Value, declaredTags.Contains(pair.Key))).ToArray();
             lock (_gate)
             {
                 _snapshot = new Snapshot(ordered, tags, untagged);

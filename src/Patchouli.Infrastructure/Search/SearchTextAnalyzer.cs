@@ -7,34 +7,52 @@ internal static class SearchTextAnalyzer
 {
     public static string BuildIndexText(string text)
     {
-        return string.Join(' ', Analyze(text));
+        return string.Join(' ', Analyze(text, true));
     }
 
     public static IReadOnlyList<string> BuildQueryTokens(string query)
     {
-        return Analyze(query);
+        return Analyze(query, true);
     }
 
-    private static IReadOnlyList<string> Analyze(string text)
+    public static IReadOnlyList<string> BuildQueryTokens(string query, int cacheVersion)
+    {
+        bool includeSymbols = cacheVersion >= SearchFtsCacheWriter.CurrentCacheVersion;
+        if (!includeSymbols && query.Any(char.IsSurrogate))
+        {
+            return Array.Empty<string>();
+        }
+
+        return Analyze(query, includeSymbols);
+    }
+
+    private static IReadOnlyList<string> Analyze(string text, bool includeSymbolTokens)
     {
         List<string> tokens = new();
         StringBuilder word = new();
-        List<char> cjkRun = new();
-        string normalizedInput = StorageText.NormalizeInvalidCodePoints(text)!;
-
-        foreach (char c in normalizedInput.Normalize(NormalizationForm.FormKC))
+        List<string> cjkRun = new();
+        string? normalizedInput = StorageText.NormalizeInvalidCodePoints(text);
+        if (string.IsNullOrEmpty(normalizedInput))
         {
-            if (IsCjk(c))
+            return Array.Empty<string>();
+        }
+
+        string normalized = normalizedInput.Normalize(NormalizationForm.FormKC);
+
+        foreach (Rune rune in normalized.EnumerateRunes())
+        {
+            int cp = rune.Value;
+            if (IsCjk(cp))
             {
                 FlushWord(tokens, word);
-                cjkRun.Add(c);
+                cjkRun.Add(rune.ToString());
                 continue;
             }
 
             FlushCjk(tokens, cjkRun);
-            if (IsWordChar(c))
+            if (IsWordChar(rune, cp))
             {
-                word.Append(char.ToLowerInvariant(c));
+                word.Append(Rune.ToLowerInvariant(rune).ToString());
             }
             else
             {
@@ -44,6 +62,19 @@ internal static class SearchTextAnalyzer
 
         FlushWord(tokens, word);
         FlushCjk(tokens, cjkRun);
+        if (includeSymbolTokens)
+        {
+            // Literal candidates must reflect canonical input before normalization composes marks
+            // or removes formatting characters. Exact matching still checks the original text.
+            foreach (Rune rune in normalizedInput.EnumerateRunes())
+            {
+                if (!Rune.IsLetterOrDigit(rune) && !Rune.IsWhiteSpace(rune))
+                {
+                    tokens.Add($"sym{rune.Value:x4}");
+                }
+            }
+        }
+
         return tokens.Distinct(StringComparer.Ordinal).ToArray();
     }
 
@@ -58,7 +89,7 @@ internal static class SearchTextAnalyzer
         word.Clear();
     }
 
-    private static void FlushCjk(List<string> tokens, List<char> run)
+    private static void FlushCjk(List<string> tokens, List<string> run)
     {
         if (run.Count == 0)
         {
@@ -74,24 +105,25 @@ internal static class SearchTextAnalyzer
 
             for (int i = 0; i <= run.Count - n; i++)
             {
-                tokens.Add(new string(run.Skip(i).Take(n).ToArray()));
+                tokens.Add(string.Concat(run.Skip(i).Take(n)));
             }
         }
 
         run.Clear();
     }
 
-    private static bool IsWordChar(char c)
+    private static bool IsWordChar(Rune rune, int cp)
     {
-        return char.IsLetterOrDigit(c) && !IsCjk(c) &&
-               CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark;
+        return Rune.IsLetterOrDigit(rune) && !IsCjk(cp) &&
+               Rune.GetUnicodeCategory(rune) != UnicodeCategory.NonSpacingMark;
     }
 
-    private static bool IsCjk(char c)
+    private static bool IsCjk(int cp)
     {
-        return (c >= '\u3400' && c <= '\u9fff')
-               || (c >= '\uf900' && c <= '\ufaff')
-               || (c >= '\u3040' && c <= '\u30ff')
-               || (c >= '\uac00' && c <= '\ud7af');
+        return (cp >= 0x3400 && cp <= 0x9fff)
+               || (cp >= 0xf900 && cp <= 0xfaff)
+               || (cp >= 0x3040 && cp <= 0x30ff)
+               || (cp >= 0xac00 && cp <= 0xd7af)
+               || (cp >= 0x20000 && cp <= 0x2fa1f);
     }
 }

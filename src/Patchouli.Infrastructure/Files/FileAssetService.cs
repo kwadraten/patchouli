@@ -278,17 +278,22 @@ public sealed class FileAssetService : IFileAssetService
             return Result<LibraryChangeSet?>.Success(null);
         }
 
-        FileAssetImpactRow[] impacts = (await connection.QueryAsync<FileAssetImpactRow>(
+        FileAssetImpactRow[] impacts = (await connection.QueryAsync<FileAssetImpactRow>(new CommandDefinition(
             """
-            select di.document_instance_id as DocumentInstanceId, di.item_id as ItemId
-            from document_instances di
-            where di.file_asset_id = @FileAssetId or exists (
-                select 1 from known_file_locations current_location
+            with affected_assets as (
+                select @FileAssetId as file_asset_id
+                union
+                select affected_location.file_asset_id
+                from known_file_locations current_location
                 join known_file_locations affected_location on affected_location.path = current_location.path
                 where current_location.file_asset_id = @FileAssetId
-                  and affected_location.file_asset_id = di.file_asset_id);
+            )
+            select distinct di.document_instance_id as DocumentInstanceId, di.item_id as ItemId
+            from affected_assets a
+            join document_instances di on di.file_asset_id = a.file_asset_id;
             """,
-            new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
+            new { FileAssetId = fileAssetId.ToString() }, transaction,
+            cancellationToken: cancellationToken))).ToArray();
         Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
             LibraryChangeSet.Empty with
             {

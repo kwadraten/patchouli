@@ -46,8 +46,10 @@ public sealed record LibraryChangeSet(
 {
     public static readonly LibraryChangeSet Empty = new(0, [], [], [], [], [], []);
 
+    public bool TagCatalogChanged { get; init; }
+
     public bool IsEmpty => ItemIds.Count == 0 && DocumentInstanceIds.Count == 0 && StyleIds.Count == 0 &&
-                           PageIds.Count == 0 && OcrRunIds.Count == 0 && CollectionIds.Count == 0;
+                           PageIds.Count == 0 && OcrRunIds.Count == 0 && CollectionIds.Count == 0 && !TagCatalogChanged;
 }
 
 public sealed class LibraryRevisionCommittedEventArgs : EventArgs

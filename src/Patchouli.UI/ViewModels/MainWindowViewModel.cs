@@ -78,6 +78,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             UnexpectedExceptions.Sink.Report(exception, boundary, operation);
 
     private HostServices? _services;
+    private readonly SemaphoreSlim _libraryLifecycleGate = new(1, 1);
+    private readonly object _startupGate = new();
+    private Task? _startupTask;
     private readonly object _shutdownGate = new();
     private Task? _shutdownTask;
     private ILibraryRevisionService? _observedLibraryRevisions;
@@ -173,6 +176,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
     [ExcludeFromDerivedGeneration] internal McpServerSettings? McpRunningSettings => _mcpHost?.RunningSettings;
+    [ExcludeFromDerivedGeneration] internal McpServerSettings? McpAppliedSettings => _mcpHost?.AppliedSettings;
 
     [ObservableProperty] public partial string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
 
@@ -381,23 +385,33 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _agentWorkspace ??= CreateWithActivityTracker(() => new AgentWorkspaceViewModel(this));
 
     [ExcludeFromDerivedGeneration]
-    public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchEvidenceViewModel.AvailableModeOptions;
+    public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchPageAwareness.ModeOptions;
 
     [ObservableProperty] public partial string ToolbarSearchQuery { get; set; } = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsToolbarBibliographicSearch))]
     [NotifyPropertyChangedFor(nameof(IsToolbarFullTextSearch))]
-    public partial SearchModeOption ToolbarSearchMode { get; set; } = SearchEvidenceViewModel.AvailableModeOptions[1];
+    [NotifyPropertyChangedFor(nameof(IsToolbarDocumentFullTextSearch))]
+    public partial SearchModeOption ToolbarSearchMode { get; set; } = SearchPageAwareness.ModeOptions[1];
 
     [ExcludeFromDerivedGeneration]
     public bool IsToolbarBibliographicSearch => ToolbarSearchMode.Mode == SearchMode.Bibliographic;
 
     [ExcludeFromDerivedGeneration] public bool IsToolbarFullTextSearch => ToolbarSearchMode.Mode == SearchMode.FullText;
 
+    [ExcludeFromDerivedGeneration]
+    public bool IsToolbarDocumentFullTextSearch => ToolbarSearchMode.Mode == SearchMode.DocumentFullText;
+
     [RelayCommand]
     private void SelectToolbarSearchMode(SearchModeOption mode)
     {
+        if (mode.Mode == SearchMode.DocumentFullText && !IsToolbarDocumentSearchAvailable)
+        {
+            return;
+        }
+
+        IsToolbarSearchPageAware = false;
         ToolbarSearchMode = mode;
     }
 
@@ -411,9 +425,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     partial void OnToolbarSearchModeChanged(SearchModeOption value)
     {
-        if (!_synchronizingToolbarSearch && _searchEvidenceViewModel is { } search)
+        // DocumentFullText is toolbar-only and never reaches the shared evidence VM, which only
+        // handles the two library-wide modes.
+        if (!_synchronizingToolbarSearch && value.Mode != SearchMode.DocumentFullText &&
+            _searchEvidenceViewModel is { } search)
         {
-            search.SelectedMode = value;
+            search.SelectedMode = EvidenceOptionFor(value.Mode);
         }
     }
 
@@ -533,6 +550,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ArgumentNullException.ThrowIfNull(updater);
         _settingsStore.Update(current => updater(current), fieldCategory);
         _settings = _settingsStore.Current;
+        RefreshToolbarSearchContextForSettingsChange();
     }
 
     public void UpdateAppOptionsDeferred(PatchouliAppSettings settings, string? fieldCategory = "Ui")
@@ -544,6 +562,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         _settingsStore.Update(current => MergeSettingsCategory(current, settings, null));
         _settings = _settingsStore.Current;
+        RefreshToolbarSearchContextForSettingsChange();
         return SettingsSaveResult.Success;
     }
 
@@ -556,6 +575,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settings = _settingsStore.Current;
         SettingsSaveResult result = await _settingsStore.SaveImmediatelyAsync(cancellationToken);
         _settings = _settingsStore.Current;
+        RefreshToolbarSearchContextForSettingsChange();
         return result;
     }
 
@@ -598,6 +618,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAsync(
             settings, binding, cancellationToken);
         _settings = _settingsStore.Current;
+        RefreshToolbarSearchContextForSettingsChange();
         return result;
     }
 
@@ -610,6 +631,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         SettingsSaveResult result = await _settingsStore.UpdateSyncBindingAndMetadataLookupAsync(
             settings, binding, materializedMetadataLookup, cancellationToken);
         _settings = _settingsStore.Current;
+        RefreshToolbarSearchContextForSettingsChange();
         return result;
     }
 
@@ -842,6 +864,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Layout = new WorkspaceLayoutViewModel(_uiScheduler);
         Layout.ConfirmNavigationAsync = ConfirmWorkspaceNavigationAsync;
         Workspace = new WorkspaceManager(Layout);
+        WireToolbarSearchContextDefaults();
         Shell = new LibraryShellViewModel(this);
 
         Shell.MinerUToken = "";
@@ -993,45 +1016,53 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 return;
             }
 
-            await BeginLibrarySwitchAsync("正在切换运行数据库。");
-            await RunWithStartupLoadingAsync(async () =>
+            await _libraryLifecycleGate.WaitAsync();
+            try
             {
-                HostServices services;
-                try
+                await BeginLibrarySwitchCoreAsync("正在切换运行数据库。");
+                await RunWithStartupLoadingAsync(async () =>
                 {
-                    services = await CreateOwnedHostServicesAsync();
-                    SetServices(services);
-                }
-                catch (UnsupportedLibrarySchemaException exception)
-                {
-                    string epochs = exception.SchemaVersions.Count == 0
-                        ? "未知"
-                        : string.Join("、", exception.SchemaVersions.Order());
-                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.9 支持的数据库 schema epoch（{epochs}）。" +
-                                "0.3.9 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
-                    return;
-                }
+                    HostServices services;
+                    try
+                    {
+                        services = await CreateOwnedHostServicesAsync(RuntimeDatabasePath);
+                        SetServices(services);
+                    }
+                    catch (UnsupportedLibrarySchemaException exception)
+                    {
+                        string epochs = exception.SchemaVersions.Count == 0
+                            ? "未知"
+                            : string.Join("、", exception.SchemaVersions.Order());
+                        ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.9 支持的数据库 schema epoch（{epochs}）。" +
+                                    "0.3.9 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                        return;
+                    }
 
-                StartupLoadingStatus = "正在同步元数据查找设置…";
-                await RefreshSyncedMetadataLookupAsync(services);
-                if (_settingsViewModel is { } settings)
-                {
-                    await settings.ReloadCleanSectionsAsync();
-                }
+                    StartupLoadingStatus = "正在同步元数据查找设置…";
+                    await RefreshSyncedMetadataLookupAsync(services);
+                    if (_settingsViewModel is { } settings)
+                    {
+                        await settings.ReloadCleanSectionsAsync();
+                    }
 
-                await RefreshQueryRewriteEnabledAsync(services);
-                await PersistRuntimeDatabasePathIfEnabledAsync();
-                StartupLoadingStatus = "正在恢复 MinerU 凭据…";
-                await LoadPersistedMinerUTokenAsync();
-                StartupLoadingStatus = "正在刷新文件搜索路径…";
-                await RefreshSidebarPathsAsync();
-                Status = $"数据库已就绪：{RuntimeDatabasePath}";
-                if (_autoStartMcpServer)
-                {
-                    StartupLoadingStatus = "正在启动 MCP 服务器…";
-                    await StartMcpServerAsync(services);
-                }
-            });
+                    await RefreshQueryRewriteEnabledAsync(services);
+                    await PersistRuntimeDatabasePathIfEnabledAsync();
+                    StartupLoadingStatus = "正在恢复 MinerU 凭据…";
+                    await LoadPersistedMinerUTokenAsync();
+                    StartupLoadingStatus = "正在刷新文件搜索路径…";
+                    await RefreshSidebarPathsAsync();
+                    Status = $"数据库已就绪：{RuntimeDatabasePath}";
+                    if (_autoStartMcpServer)
+                    {
+                        StartupLoadingStatus = "正在启动 MCP 服务器…";
+                        await StartMcpServerAsync(services);
+                    }
+                });
+            }
+            finally
+            {
+                _libraryLifecycleGate.Release();
+            }
         }, () => !string.IsNullOrWhiteSpace(RuntimeDatabasePath));
         FirstRun = CreateFirstRunViewModel();
 
@@ -1177,7 +1208,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         try
         {
             search.Query = ToolbarSearchQuery;
-            search.SelectedMode = ToolbarSearchMode;
+            search.SelectedMode = !IsToolbarSearchPageAware && ToolbarSearchMode.Mode != SearchMode.DocumentFullText
+                ? EvidenceOptionFor(ToolbarSearchMode.Mode)
+                : SearchEvidenceViewModel.AvailableModeOptions[1];
         }
         finally
         {
@@ -1186,8 +1219,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         PropertyChangedEventHandler handler = (_, args) =>
         {
-            if (args.PropertyName is not (nameof(SearchEvidenceViewModel.Query) or
-                nameof(SearchEvidenceViewModel.SelectedMode)))
+            bool queryChanged = args.PropertyName is null or nameof(SearchEvidenceViewModel.Query);
+            bool modeChanged = args.PropertyName is null or nameof(SearchEvidenceViewModel.SelectedMode);
+            if (!queryChanged && !modeChanged)
             {
                 return;
             }
@@ -1195,8 +1229,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             _synchronizingToolbarSearch = true;
             try
             {
-                ToolbarSearchQuery = search.Query;
-                ToolbarSearchMode = search.SelectedMode;
+                if (queryChanged)
+                {
+                    ToolbarSearchQuery = search.Query;
+                }
+
+                if (modeChanged)
+                {
+                    ToolbarSearchMode = ToolbarOptionFor(search.SelectedMode.Mode);
+                }
             }
             finally
             {
@@ -1262,12 +1303,49 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         await RunStartupAsync(startMcpServer);
-        return _services!;
+        return _services ?? throw new OperationCanceledException("资料库已关闭或切换。");
     }
 
-    public async Task RunStartupAsync(bool startMcpServer)
+    public Task RunStartupAsync(bool startMcpServer)
     {
-        bool hadDatabase = File.Exists(RuntimeDatabasePath) && new FileInfo(RuntimeDatabasePath).Length > 0;
+        lock (_startupGate)
+        {
+            if (_startupTask is { IsCompleted: false })
+            {
+                return _startupTask;
+            }
+
+            return _startupTask = RunStartupSerializedAsync(startMcpServer);
+        }
+    }
+
+    private async Task RunStartupSerializedAsync(bool startMcpServer)
+    {
+        // Publish the shared task before callbacks can reenter initialization.
+        await Task.Yield();
+        await _libraryLifecycleGate.WaitAsync();
+        try
+        {
+            if (_shutdownTask is not null)
+            {
+                throw new OperationCanceledException("应用正在关闭。");
+            }
+
+            if (_services is null)
+            {
+                await RunStartupCoreAsync(startMcpServer);
+            }
+        }
+        finally
+        {
+            _libraryLifecycleGate.Release();
+        }
+    }
+
+    private async Task RunStartupCoreAsync(bool startMcpServer)
+    {
+        string databasePath = RuntimeDatabasePath;
+        bool hadDatabase = File.Exists(databasePath) && new FileInfo(databasePath).Length > 0;
         using IActivityScope startupActivity =
             _activityTracker.BeginScope("启动", HostActivityKind.Startup, "初始化运行环境");
         IsStartupLoadingVisible = true;
@@ -1287,7 +1365,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 }
             }
 
-            HostServices services = await CreateOwnedHostServicesAsync();
+            HostServices services = await CreateOwnedHostServicesAsync(databasePath);
             SetServices(services);
             StartupLoadingStatus = "正在同步元数据查找设置…";
             startupActivity.UpdateDetail(StartupLoadingStatus);
@@ -1321,7 +1399,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }
             else
             {
-                string databasePath = RuntimeDatabasePath;
                 ExistingDatabaseSetup setup =
                     await Task.Run(() => ExistingDatabaseSetupInspector.InspectAsync(databasePath));
                 if (setup.CurrentStep == FirstRunStep.Complete && string.IsNullOrWhiteSpace(Shell.MinerUToken))
@@ -1372,6 +1449,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             StartupStage.ValidatingPaths => "正在校验并准备存储路径…",
             StartupStage.ComposingServices => "正在初始化服务组件…",
             StartupStage.ApplyingMigrations => "正在检查数据库迁移…",
+            StartupStage.PreparingSearchCache => "正在准备全文搜索缓存…",
             StartupStage.AdoptingRootBindings => "正在对账文件搜索根目录绑定…",
             StartupStage.ReconcilingOcrRuns => "正在对账中断的 OCR 任务…",
             StartupStage.StartingOcrQueue => "正在启动 OCR 处理队列…",
@@ -1650,7 +1728,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private async Task StartMcpServerInBackgroundAsync()
     {
         HostServices services = await ServicesAsync(false);
-        await StartMcpServerAsync(services);
+        await _libraryLifecycleGate.WaitAsync();
+        try
+        {
+            if (ReferenceEquals(_services, services) && _shutdownTask is null)
+            {
+                await StartMcpServerAsync(services);
+            }
+        }
+        finally
+        {
+            _libraryLifecycleGate.Release();
+        }
     }
 
     public async Task RefreshSyncedMetadataLookupAsync()
@@ -2034,8 +2123,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                         started.IsSuccess ? started.Value.OperationId : (BlockingOperationId?)null;
                     try
                     {
-                        Result result =
-                            await services.SearchIndex.RebuildFtsForLibraryAsync(context.CancellationToken);
+                        SearchIndexRebuildPhase? loggedPhase = null;
+                        Result result = await services.SearchIndex.RebuildFtsForLibraryAsync(
+                            context.CancellationToken,
+                            update =>
+                            {
+                                string label = DescribeSearchIndexProgress(update);
+                                string? detail = loggedPhase == update.Phase ? null : label;
+                                loggedPhase = update.Phase;
+                                context.Report(update.ProcessedUnits, update.TotalUnits, label, detail);
+                            });
                         if (result.IsFailure)
                         {
                             if (operationId is not null)
@@ -2077,6 +2174,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
+    private static string DescribeSearchIndexProgress(SearchIndexRebuildProgress update)
+    {
+        return update.Phase switch
+        {
+            SearchIndexRebuildPhase.Preparing => "正在准备 FTS 索引缓存...",
+            SearchIndexRebuildPhase.ClearingCache => "正在清空旧 FTS 索引...",
+            SearchIndexRebuildPhase.CountingUnits => "正在统计待重建的搜索单元...",
+            SearchIndexRebuildPhase.WritingEntries => update.TotalUnits > 0
+                ? $"正在写入 FTS 索引（{update.ProcessedUnits ?? 0}/{update.TotalUnits}）..."
+                : "没有需要写入的搜索单元。",
+            SearchIndexRebuildPhase.Committing => "正在提交 FTS 索引事务...",
+            SearchIndexRebuildPhase.UpdatingStatus => "正在更新书库索引状态...",
+            SearchIndexRebuildPhase.Completed => "本地 FTS 搜索索引已重建。",
+            _ => "正在重建本地 FTS 搜索索引。"
+        };
+    }
+
     private void RefreshFileSearchRootWatchers(IReadOnlyList<FileSearchRoot> roots)
     {
         _fileSearchRootWatcher?.RefreshWatchers(roots);
@@ -2096,6 +2210,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     }
 
     private async Task ShutdownCoreAsync()
+    {
+        await _libraryLifecycleGate.WaitAsync();
+        try
+        {
+            await ShutdownLibraryCoreAsync();
+        }
+        finally
+        {
+            _libraryLifecycleGate.Release();
+        }
+    }
+
+    private async Task ShutdownLibraryCoreAsync()
     {
         Interlocked.Exchange(ref _librarySwitchInProgress, 1);
         await Shell.CancelAndDrainItemPurgeAsync();
@@ -2237,6 +2364,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
+        await _libraryLifecycleGate.WaitAsync();
+        try
+        {
+            await BeginLibrarySwitchCoreAsync(detail);
+        }
+        finally
+        {
+            _libraryLifecycleGate.Release();
+        }
+    }
+
+    private async Task BeginLibrarySwitchCoreAsync(string detail)
+    {
         foreach (WorkspaceTabViewModel tab in Layout.Tabs.Where(tab => tab.Kind == WorkspaceTabKind.PdfWorkspace)
                      .ToArray())
         {
@@ -2296,7 +2436,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 {
                     Port = RuntimeHostCoordinator.ReserveEphemeralLoopbackPort()
                 };
-                await Task.Run(() => host.StartAsync(settings));
+                await Task.Run(() => host.StartAsync(settings, appliedSettings: configured.Value));
             }
         }
 
@@ -2335,11 +2475,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
-    private async Task<HostServices> CreateOwnedHostServicesAsync()
+    private async Task<HostServices> CreateOwnedHostServicesAsync(string databasePath)
     {
         if (!_enforceRuntimeHostOwnership)
         {
-            return await CreateHostServicesAsync(RuntimeDatabasePath);
+            return await CreateHostServicesAsync(databasePath);
         }
 
         if (_runtimeHostLease is not null)
@@ -2348,7 +2488,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         _runtimeHostLease = await RuntimeHostCoordinator.AcquireDesktopAsync(
-            RuntimeDatabasePath, TimeSpan.FromSeconds(10));
+            databasePath, TimeSpan.FromSeconds(10));
         try
         {
             return await CreateHostServicesAsync(_runtimeHostLease.DatabasePath);
@@ -2628,6 +2768,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         _settings = PatchouliAppSettings.Load(SettingsFilePath);
+        RefreshToolbarSearchContextForSettingsChange();
         return true;
     }
 
@@ -2886,6 +3027,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         _settings = PatchouliAppSettings.Load(SettingsFilePath);
+        RefreshToolbarSearchContextForSettingsChange();
         Shell.MinerUToken = "";
         FirstRun.MinerUToken = "";
         _settingsViewModel?.OcrProviderSettings.LoadPersistedCredential("");
@@ -3147,17 +3289,35 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
+        if (ToolbarSearchMode.Mode == SearchMode.DocumentFullText)
+        {
+            await RunToolbarDocumentSearchAsync();
+            return;
+        }
+
         SearchEvidenceViewModel search = SearchEvidence;
-        await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
-            () => search);
+        search.Query = ToolbarSearchQuery;
+        search.SelectedMode = EvidenceOptionFor(ToolbarSearchMode.Mode);
+        using (EnterToolbarSearchContextSuppression())
+        {
+            await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search",
+                true,
+                () => search);
+        }
+
         await search.SearchCommand.ExecuteAsync();
     }
 
     private async Task OpenAdvancedSearchAsync()
     {
         SearchEvidenceViewModel search = SearchEvidence;
-        await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
-            () => search);
+        using (EnterToolbarSearchContextSuppression())
+        {
+            await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search",
+                true,
+                () => search);
+        }
+
         await search.OpenAdvancedSearchCommand.ExecuteAsync();
     }
 

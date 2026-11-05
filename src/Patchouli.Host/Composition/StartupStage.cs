@@ -5,6 +5,7 @@ public enum StartupStage
     ValidatingPaths,
     ComposingServices,
     ApplyingMigrations,
+    PreparingSearchCache,
     AdoptingRootBindings,
     ReconcilingOcrRuns,
     StartingOcrQueue,

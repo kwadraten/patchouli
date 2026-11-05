@@ -237,12 +237,13 @@ public sealed class LibraryRevisionMonitor : IDisposable, IAsyncDisposable
     private static LibraryChangeSet MergeChanges(LibraryChangeSet first, LibraryChangeSet second)
     {
         return new LibraryChangeSet(Math.Max(first.NewRevision, second.NewRevision),
-            first.ItemIds.Concat(second.ItemIds).Distinct().ToArray(),
-            first.DocumentInstanceIds.Concat(second.DocumentInstanceIds).Distinct().ToArray(),
-            first.StyleIds.Concat(second.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
-            first.PageIds.Concat(second.PageIds).Distinct().ToArray(),
-            first.OcrRunIds.Concat(second.OcrRunIds).Distinct().ToArray(),
-            first.CollectionIds.Concat(second.CollectionIds).Distinct().ToArray());
+                first.ItemIds.Concat(second.ItemIds).Distinct().ToArray(),
+                first.DocumentInstanceIds.Concat(second.DocumentInstanceIds).Distinct().ToArray(),
+                first.StyleIds.Concat(second.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
+                first.PageIds.Concat(second.PageIds).Distinct().ToArray(),
+                first.OcrRunIds.Concat(second.OcrRunIds).Distinct().ToArray(),
+                first.CollectionIds.Concat(second.CollectionIds).Distinct().ToArray())
+            { TagCatalogChanged = first.TagCatalogChanged || second.TagCatalogChanged };
     }
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)

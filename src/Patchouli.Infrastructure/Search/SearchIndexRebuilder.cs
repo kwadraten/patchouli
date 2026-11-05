@@ -86,6 +86,8 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
         using CancellationTokenSource linkedCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
         cancellationToken = linkedCancellation.Token;
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "准备搜索索引", HostActivityKind.Indexing, "检查并升级全文搜索缓存");
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
@@ -103,13 +105,15 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
                                               exception,
                                               "infrastructure.search-index-rebuilder"))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             await SetIndexUnavailableAsync(SearchIndexScopeType.Library, "current", exception.Message,
                 cancellationToken);
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
+    public async Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default,
+        Action<SearchIndexRebuildProgress>? progress = null)
     {
         using CancellationTokenSource linkedCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
@@ -123,10 +127,12 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
-            await SearchFtsCacheWriter.RebuildAllAsync(connection, tx, cancellationToken);
+            await SearchFtsCacheWriter.RebuildAllAsync(connection, tx, cancellationToken, progress);
 
+            progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.Committing));
             await tx.CommitAsync(cancellationToken);
 
+            progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.UpdatingStatus));
             string? libraryId =
                 await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
             if (libraryId is not null)
@@ -135,6 +141,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
                     SearchIndexStatusValue.Current, 0, 0, null, null, cancellationToken);
             }
 
+            progress?.Invoke(new SearchIndexRebuildProgress(SearchIndexRebuildPhase.Completed));
             return Result.Success();
         }
         catch (OperationCanceledException)
