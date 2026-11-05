@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Mcp;
@@ -116,7 +117,7 @@ public static class McpItemYamlCodec
     }
 
     public static Result<(UpdateItemRequest Request, IReadOnlyList<ItemIdentifierInput> Identifiers)> Decode(
-        string yaml, ItemMetadata existing, bool preserveTags)
+        string yaml, ItemMetadata existing, bool preserveTags, bool preserveCollections = false)
     {
         ArgumentNullException.ThrowIfNull(existing);
         try
@@ -153,9 +154,35 @@ public static class McpItemYamlCodec
                 throw new FormatException("Patchouli tags must be an array of strings.");
             }
 
-            string tagsJson = preserveTags
+            string tagsJson = preserveTags || tags is null
                 ? existing.TagsJson
                 : tags?.ToJsonString() ?? "[]";
+            IReadOnlyList<CollectionId>? collections = null;
+            if (!preserveCollections && patchouli?.ContainsKey("collections") == true)
+            {
+                JsonArray entries = OptionalArray(patchouli, "collections") ??
+                                    throw new FormatException(
+                                        "collections must be an array; use [] to clear membership.");
+                List<CollectionId> ids = [];
+                foreach (JsonNode? entry in entries)
+                {
+                    if (entry is not JsonValue value || !value.TryGetValue(out string? text) ||
+                        !Guid.TryParseExact(text, "D", out Guid id))
+                    {
+                        throw new FormatException("collections must contain collection UUID strings from library.yml.");
+                    }
+
+                    ids.Add(new CollectionId(id));
+                }
+
+                if (ids.Distinct().Count() != ids.Count)
+                {
+                    throw new FormatException("collections must not contain duplicate ids.");
+                }
+
+                collections = ids;
+            }
+
             JsonObject? customFields = patchouli is null ? null : OptionalObject(patchouli, "custom_fields");
             string customFieldsJson = customFields?.ToJsonString() ?? "{}";
 
@@ -188,7 +215,8 @@ public static class McpItemYamlCodec
                 customFieldsJson,
                 creators,
                 dates,
-                Collections: null);
+                Collections: collections,
+                RequireKnownTags: !preserveTags);
 
             return Result<(UpdateItemRequest, IReadOnlyList<ItemIdentifierInput>)>.Success((request, identifiers));
         }

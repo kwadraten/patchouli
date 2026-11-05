@@ -489,12 +489,9 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                 : Result<CslItemTypeProfile>.Failure(AppErrorCodes.NotFound, "Item type profile was not found."));
     }
 
-    public async Task<Result> ValidateItemTypeAsync(string itemType, CancellationToken cancellationToken = default)
+    public Task<Result> ValidateItemTypeAsync(string itemType, CancellationToken cancellationToken = default)
     {
-        Result<CslItemTypeProfile> profile = await GetProfileAsync(itemType, cancellationToken);
-        return profile.IsSuccess
-            ? Result.Success()
-            : Result.Failure(profile.ErrorCode!, profile.ErrorMessage!);
+        return Task.FromResult(CslItemTypeValidation.Validate(itemType));
     }
 
     private static CslItemTypeProfile Create(

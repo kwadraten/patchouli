@@ -29,14 +29,18 @@ public sealed class ItemTagService : IItemTagService
             await connection.OpenAsync(cancellationToken);
             IEnumerable<TagCountRow> rows = await connection.QueryAsync<TagCountRow>(
                 """
-                select tag as Name, count(*) as Count
-                from item_tag_memberships
-                where is_active = 1
-                group by tag
-                order by tag collate nocase;
+                with counts as (
+                    select tag, count(*) as item_count from item_tag_memberships where is_active = 1 group by tag
+                ), names as (
+                    select tag from counts union select tag from library_tag_definitions
+                )
+                select names.tag as Name, coalesce(counts.item_count, 0) as Count,
+                       exists(select 1 from library_tag_definitions d where d.tag = names.tag) as IsDeclared
+                from names left join counts on counts.tag = names.tag
+                order by names.tag collate nocase;
                 """);
             return Result<IReadOnlyList<TagInfo>>.Success(
-                rows.Select(row => new TagInfo(row.Name, row.Count)).ToArray());
+                rows.Select(row => new TagInfo(row.Name, row.Count, row.IsDeclared)).ToArray());
         }
         catch (OperationCanceledException)
         {
@@ -128,7 +132,7 @@ public sealed class ItemTagService : IItemTagService
         return await MutateAllActiveAsync(
             normalizedOld,
             existing => RenameInPlace(existing, normalizedOld, normalizedNew),
-            cancellationToken);
+            cancellationToken, normalizedNew);
     }
 
     public async Task<Result> MergeTagsAsync(
@@ -147,7 +151,7 @@ public sealed class ItemTagService : IItemTagService
         return await MutateAllActiveAsync(
             normalizedSource,
             existing => MergeInPlace(existing, normalizedSource, normalizedTarget),
-            cancellationToken);
+            cancellationToken, normalizedTarget);
     }
 
     public async Task<Result> RemoveTagAsync(
@@ -384,7 +388,7 @@ public sealed class ItemTagService : IItemTagService
     private async Task<Result> MutateAllActiveAsync(
         string matchingTag,
         Func<IReadOnlyList<string>, IReadOnlyList<string>> transform,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? replacementTag = null)
     {
         try
         {
@@ -392,6 +396,16 @@ public sealed class ItemTagService : IItemTagService
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            if (replacementTag is not null)
+            {
+                await connection.ExecuteAsync(
+                    "insert or ignore into library_tag_definitions (library_id, tag) select library_id, @Target from library_tag_definitions where tag = @Tag;",
+                    new { Target = replacementTag, Tag = matchingTag }, transaction);
+            }
+
+            bool catalogChanged = await connection.ExecuteAsync("delete from library_tag_definitions where tag = @Tag;",
+                new { Tag = matchingTag }, transaction) > 0;
 
             IEnumerable<ItemTagRow> rows = await connection.QueryAsync<ItemTagRow>(
                 """
@@ -425,14 +439,16 @@ public sealed class ItemTagService : IItemTagService
                     }, transaction);
             }
 
-            if (affectedItemIds.Count == 0)
+            if (affectedItemIds.Count == 0 && !catalogChanged)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result.Success();
             }
 
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = affectedItemIds }, cancellationToken);
+                connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = affectedItemIds, TagCatalogChanged = catalogChanged },
+                cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -534,6 +550,7 @@ public sealed class ItemTagService : IItemTagService
     {
         public string Name { get; init; } = "";
         public int Count { get; init; }
+        public bool IsDeclared { get; init; }
     }
 
     private sealed class ItemTagRow

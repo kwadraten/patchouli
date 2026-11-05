@@ -63,7 +63,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Pmc Id Converter metadata extension.</summary>
-/// <patchouli-extension id="metadata.pmc-id-converter" kind="metadata" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="metadata.pmc-id-converter" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Pmc Id Converter</name>
 /// </patchouli-extension>
 let extension =

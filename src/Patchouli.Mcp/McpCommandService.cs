@@ -2,6 +2,7 @@ using System.Xml.Linq;
 using Patchouli.Core.Mcp;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
@@ -190,7 +191,7 @@ public sealed partial class McpCommandService
             McpMessage message = new(McpToolError.From(code, imported.ErrorMessage ?? "Import failed.")
                 .ToTerminalLine(), []);
             failed = failed with { Message = message };
-            return McpCommandResult<McpAddMeta, McpAddResult>.Partial(failed, code,
+            return McpCommandResult<McpAddMeta, McpAddResult>.ErrorWithContent(failed, code,
                 imported.ErrorMessage ?? "Import failed.");
         }
 
@@ -207,7 +208,8 @@ public sealed partial class McpCommandService
             result.BodyStatus,
             result.Issues.Select(issue => new McpAddIssue(issue.Code, issue.Message)).ToArray());
         McpEnvelope<McpAddMeta, McpAddResult> envelope =
-            McpEnvelope<McpAddMeta, McpAddResult>.Create(new McpAddMeta(revision), [entry]);
+            McpEnvelope<McpAddMeta, McpAddResult>.Create(
+                new McpAddMeta(await CurrentLibraryRevisionAsync(cancellationToken)), [entry]);
         return McpCommandResult<McpAddMeta, McpAddResult>.Ok(envelope);
     }
 
@@ -405,12 +407,10 @@ public sealed partial class McpCommandService
         McpEnvelope<TMeta, TEntry> envelope = result.Envelope ?? McpEnvelope<TMeta, TEntry>.Create(fallbackMeta, []);
         return result with
         {
-            Envelope = envelope with
-            {
-                Message = new McpMessage(
+            Envelope = McpEnvelope<TMeta, TEntry>.Create(envelope.Meta, envelope.Entries, envelope.Continuation,
+                new McpMessage(
                     envelope.Message?.Error ?? result.Error?.ToTerminalLine(),
-                    (envelope.Message?.Warnings ?? []).Concat(warnings).Distinct(StringComparer.Ordinal).ToArray())
-            }
+                    (envelope.Message?.Warnings ?? []).Concat(warnings).Distinct(StringComparer.Ordinal).ToArray()))
         };
     }
 
@@ -550,7 +550,12 @@ public sealed partial class McpCommandService
             AddWarning(warnings, McpWarningCodes.ResultSetMayHaveChanged);
         }
 
-        McpFindMeta meta = new(state.Value.LibraryRevision, page.DomainTotal, page.FilteredTotal, page.Entries.Count);
+        McpFindMeta meta = new(state.Value.LibraryRevision, page.DomainTotal, page.FilteredTotal, page.Entries.Count)
+        {
+            Summary = $"{(string.IsNullOrWhiteSpace(query) ? "Browsed" : "Searched")} {scopeUri ?? "patchouli://"}; " +
+                      $"returned {page.Entries.Count} of {page.FilteredTotal} matching entries." +
+                      (page.Continuation is null ? " No further results." : " Continue with continuation.")
+        };
         McpMessage? message = warnings.Count == 0 ? null : new McpMessage(null, warnings);
         McpEnvelope<McpFindMeta, object> envelope =
             McpEnvelope<McpFindMeta, object>.Create(meta, page.Entries, page.Continuation, message);
@@ -607,12 +612,12 @@ public sealed partial class McpCommandService
         if (entries.Any(entry => entry.Truncated))
         {
             topError = McpToolError.From(McpErrorCode.ResponseTruncated,
-                    "At least one response exceeds limit_bytes; partial content is available and must not be treated as complete.")
+                    "Response exceeds limit_bytes; retained content is incomplete. Narrow range or follow next_range/continuation.")
                 .ToTerminalLine();
         }
-        else if (entries.Count > 0 && entries.All(entry => entry.Error is not null))
+        else if (entries.Any(entry => entry.Error is not null))
         {
-            topError = entries[0].Error;
+            topError = entries.First(entry => entry.Error is not null).Error;
         }
 
         McpMessage? message = warnings.Count == 0 && topError is null
@@ -623,7 +628,7 @@ public sealed partial class McpCommandService
                 new McpFetchMeta(state.Value.LibraryRevision), entries, null, message);
         return topError is null
             ? McpCommandResult<McpFetchMeta, McpFetchResult>.Ok(envelope)
-            : McpCommandResult<McpFetchMeta, McpFetchResult>.Partial(envelope,
+            : McpCommandResult<McpFetchMeta, McpFetchResult>.ErrorWithContent(envelope,
                 McpToolError.TryGetCode(topError, out McpErrorCode topErrorCode) ? topErrorCode : McpErrorCode.Internal,
                 topError);
     }
@@ -679,7 +684,13 @@ public sealed partial class McpCommandService
                 "Box replacements require a current XML page URI.");
         }
 
-        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library
+        if (kind == McpUriKind.Library && parsed.Value.IsLegacy)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
+                "Legacy library.toon is read-only. Edit patchouli://library.yml to manage the catalog.");
+        }
+
+        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence
             or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
@@ -697,18 +708,20 @@ public sealed partial class McpCommandService
             return await PutTranslationAsync(request, parsed.Value, cancellationToken);
         }
 
-        if (kind is not (McpUriKind.Item or McpUriKind.Style))
+        if (kind is not (McpUriKind.Item or McpUriKind.Style or McpUriKind.Library))
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
-                "Only item, csl-style, and translation page resources can be put.");
+                "Only library.yml, item, csl-style, document map, and writable page resources can be put.");
         }
 
         Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         string baseRevision = beforeWrite.IsSuccess ? beforeWrite.Value.LibraryRevision : "lib:0";
 
-        McpPutRequest effectiveRequest = _exposeLibraryTags
-            ? request
-            : request with { PreserveTags = true };
+        McpPutRequest effectiveRequest = request with
+        {
+            PreserveTags = request.PreserveTags || !_exposeLibraryTags,
+            PreserveCollections = request.PreserveCollections || !_exposeLibraryCollections
+        };
         Result<McpPutResponse> result = await _write.PutAsync(effectiveRequest, cancellationToken);
         if (result.IsFailure)
         {
@@ -718,7 +731,7 @@ public sealed partial class McpCommandService
                 McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(baseRevision), []);
             McpMessage message = new(McpToolError.From(code, detail).ToTerminalLine(), []);
             failed = failed with { Message = message };
-            return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
+            return McpCommandResult<McpPutMeta, McpPutResult>.ErrorWithContent(failed, code, detail);
         }
 
         Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
@@ -728,7 +741,8 @@ public sealed partial class McpCommandService
             TranslationVersion: result.Value.TranslationVersion, ModifiedBoxIds: result.Value.ModifiedBoxIds);
         IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
         McpEnvelope<McpPutMeta, McpPutResult> envelope =
-            McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(newRevision), [putResult],
+            McpEnvelope<McpPutMeta, McpPutResult>.Create(
+                new McpPutMeta(newRevision) { Summary = result.Value.Summary ?? string.Empty }, [putResult],
                 message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
         return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
     }
@@ -771,12 +785,14 @@ public sealed partial class McpCommandService
                 request.Boxes?.Sum(box => Encoding.UTF8.GetByteCount(box.Content)) ??
                 Encoding.UTF8.GetByteCount(request.Content ?? string.Empty),
                 ExtractTranslationErrors(result.Details), BoxErrors: result.Details is BoxContentFailureDetails failures
-                    ? failures.Errors.Select(error => new McpBoxPutError(error.BoxId, error.Message)).ToArray()
+                    ? failures.Errors.Select(error => new McpBoxPutError(error.BoxId, error.Message,
+                        error.StructureDiff?.Select(diff => new McpTranslationStructureError(
+                            diff.BlockIndex, diff.Expected, diff.Actual)).ToArray())).ToArray()
                     : null);
             McpEnvelope<McpPutMeta, McpPutResult> failed = McpEnvelope<McpPutMeta, McpPutResult>.Create(
                 new McpPutMeta(baseRevision), [rejected],
                 message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
-            return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
+            return McpCommandResult<McpPutMeta, McpPutResult>.ErrorWithContent(failed, code, detail);
         }
 
         Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
@@ -847,7 +863,7 @@ public sealed partial class McpCommandService
             McpEnvelope<McpPutMeta, McpPutResult> failed = McpEnvelope<McpPutMeta, McpPutResult>.Create(
                 new McpPutMeta(baseRevision), [rejected],
                 message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
-            return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
+            return McpCommandResult<McpPutMeta, McpPutResult>.ErrorWithContent(failed, code, detail);
         }
 
         Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
@@ -952,6 +968,7 @@ public sealed partial class McpCommandService
         }
 
         string? bibliography = null;
+        string? bibliographyError = null;
         if (request.Bibliography && itemIds.Count > 0)
         {
             Result<McpRenderBibliographyResponse> bibliographyRender = await _read.RenderItemsBibliographyAsync(
@@ -963,15 +980,23 @@ public sealed partial class McpCommandService
                 effectiveStyleId ??= bibliographyRender.Value.StyleId;
                 warnings.AddRange(bibliographyRender.Value.Warnings.Select(McpWarningCodes.ToTerminalLine));
             }
+            else
+            {
+                bibliographyError = McpToolError.From(
+                        McpErrorMappings.ToReadError(bibliographyRender.ErrorCode),
+                        bibliographyRender.ErrorMessage ??
+                        "Bibliography rendering failed; individual citations are retained.")
+                    .ToTerminalLine();
+            }
         }
 
         string? effectiveStyleUri = effectiveStyleId is null ? null : McpResourceUris.StyleUri(effectiveStyleId);
         effectiveStyleUri ??= request.Style is null ? null : McpResourceUris.Normalize(request.Style);
 
-        string? topError = null;
-        if (results.Length > 0 && results.All(result => result.Error is not null))
+        string? topError = bibliographyError;
+        if (topError is null && results.Any(result => result.Error is not null))
         {
-            topError = results[0].Error;
+            topError = results.First(result => result.Error is not null).Error;
         }
 
         McpCiteMeta meta = new(state.Value.LibraryRevision, effectiveStyleUri, request.Locale ?? "en-US",
@@ -983,7 +1008,7 @@ public sealed partial class McpCommandService
             McpEnvelope<McpCiteMeta, McpCitationResult>.Create(meta, results, null, message);
         return topError is null
             ? McpCommandResult<McpCiteMeta, McpCitationResult>.Ok(envelope)
-            : McpCommandResult<McpCiteMeta, McpCitationResult>.Partial(envelope,
+            : McpCommandResult<McpCiteMeta, McpCitationResult>.ErrorWithContent(envelope,
                 McpToolError.TryGetCode(topError, out McpErrorCode topErrorCode) ? topErrorCode : McpErrorCode.Internal,
                 topError);
     }
@@ -1131,6 +1156,12 @@ public sealed partial class McpCommandService
                 {
                     ContentType = "application/xml", Translation = xml.Value.Translation,
                     Complete = complete,
+                    Truncated = selectedEnd < end,
+                    Error = selectedEnd < end
+                        ? McpToolError.From(McpErrorCode.ResponseTruncated,
+                                "Response exceeds limit_bytes; retained XML contains whole boxes only. Narrow range or follow next_range.")
+                            .ToTerminalLine()
+                        : null,
                     Continuation = selectedEnd < boxes.Length && target.BoxId is null
                         ? $"boxes:{selectedEnd + 1}-{boxes.Length}"
                         : null,
@@ -1319,6 +1350,35 @@ public sealed partial class McpCommandService
             return FailedFetch(uri,
                 McpToolError.From(McpErrorMappings.ToReadError(exported.ErrorCode),
                     exported.ErrorMessage ?? exported.ErrorCode ?? "BibLaTeX export failed."), limitBytes);
+        }
+
+        if (!target.IsLegacy && _exposeLibraryCollections)
+        {
+            Result<IReadOnlyList<CollectionId>> membership =
+                await _read.GetItemCollectionIdsAsync(target.ItemId.Value, cancellationToken);
+            if (membership.IsFailure)
+            {
+                return FailedFetch(uri,
+                    McpToolError.From(McpErrorMappings.ToReadError(membership.ErrorCode), membership.ErrorMessage),
+                    limitBytes);
+            }
+
+            JsonObject root = (JsonObject)McpYamlCodec.Decode(exported.Value);
+            JsonObject extensions = root["extensions"] as JsonObject ?? new JsonObject();
+            JsonObject patchouli = extensions["patchouli"] as JsonObject ?? new JsonObject();
+            patchouli["collections"] =
+                new JsonArray(membership.Value.Select(id => (JsonNode?)JsonValue.Create(id.ToString())).ToArray());
+            if (extensions["patchouli"] is null)
+            {
+                extensions["patchouli"] = patchouli;
+            }
+
+            if (root["extensions"] is null)
+            {
+                root["extensions"] = extensions;
+            }
+
+            exported = Result<string>.Success(McpYamlCodec.Encode(root));
         }
 
         string? rangeError = ValidateRange(range, "lines");
@@ -1682,7 +1742,7 @@ public sealed partial class McpCommandService
         string? nextRange = consumedLines >= totalLines ? null : $"lines:{consumedLines + 1}-{totalLines}";
         int returned = Encoding.UTF8.GetByteCount(best);
         McpToolError error = McpToolError.From(McpErrorCode.ResponseTruncated,
-            "Response exceeds limit_bytes; partial content is available and must not be treated as complete.");
+            "Response exceeds limit_bytes; retained content is incomplete. Narrow range or follow next_range/continuation.");
         return new McpFetchResult(uri, resourceType, itemUri, best, false, true, returned, limitBytes, nextRange,
             nextRange, error.ToTerminalLine());
     }
@@ -1703,7 +1763,8 @@ public sealed partial class McpCommandService
     private static int SerializedSize(McpFetchResult entry, string libraryRevision)
     {
         McpEnvelope<McpFetchMeta, McpFetchResult> envelope =
-            McpEnvelope<McpFetchMeta, McpFetchResult>.Create(new McpFetchMeta(libraryRevision), [entry]);
+            McpEnvelope<McpFetchMeta, McpFetchResult>.Create(new McpFetchMeta(libraryRevision), [entry],
+                message: entry.Error is null ? null : new McpMessage(entry.Error, []));
         return Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(envelope));
     }
 

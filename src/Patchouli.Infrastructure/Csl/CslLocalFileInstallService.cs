@@ -83,12 +83,12 @@ public sealed class CslLocalFileInstallService : ICslLocalFileInstallService
         {
             if (string.Equals(existing.Value.ContentHash, contentHash, StringComparison.OrdinalIgnoreCase))
             {
-                return await BuildResultAsync(info, reused: true, conflict: false, cancellationToken);
+                return await BuildResultAsync(info, true, false, cancellationToken);
             }
 
             // Same id, different content: explicit conflict; the update path is put.
             Result<CslLocalInstallResult> conflict =
-                await BuildResultAsync(info, reused: false, conflict: true, cancellationToken);
+                await BuildResultAsync(info, false, true, cancellationToken);
             return conflict.IsSuccess
                 ? Result<CslLocalInstallResult>.Failure(
                     FileImportErrorCodes.StyleConflict,
@@ -111,7 +111,7 @@ public sealed class CslLocalFileInstallService : ICslLocalFileInstallService
                 "retrying the install completes the interrupted install.");
         }
 
-        return await BuildResultAsync(info, reused: false, conflict: false, cancellationToken);
+        return await BuildResultAsync(info, false, false, cancellationToken);
     }
 
     private async Task<Result<CslLocalInstallResult>> BuildResultAsync(

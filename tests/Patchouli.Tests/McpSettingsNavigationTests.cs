@@ -198,6 +198,46 @@ public sealed class McpSettingsNavigationTests
         fixture.Dialogs.Shown.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Automatic_port_fallback_does_not_create_pending_edits_or_change_the_discard_baseline(bool edit)
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Discard);
+        using TcpListener occupied = new(IPAddress.Loopback, fixture.InitialPort);
+        occupied.Start();
+        await fixture.Main.StartMcpServerAsync();
+        fixture.Main.McpRunningSettings!.Port.Should().NotBe(fixture.InitialPort);
+        await fixture.Main.Settings.McpSettings.LoadAsync();
+        fixture.Main.Settings.McpSettings.HasPendingLeaveDecision.Should().BeFalse();
+        if (edit)
+        {
+            fixture.Main.Settings.McpSettings.ExposeLibraryTags = false;
+        }
+
+        await fixture.LeaveAsync("subpage");
+
+        fixture.AssertLeft("subpage");
+        fixture.Dialogs.Shown.Should().HaveCount(edit ? 1 : 0);
+        fixture.Main.Settings.McpSettings.HasPendingLeaveDecision.Should().BeFalse();
+        (await fixture.ReadSettingsAsync()).Port.Should().Be(fixture.InitialPort);
+        (await fixture.ReadSettingsAsync()).ExposeLibraryTags.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Starting_mcp_before_loading_its_settings_does_not_prompt_on_exit()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Discard, openMcp: false);
+        _ = fixture.Main.Settings.McpSettings;
+
+        await fixture.Main.StartMcpServerAsync();
+
+        fixture.Main.HasPendingMcpSettings.Should().BeFalse();
+        (await fixture.Main.ConfirmMcpSettingsBeforeExitAsync()).Should().BeTrue();
+        fixture.Dialogs.Shown.Should().BeEmpty();
+        (await fixture.ReadSettingsAsync()).Port.Should().Be(fixture.InitialPort);
+    }
+
     [Fact]
     public async Task Run_child_selections_round_trip_without_a_parent_grant_or_enabling_global_send()
     {
@@ -234,7 +274,8 @@ public sealed class McpSettingsNavigationTests
                 timingScheduler: scheduler, uiScheduler: ImmediateScheduler.Instance);
         }
 
-        public static async Task<Fixture> CreateAsync(ConfirmDialogResult? choice, TestScheduler? scheduler = null)
+        public static async Task<Fixture> CreateAsync(ConfirmDialogResult? choice, TestScheduler? scheduler = null,
+            bool openMcp = true)
         {
             Fixture fixture = new(choice, scheduler);
             try
@@ -249,7 +290,11 @@ public sealed class McpSettingsNavigationTests
                 McpServerSettings baseline = (await service.GetSettingsAsync()).Value;
                 (await service.SaveSettingsAsync(baseline with { Port = fixture.InitialPort })).IsSuccess.Should()
                     .BeTrue();
-                await fixture.Main.OpenSettingsAsync("mcp");
+                if (openMcp)
+                {
+                    await fixture.Main.OpenSettingsAsync("mcp");
+                }
+
                 return fixture;
             }
             catch

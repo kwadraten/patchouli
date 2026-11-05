@@ -392,7 +392,7 @@ public sealed class BiblatexImportService : IBiblatexImportService
         while (true)
         {
             Result<ItemListPage> page = await _items.ListItemsAsync(
-                new ListItemsRequest(PageSize: 200, Cursor: cursor),
+                new ListItemsRequest(PageSize: 200, Cursor: cursor, IncludeTotalCount: false),
                 cancellationToken);
             if (page.IsFailure)
             {

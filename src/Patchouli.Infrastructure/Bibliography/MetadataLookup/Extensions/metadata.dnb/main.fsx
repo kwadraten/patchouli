@@ -97,7 +97,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Dnb metadata extension.</summary>
-/// <patchouli-extension id="metadata.dnb" kind="metadata" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="metadata.dnb" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Dnb</name>
 /// </patchouli-extension>
 let extension =

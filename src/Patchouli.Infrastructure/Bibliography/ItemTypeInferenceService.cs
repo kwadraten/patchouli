@@ -182,6 +182,12 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
                 return Result<ItemTypeInference>.Failure(AppErrorCodes.NotFound, "Item type inference was not found.");
             }
 
+            Result typeValidation = CslItemTypeValidation.Validate(row.SuggestedType);
+            if (typeValidation.IsFailure)
+            {
+                return Result<ItemTypeInference>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
+            }
+
             DateTimeOffset acceptedAt = _clock.UtcNow.ToUniversalTime();
             ItemId itemId = ItemId.Parse(row.ItemId);
             int updated = await connection.ExecuteAsync(

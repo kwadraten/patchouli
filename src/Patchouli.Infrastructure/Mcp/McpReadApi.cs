@@ -737,24 +737,46 @@ public sealed class McpReadApi : IMcpReadApi
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where deleted_at is null and merged_into_item_id is null;");
-            int filteredTotal = await connection.ExecuteScalarAsync<int>(
-                $"select count(1) from items where deleted_at is null and merged_into_item_id is null{filter.Sql}",
-                filter.Parameters);
-            Dictionary<string, object> pageParameters = new(filter.Parameters, StringComparer.Ordinal)
+            int filteredTotal = string.IsNullOrEmpty(filter.Sql)
+                ? domainTotal
+                : await connection.ExecuteScalarAsync<int>(
+                    $"select count(1) from items where deleted_at is null and merged_into_item_id is null{filter.Sql}",
+                    filter.Parameters);
+
+            IReadOnlyList<ItemRow> rows;
+            if (filteredTotal == 0 || skip >= filteredTotal)
             {
-                ["Limit"] = limit,
-                ["Skip"] = skip
-            };
-            IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(
-                $"""
-                 select item_id, title, item_type, status, citation_key, updated_at,
-                        {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
-                 from items
-                 where deleted_at is null and merged_into_item_id is null{filter.Sql}
-                 order by updated_at desc, item_id
-                 limit @Limit offset @Skip;
-                 """,
-                pageParameters)).ToArray();
+                rows = Array.Empty<ItemRow>();
+            }
+            else
+            {
+                Dictionary<string, object> pageParameters = new(filter.Parameters, StringComparer.Ordinal)
+                {
+                    ["Limit"] = limit,
+                    ["Skip"] = skip
+                };
+                rows = (await connection.QueryAsync<ItemRow>(
+                    $"""
+                     with paged_items as (
+                         select item_id, title, item_type, status, citation_key, updated_at
+                         from items
+                         where deleted_at is null and merged_into_item_id is null{filter.Sql}
+                         order by updated_at desc, item_id
+                         limit @Limit offset @Skip
+                     )
+                     select paged_items.item_id as ItemId,
+                            paged_items.title as Title,
+                            paged_items.item_type as ItemType,
+                            paged_items.status as Status,
+                            paged_items.citation_key as CitationKey,
+                            paged_items.updated_at as UpdatedAt,
+                            {PrimaryDocumentOcrIndexStatusExpression("paged_items.item_id")} as primary_document_ocr_index_status
+                     from paged_items
+                     order by paged_items.updated_at desc, paged_items.item_id;
+                     """,
+                    pageParameters)).ToArray();
+            }
+
             return Result<McpBrowseItemPage>.Success(new McpBrowseItemPage(
                 rows.Select(row => new McpBrowseItemRow(
                     ItemId.Parse(row.ItemId), row.Title, row.ItemType, row.Status, row.CitationKey,
@@ -807,11 +829,6 @@ public sealed class McpReadApi : IMcpReadApi
             {
                 ["Pattern"] = pattern
             };
-            Dictionary<string, object> pageParameters = new(searchParameters, StringComparer.Ordinal)
-            {
-                ["Limit"] = limit,
-                ["Skip"] = skip
-            };
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
@@ -819,16 +836,41 @@ public sealed class McpReadApi : IMcpReadApi
             int filteredTotal = await connection.ExecuteScalarAsync<int>(
                 $"select count(1) from items where deleted_at is null and merged_into_item_id is null and {searchPredicate}{filter.Sql}",
                 searchParameters);
-            IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(
-                $"""
-                 select item_id, title, item_type, status, citation_key, updated_at,
-                        {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
-                 from items
-                 where deleted_at is null and merged_into_item_id is null and {searchPredicate}{filter.Sql}
-                 order by updated_at desc, item_id
-                 limit @Limit offset @Skip;
-                 """,
-                pageParameters)).ToArray();
+
+            IReadOnlyList<ItemRow> rows;
+            if (filteredTotal == 0 || skip >= filteredTotal)
+            {
+                rows = Array.Empty<ItemRow>();
+            }
+            else
+            {
+                Dictionary<string, object> pageParameters = new(searchParameters, StringComparer.Ordinal)
+                {
+                    ["Limit"] = limit,
+                    ["Skip"] = skip
+                };
+                rows = (await connection.QueryAsync<ItemRow>(
+                    $"""
+                     with paged_items as (
+                         select item_id, title, item_type, status, citation_key, updated_at
+                         from items
+                         where deleted_at is null and merged_into_item_id is null and {searchPredicate}{filter.Sql}
+                         order by updated_at desc, item_id
+                         limit @Limit offset @Skip
+                     )
+                     select paged_items.item_id as ItemId,
+                            paged_items.title as Title,
+                            paged_items.item_type as ItemType,
+                            paged_items.status as Status,
+                            paged_items.citation_key as CitationKey,
+                            paged_items.updated_at as UpdatedAt,
+                            {PrimaryDocumentOcrIndexStatusExpression("paged_items.item_id")} as primary_document_ocr_index_status
+                     from paged_items
+                     order by paged_items.updated_at desc, paged_items.item_id;
+                     """,
+                    pageParameters)).ToArray();
+            }
+
             return Result<McpBrowseItemPage>.Success(new McpBrowseItemPage(
                 rows.Select(row => new McpBrowseItemRow(
                     ItemId.Parse(row.ItemId), row.Title, row.ItemType, row.Status, row.CitationKey,
@@ -1071,9 +1113,15 @@ public sealed class McpReadApi : IMcpReadApi
                       where r.status = 'committed' and r.is_current = 1
                   ),
                   translated_box_counts as (
-                      select tp.page_id, count(tb.page_id) as translated_boxes
+                      select tp.page_id,
+                             count(case when tb.page_id is not null and
+                                  (b.box_id is null or ({{DocumentBoxProjection.TranslationContentSqlPredicate}}))
+                                  then 1 end) as translated_boxes
                       from target_pages tp
                       left join translation_boxes tb on tb.page_id = tp.page_id
+                      left join page_translations pt on pt.page_id = tp.page_id
+                      left join document_boxes b on b.page_id = tp.page_id and b.box_id = tb.box_id
+                                               and b.tree_revision_id = pt.source_tree_revision_id
                       group by tp.page_id
                   ),
                   current_box_counts as (
@@ -1082,7 +1130,7 @@ public sealed class McpReadApi : IMcpReadApi
                       join current_revisions cr on cr.page_id = tp.page_id
                       join document_boxes b on b.page_id = tp.page_id
                                            and b.tree_revision_id = cr.tree_revision_id
-                      where b.box_type <> 'logical_page' or b.payload_json is not null
+                      where {{DocumentBoxProjection.TranslationContentSqlPredicate}}
                       group by tp.page_id
                   ),
                   progress as (
@@ -1176,9 +1224,15 @@ public sealed class McpReadApi : IMcpReadApi
                       where r.status = 'committed' and r.is_current = 1
                   ),
                   translated_box_counts as (
-                      select tp.page_id, count(tb.page_id) as translated_boxes
+                      select tp.page_id,
+                             count(case when tb.page_id is not null and
+                                  (b.box_id is null or ({{DocumentBoxProjection.TranslationContentSqlPredicate}}))
+                                  then 1 end) as translated_boxes
                       from target_pages tp
                       left join translation_boxes tb on tb.page_id = tp.page_id
+                      left join page_translations pt on pt.page_id = tp.page_id
+                      left join document_boxes b on b.page_id = tp.page_id and b.box_id = tb.box_id
+                                               and b.tree_revision_id = pt.source_tree_revision_id
                       group by tp.page_id
                   ),
                   current_box_counts as (
@@ -1187,7 +1241,7 @@ public sealed class McpReadApi : IMcpReadApi
                       join current_revisions cr on cr.page_id = tp.page_id
                       join document_boxes b on b.page_id = tp.page_id
                                            and b.tree_revision_id = cr.tree_revision_id
-                      where b.box_type <> 'logical_page' or b.payload_json is not null
+                      where {{DocumentBoxProjection.TranslationContentSqlPredicate}}
                       group by tp.page_id
                   )
                   select p.page_id as PageId, p.page_label as PageLabel, p.page_index as PageIndex,
@@ -1463,11 +1517,16 @@ public sealed class McpReadApi : IMcpReadApi
             {
                 tags = (await connection.QueryAsync<LibraryTagRow>(
                         """
-                        select tag as Tag, count(*) as ItemCount
-                        from item_tag_memberships
-                        where library_id = @LibraryId and is_active = 1
-                        group by tag
-                        order by tag collate binary;
+                        with counts as (
+                            select tag, count(*) as item_count from item_tag_memberships
+                            where library_id = @LibraryId and is_active = 1 group by tag
+                        ), names as (
+                            select tag from item_tag_memberships where library_id = @LibraryId
+                            union select tag from library_tag_definitions where library_id = @LibraryId
+                        )
+                        select names.tag as Tag, coalesce(counts.item_count, 0) as ItemCount
+                        from names left join counts on counts.tag = names.tag
+                        order by names.tag collate binary;
                         """,
                         new { LibraryId = library.LibraryId }))
                     .Select(row => new McpLibraryTag(row.Tag, (int)row.ItemCount)).ToArray();

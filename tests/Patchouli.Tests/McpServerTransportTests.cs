@@ -126,7 +126,7 @@ public sealed class McpServerTransportTests
             .And.Contain("structured Library tools")
             .And.Contain("instructions");
         response.Should().Contain("TOON").And.Contain("format=json")
-            .And.Contain("A clean success response has no message field");
+            .And.Contain("Every response explicitly reports meta.outcome");
     }
 
     [Fact]
@@ -227,7 +227,7 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public async Task Find_clean_success_omits_message_and_returns_vfs_entries()
+    public async Task Find_success_explicitly_reports_outcome_and_returns_vfs_entries()
     {
         McpProtocolHandler h = new(new FakeApi(),
             new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")));
@@ -238,6 +238,8 @@ public sealed class McpServerTransportTests
         envelope.RootElement.TryGetProperty("message", out _).Should().BeFalse();
         JsonElement meta = envelope.RootElement.GetProperty("meta");
         meta.GetProperty("library_revision").GetString().Should().Be("lib:1");
+        meta.GetProperty("outcome").GetString().Should().Be("success");
+        meta.GetProperty("summary").GetString().Should().NotBeNullOrWhiteSpace();
         meta.GetProperty("domain_total").GetInt32().Should().Be(6);
         meta.GetProperty("shown_total").GetInt32().Should().Be(6);
         JsonElement[] entries = envelope.RootElement.GetProperty("entries").EnumerateArray().ToArray();
@@ -704,9 +706,32 @@ public sealed class McpServerTransportTests
         throw new InvalidOperationException("SSE comment was not received.");
     }
 
+    [Theory]
+    [InlineData("toon")]
+    [InlineData("json")]
+    public async Task Bibliography_failure_is_an_error_and_retains_rendered_citations(string format)
+    {
+        McpProtocolHandler handler = new(new FakeApi { RenderIndividualCitation = true },
+            new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")));
+        string response = await handler.HandleAsync(ToolCall("patchouli.cite", JsonSerializer.Serialize(new
+        {
+            refs = new[] { "patchouli://items/11111111-1111-1111-1111-111111111111.yml" },
+            bibliography = true,
+            format
+        })));
+
+        ToolIsError(response).Should().BeTrue();
+        using JsonDocument envelope = ToolResultEnvelope(response);
+        envelope.RootElement.GetProperty("meta").GetProperty("outcome").GetString().Should().Be("error");
+        envelope.RootElement.GetProperty("message").GetProperty("error").GetString().Should().NotBeNullOrWhiteSpace();
+        envelope.RootElement.GetProperty("entries")[0].GetProperty("citation").GetString().Should()
+            .Be("Individual citation");
+    }
+
     private sealed class FakeApi : IMcpReadApi
     {
         public bool ThrowOnLibraryState;
+        public bool RenderIndividualCitation;
 
         public Task<Result<McpLibraryStateResponse>> GetCurrentLibraryStateAsync(
             CancellationToken cancellationToken = default)
@@ -785,6 +810,13 @@ public sealed class McpServerTransportTests
         public Task<Result<McpRenderBibliographyResponse>> RenderItemBibliographyAsync(ItemId itemId,
             string? styleId = null, string? locale = null, CancellationToken cancellationToken = default)
         {
+            if (RenderIndividualCitation)
+            {
+                return Task.FromResult(Result<McpRenderBibliographyResponse>.Success(
+                    new McpRenderBibliographyResponse("apa", "APA", "en-US", [itemId], "Individual citation",
+                        "Individual citation", [], [])));
+            }
+
             return Task.FromResult(Result<McpRenderBibliographyResponse>.Failure("fake", "x"));
         }
 

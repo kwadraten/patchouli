@@ -93,6 +93,8 @@ public sealed class McpAddViewCommandTests
 
         result.IsSuccess.Should().BeTrue();
         McpAddResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        result.Envelope.Meta.Outcome.Should().Be("success");
+        result.Envelope.Meta.Summary.Should().Contain("Imported and committed").And.Contain(entry.ItemUri!);
         entry.Kind.Should().Be("pdf");
         entry.ItemUri.Should().Be("patchouli://items/item-1.yml");
         entry.TextUri.Should().Be("patchouli://texts/" + DocId + "/");
@@ -357,21 +359,42 @@ public sealed class McpAddViewCommandTests
 
     // ---------- harness ----------
 
+    [Fact]
+    public async Task Add_receipt_reports_the_revision_after_import_commit()
+    {
+        string revision = "lib:99";
+        (_, Stub<IFileImportService> import) = Stub<IFileImportService>.Create();
+        import.Handle(nameof(IFileImportService.ImportAsync), _ =>
+        {
+            revision = "lib:100";
+            return Task.FromResult(Result<FileImportResult>.Success(new FileImportResult(
+                true, LocalImportKind.Pdf, false, false, "patchouli://items/item-1.yml",
+                "patchouli://texts/" + DocId + "/", null, 1, "imported", "ingested", [], null)));
+        });
+        McpCommandService service = CreateService(import.Proxy, revision: () => revision);
+
+        McpCommandResult<McpAddMeta, McpAddResult> result = await service.AddAsync(new McpAddRequest("/tmp/paper.pdf"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Envelope!.Meta.LibraryRevision.Should().Be("lib:100");
+    }
+
     private static McpCommandService CreateService(
         IFileImportService? fileImport = null,
         IPageImageViewService? pageView = null,
         bool addEnabled = true,
         bool viewEnabled = true,
-        Func<CancellationToken, Task<McpServerSettings>>? permissions = null)
+        Func<CancellationToken, Task<McpServerSettings>>? permissions = null,
+        Func<string>? revision = null)
     {
         (_, Stub<IMcpReadApi> read) = Stub<IMcpReadApi>.Create();
         read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
             Task.FromResult(Result<McpLibraryStateResponse>.Success(
-                new McpLibraryStateResponse("lib", "lib:99"))));
+                new McpLibraryStateResponse("lib", revision?.Invoke() ?? "lib:99"))));
         (_, Stub<IMcpWriteApi> write) = Stub<IMcpWriteApi>.Create();
-        (_, Stub<IBiblatexImportService> biblatex) = Stub<Core.Bibliography.Biblatex.IBiblatexImportService>.Create();
-        (_, Stub<IItemService> items) = Stub<Core.Bibliography.IItemService>.Create();
-        (_, Stub<IVersionedEvidenceReader> evidence) = Stub<Core.Documents.IVersionedEvidenceReader>.Create();
+        (_, Stub<IBiblatexImportService> biblatex) = Stub<IBiblatexImportService>.Create();
+        (_, Stub<IItemService> items) = Stub<IItemService>.Create();
+        (_, Stub<IVersionedEvidenceReader> evidence) = Stub<IVersionedEvidenceReader>.Create();
         return new McpCommandService(read.Proxy, write.Proxy, biblatex.Proxy, items.Proxy,
             evidence.Proxy, permissionSettings: permissions, fileImport: fileImport,
             pageView: pageView, addEnabled: addEnabled, viewEnabled: viewEnabled);

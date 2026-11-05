@@ -14,6 +14,8 @@ internal sealed record McpServerHostStatusSnapshot(
     long? RunningSettingsRevision,
     McpServerSettings? RunningSettings)
 {
+    public McpServerSettings? AppliedSettings { get; init; }
+
     public static readonly McpServerHostStatusSnapshot Initial = new(
         McpServerHostStatus.Stopped,
         "MCP HTTP 服务未启动。",

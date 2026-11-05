@@ -3,6 +3,7 @@ using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Csl;
@@ -17,6 +18,86 @@ namespace Patchouli.Tests;
 
 public sealed class McpNativeResourceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Translation_structure_diffs_reach_the_wire_for_every_invalid_box_without_writes(bool fullPage)
+    {
+        await using TranslationTestContext fixture = await TranslationTestContext.CreateAsync();
+        DocumentTreeRevision revision = await fixture.CommitAsync(Seed(0, "Paragraph"), Seed(1, "First\n\nSecond"));
+        McpCommandService commands = Commands(fixture);
+        string uri = McpResourceUris.TranslationPageUri(fixture.DocumentId, 1);
+        XElement page = XElement.Parse((await commands.FetchAsync(new McpFetchRequest([uri], null, null)))
+            .Envelope!.Entries.Single().Content!);
+        XElement[] boxes = page.Descendants("box").ToArray();
+        boxes[0].Element("payload")!.Value = "## Changed heading";
+        boxes[1].Element("payload")!.Value = "Merged paragraph";
+        foreach (XElement box in boxes)
+        {
+            box.SetAttributeValue("translated", "true");
+        }
+
+        McpPutRequest request = fullPage
+            ? new McpPutRequest(uri, page.ToString())
+            : new McpPutRequest(uri, SourceRevision: revision.TreeRevisionId.ToString(), TranslationVersion: 0,
+                Boxes: boxes.Select(box => new McpBoxReplacement((string)box.Attribute("id")!, box.ToString()))
+                    .ToArray());
+        McpCommandResult<McpPutMeta, McpPutResult> result = await commands.PutAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidContent);
+        McpPutResult rejected = result.Envelope!.Entries.Single();
+        rejected.Committed.Should().BeFalse();
+        rejected.BoxErrors.Should().HaveCount(2);
+        rejected.BoxErrors![0].StructureDiff.Should().ContainSingle(diff =>
+            diff.BlockIndex == 0 && diff.Expected == "paragraph" && diff.Actual == "heading level 2");
+        rejected.BoxErrors[1].StructureDiff.Should().ContainSingle(diff =>
+            diff.BlockIndex == 1 && diff.Expected == "paragraph" && diff.Actual == "end of markdown");
+        using System.Text.Json.JsonDocument json = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(result.Envelope));
+        System.Text.Json.JsonElement error = json.RootElement.GetProperty("entries")[0].GetProperty("box_errors")[0];
+        error.GetProperty("box_id").GetString().Should().Be((string)boxes[0].Attribute("id")!);
+        error.GetProperty("structure_diff")[0].GetProperty("expected").GetString().Should().Be("paragraph");
+        error.GetProperty("structure_diff")[0].GetProperty("actual").GetString().Should().Be("heading level 2");
+        string toon = McpToonCodec.Encode(result.Envelope);
+        toon.Should().Contain("structure_diff").And.Contain("paragraph").And.Contain("heading level 2");
+        (await fixture.ListTranslationRowsAsync()).Should().BeEmpty();
+        (await fixture.GetHeaderAsync()).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("\t\r\n\u3000")]
+    public async Task Translation_directories_exclude_empty_legacy_continuations(string empty)
+    {
+        await using TranslationTestContext fixture = await TranslationTestContext.CreateAsync();
+        DocumentBoxSeed head = Seed(0, "Source");
+        DocumentBoxSeed follower = Seed(1, empty) with
+        {
+            ContinuesFromBoxId = head.BoxId,
+            ContinuationState = DocumentContinuationState.LegacyUnrecovered
+        };
+        DocumentTreeRevision revision = await fixture.CommitAsync(head, follower);
+        Result<PageTranslationStatus> written = await fixture.Translations.PutBoxPayloadsAsync(fixture.DocumentId,
+            fixture.PageId,
+            revision.TreeRevisionId, 0,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload> { [head.BoxId!.Value] = new TextBoxPayload("译文") });
+        written.IsSuccess.Should().BeTrue(written.ErrorMessage);
+        McpReadApi read = new(fixture.ConnectionFactory, new SqliteSearchService(fixture.ConnectionFactory),
+            markdown: fixture.Markdown, markdownCompiler: fixture.MarkdownCompiler,
+            pageTranslations: fixture.Translations);
+        Result<McpTranslationOutlineResponse> outline = await read.GetTranslationOutlineAsync(fixture.DocumentId);
+        outline.IsSuccess.Should().BeTrue(outline.ErrorMessage);
+        McpTranslationPageRow page = outline.Value.Pages.Single();
+        page.TotalBoxCount.Should().Be(1);
+        page.TranslatedBoxCount.Should().Be(1);
+        page.Status.Should().Be(McpTranslationStatus.Translated);
+        Result<McpBrowseTranslationPage> root = await read.BrowseTranslationsAsync(0, 20, null);
+        root.IsSuccess.Should().BeTrue(root.ErrorMessage);
+        root.Value.Rows.Single().TranslatedPageCount.Should().Be(1);
+        root.Value.Rows.Single().PartialPageCount.Should().Be(0);
+    }
+
     [Fact]
     public async Task Xml_byte_budget_returns_whole_boxes_and_reports_an_oversized_single_box()
     {
@@ -26,13 +107,16 @@ public sealed class McpNativeResourceTests
         string uri = McpResourceUris.PageUri(fixture.DocumentId, 1);
         McpCommandResult<McpFetchMeta, McpFetchResult> fetched =
             await commands.FetchAsync(new McpFetchRequest([uri], null, 7000));
-        fetched.IsSuccess.Should().BeTrue(fetched.Error?.Detail);
+        fetched.IsSuccess.Should().BeFalse();
+        fetched.Error!.Code.Should().Be((int)McpErrorCode.ResponseTruncated);
+        fetched.Envelope!.Meta.Outcome.Should().Be("error");
         McpFetchResult entry = fetched.Envelope!.Entries.Single();
         XElement xml = XElement.Parse(entry.Content!);
         xml.Descendants("payload").Select(value => value.Value).Should().Equal(new string('a', 5000));
         entry.Complete.Should().BeFalse();
-        entry.Truncated.Should().BeFalse();
+        entry.Truncated.Should().BeTrue();
         entry.NextRange.Should().Be("boxes:2-2");
+        entry.Error.Should().Contain("Narrow range");
         entry.ReturnedBytes.Should().Be(System.Text.Encoding.UTF8.GetByteCount(entry.Content!));
         entry.ReturnedBytes.Should().BeLessThanOrEqualTo(7000);
 

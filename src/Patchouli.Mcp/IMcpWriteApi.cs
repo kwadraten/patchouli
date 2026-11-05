@@ -12,7 +12,8 @@ public sealed record McpPutRequest(
     bool PreserveTags = false,
     string? SourceRevision = null,
     int? TranslationVersion = null,
-    IReadOnlyList<McpBoxReplacement>? Boxes = null);
+    IReadOnlyList<McpBoxReplacement>? Boxes = null,
+    bool PreserveCollections = false);
 
 public sealed record McpPutResponse(
     string Uri,
@@ -22,7 +23,8 @@ public sealed record McpPutResponse(
     IReadOnlyList<string>? Warnings = null,
     string? SourceRevision = null,
     int? TranslationVersion = null,
-    IReadOnlyList<string>? ModifiedBoxIds = null);
+    IReadOnlyList<string>? ModifiedBoxIds = null,
+    string? Summary = null);
 
 /// <summary>
 /// The single host write service. put validates and atomically replaces a resource or a

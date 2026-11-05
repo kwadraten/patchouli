@@ -22,10 +22,11 @@ public sealed class McpWriteApi : IMcpWriteApi
     private readonly IPageTranslationService? _pageTranslations;
     private readonly IDocumentTreeService? _trees;
     private readonly IDocumentPageMapService? _pageMaps;
+    private readonly ILibraryCatalogService? _catalog;
 
     public McpWriteApi(IItemService items, IBiblatexHelperClient biblatex, ICslStyleStore styles,
         IPageTranslationService? pageTranslations = null, IDocumentTreeService? trees = null,
-        IDocumentPageMapService? pageMaps = null)
+        IDocumentPageMapService? pageMaps = null, ILibraryCatalogService? catalog = null)
     {
         _items = items;
         _biblatex = biblatex;
@@ -33,6 +34,7 @@ public sealed class McpWriteApi : IMcpWriteApi
         _pageTranslations = pageTranslations;
         _trees = trees;
         _pageMaps = pageMaps;
+        _catalog = catalog;
     }
 
     public async Task<Result<McpPutResponse>> PutPageXmlAsync(McpPutRequest request, DocumentInstanceId documentId,
@@ -137,7 +139,8 @@ public sealed class McpWriteApi : IMcpWriteApi
                 return written.IsFailure
                     ? Result<McpPutResponse>.Failure(written.ErrorCode!, written.ErrorMessage!, written.Conflicts,
                         written.Details)
-                    : Result<McpPutResponse>.Success(TranslationResponse(request, written.Value, replacements.Keys));
+                    : Result<McpPutResponse>.Success(TranslationResponse(request, written.Value,
+                        replacements.Keys.Where(id => !DocumentBoxProjection.IsEmptyContinuation(sources[id]))));
             }
 
             Result<DocumentTreeRevision> committed = await _trees.ReplaceBoxPayloadsAsync(documentId, pageId,
@@ -290,6 +293,36 @@ public sealed class McpWriteApi : IMcpWriteApi
                 "Only existing item bibliography resources can be replaced.");
         }
 
+        if (parsedUri.Value.Kind == McpUriKind.Library && !parsedUri.Value.IsLegacy)
+        {
+            if (_catalog is null)
+            {
+                return Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+                    "Library catalog writes are unavailable.");
+            }
+
+            Result<LibraryCatalogUpdate> decoded =
+                McpLibraryYamlCodec.Decode(request.Content, request.PreserveTags, request.PreserveCollections);
+            if (decoded.IsFailure)
+            {
+                return Result<McpPutResponse>.Failure(decoded.ErrorCode!, decoded.ErrorMessage!);
+            }
+
+            Result<LibraryCatalogChange> changed = await _catalog.ReplaceAsync(decoded.Value, cancellationToken);
+            if (changed.IsFailure)
+            {
+                return Result<McpPutResponse>.Failure(changed.ErrorCode!, changed.ErrorMessage!);
+            }
+
+            LibraryCatalogChange value = changed.Value;
+            return Result<McpPutResponse>.Success(new McpPutResponse("patchouli://library.yml", "library_yaml",
+                value.Changed,
+                ContentBytes(request.Content), Summary:
+                !value.Changed
+                    ? "The Library catalog already matches; no changes were needed. Items were preserved."
+                    : $"Saved the Library catalog: created {value.CreatedCollections}, renamed {value.RenamedCollections}, dissolved {value.DissolvedCollections} collections; created {value.CreatedTags}, deleted {value.DeletedTags} tags; removed {value.RemovedMemberships} relationships. Items were preserved. Fetch library.yml for collection ids."));
+        }
+
         if (parsedUri.Value.Kind == McpUriKind.Style)
         {
             return await ReplaceStyleAsync(request, parsedUri.Value.StyleId!, cancellationToken);
@@ -366,7 +399,8 @@ public sealed class McpWriteApi : IMcpWriteApi
         if (!McpResourceUris.Parse(request.Uri).Value.IsLegacy)
         {
             Result<(UpdateItemRequest Request, IReadOnlyList<ItemIdentifierInput> Identifiers)> decoded =
-                McpItemYamlCodec.Decode(request.Content ?? string.Empty, existing.Value, request.PreserveTags);
+                McpItemYamlCodec.Decode(request.Content ?? string.Empty, existing.Value, request.PreserveTags,
+                    request.PreserveCollections);
             if (decoded.IsFailure)
             {
                 return Result<McpPutResponse>.Failure(decoded.ErrorCode!, decoded.ErrorMessage!);
@@ -377,7 +411,11 @@ public sealed class McpWriteApi : IMcpWriteApi
             return updated.IsFailure
                 ? Result<McpPutResponse>.Failure(updated.ErrorCode!, updated.ErrorMessage!)
                 : Result<McpPutResponse>.Success(new McpPutResponse(McpResourceUris.ItemUri(itemId), "item_yaml", true,
-                    ContentBytes(request.Content ?? string.Empty)));
+                    ContentBytes(request.Content ?? string.Empty), Summary:
+                    $"Saved item metadata at {McpResourceUris.ItemUri(itemId)}." +
+                    (decoded.Value.Request.Collections is { } memberships
+                        ? $" Set membership to {memberships.Count} collections."
+                        : string.Empty)));
         }
 
         bool isGeneral = string.Equals(existing.Value.ItemType, "general", StringComparison.OrdinalIgnoreCase);
@@ -449,7 +487,8 @@ public sealed class McpWriteApi : IMcpWriteApi
             CollectionsJson: existing.Value.CollectionsJson,
             CustomFieldsJson: BiblatexMappedItemMerge.BuildCustomFields(mapped.Value) ?? "{}",
             Creators: mapped.Value.Creators,
-            Dates: mapped.Value.Dates);
+            Dates: mapped.Value.Dates,
+            RequireKnownTags: !request.PreserveTags);
 
         Result<ItemMetadata> replaced = await _items.ReplaceItemAsync(
             itemId, update, mapped.Value.Identifiers, cancellationToken);

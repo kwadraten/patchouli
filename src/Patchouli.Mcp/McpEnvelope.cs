@@ -5,7 +5,8 @@ namespace Patchouli.Mcp;
 /// <summary>
 /// v3 unified response envelope shared by the MCP tools and the patchouli-cli executable.
 /// Every tool response is strictly { meta, continuation, message?, entries }.
-/// `message` is omitted for a clean success; a response without `message` is a clean success.
+/// meta.outcome explicitly reports success/error and meta.summary describes the result.
+/// Errors may retain usable entries; retained content never changes an error into success.
 /// Only find may return a top-level `continuation`; fetch continuation data lives on its
 /// per-entry next_range/continuation and put/cite always return null.
 /// </summary>
@@ -25,13 +26,26 @@ public sealed record McpEnvelope<TMeta, TEntry>(
         string? continuation = null,
         McpMessage? message = null)
     {
+        if (meta is McpResponseMeta response)
+        {
+            meta = (TMeta)(object)(response with
+            {
+                Outcome = message?.Error is null ? "success" : "error",
+                Summary = message?.Error is not null
+                    ? McpOutputSanitizer.Sanitize(message.Error)
+                    : string.IsNullOrWhiteSpace(response.Summary)
+                        ? McpResponseSummary.Describe(response, entries, continuation)
+                        : response.Summary
+            });
+        }
+
         return new McpEnvelope<TMeta, TEntry>(meta, continuation, message, entries);
     }
 }
 
 /// <summary>
 /// The optional terminal-style message slot of a response. Present exactly when there are
-/// warnings and/or a request-level error; never carries success prose.
+/// warnings and/or a request-level error. Explicit success receipts live in meta.
 /// </summary>
 public sealed record McpMessage(
     [property: JsonPropertyName("error")] string? Error,
@@ -136,7 +150,7 @@ public sealed record McpToolError(
 
 /// <summary>
 /// Command result carrying either a full response envelope or a request-level error.
-/// A partial success keeps its envelope and sets <see cref="Error"/> so the transport can
+/// An error with usable content keeps its envelope and sets <see cref="Error"/> so the transport can
 /// mark the tool response isError while preserving usable entries.
 /// </summary>
 public sealed record McpCommandResult<TMeta, TEntry>(
@@ -156,9 +170,13 @@ public sealed record McpCommandResult<TMeta, TEntry>(
         return new McpCommandResult<TMeta, TEntry>(null, McpToolError.From(code, detail, correlationId));
     }
 
-    public static McpCommandResult<TMeta, TEntry> Partial(
+    public static McpCommandResult<TMeta, TEntry> ErrorWithContent(
         McpEnvelope<TMeta, TEntry> envelope, McpErrorCode code, string detail, string? correlationId = null)
     {
-        return new McpCommandResult<TMeta, TEntry>(envelope, McpToolError.From(code, detail, correlationId));
+        McpToolError error = McpToolError.From(code, detail, correlationId);
+        return new McpCommandResult<TMeta, TEntry>(
+            McpEnvelope<TMeta, TEntry>.Create(envelope.Meta, envelope.Entries, envelope.Continuation,
+                new McpMessage(envelope.Message?.Error ?? error.ToTerminalLine(), envelope.Message?.Warnings ?? [])),
+            error);
     }
 }

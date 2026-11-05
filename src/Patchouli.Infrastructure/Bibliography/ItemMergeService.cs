@@ -194,6 +194,12 @@ public sealed class ItemMergeService : IItemMergeService
 
             DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
             ItemMetadata merged = BuildMergedItem(target, source, choiceByField, now);
+            Result typeValidation = CslItemTypeValidation.Validate(merged.ItemType);
+            if (typeValidation.IsFailure)
+            {
+                return typeValidation;
+            }
+
             string freedSourceCitationKey = "merged-" + sourceId.Value.ToString("N");
 
             // Free the source citation_key before writing the target so a chosen source key

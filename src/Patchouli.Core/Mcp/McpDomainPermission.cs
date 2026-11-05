@@ -30,7 +30,7 @@ public static class McpPermissionPolicy
             "translations" => verb is "find" or "fetch" or "put" or "view",
             "csl-styles" => verb is "find" or "fetch" or "put" or "add",
             "runs" => verb is "find" or "fetch",
-            "library.yml" => verb is "find" or "fetch",
+            "library.yml" => verb is "find" or "fetch" or "put",
             _ => false
         };
     }

@@ -6,7 +6,7 @@ namespace Patchouli.Core.Bibliography;
 /// <summary>
 /// Describes a tag aggregated across active library items.
 /// </summary>
-public sealed record TagInfo(string Name, int Count);
+public sealed record TagInfo(string Name, int Count, bool IsDeclared = false);
 
 /// <summary>
 /// Bulk tag operations against <c>items.tags_json</c>. All write operations skip items in the
@@ -15,7 +15,7 @@ public sealed record TagInfo(string Name, int Count);
 public interface IItemTagService
 {
     /// <summary>
-    /// Lists every tag that appears on at least one active item, ordered by name using
+    /// Lists declared tags (including empty ones) and tags on active items, ordered by name using
     /// ordinal comparison. Counts exclude trashed and merged items.
     /// </summary>
     Task<Result<IReadOnlyList<TagInfo>>> ListTagsAsync(CancellationToken cancellationToken = default);

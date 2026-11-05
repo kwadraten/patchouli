@@ -205,7 +205,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Cinii metadata extension.</summary>
-/// <patchouli-extension id="metadata.cinii" kind="metadata" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="metadata.cinii" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Cinii</name>
 /// </patchouli-extension>
 let extension =

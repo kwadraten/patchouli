@@ -245,9 +245,10 @@ public sealed class ItemService : IItemService
             return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item title is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(request.ItemType))
+        Result typeValidation = CslItemTypeValidation.Validate(request.ItemType);
+        if (typeValidation.IsFailure)
         {
-            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item type is required.");
+            return Result<ItemMetadata>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
         }
 
         try
@@ -309,6 +310,29 @@ public sealed class ItemService : IItemService
                 _clock.UtcNow.ToUniversalTime());
 
             DynamicParameters updateParameters = new(ToParameters(updated));
+            bool tagCatalogChanged = false;
+            if (request.RequireKnownTags)
+            {
+                string[] requestedTags = JsonSerializer.Deserialize<string[]>(updated.TagsJson) ?? [];
+                string[] knownTags = (await connection.QueryAsync<string>(
+                    "select tag from library_tag_definitions where library_id = @LibraryId union select tag from item_tag_memberships where library_id = @LibraryId;",
+                    new { LibraryId = updated.LibraryId.ToString() }, transaction)).ToArray();
+                if (requestedTags.Except(knownTags, StringComparer.Ordinal).Any())
+                {
+                    return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound,
+                        "A tag does not exist. Create tags by editing library.yml before assigning them to items.");
+                }
+
+                // Removing the last membership must not implicitly delete its category.
+                string[] previousTags = JsonSerializer.Deserialize<string[]>(existing.TagsJson) ?? [];
+                foreach (string tag in previousTags.Concat(requestedTags).Distinct(StringComparer.Ordinal))
+                {
+                    tagCatalogChanged |= await connection.ExecuteAsync(
+                        "insert or ignore into library_tag_definitions (library_id, tag) values (@LibraryId, @Tag);",
+                        new { LibraryId = updated.LibraryId.ToString(), Tag = tag }, transaction) > 0;
+                }
+            }
+
             updateParameters.Add("ExpectedUpdatedAt", request.ExpectedUpdatedAt?.ToUniversalTime().ToString("O"));
             int affected = await connection.ExecuteAsync(
                 """
@@ -412,7 +436,10 @@ public sealed class ItemService : IItemService
 
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
                 connection, transaction,
-                LibraryChangeSet.Empty with { ItemIds = [itemId], CollectionIds = collectionIds },
+                LibraryChangeSet.Empty with
+                {
+                    ItemIds = [itemId], CollectionIds = collectionIds, TagCatalogChanged = tagCatalogChanged
+                },
                 cancellationToken);
             if (revision.IsFailure)
             {
@@ -750,91 +777,95 @@ public sealed class ItemService : IItemService
                 Take = pageSize + 1
             };
 
-            int totalCount = await connection.ExecuteScalarAsync<int>(
-                """
-                select count(1)
-                from items
-                where library_id = @LibraryId
-                  and deleted_at is null
-                  and merged_into_item_id is null
-                  and (@ItemType is null or item_type = @ItemType)
-                  and (
-                      @Query is null
-                      or title like @QueryPattern
-                      or coalesce(subtitle, '') like @QueryPattern
-                      or coalesce(citation_key, '') like @QueryPattern
-                      or coalesce(publication_title, '') like @QueryPattern
-                      or exists (
-                          select 1
-                          from item_creators c
-                          where c.item_id = items.item_id
-                            and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
-                      )
-                  );
-                """,
-                parameters);
+            int? totalCount = null;
+            if (request.IncludeTotalCount)
+            {
+                totalCount = await connection.ExecuteScalarAsync<int>(
+                    """
+                    select count(1)
+                    from items
+                    where library_id = @LibraryId
+                      and deleted_at is null
+                      and merged_into_item_id is null
+                      and (@ItemType is null or item_type = @ItemType)
+                      and (
+                          @Query is null
+                          or title like @QueryPattern
+                          or coalesce(subtitle, '') like @QueryPattern
+                          or coalesce(citation_key, '') like @QueryPattern
+                          or coalesce(publication_title, '') like @QueryPattern
+                          or exists (
+                              select 1
+                              from item_creators c
+                              where c.item_id = items.item_id
+                                and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
+                          )
+                      );
+                    """,
+                    parameters);
+            }
+
+            string cursorClause = cursorCreatedAt is not null
+                ? "and (created_at, item_id) < (@CursorCreatedAt, @CursorItemId)"
+                : "";
 
             ItemRow[] rows = (await connection.QueryAsync<ItemRow>(
-                """
-                select
-                    item_id as ItemId,
-                    library_id as LibraryId,
-                    item_type as ItemType,
-                    citation_key as CitationKey,
-                    title as Title,
-                    subtitle as Subtitle,
-                    title_short as TitleShort,
-                    creators_json as CreatorsJson,
-                    date as Date,
-                    publication_title as PublicationTitle,
-                    container_title_short as ContainerTitleShort,
-                    collection_title as CollectionTitle,
-                    publisher as Publisher,
-                    place as Place,
-                    edition as Edition,
-                    genre as Genre,
-                    number as Number,
-                    chapter_number as ChapterNumber,
-                    volume as Volume,
-                    version as Version,
-                    issue as Issue,
-                    pages as Pages,
-                    language as Language,
-                    status as Status,
-                    note as Note,
-                    abstract as Abstract,
-                    tags_json as TagsJson,
-                    collections_json as CollectionsJson,
-                    custom_fields_json as CustomFieldsJson,
-                    created_at as CreatedAt,
-                    updated_at as UpdatedAt,
-                    deleted_at as DeletedAt
-                from items
-                where library_id = @LibraryId
-                  and deleted_at is null
-                  and merged_into_item_id is null
-                  and (@ItemType is null or item_type = @ItemType)
-                  and (
-                      @Query is null
-                      or title like @QueryPattern
-                      or coalesce(subtitle, '') like @QueryPattern
-                      or coalesce(citation_key, '') like @QueryPattern
-                      or coalesce(publication_title, '') like @QueryPattern
-                      or exists (
-                          select 1
-                          from item_creators c
-                          where c.item_id = items.item_id
-                            and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
-                      )
-                  )
-                  and (
-                      @CursorCreatedAt is null
-                      or created_at < @CursorCreatedAt
-                      or (created_at = @CursorCreatedAt and item_id < @CursorItemId)
-                  )
-                order by created_at desc, item_id desc
-                limit @Take;
-                """,
+                $"""
+                 select
+                     item_id as ItemId,
+                     library_id as LibraryId,
+                     item_type as ItemType,
+                     citation_key as CitationKey,
+                     title as Title,
+                     subtitle as Subtitle,
+                     title_short as TitleShort,
+                     creators_json as CreatorsJson,
+                     date as Date,
+                     publication_title as PublicationTitle,
+                     container_title_short as ContainerTitleShort,
+                     collection_title as CollectionTitle,
+                     publisher as Publisher,
+                     place as Place,
+                     edition as Edition,
+                     genre as Genre,
+                     number as Number,
+                     chapter_number as ChapterNumber,
+                     volume as Volume,
+                     version as Version,
+                     issue as Issue,
+                     pages as Pages,
+                     language as Language,
+                     status as Status,
+                     note as Note,
+                     abstract as Abstract,
+                     tags_json as TagsJson,
+                     collections_json as CollectionsJson,
+                     custom_fields_json as CustomFieldsJson,
+                     created_at as CreatedAt,
+                     updated_at as UpdatedAt,
+                     deleted_at as DeletedAt
+                 from items
+                 where library_id = @LibraryId
+                   and deleted_at is null
+                   and merged_into_item_id is null
+                   and (@ItemType is null or item_type = @ItemType)
+                   and (
+                       @Query is null
+                       or title like @QueryPattern
+                       or coalesce(subtitle, '') like @QueryPattern
+                       or coalesce(citation_key, '') like @QueryPattern
+                       or coalesce(publication_title, '') like @QueryPattern
+                       or exists (
+                           select 1
+                           from item_creators c
+                           where c.item_id = items.item_id
+                             and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
+                       )
+                   )
+                   {cursorClause}
+                 order by created_at desc, item_id desc
+                 limit @Take;
+                 """,
                 parameters)).ToArray();
 
             bool hasMore = rows.Length > pageSize;
@@ -1481,9 +1512,10 @@ public sealed class ItemService : IItemService
             return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item title is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(request.ItemType))
+        Result typeValidation = CslItemTypeValidation.Validate(request.ItemType);
+        if (typeValidation.IsFailure)
         {
-            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item type is required.");
+            return Result<ItemMetadata>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
         }
 
         Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);

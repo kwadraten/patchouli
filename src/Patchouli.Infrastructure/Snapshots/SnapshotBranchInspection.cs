@@ -719,6 +719,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             // selected because collections are independent of item membership.
             bool branchHasCollections = await TableExistsAsync(connection, "branch", "collections");
             bool branchHasItemCollections = await TableExistsAsync(connection, "branch", "item_collections");
+            if (sameLibrary && await TableExistsAsync(connection, "branch", "library_tag_definitions"))
+            {
+                await connection.ExecuteAsync(
+                    "insert or ignore into library_tag_definitions (library_id, tag) select @TargetLibraryId, tag from branch.library_tag_definitions where library_id = @TargetLibraryId;",
+                    new { TargetLibraryId = plan.TargetLibraryId.ToString() }, transaction);
+            }
+
             if (sameLibrary && branchHasCollections)
             {
                 await connection.ExecuteAsync(

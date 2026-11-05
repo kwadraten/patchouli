@@ -21,10 +21,12 @@ namespace Patchouli.Infrastructure.LibraryIdentity;
 public sealed class LibraryItemQueryService : ILibraryItemQueryService
 {
     private readonly SqliteConnectionFactory _connectionFactory;
+    private readonly IQueryRewriter? _rewriter;
 
-    public LibraryItemQueryService(SqliteConnectionFactory connectionFactory)
+    public LibraryItemQueryService(SqliteConnectionFactory connectionFactory, IQueryRewriter? rewriter = null)
     {
         _connectionFactory = connectionFactory;
+        _rewriter = rewriter;
     }
 
     private enum QueryScope
@@ -125,7 +127,32 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
         }
 
-        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search);
+        IReadOnlyList<string>? rewrittenQueries = null;
+        if (_rewriter is not null && !string.IsNullOrWhiteSpace(search.Query))
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            string? libraryText = await connection.ExecuteScalarAsync<string?>(
+                new CommandDefinition("select library_id from library_metadata limit 1;",
+                    cancellationToken: cancellationToken));
+            if (libraryText is not null)
+            {
+                LibraryId libraryId = LibraryId.Parse(libraryText);
+                if (await _rewriter.IsRewriteEnabledAsync(libraryId, cancellationToken))
+                {
+                    Result<SearchRewritePlan> plan = await _rewriter.BuildRewritePlanAsync(search.Query,
+                        new SearchRewriteOptions(libraryId), cancellationToken);
+                    if (plan.IsFailure)
+                    {
+                        return Result<IReadOnlyList<LibraryItemRow>>.Failure(plan.ErrorCode!, plan.ErrorMessage!);
+                    }
+
+                    rewrittenQueries = plan.Value.ExpandedQueries;
+                }
+            }
+        }
+
+        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search, rewrittenQueries);
         int limit = Math.Clamp(search.Limit <= 0 ? 500 : search.Limit, 1, 1000);
         (Result<IReadOnlyList<LibraryItemRow>> result, _) = await QueryPageAsync(
             limit, null, QueryScope.Active, cancellationToken, extraFilter: filterSql,
@@ -225,14 +252,14 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         {
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
-            const string activeItems = "from items where deleted_at is null and merged_into_item_id is null";
+            const string activeItems = "from items i where i.deleted_at is null and i.merged_into_item_id is null";
             List<string> itemTypes = (await connection.QueryAsync<string>(
-                $"select distinct item_type as Value {activeItems} order by item_type;")).ToList();
+                $"select distinct i.item_type as Value {activeItems} order by i.item_type;")).ToList();
             List<string> itemStatuses = (await connection.QueryAsync<string>(
-                $"select distinct coalesce(status, 'unset') as Value {activeItems} order by Value;")).ToList();
+                $"select distinct coalesce(i.status, 'unset') as Value {activeItems} order by Value;")).ToList();
             List<string> ocrStatuses = (await connection.QueryAsync<string>(
                 $"""
-                 select distinct {PrimaryDocumentOcrIndexStatusExpression("item_id")} as Value
+                 select distinct {PrimaryDocumentOcrIndexStatusExpression("i.item_id")} as Value
                  {activeItems} order by Value;
                  """)).ToList();
             IReadOnlyList<CollectionOptionRow> collectionRows = (await connection.QueryAsync<CollectionOptionRow>(
@@ -266,7 +293,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     }
 
     private static (string Sql, Dictionary<string, object?> Parameters) BuildSearchFilter(
-        BibliographicItemSearch search)
+        BibliographicItemSearch search, IReadOnlyList<string>? rewrittenQueries)
     {
         (List<string> clauses, Dictionary<string, object?> parameters) = BuildFilterClauses(search.Filters, "F");
         if (search.ExcludeGeneralItems)
@@ -282,24 +309,29 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             // Free text covers title, citation key, creators, identifiers, the
             // publication (journal/container) title and the issued year
             // (issue #14: BBT/TexPile search parity for year and venue).
-            clauses.Insert(0,
-                """
-                (instr(lower(i.title), @Q) > 0
-                 or instr(lower(i.citation_key), @Q) > 0
-                 or instr(lower(i.creators_json), @Q) > 0
-                 or instr(lower(coalesce(i.publication_title, '')), @Q) > 0
-                 or instr(i.date, @Q) > 0
-                 or exists (select 1 from item_dates issued_date
-                            where issued_date.item_id = i.item_id
-                              and issued_date.role = 'issued'
-                              and (instr(lower(coalesce(issued_date.literal, '')), @Q) > 0
-                                   or instr(issued_date.date_parts_json, @Q) > 0))
-                 or exists (select 1 from item_identifiers ident
-                            where ident.item_id = i.item_id
-                              and (instr(lower(ident.value), @Q) > 0
-                                   or instr(lower(ident.scheme), @Q) > 0)))
-                """);
-            parameters["Q"] = search.Query.Trim().ToLowerInvariant();
+            IReadOnlyList<string> queries = rewrittenQueries is { Count: > 0 } ? rewrittenQueries : [search.Query];
+            List<string> alternatives = [];
+            foreach (string query in queries.Distinct(StringComparer.Ordinal))
+            {
+                string key = "Q" + alternatives.Count.ToString(CultureInfo.InvariantCulture);
+                alternatives.Add($"""
+                                  (instr(lower(i.title), @{key}) > 0
+                                   or instr(lower(i.citation_key), @{key}) > 0
+                                   or instr(lower(i.creators_json), @{key}) > 0
+                                   or instr(lower(coalesce(i.publication_title, '')), @{key}) > 0
+                                   or instr(i.date, @{key}) > 0
+                                   or i.item_id in (select issued_date.item_id from item_dates issued_date
+                                                    where issued_date.role = 'issued'
+                                                      and (instr(lower(coalesce(issued_date.literal, '')), @{key}) > 0
+                                                           or instr(issued_date.date_parts_json, @{key}) > 0))
+                                   or i.item_id in (select ident.item_id from item_identifiers ident
+                                                    where instr(lower(ident.value), @{key}) > 0
+                                                       or instr(lower(ident.scheme), @{key}) > 0))
+                                  """);
+                parameters[key] = query.Trim().ToLowerInvariant();
+            }
+
+            clauses.Insert(0, "(" + string.Join(" or ", alternatives) + ")");
         }
 
         string sql = clauses.Count == 0 ? "" : "and " + string.Join(" and ", clauses) + " ";
@@ -309,13 +341,14 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     internal static (string Sql, Dictionary<string, object?> Parameters) BuildFilterSql(
         IReadOnlyList<BibliographicSearchFilter> filters, string parameterPrefix)
     {
-        (List<string> clauses, Dictionary<string, object?> parameters) = BuildFilterClauses(filters, parameterPrefix);
+        (List<string> clauses, Dictionary<string, object?> parameters) =
+            BuildFilterClauses(filters, parameterPrefix, true);
         string sql = clauses.Count == 0 ? "" : "and " + string.Join(" and ", clauses) + " ";
         return (sql, parameters);
     }
 
     private static (List<string> Clauses, Dictionary<string, object?> Parameters) BuildFilterClauses(
-        IReadOnlyList<BibliographicSearchFilter> filters, string parameterPrefix)
+        IReadOnlyList<BibliographicSearchFilter> filters, string parameterPrefix, bool scopeToOuterItem = false)
     {
         List<string> clauses = new();
         Dictionary<string, object?> parameters = new(StringComparer.Ordinal);
@@ -336,23 +369,36 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     break;
                 case BibliographicSearchFilterKeys.Author:
                     clauses.Add(
-                        $"""
-                         exists (select 1 from item_creators c
-                                 where c.item_id = i.item_id
-                                   and instr(lower(coalesce(c.literal, '') || ' ' || coalesce(c.given, '') || ' ' ||
-                                                   coalesce(c.particles, '') || ' ' || coalesce(c.family, '') || ' ' ||
-                                                   coalesce(c.suffix, '')), @{name}) > 0)
-                         """);
+                        scopeToOuterItem
+                            ? $"""
+                               exists (select 1 from item_creators c
+                                       where c.item_id = i.item_id
+                                         and instr(lower(coalesce(c.literal, '') || ' ' || coalesce(c.given, '') || ' ' ||
+                                                         coalesce(c.particles, '') || ' ' || coalesce(c.family, '') || ' ' ||
+                                                         coalesce(c.suffix, '')), @{name}) > 0)
+                               """
+                            : $"""
+                               i.item_id in (select c.item_id from item_creators c
+                                             where instr(lower(coalesce(c.literal, '') || ' ' || coalesce(c.given, '') || ' ' ||
+                                                               coalesce(c.particles, '') || ' ' || coalesce(c.family, '') || ' ' ||
+                                                               coalesce(c.suffix, '')), @{name}) > 0)
+                               """);
                     parameters[name] = filter.Value.Trim().ToLowerInvariant();
                     break;
                 case BibliographicSearchFilterKeys.Identifier:
                     clauses.Add(
-                        $"""
-                         exists (select 1 from item_identifiers ident
-                                 where ident.item_id = i.item_id
-                                   and (instr(lower(ident.value), @{name}) > 0
-                                        or instr(lower(ident.scheme), @{name}) > 0))
-                         """);
+                        scopeToOuterItem
+                            ? $"""
+                               exists (select 1 from item_identifiers ident
+                                       where ident.item_id = i.item_id
+                                         and (instr(lower(ident.value), @{name}) > 0
+                                              or instr(lower(ident.scheme), @{name}) > 0))
+                               """
+                            : $"""
+                               i.item_id in (select ident.item_id from item_identifiers ident
+                                             where instr(lower(ident.value), @{name}) > 0
+                                                or instr(lower(ident.scheme), @{name}) > 0)
+                               """);
                     parameters[name] = filter.Value.Trim().ToLowerInvariant();
                     break;
                 case BibliographicSearchFilterKeys.ItemType:
@@ -379,7 +425,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     break;
                 case BibliographicSearchFilterKeys.CollectionId:
                     clauses.Add(
-                        $"exists (select 1 from item_collections ic where ic.item_id = i.item_id and ic.collection_id = @{name})");
+                        $"i.item_id in (select ic.item_id from item_collections ic where ic.collection_id = @{name})");
                     parameters[name] = filter.Value.Trim();
                     break;
                 default:
@@ -583,10 +629,17 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 ? "and i.deleted_at is not null and i.merged_into_item_id is null"
                 : "and i.deleted_at is null and i.merged_into_item_id is null";
             string tagFilter = BuildTagFilter(requiredTags);
+            string keysetClause = after is null
+                ? ""
+                : "and (i.created_at, i.item_id) < (@AfterCreatedAt, @AfterItemId) ";
             DynamicParameters parameters = new();
             parameters.Add("Limit", take);
-            parameters.Add("AfterCreatedAt", after?.CreatedAt);
-            parameters.Add("AfterItemId", after?.ItemId.ToString());
+            if (after is not null)
+            {
+                parameters.Add("AfterCreatedAt", after.CreatedAt);
+                parameters.Add("AfterItemId", after.ItemId.ToString());
+            }
+
             parameters.Add("ItemIds", itemIds?.Select(static id => id.ToString()).ToArray());
             parameters.Add("RequiredTags", requiredTags?.ToArray());
             parameters.Add("RequiredTagCount", requiredTags?.Count ?? 0);
@@ -600,7 +653,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
             IEnumerable<CoreRow> rows = await connection.QueryAsync<CoreRow>(
                 string.Format(CultureInfo.InvariantCulture, CoreRowSqlTemplate, itemIdFilter, lifecycleClause,
-                    tagFilter, extraFilter),
+                    tagFilter, extraFilter, keysetClause),
                 parameters);
 
             CoreRow[] coreRows = rows.ToArray();
@@ -748,8 +801,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         left join file_assets fa on fa.file_asset_id = di.file_asset_id
         where 1 = 1
           {1}
-          and (@AfterCreatedAt is null or i.created_at < @AfterCreatedAt
-               or (i.created_at = @AfterCreatedAt and i.item_id < @AfterItemId))
+          {4}
           {0}
           {2}
           {3}

@@ -160,7 +160,7 @@ public sealed class McpV3ContractTests
     }
 
     [Fact]
-    public void Clean_success_envelope_omits_message()
+    public void Success_envelope_explicitly_describes_outcome_without_diagnostics()
     {
         McpEnvelope<McpFindMeta, McpFindEntry> envelope =
             McpEnvelope<McpFindMeta, McpFindEntry>.Create(new McpFindMeta("lib:1", 3, 3, 3),
@@ -170,6 +170,8 @@ public sealed class McpV3ContractTests
         root["continuation"].Should().BeNull("JSON null values surface as null nodes");
         root["meta"]!["library_revision"]!.GetValue<string>().Should().Be("lib:1");
         root["meta"]!["domain_total"]!.GetValue<int>().Should().Be(3);
+        root["meta"]!["outcome"]!.GetValue<string>().Should().Be("success");
+        root["meta"]!["summary"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]

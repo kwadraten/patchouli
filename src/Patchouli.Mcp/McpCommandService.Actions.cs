@@ -88,7 +88,8 @@ public sealed partial class McpCommandService
 
         McpEnvelope<McpActionSendMeta, McpActionSendResult> envelope =
             McpEnvelope<McpActionSendMeta, McpActionSendResult>.Create(
-                new McpActionSendMeta(revision, action, outcome.Value.State, endpoint),
+                new McpActionSendMeta(await CurrentLibraryRevisionAsync(cancellationToken), action, outcome.Value.State,
+                    endpoint),
                 [new McpActionSendResult(outcome.Value.State, outcome.Value.Result, outcome.Value.RunUri)]);
         return McpCommandResult<McpActionSendMeta, McpActionSendResult>.Ok(envelope);
     }
@@ -96,7 +97,7 @@ public sealed partial class McpCommandService
     private static McpCommandResult<McpActionSendMeta, McpActionSendResult> ActionFailure(
         string revision, string endpoint, string action, McpErrorCode code, string detail)
     {
-        return McpCommandResult<McpActionSendMeta, McpActionSendResult>.Partial(
+        return McpCommandResult<McpActionSendMeta, McpActionSendResult>.ErrorWithContent(
             McpEnvelope<McpActionSendMeta, McpActionSendResult>.Create(
                 new McpActionSendMeta(revision, action, "rejected", endpoint), [],
                 message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), [])), code, detail);

@@ -32,4 +32,5 @@ public sealed record UpdateItemRequest(
     IReadOnlyList<ItemCreatorInput>? Creators = null,
     IReadOnlyList<ItemDateInput>? Dates = null,
     DateTimeOffset? ExpectedUpdatedAt = null,
-    IReadOnlyList<CollectionId>? Collections = null);
+    IReadOnlyList<CollectionId>? Collections = null,
+    bool RequireKnownTags = false);

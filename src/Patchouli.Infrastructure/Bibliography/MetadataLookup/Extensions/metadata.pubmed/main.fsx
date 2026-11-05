@@ -64,7 +64,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Pubmed metadata extension.</summary>
-/// <patchouli-extension id="metadata.pubmed" kind="metadata" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="metadata.pubmed" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Pubmed</name>
 /// </patchouli-extension>
 let extension =

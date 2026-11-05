@@ -1,4 +1,6 @@
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -10,6 +12,32 @@ namespace Patchouli.Tests;
 
 public sealed class ItemTypeInferenceTests
 {
+    [Fact]
+    public async Task Invalid_types_are_rejected_when_suggested_or_accepted_from_legacy_rows()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata item = (await context.Items.CreateItemAsync("general", "Unclassified")).Value;
+        Result<ItemTypeInference> invalid = await context.Inference.SuggestAsync(item.ItemId, "newspaper", 0.9,
+            ItemTypeInferenceSources.IdentifierLookup, null);
+        invalid.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        invalid.ErrorMessage.Should().Contain("CSL-JSON");
+        ItemTypeInference suggestion = (await context.Inference.SuggestAsync(item.ItemId, "article-newspaper", 0.9,
+            ItemTypeInferenceSources.IdentifierLookup, null)).Value;
+        await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            "update item_type_inferences set suggested_type = 'newspaper' where inference_id = @Id",
+            new { Id = suggestion.InferenceId });
+
+        Result<ItemTypeInference> accepted = await context.Inference.AcceptSuggestionAsync(suggestion.InferenceId);
+
+        accepted.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        accepted.ErrorMessage.Should().Contain("CSL-JSON");
+        (await context.Items.GetItemAsync(item.ItemId)).Value.ItemType.Should().Be("general");
+        (await context.Inference.ListSuggestionsAsync(item.ItemId)).Value.Should().ContainSingle()
+            .Which.AcceptedAt.Should().BeNull();
+    }
+
     [Fact]
     public async Task Suggestion_creation_and_listing_round_trip()
     {

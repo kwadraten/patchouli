@@ -299,7 +299,7 @@ public static class DocumentPageMapYamlCodec
         }
 
         return node as JsonObject
-            ?? throw new FormatException($"'{key}' must be a mapping.");
+               ?? throw new FormatException($"'{key}' must be a mapping.");
     }
 
     private static JsonArray? OptionalArray(JsonObject obj, string key)
@@ -311,7 +311,7 @@ public static class DocumentPageMapYamlCodec
         }
 
         return node as JsonArray
-            ?? throw new FormatException($"'{key}' must be a list.");
+               ?? throw new FormatException($"'{key}' must be a list.");
     }
 
     private static int GetInt(JsonObject obj, string key)

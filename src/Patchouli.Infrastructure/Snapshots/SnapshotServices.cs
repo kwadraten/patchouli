@@ -23,6 +23,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     private static readonly string[] DataTables =
     [
         "library_metadata",
+        "library_tag_definitions",
         "collections",
         "items",
         "item_collections",
@@ -67,7 +68,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     private static readonly string[][] DataShardTableGroups =
     [
         [
-            "library_metadata", "collections", "items", "item_collections", "item_identifiers", "item_creators",
+            "library_metadata", "library_tag_definitions", "collections", "items", "item_collections",
+            "item_identifiers", "item_creators",
             "item_dates", "file_assets",
             "file_search_root_definitions", "known_file_locations", "document_instances"
         ],
@@ -1375,6 +1377,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
     private static readonly string[] MergeTables =
     [
         "library_metadata",
+        "library_tag_definitions",
         "collections",
         "items",
         "item_collections",

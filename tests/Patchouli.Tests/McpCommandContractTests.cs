@@ -578,8 +578,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         result.Envelope!.Entries.Should().HaveCount(2);
         result.Envelope.Entries[0].Complete.Should().BeTrue();
         ErrorCode(result.Envelope.Entries[1].Error).Should().Be((int)McpErrorCode.NotFound);
-        result.IsSuccess.Should().BeTrue("a single failed URI must not fail the request");
-        result.Envelope.Message.Should().BeNull();
+        result.IsSuccess.Should().BeFalse("any failed URI makes the call an error while retaining usable results");
+        result.Envelope.Meta.Outcome.Should().Be("error");
+        result.Envelope.Message!.Error.Should().Contain("NOT_FOUND");
     }
 
     [Fact]
@@ -903,20 +904,47 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Clean_successes_omit_message_across_all_tools()
+    public async Task Successful_reads_explicitly_describe_their_results()
     {
         McpCommandResult<McpFindMeta, object> find = await _library.Commands.FindAsync(
             new McpFindRequest(null, "patchouli://items/", null));
         find.Envelope!.Message.Should().BeNull();
+        find.Envelope.Meta.Outcome.Should().Be("success");
+        find.Envelope.Meta.Summary.Should().Contain("Browsed patchouli://items/");
 
         McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await _library.Commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
         fetch.Envelope!.Message.Should().BeNull();
+        fetch.Envelope.Meta.Outcome.Should().Be("success");
+        fetch.Envelope.Meta.Summary.Should().Contain("Read 1");
 
         McpCommandResult<McpCiteMeta, McpCitationResult> cite = await _library.Commands.CiteAsync(
             new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], McpResourceUris.StyleUri("apa"), null,
                 false, false));
         cite.Envelope!.Message.Should().BeNull();
+        cite.Envelope.Meta.Outcome.Should().Be("success");
+        cite.Envelope.Meta.Summary.Should().Contain("Rendered 1");
+    }
+
+    [Fact]
+    public async Task Mixed_read_and_citation_failures_are_errors_with_usable_results()
+    {
+        string existing = McpResourceUris.ItemUri(_library.BookA);
+        string missing = McpResourceUris.ItemUri(ItemId.New());
+        McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await _library.Commands.FetchAsync(
+            new McpFetchRequest([existing, missing], null, null));
+        fetch.IsSuccess.Should().BeFalse();
+        fetch.Envelope!.Meta.Outcome.Should().Be("error");
+        fetch.Envelope.Message!.Error.Should().Contain("NOT_FOUND");
+        fetch.Envelope.Entries[0].Content.Should().NotBeNullOrWhiteSpace();
+        fetch.Envelope.Entries[1].Error.Should().NotBeNullOrWhiteSpace();
+
+        McpCommandResult<McpCiteMeta, McpCitationResult> cite = await _library.Commands.CiteAsync(
+            new McpCiteRequest([existing, missing], McpResourceUris.StyleUri("apa"), null, false, false));
+        cite.IsSuccess.Should().BeFalse();
+        cite.Envelope!.Meta.Outcome.Should().Be("error");
+        cite.Envelope.Entries[0].Citation.Should().NotBeNullOrWhiteSpace();
+        cite.Envelope.Entries[1].Error.Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]

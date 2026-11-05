@@ -46,7 +46,7 @@ public sealed class McpYamlCodecTests
     }
 
     [Fact]
-    public void Item_yaml_round_trip_preserves_general_metadata_and_keeps_collections_read_only()
+    public void Item_yaml_round_trip_preserves_general_metadata_and_omitted_membership()
     {
         ItemId itemId = ItemId.New();
         LibraryId libraryId = LibraryId.New();

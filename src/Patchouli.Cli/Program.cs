@@ -297,13 +297,15 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "    Box batches contain 1 to 100 entries and require source_revision; translation writes also require translation_version.");
     Console.Error.WriteLine(
+        "    Translation writes skip empty legacy continuation boxes. Structure failures include box_errors[].structure_diff (zero-based block_index, expected, actual).");
+    Console.Error.WriteLine(
         "    Each content is a complete <box> XML element copied from fetch; preserve its structural attributes and edit its payload.");
     Console.Error.WriteLine(
         "    Source pages (texts/) accept box batches only; omit translation_version. Translation pages accept batches or whole-page XML.");
     Console.Error.WriteLine(
         "    Whole-page translation XML must retain the fetched source revision and translation version attributes.");
     Console.Error.WriteLine(
-        "    Writable: patchouli://items/<id>.yml, patchouli://csl-styles/<id>.csl, or page XML under texts/ and translations/.");
+        "    Writable: library.yml (tag/collection catalogs), items/<id>.yml (metadata and membership), csl-styles/<id>.csl, map.yml, or page XML under texts/ and translations/.");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
     Console.Error.WriteLine("  add <path> [--kind pdf|csl]");
     Console.Error.WriteLine(
@@ -339,5 +341,5 @@ static void PrintUsage()
         "Legacy .bib, .md and library.toon interfaces are deprecated in 0.4.0; migrate to .yml and .xml using the canonical URIs returned by the host.");
     Console.Error.WriteLine($"UNAVAILABLE: {CliUnavailableException.Guidance}");
     Console.Error.WriteLine(
-        "A clean success response has no message field; message is only present for warnings or errors.");
+        "Every response explicitly reports meta.outcome (success or error) and meta.summary. Errors may retain usable entries; retained or truncated content is still an error. message carries warnings or errors.");
 }

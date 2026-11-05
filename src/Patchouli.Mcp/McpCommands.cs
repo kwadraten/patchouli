@@ -22,7 +22,7 @@ public sealed record McpFindMeta(
     [property: JsonPropertyName("filtered_total")]
     int FilteredTotal,
     [property: JsonPropertyName("shown_total")]
-    int ShownTotal);
+    int ShownTotal) : McpResponseMeta;
 
 public sealed record McpFindEntry(
     [property: JsonPropertyName("uri")] string Uri,
@@ -110,7 +110,7 @@ public sealed record McpFetchRequest(IReadOnlyList<string> Uris, string? Range, 
 
 public sealed record McpFetchMeta(
     [property: JsonPropertyName("library_revision")]
-    string LibraryRevision);
+    string LibraryRevision) : McpResponseMeta;
 
 public sealed record McpFetchResult(
     [property: JsonPropertyName("uri")] string Uri,
@@ -157,7 +157,7 @@ public sealed record McpCiteMeta(
     [property: JsonPropertyName("render_format")]
     string RenderFormat,
     [property: JsonPropertyName("bibliography")]
-    string? Bibliography);
+    string? Bibliography) : McpResponseMeta;
 
 public sealed record McpCitationResult(
     [property: JsonPropertyName("ref")] string Ref,
@@ -169,7 +169,7 @@ public sealed record McpCitationResult(
 
 public sealed record McpPutMeta(
     [property: JsonPropertyName("library_revision")]
-    string LibraryRevision);
+    string LibraryRevision) : McpResponseMeta;
 
 public sealed record McpPutResult(
     [property: JsonPropertyName("uri")] string Uri,
@@ -198,7 +198,10 @@ public sealed record McpPutResult(
 public sealed record McpBoxPutError(
     [property: JsonPropertyName("box_id")] string BoxId,
     [property: JsonPropertyName("message")]
-    string Message);
+    string Message,
+    [property: JsonPropertyName("structure_diff")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpTranslationStructureError>? StructureDiff = null);
 
 /// <summary>Stable warning names rendered as compact terminal-style message lines.</summary>
 public static class McpWarningCodes
@@ -247,7 +250,7 @@ public sealed record McpAddRequest(
 
 public sealed record McpAddMeta(
     [property: JsonPropertyName("library_revision")]
-    string LibraryRevision);
+    string LibraryRevision) : McpResponseMeta;
 
 public sealed record McpAddIssue(
     [property: JsonPropertyName("code")] string Code,
@@ -293,7 +296,7 @@ public sealed record McpViewRequest(
 
 public sealed record McpViewMeta(
     [property: JsonPropertyName("library_revision")]
-    string LibraryRevision);
+    string LibraryRevision) : McpResponseMeta;
 
 /// <summary>
 /// Issue #11: image metadata carried in the text content block of a view response.
@@ -362,7 +365,7 @@ public sealed record McpActionSendMeta(
     [property: JsonPropertyName("action")] string Action,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("endpoint")]
-    string Endpoint = "");
+    string Endpoint = "") : McpResponseMeta;
 
 public sealed record McpActionSendResult(
     [property: JsonPropertyName("state")] string State,

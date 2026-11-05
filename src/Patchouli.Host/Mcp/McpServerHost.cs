@@ -57,6 +57,7 @@ public sealed class McpServerHost : IAsyncDisposable
     public bool IsRunning => _server?.IsRunning == true;
     public long? RunningSettingsRevision => Volatile.Read(ref _status).RunningSettingsRevision;
     public McpServerSettings? RunningSettings => Volatile.Read(ref _status).RunningSettings;
+    public McpServerSettings? AppliedSettings => Volatile.Read(ref _status).AppliedSettings;
     public string Endpoint => Volatile.Read(ref _status).Endpoint;
     public McpServerHostStatus Status => Volatile.Read(ref _status).Status;
     public string StatusDetail => Volatile.Read(ref _status).Detail;
@@ -91,10 +92,11 @@ public sealed class McpServerHost : IAsyncDisposable
     /// Standalone-server path: starts the listener from caller-supplied effective settings (for
     /// example app settings with a command-line port override) without a blocking-operation record.
     /// </summary>
-    public Task StartAsync(McpServerSettings explicitSettings, CancellationToken cancellationToken = default)
+    public Task StartAsync(McpServerSettings explicitSettings, CancellationToken cancellationToken = default,
+        McpServerSettings? appliedSettings = null)
     {
         ArgumentNullException.ThrowIfNull(explicitSettings);
-        return StartCoreAsync(explicitSettings, false, cancellationToken);
+        return StartCoreAsync(explicitSettings, false, cancellationToken, appliedSettings);
     }
 
     /// <summary>
@@ -166,7 +168,7 @@ public sealed class McpServerHost : IAsyncDisposable
     }
 
     private async Task StartCoreAsync(McpServerSettings? explicitSettings, bool recordProgress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, McpServerSettings? appliedSettings = null)
     {
         if (_server?.IsRunning == true)
         {
@@ -253,6 +255,8 @@ public sealed class McpServerHost : IAsyncDisposable
             {
                 RunningSettingsRevision = serverSettings.Revision,
                 RunningSettings = serverSettings,
+                // Automatic endpoint fallback does not change the user's applied configuration.
+                AppliedSettings = appliedSettings ?? serverSettings,
                 Endpoint = server.Endpoint
             });
             SetStatus(McpServerHostStatus.Running, BuildConnectionDetail());
@@ -298,7 +302,8 @@ public sealed class McpServerHost : IAsyncDisposable
         UpdateStatus(static snapshot => snapshot with
         {
             RunningSettingsRevision = null,
-            RunningSettings = null
+            RunningSettings = null,
+            AppliedSettings = null
         });
         SetStatus(McpServerHostStatus.Stopped, detail);
     }

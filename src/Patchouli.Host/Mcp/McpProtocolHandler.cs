@@ -196,7 +196,7 @@ public sealed class McpProtocolHandler
             instructions =
                 "Patchouli exposes structured Library tools. Use only the tool surface enabled for this server. " +
                 "Tool text defaults to TOON; format=json selects the equivalent JSON envelope. " +
-                "A clean success response has no message field; message is only present for warnings or errors."
+                "Every response explicitly reports meta.outcome (success or error) and meta.summary. Errors may retain usable entries; retained or truncated content is still an error. message carries warnings or errors."
         };
     }
 
@@ -376,7 +376,9 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.put",
-                "Replace one existing writable item bibliography, CSL style, document page map, source page XML, or translation page atomically.",
+                "Atomically replace library.yml catalogs, item metadata and tag/collection membership, a CSL style, document page map, source page XML, or translation page. " +
+                "Translation writes skip empty legacy continuation boxes. Markdown structure failures return box_errors[].structure_diff " +
+                "with zero-based block_index, expected and actual; correct those differences before retrying.",
                 ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
