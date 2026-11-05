@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using System.Globalization;
+using System.Text.Json;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -65,7 +66,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private PdfBBoxViewModel? _selectedBox;
     private DocumentTreeRevisionId? _currentRevisionId;
+
     private DocumentTreeRevisionId? _draftRevisionId;
+
+    // Box-set snapshot of the draft revision captured when the edit session starts. The leave
+    // guard compares the live draft against it, so a session that only entered edit mode
+    // auto-discards silently and only actual edits prompt save/discard/cancel.
+    private IReadOnlyList<DocumentBox>? _editBaseline;
+    private bool _editTransitionInProgress;
     private PageId? _currentPageId;
     private IReadOnlyList<DocumentBox> _loadedBoxes = [];
     private IReadOnlyList<Page> _pages = [];
@@ -189,9 +197,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         Register(System.Reactive.Disposables.Disposable.Create(() =>
             ChapterEditor.PropertyChanged -= OnChapterEditorPropertyChanged));
         ReadingImages = new CurrentPageImageSource(() => Image);
-        PreviousPageCommand = new AsyncCommand(PreviousPageAsync, () => !IsEditMode && PageIndex > 0);
+        PreviousPageCommand = new AsyncCommand(PreviousPageAsync, () => PageIndex > 0);
         NextPageCommand =
-            new AsyncCommand(NextPageAsync, () => !IsEditMode && PageCount > 0 && PageIndex < PageCount - 1);
+            new AsyncCommand(NextPageAsync, () => PageCount > 0 && PageIndex < PageCount - 1);
         ReloadCommand = new AsyncCommand(ReloadAsync);
         ZoomInCommand = new AsyncCommand(() =>
         {
@@ -204,7 +212,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return Task.CompletedTask;
         }, () => Zoom > 0.25);
 
-        EnterEditModeCommand = new AsyncCommand(EnterEditModeAsync);
+        EnterEditModeCommand = new AsyncCommand(EnterEditModeAsync, () => !IsEditMode);
         SaveAndExitCommand = new AsyncCommand(SaveAndExitAsync, () => EditSessionId is not null);
         CancelEditModeCommand = new AsyncCommand(CancelEditModeAsync, () => EditSessionId is not null);
         SelectToolCommand = new AsyncCommand(() =>
@@ -250,10 +258,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         RunCurrentPageOcrCommand = new AsyncCommand(RunCurrentPageOcrAsync);
         RunDocumentOcrCommand = new AsyncCommand(RunDocumentOcrAsync);
         CopyMarkdownCommand = new AsyncCommand(CopyMarkdownAsync);
-        ShowContentTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.Content);
-        ShowHistoryTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.History);
-        ShowTranslationTabCommand = new AsyncCommand(ShowTranslationTabAsync);
-        ShowChaptersTabCommand = new AsyncCommand(ShowChaptersTabAsync, () => !IsEditMode);
+        ShowContentTabCommand = new AsyncCommand(() => SwitchSidebarTabAsync(SidebarTab.Content));
+        ShowHistoryTabCommand = new AsyncCommand(() => SwitchSidebarTabAsync(SidebarTab.History));
+        ShowTranslationTabCommand = new AsyncCommand(() => SwitchSidebarTabAsync(SidebarTab.Translation));
+        ShowChaptersTabCommand = new AsyncCommand(() => SwitchSidebarTabAsync(SidebarTab.Chapters));
+        ShowBoxEditorTabCommand = new AsyncCommand(ShowBoxEditorTabAsync);
         ToggleTranslationCompareCommand =
             new RelayCommand(_ => IsTranslationCompareVisible = !IsTranslationCompareVisible);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
@@ -419,7 +428,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
-        ShowChaptersTabCommand?.NotifyCanExecuteChanged();
+        EnterEditModeCommand?.NotifyCanExecuteChanged();
         foreach (PdfBBoxViewModel box in BoundingBoxes)
         {
             box.NotifyEditModeChanged();
@@ -442,17 +451,43 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public bool IsHistoryTabActive => ActiveSidebarTab == SidebarTab.History;
     public bool IsTranslationTabActive => ActiveSidebarTab == SidebarTab.Translation;
     public bool IsChaptersTabActive => ActiveSidebarTab == SidebarTab.Chapters;
+
+    /// <summary>The box editor is the edit session's own sidebar surface, selected through
+    /// <see cref="ShowBoxEditorTabCommand"/> in the same menu as the view tabs.</summary>
+    public bool IsBoxEditorTabActive => IsEditMode;
+
     public bool IsNavigationSidebarVisible => !IsEditMode;
     public bool IsBoxSidebarVisible => IsEditMode;
     public ChapterSidebarViewModel ChapterEditor { get; }
 
-    public string SidebarTabTitle => ActiveSidebarTab switch
-    {
-        SidebarTab.History => "版本历史",
-        SidebarTab.Translation => "翻译",
-        SidebarTab.Chapters => "章节",
-        _ => "页面内容"
-    };
+    /// <summary>
+    /// Whether the draft revision's box tree differs from the snapshot taken when the edit
+    /// session started. Refreshed whenever draft boxes reload and re-verified against the
+    /// service before a guarded leave; pending UI work (drawn but uninserted boxes, splits,
+    /// local OCR candidates, merges) counts separately through
+    /// <see cref="HasUnsavedPageChanges"/>.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool DraftContentDiffers { get; private set; }
+
+    /// <summary>
+    /// True while leaving the page would lose work: the draft tree differs from the session
+    /// start, or a draft operation (pending box, split, local OCR candidate, merge) is open.
+    /// </summary>
+    public bool HasUnsavedPageChanges =>
+        IsEditMode &&
+        (DraftContentDiffers || IsNewBoxPending || IsSplitPending || HasCandidate || IsMergePending);
+
+    public string SidebarTabTitle => IsEditMode
+        ? "边界框列表"
+        : ActiveSidebarTab switch
+        {
+            SidebarTab.History => "版本历史",
+            SidebarTab.Translation => "翻译",
+            SidebarTab.Chapters => "章节",
+            SidebarTab.Search => "全书搜索",
+            _ => "页面内容"
+        };
 
     // Chapter navigation (issue #4): the flattened chapter tree of the document's page map.
     // The tree is rebuilt from the resolved map; expansion is preserved across reloads by
@@ -645,11 +680,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ApplySelection([box], additive);
     }
 
-    internal void SelectOverlapPair(PdfOverlapMarkerViewModel marker)
-    {
-        ApplySelection([marker.First, marker.Second], false);
-    }
-
     internal void ToggleTreeExpansion(PdfBBoxViewModel box)
     {
         if (!_collapsedBoxIds.Remove(box.BoxId))
@@ -781,10 +811,16 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand RunCurrentPageOcrCommand { get; }
     public AsyncCommand RunDocumentOcrCommand { get; }
     public AsyncCommand CopyMarkdownCommand { get; }
-    public RelayCommand ShowContentTabCommand { get; }
-    public RelayCommand ShowHistoryTabCommand { get; }
+    public AsyncCommand ShowContentTabCommand { get; }
+    public AsyncCommand ShowHistoryTabCommand { get; }
     public AsyncCommand ShowTranslationTabCommand { get; }
     public AsyncCommand ShowChaptersTabCommand { get; }
+
+    /// <summary>Selects the box editor sidebar surface: while editing it simply shows the box
+    /// list; from view mode it enters edit mode on the current page (same as
+    /// <see cref="EnterEditModeCommand"/>).</summary>
+    public AsyncCommand ShowBoxEditorTabCommand { get; }
+
     public RelayCommand ToggleTranslationCompareCommand { get; }
     public AsyncCommand MergeSelectedCommand { get; }
     public AsyncCommand ConfirmMergeCommand { get; }
@@ -1131,6 +1167,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         PageId pageId = _currentPageId.Value;
         NormalizedBBox region = PendingBBox.Value;
+        int rotationDegrees = (int)ViewportRotationAngle;
         string engineId = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Region);
         int libraryGeneration = _main.LibraryGeneration;
         int renderGeneration = _renderGeneration;
@@ -1159,7 +1196,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 }
 
                 return await services.Ocr.RecognizeRegionCandidateAsync(
-                    documentId, preset.Value, pageId, region, linked.Token);
+                    documentId, preset.Value, pageId, region, linked.Token, rotationDegrees);
             },
             result =>
             {
@@ -1282,6 +1319,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         PageId pageId = _currentPageId.Value;
         DocumentBox targetBox = source;
+        int rotationDegrees = (int)ViewportRotationAngle;
         string engineId = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Region);
         int libraryGeneration = _main.LibraryGeneration;
         int renderGeneration = _renderGeneration;
@@ -1310,7 +1348,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 }
 
                 return await services.Ocr.RecognizeRegionCandidateAsync(
-                    documentId, preset.Value, pageId, targetBox.BBox, linked.Token);
+                    documentId, preset.Value, pageId, targetBox.BBox, linked.Token, rotationDegrees);
             },
             result =>
             {
@@ -1500,7 +1538,26 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private Task RunCurrentPageOcrAsync()
     {
-        return RunPageEditOcrAsync(false);
+        return BeginCurrentPageOcrAsync();
+    }
+
+    private async Task BeginCurrentPageOcrAsync()
+    {
+        int rotationDegrees = (int)ViewportRotationAngle;
+        if (IsBusy || _editTransitionInProgress)
+        {
+            return;
+        }
+
+        if (!IsEditMode)
+        {
+            await EnterEditModeAsync();
+        }
+
+        if (IsEditMode)
+        {
+            await RunPageEditOcrAsync(false, rotationDegrees);
+        }
     }
 
     private HostServices? _editServices;
@@ -1509,17 +1566,18 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private Task? _interactiveOcrTask;
     private Task? _pageEditOcrTask;
 
-    private Task RunPageEditOcrAsync(bool requireLogicalPages)
+    private Task RunPageEditOcrAsync(bool requireLogicalPages, int? rotationDegrees = null)
     {
         if (_pageEditOcrTask is { IsCompleted: false })
         {
             return _pageEditOcrTask;
         }
 
-        return _pageEditOcrTask = RunPageEditOcrCoreAsync(requireLogicalPages);
+        return _pageEditOcrTask = RunPageEditOcrCoreAsync(requireLogicalPages,
+            rotationDegrees ?? (int)ViewportRotationAngle);
     }
 
-    private async Task RunPageEditOcrCoreAsync(bool requireLogicalPages)
+    private async Task RunPageEditOcrCoreAsync(bool requireLogicalPages, int rotationDegrees)
     {
         if (!IsEditMode || EditSessionId is not { } sessionId || _draftRevisionId is null || _currentPageId is null)
         {
@@ -1550,7 +1608,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                 using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                     context.CancellationToken, workspaceToken);
                 return await services.LogicalPageOcr.RunPageEditAsync(
-                    presetId.Value, sessionId, linked.Token);
+                    presetId.Value, sessionId, linked.Token, rotationDegrees);
             });
         if (!_main.IsCurrentLibraryContext(services, libraryGeneration) || renderGeneration != _renderGeneration ||
             EditSessionId != sessionId)
@@ -2224,6 +2282,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     public void Clear()
     {
+        ResetBookSearchState();
         _prefetchSubject.OnNext(default);
         ExitBookReading();
         Image?.Dispose();
@@ -2252,6 +2311,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SelectedBox = null;
         _currentRevisionId = null;
         _draftRevisionId = null;
+        _editBaseline = null;
+        DraftContentDiffers = false;
         EditSessionId = null;
         _editServices = null;
         _loadedBoxes = [];
@@ -2295,6 +2356,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     // Shutdown leaves manual drafts for the next exclusive Host's startup recovery.
     public async Task StopAsync()
     {
+        ResetBookSearchState();
         _renderGeneration++;
         _chapterMapGeneration++;
         _workspaceCancellation.Cancel();
@@ -2348,49 +2410,26 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task PreviousPageAsync()
     {
-        if (IsEditMode)
-        {
-            Status = "请先提交或放弃当前页面草稿，再切换页面。";
-            return;
-        }
-
         if (PageIndex <= 0)
         {
             return;
         }
 
-        PageIndex--;
-        _lastNavigationDirection = -1;
-        await RenderCurrentPageAsync();
+        await GoToPageIndexAsync(PageIndex - 1);
     }
 
     private async Task NextPageAsync()
     {
-        if (IsEditMode)
-        {
-            Status = "请先提交或放弃当前页面草稿，再切换页面。";
-            return;
-        }
-
-        if (PageCount > 0 && PageIndex >= PageCount - 1)
+        if (PageCount <= 0 || PageIndex >= PageCount - 1)
         {
             return;
         }
 
-        PageIndex++;
-        _lastNavigationDirection = 1;
-        await RenderCurrentPageAsync();
+        await GoToPageIndexAsync(PageIndex + 1);
     }
 
     internal async Task GoToPageAsync(int pageNumber)
     {
-        if (IsEditMode)
-        {
-            Status = "请先提交或放弃当前页面草稿，再切换页面。";
-            Raise(nameof(PageNumberText));
-            return;
-        }
-
         if (PageCount <= 0)
         {
             return;
@@ -2403,9 +2442,49 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        _lastNavigationDirection = target > PageIndex ? 1 : target < PageIndex ? -1 : 0;
-        PageIndex = target;
-        await RenderCurrentPageAsync();
+        await GoToPageIndexAsync(target);
+    }
+
+    /// <summary>
+    /// Zero-based page jump shared by the toolbar, page-number box, chapter navigation, search
+    /// results and continuation jumps. While editing it first resolves the current draft
+    /// (prompting only when actual edits exist), then re-opens an edit session on the
+    /// destination page so navigation keeps the user editing.
+    /// </summary>
+    private async Task GoToPageIndexAsync(int targetIndex)
+    {
+        if (_editTransitionInProgress)
+        {
+            Raise(nameof(PageNumberText));
+            return;
+        }
+
+        bool keepEditing = IsEditMode;
+        _editTransitionInProgress = keepEditing;
+        try
+        {
+            if (keepEditing && !await ConfirmLeavingEditedPageAsync())
+            {
+                Raise(nameof(PageNumberText));
+                return;
+            }
+
+            _lastNavigationDirection =
+                targetIndex > PageIndex ? 1 : targetIndex < PageIndex ? -1 : _lastNavigationDirection;
+            PageIndex = targetIndex;
+            await RenderCurrentPageAsync();
+            if (keepEditing && PageIndex == targetIndex && SourceValidationState == SourceValidationStatus.Current)
+            {
+                await EnterEditModeAsync();
+            }
+        }
+        finally
+        {
+            if (keepEditing)
+            {
+                _editTransitionInProgress = false;
+            }
+        }
     }
 
     internal bool TryHighlightBox(DocumentBoxId boxId)
@@ -2434,7 +2513,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private void SetZoom(double value)
     {
-        Zoom = Math.Clamp(value, 0.25, 4.0);
+        double minimumZoom = Math.Min(0.25, Zoom);
+        OnManualZoomChanging();
+        Zoom = Math.Clamp(value, minimumZoom, 4.0);
     }
 
     private async Task RenderCurrentPageAsync()
@@ -2996,6 +3077,21 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
 
         _loadedBoxes = snapshot.Boxes;
+        if (isDraft)
+        {
+            // The first draft load of a session doubles as the leave-guard baseline; later
+            // draft reloads measure real edits against it.
+            if (_editBaseline is { } baseline)
+            {
+                DraftContentDiffers = !BoxFingerprintsEqual(snapshot.Boxes, baseline);
+            }
+            else
+            {
+                _editBaseline = snapshot.Boxes;
+                DraftContentDiffers = false;
+            }
+        }
+
         int readingOrder = 0;
         List<PdfBBoxViewModel> views = [];
         foreach ((DocumentBox Box, int Depth) item in snapshot.Ordered)
@@ -3121,12 +3217,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        if (IsEditMode)
-        {
-            Status = "请先提交或放弃当前页面草稿，再跳转到接续源框。";
-            return;
-        }
-
         if (!_crossPageContinuationSources.TryGetValue(
                 box.BoxId, out (int PageIndex, DocumentBoxId HeadBoxId) target))
         {
@@ -3134,8 +3224,13 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        PageIndex = target.PageIndex;
-        await RenderCurrentPageAsync();
+        await GoToPageAsync(target.PageIndex + 1);
+        if (PageIndex != target.PageIndex)
+        {
+            // The pending-edit resolution kept us on the current page.
+            return;
+        }
+
         SelectedBox = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == target.HeadBoxId);
     }
 
@@ -3548,21 +3643,79 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    private async Task ShowTranslationTabAsync()
+    /// <summary>
+    /// Shared sidebar selector entry: every view tab (and the search worker's
+    /// <c>SidebarTab.Search</c>) routes here. While an edit session is active the draft is
+    /// resolved first — a real edit prompts save/discard/cancel, an untouched session
+    /// auto-discards — and the tab only switches when leaving is allowed.
+    /// </summary>
+    public async Task SwitchSidebarTabAsync(SidebarTab tab)
     {
-        ActiveSidebarTab = SidebarTab.Translation;
-        await LoadTranslationAsync();
-    }
-
-    private async Task ShowChaptersTabAsync()
-    {
-        if (IsEditMode)
+        if (_editTransitionInProgress)
         {
             return;
         }
 
-        ActiveSidebarTab = SidebarTab.Chapters;
-        await EnsureChapterMapLoadedAsync();
+        if (tab == SidebarTab.BoxEditor)
+        {
+            await ShowBoxEditorTabAsync();
+            return;
+        }
+
+        bool wasEditing = IsEditMode;
+        _editTransitionInProgress = wasEditing;
+        try
+        {
+            if (wasEditing)
+            {
+                if (!await ConfirmLeavingEditedPageAsync())
+                {
+                    return;
+                }
+
+                await RenderCurrentPageAsync();
+            }
+
+            await ActivateSidebarTabAsync(tab);
+        }
+        finally
+        {
+            if (wasEditing)
+            {
+                _editTransitionInProgress = false;
+            }
+        }
+    }
+
+    private async Task ActivateSidebarTabAsync(SidebarTab tab)
+    {
+        switch (tab)
+        {
+            case SidebarTab.Translation:
+                ActiveSidebarTab = SidebarTab.Translation;
+                await LoadTranslationAsync();
+                break;
+            case SidebarTab.Chapters:
+                ActiveSidebarTab = SidebarTab.Chapters;
+                await EnsureChapterMapLoadedAsync();
+                break;
+            default:
+                ActiveSidebarTab = tab;
+                break;
+        }
+    }
+
+    /// <summary>The selector's 编辑页面/边界框列表 entry: shows the editing surface while a
+    /// session is active, enters edit mode from view mode otherwise.</summary>
+    private async Task ShowBoxEditorTabAsync()
+    {
+        if (IsEditMode)
+        {
+            IsSidebarOpen = true;
+            return;
+        }
+
+        await EnterEditModeAsync();
     }
 
     /// <summary>
@@ -3826,12 +3979,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task NavigateToChapterPositionAsync(NavigationPosition target)
     {
-        if (IsEditMode)
-        {
-            Status = "请先提交或放弃当前页面草稿，再使用章节导航。";
-            return;
-        }
-
         await GoToPageAsync(target.PdfPage);
 
         if (PageIndex != target.PdfPage - 1)
@@ -3949,6 +4096,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task EnterEditModeAsync()
     {
+        if (IsEditMode)
+        {
+            return;
+        }
+
         using IDisposable? operation = EnterOperation();
         if (operation is null)
         {
@@ -3991,9 +4143,21 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         if (session.IsSuccess)
         {
+            // Snapshot the untouched draft as the leave guard's baseline; a superseding
+            // navigation during this read orphans the session, so re-check before adopting.
+            IReadOnlyList<DocumentBox> baseline = await Task.Run(() =>
+                LoadBoxesCoreAsync(services, session.Value.DraftRevisionId, DocumentBoxesLoadHandler));
+            if (generation != _renderGeneration || _currentPageId != pageId)
+            {
+                await Task.Run(() => services.DocumentTrees.DiscardPageEditAsync(session.Value.SessionId));
+                return;
+            }
+
             _editServices = services;
             EditSessionId = session.Value.SessionId;
             _draftRevisionId = session.Value.DraftRevisionId;
+            _editBaseline = baseline;
+            DraftContentDiffers = false;
             IsEditMode = true;
             IsSidebarOpen = true;
             SetActiveTool(PdfWorkspaceTool.Select);
@@ -4018,46 +4182,195 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        HostServices services = _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
-        PageEditSessionId sessionId = EditSessionId.Value;
-        Result<DocumentTreeRevision> res = await Task.Run(() => services.DocumentTrees.CommitPageEditAsync(sessionId));
-        if (EditSessionId != sessionId)
+        if (!await CommitEditSessionAsync())
         {
             return;
         }
 
-        if (res.IsSuccess)
-        {
-            IsEditMode = false;
-            _draftRevisionId = null;
-            EditSessionId = null;
-            _editServices = null;
-            ClearPendingBox();
-            ClearSplit();
-            ClearLocalOcrCandidate();
-            await ReloadAsync();
-        }
-        else
-        {
-            Status = $"保存失败：{res.ErrorMessage}";
-        }
+        await ReloadAsync();
     }
 
     private async Task CancelEditModeAsync()
     {
-        if (!await DiscardDraftAsync())
+        if (!await DiscardEditSessionAsync())
         {
             return;
         }
 
+        await ReloadAsync();
+    }
+
+    /// <summary>
+    /// Resolves the current page's edit session before a page or sidebar transition. An
+    /// untouched draft is discarded silently; a real edit prompts save/discard/cancel and
+    /// only proceeds on success. A false return leaves the session, page and editing state
+    /// untouched.
+    /// </summary>
+    private async Task<bool> ConfirmLeavingEditedPageAsync()
+    {
+        if (!IsEditMode)
+        {
+            return true;
+        }
+
+        using IDisposable? operation = EnterOperation();
+        if (operation is null)
+        {
+            return false;
+        }
+
+        if (EditSessionId is null)
+        {
+            ClearEditSessionState();
+            return true;
+        }
+
+        if (!HasPendingDraftUiState && !await DraftEditsDifferFromStartAsync())
+        {
+            return await DiscardEditSessionAsync();
+        }
+
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "未保存的编辑",
+                "当前页面有未保存的编辑。是否保存后继续？",
+                "保存并继续",
+                "放弃更改"));
+        switch (choice)
+        {
+            case ConfirmDialogResult.Confirm:
+                return await CommitEditSessionAsync();
+            case ConfirmDialogResult.Discard:
+                return await DiscardEditSessionAsync();
+            default:
+                Status = "已取消离开；仍在编辑当前页面。";
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Authoritative dirty check against the service: payload, geometry, tree structure,
+    /// suppression, continuation and OCR adoption all land in the same working-revision box
+    /// rows, so comparing the live draft against the session-start snapshot covers every edit.
+    /// </summary>
+    private async Task<bool> DraftEditsDifferFromStartAsync()
+    {
+        if (_draftRevisionId is not { } revisionId || _editBaseline is not { } baseline)
+        {
+            return false;
+        }
+
+        HostServices services = _editServices ?? await _main.ServicesAsync();
+        IReadOnlyList<DocumentBox> current = await Task.Run(() =>
+            LoadBoxesCoreAsync(services, revisionId, DocumentBoxesLoadHandler));
+        bool differs = !BoxFingerprintsEqual(current, baseline);
+        DraftContentDiffers = differs;
+        return differs;
+    }
+
+    /// <summary>Unsaved in-flight draft work that never reached the box rows (drawn but
+    /// uninserted box, split in progress, local OCR candidate, merge wizard).</summary>
+    private bool HasPendingDraftUiState =>
+        PendingBBox is not null || SplitSource is not null || LocalOcrCandidate is not null ||
+        IsMergePending;
+
+    /// <summary>Commits the draft and, on success only, tears down the edit session state.</summary>
+    private async Task<bool> CommitEditSessionAsync()
+    {
+        if (HasPendingDraftUiState)
+        {
+            Status = "请先完成或取消当前边界框操作，再保存页面。";
+            return false;
+        }
+
+        if (EditSessionId is not { } sessionId)
+        {
+            return true;
+        }
+
+        HostServices services =
+            _editServices ?? throw new InvalidOperationException("编辑会话所属的书库服务不可用。");
+        Result<DocumentTreeRevision> result =
+            await Task.Run(() => services.DocumentTrees.CommitPageEditAsync(sessionId));
+        if (EditSessionId != sessionId)
+        {
+            return false;
+        }
+
+        if (result.IsFailure)
+        {
+            Status = $"保存失败：{result.ErrorMessage}";
+            return false;
+        }
+
+        ClearEditSessionState();
+        return true;
+    }
+
+    /// <summary>Discards the draft and, on success only, tears down the edit session state.</summary>
+    private async Task<bool> DiscardEditSessionAsync()
+    {
+        if (!await DiscardDraftAsync())
+        {
+            return false;
+        }
+
+        ClearEditSessionState();
+        return true;
+    }
+
+    private void ClearEditSessionState()
+    {
         IsEditMode = false;
         _draftRevisionId = null;
+        _editBaseline = null;
+        DraftContentDiffers = false;
         EditSessionId = null;
         _editServices = null;
         ClearPendingBox();
         ClearSplit();
         ClearLocalOcrCandidate();
-        await ReloadAsync();
+        CancelContinuationPick();
+        ClearMerge();
+    }
+
+    private static bool BoxFingerprintsEqual(IReadOnlyList<DocumentBox> first,
+        IReadOnlyList<DocumentBox> second)
+    {
+        if (first.Count != second.Count)
+        {
+            return false;
+        }
+
+        return first.Select(BoxFingerprint).OrderBy(fingerprint => fingerprint, StringComparer.Ordinal)
+            .SequenceEqual(
+                second.Select(BoxFingerprint).OrderBy(fingerprint => fingerprint, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Canonical comparison key covering every persisted box field. Payloads serialize through
+    /// JSON so content and annotation differences compare by value — record equality would
+    /// compare the annotation list by reference and report false edits on untouched sessions.
+    /// </summary>
+    private static string BoxFingerprint(DocumentBox box)
+    {
+        return string.Join('',
+            box.BoxId.Value.ToString("N"),
+            box.ParentBoxId?.Value.ToString("N"),
+            box.NextSiblingBoxId?.Value.ToString("N"),
+            box.BoxType,
+            box.SubType,
+            box.BBox.X.ToString("R", CultureInfo.InvariantCulture),
+            box.BBox.Y.ToString("R", CultureInfo.InvariantCulture),
+            box.BBox.Width.ToString("R", CultureInfo.InvariantCulture),
+            box.BBox.Height.ToString("R", CultureInfo.InvariantCulture),
+            box.Payload is null ? null : JsonSerializer.Serialize(box.Payload, box.Payload.GetType()),
+            box.HeadingLevel,
+            box.CodeLanguage,
+            box.Confidence?.ToString("R", CultureInfo.InvariantCulture),
+            box.Suppressed,
+            box.ContinuesFromBoxId?.Value.ToString("N"),
+            box.ContinuationState);
     }
 
     private async Task LoadPageRevisionsAsync(HostServices services, DocumentInstanceId documentInstanceId,

@@ -65,6 +65,23 @@ public sealed partial class ItemFieldDescriptor : ViewModelBase
         : Array.AsReadOnly(KnownLanguages.Append(ResolveLanguageOption(Value)).ToArray());
 
     [ExcludeFromDerivedGeneration] public bool IsDate => Type == "Date";
+
+    [ExcludeFromDerivedGeneration]
+    public DateTime? CalendarDate
+    {
+        get => Value.Length == 10 && ItemDateText.TryParse(Value, out DateTime date) ? date : null;
+        set
+        {
+            if (value is { } date)
+            {
+                Value = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public DateTime CalendarDisplayDate => ItemDateText.TryParse(Value, out DateTime date) ? date : DateTime.Today;
+
     [ExcludeFromDerivedGeneration] public bool IsCreatorList => Type == "CreatorList";
     [ExcludeFromDerivedGeneration] public bool IsIdentifierBacked => Type == "IdentifierBacked";
     [ExcludeFromDerivedGeneration] public bool IsExtraCslBacked => Type == "ExtraCslBacked";
@@ -85,6 +102,12 @@ public sealed partial class ItemFieldDescriptor : ViewModelBase
 
     partial void OnValueChanged(string value)
     {
+        if (IsDate)
+        {
+            Raise(nameof(CalendarDate));
+            Raise(nameof(CalendarDisplayDate));
+        }
+
         if (IsLanguage && !_isUpdatingLanguageSelection)
         {
             _isUpdatingLanguageSelection = true;

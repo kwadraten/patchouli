@@ -1,0 +1,50 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Styles.Resources>
+    <SolidColorBrush x:Key="StatusBarButtonHoverBrush" Color="{DynamicResource InverseOnSurfaceColor}" Opacity="0.12" />
+    <SolidColorBrush x:Key="StatusBarButtonPressedBrush" Color="{DynamicResource InverseOnSurfaceColor}" Opacity="0.2" />
+  </Styles.Resources>
+  <!-- Template states must also override Fluent's ordinary surface colors. -->
+  <Style Selector="Button.statusBar">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+    <Setter Property="BorderThickness" Value="0" />
+  </Style>
+  <Style Selector="Button.statusBar /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+  </Style>
+  <Style Selector="Button.statusBar:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource StatusBarButtonHoverBrush}" />
+  </Style>
+  <Style Selector="Button.statusBar:pressed /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource StatusBarButtonPressedBrush}" />
+  </Style>
+  <Style Selector="Button.statusBar:disabled /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Opacity" Value="0.4" />
+  </Style>
+  <!-- The MCP flyout has a fixed dark surface in both application modes. -->
+  <Style Selector="Button.mcpPopupAction">
+    <Setter Property="Background" Value="#3E3E3E" />
+    <Setter Property="Foreground" Value="White" />
+    <Setter Property="BorderThickness" Value="0" />
+  </Style>
+  <Style Selector="Button.mcpPopupAction /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="#3E3E3E" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+  <Style Selector="Button.mcpPopupAction:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="#505050" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+  <Style Selector="Button.mcpPopupAction:pressed /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="#626262" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+  <Style Selector="Button.mcpPopupAction:disabled /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="#3E3E3E" />
+    <Setter Property="Foreground" Value="White" />
+    <Setter Property="Opacity" Value="0.4" />
+  </Style>
+</Styles>

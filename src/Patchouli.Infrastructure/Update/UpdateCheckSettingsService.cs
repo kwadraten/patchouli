@@ -135,7 +135,7 @@ public sealed class UpdateCheckSettingsService : IUpdateCheckSettingsService
             {
                 JsonValueKind.True => true,
                 JsonValueKind.False => false,
-                _ => true,
+                _ => true
             };
         }
 
@@ -200,7 +200,7 @@ public sealed class UpdateCheckSettingsService : IUpdateCheckSettingsService
         JsonObject section = new()
         {
             ["AutoCheckEnabled"] = settings.AutoCheckEnabled,
-            ["UpdatedAt"] = _clock.UtcNow.ToUniversalTime().ToString("O"),
+            ["UpdatedAt"] = _clock.UtcNow.ToUniversalTime().ToString("O")
         };
         if (settings.LastCheckUtc.HasValue)
         {

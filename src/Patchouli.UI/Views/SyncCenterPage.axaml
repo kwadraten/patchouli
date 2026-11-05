@@ -98,8 +98,8 @@
                          Foreground="{DynamicResource ErrorBrush}" />
               <Button Content="解决内容冲突" Command="{Binding ResolveConflictsCommand}"
                       IsEnabled="{Binding CanResolveContentConflicts}" HorizontalAlignment="Left" />
-              <CheckBox Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}"
-                        IsEnabled="{Binding HasIncomingPlan}" />
+              <ToggleSwitch Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}"
+                            IsEnabled="{Binding HasIncomingPlan}" />
               <Button Content="应用已检查的内容" Command="{Binding ApplyCommand}" IsEnabled="{Binding CanApply}"
                       Classes="Primary" HorizontalAlignment="Left" />
               <Separator />

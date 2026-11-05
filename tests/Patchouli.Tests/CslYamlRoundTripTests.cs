@@ -19,6 +19,26 @@ namespace Patchouli.Tests;
 public sealed class CslYamlRoundTripTests
 {
     [Theory]
+    [InlineData("newspaper")]
+    [InlineData("web")]
+    public async Task Nonstandard_yaml_types_return_csl_json_guidance_and_preserve_the_entire_item(string itemType)
+    {
+        await using TestContext context = await CreateContextAsync();
+        string original = (await context.Read.GetItemYamlAsync(context.ItemId, true)).Value;
+        JsonObject csl = Fields();
+        csl["type"] = itemType;
+        csl["title"] = "Must not be saved";
+        csl["URL"] = "https://example.test/must-not-be-saved";
+
+        Result<McpPutResponse> result = await context.PutAsync(csl);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        result.ErrorMessage.Should().Contain("CSL-JSON").And.Contain("article-newspaper");
+        (await context.Read.GetItemYamlAsync(context.ItemId, true)).Value.Should().Be(original);
+    }
+
+    [Theory]
     [InlineData(2019)]
     [InlineData(2026)]
     public async Task Year_only_yaml_renders_without_a_literal(int year)

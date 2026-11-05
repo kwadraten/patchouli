@@ -37,8 +37,21 @@
         <controls:LineNumberedTextEditor ContentText="{Binding Value}" MinHeight="180"
                                          IsVisible="{Binding IsNoteLineEditor}" />
 
-        <TextBox Text="{Binding Value}" PlaceholderText="如 2026-07-09 或 2026"
-                 IsVisible="{Binding IsDate}" />
+        <TextBox Text="{Binding Value}" PlaceholderText="YYYY / YYYY-MM / YYYY-MM-DD"
+                 IsVisible="{Binding IsDate}">
+          <TextBox.InnerRightContent>
+            <CalendarDatePicker SelectedDate="{Binding CalendarDate, Mode=TwoWay}"
+                                DisplayDate="{Binding CalendarDisplayDate, Mode=OneWay}"
+                                Width="36" MinHeight="0" Padding="0" BorderThickness="0"
+                                Background="Transparent" ToolTip.Tip="选择日期">
+              <CalendarDatePicker.Styles>
+                <Style Selector="CalendarDatePicker /template/ TextBox#PART_TextBox">
+                  <Setter Property="IsVisible" Value="False" />
+                </Style>
+              </CalendarDatePicker.Styles>
+            </CalendarDatePicker>
+          </TextBox.InnerRightContent>
+        </TextBox>
 
         <StackPanel Spacing="8" IsVisible="{Binding IsCreatorList}">
           <ItemsControl ItemsSource="{Binding Creators}">
@@ -61,7 +74,7 @@
                   </Grid>
                   <Border Classes="CardTile" IsVisible="{Binding IsExpanded}">
                     <StackPanel Spacing="10">
-                      <CheckBox Content="整体署名" IsChecked="{Binding IsLiteral}" />
+                      <ToggleSwitch Content="整体署名" IsChecked="{Binding IsLiteral}" />
                       <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
                         <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding Family}" PlaceholderText="姓"
                                  IsEnabled="{Binding IsPersonalName}" />
@@ -283,9 +296,14 @@
                             <TextBlock Text="{Binding Name}" FontSize="12"
                                        Foreground="{DynamicResource OnSurfaceBrush}"
                                        VerticalAlignment="Center" />
-                            <Button x:Name="RemoveEditorTagButton" Content="×" Padding="0" FontSize="12"
+                            <Button x:Name="RemoveEditorTagButton" Padding="0"
                                     Width="16" Height="16" Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                    Background="Transparent" Command="{Binding RemoveCommand}" />
+                                    VerticalAlignment="Center"
+                                    HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                    Background="Transparent" Command="{Binding RemoveCommand}" ToolTip.Tip="移除标签">
+                              <lucide:Lucide Icon="X" Width="12" Height="12"
+                                             StrokeBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            </Button>
                           </StackPanel>
                         </Border>
                       </DataTemplate>
@@ -315,7 +333,7 @@
                   </ItemsControl.ItemsPanel>
                   <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="editor:CollectionSelectionItemViewModel">
-                      <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="0,0,12,4" />
+                      <ToggleSwitch Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="0,0,12,4" />
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>

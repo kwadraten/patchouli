@@ -7,12 +7,16 @@
   <Border Classes="Card">
     <StackPanel Spacing="12">
       <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="{Binding Title}" Classes="CardTitle" />
-        <Button Grid.Column="1" Content="刷新列表" Command="{Binding RefreshCommand}"
-                ToolTip.Tip="重新读取组件列表" AutomationProperties.Name="刷新列表" />
+        <TextBlock Text="{Binding Title}" Classes="CardTitle" ToolTip.Tip="{Binding Description}" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button Command="{Binding RefreshCommand}" ToolTip.Tip="刷新列表" AutomationProperties.Name="刷新列表">
+            <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+          </Button>
+          <Button Click="AddExtensionClicked" ToolTip.Tip="添加扩展" AutomationProperties.Name="添加扩展">
+            <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+          </Button>
+        </StackPanel>
       </Grid>
-      <TextBlock Text="{Binding Description}" FontSize="12" TextWrapping="Wrap"
-                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
       <ItemsControl ItemsSource="{Binding Components}">
         <ItemsControl.ItemTemplate>
           <DataTemplate DataType="settings:OcrComponentRowViewModel">

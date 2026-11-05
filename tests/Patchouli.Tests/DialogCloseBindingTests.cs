@@ -1,5 +1,9 @@
 using Avalonia.Controls;
+using Avalonia;
 using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
@@ -72,12 +76,26 @@ public sealed class DialogCloseBindingTests(AvaloniaSharedSessionFixture headles
             try
             {
                 Task<ConfirmDialogResult> confirmation = dialog.ShowDialog<ConfirmDialogResult>(owner);
-                switch (action)
+                if (action == "close")
                 {
-                    case "confirm": vm.ConfirmCommand.Execute(null); break;
-                    case "discard": vm.DiscardCommand.Execute(null); break;
-                    case "cancel": vm.CancelCommand.Execute(null); break;
-                    default: dialog.Close(); break;
+                    dialog.Close();
+                }
+                else
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    dialog.UpdateLayout();
+                    string content = action switch
+                    {
+                        "confirm" => vm.ConfirmText,
+                        "discard" => vm.DiscardText!,
+                        _ => "取消"
+                    };
+                    Button button = dialog.GetVisualDescendants().OfType<Button>()
+                        .Single(value => Equals(value.Content, content));
+                    Point point = button.TranslatePoint(new Point(button.Bounds.Width / 2, button.Bounds.Height / 2),
+                        dialog)!.Value;
+                    dialog.MouseDown(point, MouseButton.Left);
+                    dialog.MouseUp(point, MouseButton.Left);
                 }
 
                 confirmation.IsCompleted.Should().BeTrue();

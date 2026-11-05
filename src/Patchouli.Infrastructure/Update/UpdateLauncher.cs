@@ -53,7 +53,7 @@ public sealed class UpdateLauncher
             ProcessStartInfo startInfo = new()
             {
                 FileName = installerPath,
-                UseShellExecute = true,
+                UseShellExecute = true
             };
 
             using Process? process = Process.Start(startInfo);
@@ -76,5 +76,4 @@ public sealed class UpdateLauncher
                 $"安装程序启动失败：{exception.Message}"));
         }
     }
-
 }

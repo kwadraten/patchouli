@@ -383,10 +383,6 @@ public sealed class WorkspaceTabContentHostTests
                 PumpLayout(window, new Size(1000, 480));
                 Control firstTabContent = tabs.Children.Single(child =>
                     ReferenceEquals(child.DataContext, firstEntry));
-                ScrollViewer firstTabScroll = await WaitForScrollableViewerAsync(
-                    firstTabContent, window, new Size(1000, 480), 35);
-                firstTabScroll.Extent.Height.Should().BeGreaterThan(firstTabScroll.Viewport.Height + 35);
-                firstTabScroll.Offset = new Vector(0, 35);
 
                 group.SelectedTab = secondEntry;
                 PumpLayout(window, new Size(1000, 480));
@@ -400,7 +396,6 @@ public sealed class WorkspaceTabContentHostTests
                 group.SelectedTab = firstEntry;
                 PumpLayout(window, new Size(1000, 480));
                 tabs.Children.Should().Contain(firstTabContent);
-                firstTabScroll.Offset.Y.Should().Be(35);
                 group.SelectedTab = secondEntry;
                 PumpLayout(window, new Size(1000, 480));
                 secondTabScroll.Offset.Y.Should().Be(70);

@@ -218,7 +218,7 @@ public sealed class BibtexExportMapperTests
     public void Text_fields_escape_latex_special_characters()
     {
         ItemMetadata item = Item("book", "doe2020",
-            title: "Fish & Chips: 100% #1 Under_score $5 ~home ^2",
+            "Fish & Chips: 100% #1 Under_score $5 ~home ^2",
             publisher: "A & B Press");
 
         Result<BiblatexWriteEntryDto> mapped = BibtexExportMapper.MapItem(item);
@@ -232,7 +232,7 @@ public sealed class BibtexExportMapperTests
     [Fact]
     public void Balanced_braces_survive_as_case_protection_while_specials_are_escaped()
     {
-        ItemMetadata item = Item("book", "nasa2020", title: "The {NASA} Missions & Failures");
+        ItemMetadata item = Item("book", "nasa2020", "The {NASA} Missions & Failures");
 
         Result<BiblatexWriteEntryDto> mapped = BibtexExportMapper.MapItem(item);
 

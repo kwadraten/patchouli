@@ -25,7 +25,7 @@ public static class CslItemTypeProfileService
         ["title"] = new ItemFieldDefinition("Title", "标题", "String"),
         ["author"] = new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"),
         ["editor"] = new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"),
-        ["issued"] = new ItemFieldDefinition("IssuedDate", "日期", "Date"),
+        ["issued"] = new ItemFieldDefinition("IssuedDate", "出版时间", "Date"),
         ["title-short"] = new ItemFieldDefinition("TitleShort", "短标题", "String"),
         ["subtitle"] = new ItemFieldDefinition("Subtitle", "副标题", "String"),
         ["note"] = new ItemFieldDefinition("Note", "附注", "Note"),
@@ -56,7 +56,7 @@ public static class CslItemTypeProfileService
     [
         new("Title", "标题", "String"),
         new("Creators", "作者/贡献者", "CreatorList"),
-        new("IssuedDate", "日期", "Date"),
+        new("IssuedDate", "出版时间", "Date"),
         new("PublicationTitle", "期刊/出处", "String"),
         new("Publisher", "出版社/机构", "String"),
         new("Place", "地点", "String"),
@@ -108,7 +108,7 @@ public static class CslItemTypeProfileService
 
         visible.Add(new ItemFieldDefinition("Title", "标题", "String"));
         visible.Add(new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"));
-        visible.Add(new ItemFieldDefinition("IssuedDate", "日期", "Date"));
+        visible.Add(new ItemFieldDefinition("IssuedDate", "出版时间", "Date"));
         visible.AddRange(typeFields);
         if (profile.ItemType != "webpage")
         {

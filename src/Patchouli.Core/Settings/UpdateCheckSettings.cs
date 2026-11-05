@@ -13,6 +13,6 @@ public sealed record UpdateCheckSettings(
         // Auto-check defaults to ON: security and stability fixes reach users
         // without manual polling; checks are throttled to once per 24 hours and
         // stay silent when the app is already up to date. See ADR 0048.
-        return new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null);
+        return new UpdateCheckSettings(true, null);
     }
 }

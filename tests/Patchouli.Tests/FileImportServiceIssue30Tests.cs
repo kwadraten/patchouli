@@ -47,14 +47,14 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         TaskCompletionSource releaseImport = NewSignal();
         Harness harness = CreateHarness(
             coordinator,
-            committed: null,
-            pdfHandler: async _ =>
+            null,
+            async _ =>
             {
                 importEntered.TrySetResult();
                 await releaseImport.Task;
                 return PdfImportResultFactory.Imported();
             },
-            roots: [first]);
+            [first]);
         string source = WriteFile("claimed.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "claimed.pdf");
 
@@ -88,14 +88,14 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         CancellationToken token = cancelling.Token;
         Harness harness = CreateHarness(
             coordinator,
-            committed: new FakeCommittedLookup(),
-            pdfHandler: _ =>
+            new FakeCommittedLookup(),
+            _ =>
             {
                 // ReSharper disable once AccessToDisposedClosure -- asserted before disposal.
                 cancelling.Cancel();
                 throw new OperationCanceledException(token);
             },
-            roots: [first]);
+            [first]);
         string source = WriteFile("cancel-uncommitted.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "cancel-uncommitted.pdf");
 
@@ -121,8 +121,8 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         CancellationToken token = cancelling.Token;
         Harness harness = CreateHarness(
             coordinator,
-            committed: lookup,
-            pdfHandler: _ =>
+            lookup,
+            _ =>
             {
                 // The commit landed; only afterwards was cancellation observed.
                 lookup.Committed = true;
@@ -130,7 +130,7 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
                 cancelling.Cancel();
                 throw new OperationCanceledException(token);
             },
-            roots: [first]);
+            [first]);
         string source = WriteFile("cancel-committed.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "cancel-committed.pdf");
 
@@ -155,13 +155,13 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         FakeCommittedLookup lookup = new();
         Harness harness = CreateHarness(
             coordinator,
-            committed: lookup,
-            pdfHandler: _ =>
+            lookup,
+            _ =>
             {
                 lookup.Committed = true;
                 return Task.FromResult(PdfImportResultFactory.Failed("boom"));
             },
-            roots: [first]);
+            [first]);
         string source = WriteFile("fail-committed.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "fail-committed.pdf");
 
@@ -183,9 +183,9 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         FileOperationCoordinator coordinator = new();
         Harness harness = CreateHarness(
             coordinator,
-            committed: new FakeCommittedLookup(),
-            pdfHandler: _ => Task.FromResult(PdfImportResultFactory.Failed("boom")),
-            roots: [first]);
+            new FakeCommittedLookup(),
+            _ => Task.FromResult(PdfImportResultFactory.Failed("boom")),
+            [first]);
         string source = WriteFile("fail-uncommitted.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "fail-uncommitted.pdf");
 
@@ -209,9 +209,9 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
         CancellationToken token = cancelling.Token;
         Harness harness = CreateHarness(
             coordinator,
-            committed: new CancellingCommittedLookup(cancelling),
-            pdfHandler: _ => Task.FromResult(PdfImportResultFactory.Failed("boom")),
-            roots: [first]);
+            new CancellingCommittedLookup(cancelling),
+            _ => Task.FromResult(PdfImportResultFactory.Failed("boom")),
+            [first]);
         string source = WriteFile("fail-cancel-during-recovery.pdf", PdfBytes);
         string target = Path.Combine(first.RootPath, "fail-cancel-during-recovery.pdf");
 
@@ -281,8 +281,10 @@ public sealed class FileImportServiceIssue30Tests : IDisposable
 
     // ---- harness & fakes ----
 
-    private static TaskCompletionSource NewSignal() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource NewSignal()
+    {
+        return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private string WriteFile(string relativePath, string content)
     {

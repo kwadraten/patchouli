@@ -32,13 +32,15 @@ public sealed class PageMapLogicalRuleTests
         DocumentBoxId c = Box("03");
         DocumentBoxId d = Box("04");
         DocumentPageMap map = new(DocId, [],
-            [new LogicalPaginationRule(5, 7, 1,
+            [
+                new LogicalPaginationRule(5, 7, 1,
                 [
                     new LogicalPageReadingEntry(a, 5),
                     new LogicalPageReadingEntry(b, 5),
                     new LogicalPageReadingEntry(c, 6),
                     new LogicalPageReadingEntry(d, 7)
-                ])],
+                ])
+            ],
             [], []);
 
         PageMapValidator.Validate(map).Should().BeEmpty();
@@ -62,12 +64,14 @@ public sealed class PageMapLogicalRuleTests
         DocumentBoxId b = Box("02");
         DocumentBoxId c = Box("03");
         DocumentPageMap map = new(DocId, [],
-            [new LogicalPaginationRule(5, 6, 7,
+            [
+                new LogicalPaginationRule(5, 6, 7,
                 [
                     new LogicalPageReadingEntry(b, 6),
                     new LogicalPageReadingEntry(a, 5),
                     new LogicalPageReadingEntry(c, 6)
-                ])],
+                ])
+            ],
             [], []);
 
         IReadOnlyList<LogicalRuleHealth> health = Healthy(map);
@@ -96,8 +100,10 @@ public sealed class PageMapLogicalRuleTests
     {
         DocumentPageMap map = new(DocId,
             [new PhysicalPaginationRule(6, 10, 1)],
-            [new LogicalPaginationRule(5, 6, 50,
-                [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 50,
+                    [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])
+            ],
             [], []);
 
         PageMapValidator.Validate(map).Should().Contain(error => error.Code == "mixed_rule_kinds");
@@ -108,8 +114,10 @@ public sealed class PageMapLogicalRuleTests
     {
         DocumentPageMap map = new(DocId,
             [new PhysicalPaginationRule(1, 4, 1)],
-            [new LogicalPaginationRule(5, 6, 50,
-                [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 50,
+                    [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])
+            ],
             [], []);
 
         PageMapValidator.Validate(map).Should().BeEmpty();
@@ -121,11 +129,13 @@ public sealed class PageMapLogicalRuleTests
         // Pages 6 and 8 have no logical pages inside the [5, 8] logical range: the range must
         // be re-split or given a complete logical division instead of silently counting them.
         DocumentPageMap map = new(DocId, [],
-            [new LogicalPaginationRule(5, 8, 1,
+            [
+                new LogicalPaginationRule(5, 8, 1,
                 [
                     new LogicalPageReadingEntry(Box("01"), 5),
                     new LogicalPageReadingEntry(Box("02"), 7)
-                ])],
+                ])
+            ],
             [], []);
 
         IReadOnlyList<PageMapValidationError> errors = PageMapValidator.Validate(map);
@@ -193,8 +203,10 @@ public sealed class PageMapLogicalRuleTests
     {
         DocumentBoxId a = Box("01");
         DocumentPageMap map = new(DocId, [],
-            [new LogicalPaginationRule(5, 6, 10,
-                [new LogicalPageReadingEntry(a, 5), new LogicalPageReadingEntry(Box("02"), 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 10,
+                    [new LogicalPageReadingEntry(a, 5), new LogicalPageReadingEntry(Box("02"), 6)])
+            ],
             [],
             [ChapterNode.Leaf("ch1", "第一章", new NavigationPosition(5, a))]);
 
@@ -215,7 +227,7 @@ public sealed class PageMapLogicalRuleTests
             [new LogicalPaginationRule(3, 3, 5, [new LogicalPageReadingEntry(a, 3)])],
             [], []);
         IReadOnlyList<LogicalRuleHealth> health =
-            [new LogicalRuleHealth(0, true, [new MapDiagnostic("logical_page_deleted", "gone")])];
+            [new(0, true, [new MapDiagnostic("logical_page_deleted", "gone")])];
 
         // The paused logical rule contributes nothing…
         PageMapResolver.ResolveReverse(map, health, 5).Should().BeEmpty();
@@ -230,8 +242,10 @@ public sealed class PageMapLogicalRuleTests
         DocumentBoxId a = Box("01");
         DocumentPageMap map = new(DocId,
             [new PhysicalPaginationRule(1, 2, 5)],
-            [new LogicalPaginationRule(3, 4, 5,
-                [new LogicalPageReadingEntry(a, 3), new LogicalPageReadingEntry(Box("02"), 4)])],
+            [
+                new LogicalPaginationRule(3, 4, 5,
+                    [new LogicalPageReadingEntry(a, 3), new LogicalPageReadingEntry(Box("02"), 4)])
+            ],
             [], []);
 
         IReadOnlyList<NavigationPosition> positions =

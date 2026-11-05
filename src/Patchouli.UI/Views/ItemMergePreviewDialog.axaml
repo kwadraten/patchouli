@@ -43,7 +43,14 @@
                   <DataGridTextColumn Header="目标值" Binding="{Binding TargetValue}" Width="*" />
                   <DataGridTextColumn Header="来源值" Binding="{Binding SourceValue}" Width="*" />
                   <DataGridTextColumn Header="将使用" Binding="{Binding SelectedValue}" Width="*" />
-                  <DataGridCheckBoxColumn Header="使用来源" Binding="{Binding UseSourceValue}" Width="90" />
+                  <DataGridTemplateColumn Header="使用来源" Width="90">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate DataType="vm:MergeConflictRowViewModel">
+                        <ToggleSwitch IsChecked="{Binding UseSourceValue}" HorizontalAlignment="Center"
+                                      AutomationProperties.Name="使用来源字段" />
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
                 </DataGrid.Columns>
               </DataGrid>
             </Border>

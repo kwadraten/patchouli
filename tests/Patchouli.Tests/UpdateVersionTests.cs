@@ -12,19 +12,19 @@ namespace Patchouli.Tests;
 public sealed class UpdateVersionTests
 {
     [Theory]
-    [InlineData("0.3.9", "0.3.13", -1)]   // numeric, not lexicographic ("9" > "13" as strings)
+    [InlineData("0.3.9", "0.3.13", -1)] // numeric, not lexicographic ("9" > "13" as strings)
     [InlineData("0.3.13", "0.3.9", 1)]
     [InlineData("0.3.13", "0.3.13", 0)]
-    [InlineData("v0.3.13", "0.3.13", 0)]  // leading "v" tolerated
+    [InlineData("v0.3.13", "0.3.13", 0)] // leading "v" tolerated
     [InlineData("V0.3.13", "0.3.13", 0)]
     [InlineData("0.3.13-beta", "0.3.13", -1)] // pre-release < final
     [InlineData("0.3.13", "0.3.13-beta", 1)]
     [InlineData("0.3.13-alpha", "0.3.13-beta", -1)]
     [InlineData("0.3.13-beta.10", "0.3.13-beta.2", 1)] // SemVer: numeric identifiers compare by value
     [InlineData("0.3.13-beta.2", "0.3.13-beta.10", -1)]
-    [InlineData("0.3.10", "0.3.9", 1)]    // 10 > 9 numerically
+    [InlineData("0.3.10", "0.3.9", 1)] // 10 > 9 numerically
     [InlineData("0.3.12", "0.3.12", 0)]
-    [InlineData("1.0", "1.0.0", 0)]       // missing parts are zero
+    [InlineData("1.0", "1.0.0", 0)] // missing parts are zero
     [InlineData("0.3.13+build.1", "0.3.13", 0)] // build metadata ignored
     public void CompareTo_orders_versions_numerically(string left, string right, int expectedSign)
     {
@@ -61,10 +61,10 @@ public sealed class UpdateVersionTests
     [InlineData("   ")]
     [InlineData("abc")]
     [InlineData("v")]
-    [InlineData("1.2.3.4.5")]  // too many parts
+    [InlineData("1.2.3.4.5")] // too many parts
     [InlineData("1..3")]
     [InlineData("1.-2")]
-    [InlineData("0.3.13-")]    // dangling pre-release separator
+    [InlineData("0.3.13-")] // dangling pre-release separator
     public void TryParse_rejects_invalid_versions(string text)
     {
         UpdateVersion.TryParse(text, out UpdateVersion? version).Should().BeFalse();
@@ -79,13 +79,13 @@ public sealed class UpdateVersionTests
     }
 
     [Theory]
-    [InlineData("1.0.0-2", "1.0.0-alpha", -1)]       // numeric identifiers rank below alphanumeric
+    [InlineData("1.0.0-2", "1.0.0-alpha", -1)] // numeric identifiers rank below alphanumeric
     [InlineData("1.0.0-alpha", "1.0.0-2", 1)]
     [InlineData("1.0.0-alpha.1", "1.0.0-alpha.1.2", -1)] // longer identifier list wins on ties
     [InlineData("1.0.0-alpha.1.2", "1.0.0-alpha.1", 1)]
     [InlineData("1.0.0-beta.02", "1.0.0-beta.2", 0)] // leading zeros do not change numeric value
-    [InlineData("1.0.0-rc.1", "1.0.0-beta.11", 1)]   // "rc" > "beta" ordinally
-    [InlineData("1.0.0-alpha", "1.0.0-ALPHA", 1)]    // alphanumeric identifiers compare ordinally
+    [InlineData("1.0.0-rc.1", "1.0.0-beta.11", 1)] // "rc" > "beta" ordinally
+    [InlineData("1.0.0-alpha", "1.0.0-ALPHA", 1)] // alphanumeric identifiers compare ordinally
     public void CompareTo_applies_semver_prerelease_rules(string left, string right, int expectedSign)
     {
         UpdateVersion leftVersion = UpdateVersion.Parse(left);

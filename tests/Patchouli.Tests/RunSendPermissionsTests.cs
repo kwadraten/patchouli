@@ -12,7 +12,7 @@ namespace Patchouli.Tests;
 public sealed class RunSendPermissionsTests(AvaloniaSharedSessionFixture headless)
 {
     [Fact]
-    public async Task Checkbox_clicks_select_all_clear_all_and_promote_partial_to_all()
+    public async Task Switch_clicks_select_all_clear_all_and_promote_partial_to_all()
     {
         await headless.Session.Dispatch(() =>
         {
@@ -20,9 +20,10 @@ public sealed class RunSendPermissionsTests(AvaloniaSharedSessionFixture headles
             McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
             RunSendPermissionsViewModel group = new(McpPermissionPolicy.RunSendDomains, settings,
                 (domain, enabled) => saved[domain] = enabled);
-            ClickableCheckBox parent = new()
+            ClickableToggleSwitch parent = new()
                 { IsThreeState = true, Command = group.ToggleCommand, DataContext = group };
-            parent.Bind(CheckBox.IsCheckedProperty, new Binding(nameof(group.Checked)) { Mode = BindingMode.OneWay });
+            parent.Bind(ToggleSwitch.IsCheckedProperty,
+                new Binding(nameof(group.Checked)) { Mode = BindingMode.OneWay });
             parent.IsChecked.Should().BeFalse();
             parent.InvokeClick();
             Dispatcher.UIThread.RunJobs();
@@ -61,7 +62,7 @@ public sealed class RunSendPermissionsTests(AvaloniaSharedSessionFixture headles
         }, CancellationToken.None);
     }
 
-    private sealed class ClickableCheckBox : CheckBox
+    private sealed class ClickableToggleSwitch : ToggleSwitch
     {
         public void InvokeClick()
         {

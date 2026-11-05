@@ -1770,7 +1770,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         editorXaml.Should().Contain("RegisterFileCommand");
         settingsXaml.Should().Contain("FileSearchRoot");
         settingsXaml.Should().Contain("OCR 预设");
-        settingsXaml.Should().Contain("搜索配置");
+        settingsXaml.Should().Contain("搜索框页面感知");
         settingsXaml.Should().Contain("MCP");
         settingsXaml.Should().Contain("Streamable HTTP");
         settingsXaml.Should().Contain("命令行工具 (patchouli-cli)");
@@ -2500,7 +2500,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await vm.Library.CreateCommand.ExecuteAsync();
 
             NavCategoryViewModel category = vm.Settings.Categories
-                .Single(c => ReferenceEquals(c.Content, vm.Settings.SearchRewriteSettings));
+                .Single(c => c.Content is SettingsSectionGroupViewModel group &&
+                             group.Entries.Any(entry =>
+                                 ReferenceEquals(entry.Content, vm.Settings.SearchRewriteSettings)));
             category.Title.Should().Be("搜索");
             category.IconName.Should().Be("Filter");
 
@@ -2509,6 +2511,13 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             vm.Settings.ActiveCategory.Should().BeSameAs(category);
             vm.ShowSettingsTab.Should().BeTrue();
             vm.Settings.SearchRewriteSettings.Status.Should().Be("已加载");
+            vm.Settings.ActiveTabbedGroup!.ActiveEntry.Id.Should().Be("search_rewrite");
+            await vm.Settings.SelectSectionAsync("search_awareness");
+            vm.Settings.ActiveCategory.Should().BeSameAs(category);
+            vm.Settings.ActiveTabbedGroup.ActiveEntry.Content.Should()
+                .BeSameAs(vm.Settings.SearchRewriteSettings.Awareness);
+            await vm.OpenSearchRewriteSettingsCommand.ExecuteAsync();
+            vm.Settings.ActiveTabbedGroup.ActiveEntry.Id.Should().Be("search_rewrite");
         }
         finally
         {
@@ -2762,7 +2771,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         string settingsPath = WriteSettingsFile("fallback-token");
         try
         {
-            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+            await using MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
                 { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -2771,8 +2780,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
                     "provider-token");
             saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+            await vm.ShutdownAsync();
 
-            MainWindowViewModel reloaded = new(new FakeClipboard(), settingsPath: settingsPath)
+            await using MainWindowViewModel reloaded = new(new FakeClipboard(), settingsPath: settingsPath)
                 { RuntimeDatabasePath = path };
             await reloaded.OpenDatabaseCommand.ExecuteAsync();
 
@@ -3005,7 +3015,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "selected.pdf");
-            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+            await using MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
                 { RuntimeDatabasePath = path };
             vm.UpdateAppOptions(vm.AppOptions with
             {
@@ -3025,7 +3035,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             vm.IsLibraryVisible.Should().BeTrue();
             vm.Shell.Items.Should().ContainSingle();
             HostServices services = await vm.ServicesAsync();
-            File.ReadAllText(settingsPath).Should().Contain("token");
+            (await vm.SettingsStore.SaveImmediatelyAsync()).IsSuccess.Should().BeTrue();
+            (await ReadFileWithRetryAsync(settingsPath)).Should().Contain("token");
             (await vm.GetPersistedMinerUTokenAsync()).Should().Be("token");
 
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
@@ -3043,7 +3054,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await queue.WaitForIdleAsync();
             await vm.Shell.RefreshItemsAsync();
 
-            File.ReadAllText(settingsPath).Should().Contain("token");
+            (await vm.SettingsStore.SaveImmediatelyAsync()).IsSuccess.Should().BeTrue();
+            (await ReadFileWithRetryAsync(settingsPath)).Should().Contain("token");
             (await vm.GetPersistedMinerUTokenAsync()).Should().Be("token");
             modelVersionUsed.Should().BeNull("the app settings own the MinerU API model version fallback");
             tokenUsed.Should().Be("token");
@@ -3077,6 +3089,23 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             if (File.Exists(settingsPath))
             {
                 File.Delete(settingsPath);
+            }
+        }
+    }
+
+    /// <summary>The settings store debounces background saves; a read racing one of
+    /// them can hit a transient share violation on the shared temp directory.</summary>
+    private static async Task<string> ReadFileWithRetryAsync(string path, int attempts = 10)
+    {
+        for (int attempt = 0;; attempt++)
+        {
+            try
+            {
+                return await File.ReadAllTextAsync(path);
+            }
+            catch (IOException) when (attempt < attempts)
+            {
+                await Task.Delay(100);
             }
         }
     }
@@ -4398,7 +4427,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             Calls.Add("region");
             return Task.FromResult(Result<OcrRun>.Success(Run));
@@ -4445,14 +4474,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
             IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-            IProgress<OcrTaskStageProgress>? progress = null)
+            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }

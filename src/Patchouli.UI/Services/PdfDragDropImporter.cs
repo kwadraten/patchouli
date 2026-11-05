@@ -97,7 +97,7 @@ public sealed class PdfDragDropImporter
             new ModalOperationOptions(
                 "导入 PDF",
                 $"正在导入 {pdfs.Count} 个 PDF 文件。",
-                CanCancel: true),
+                true),
             context => RunImportsAsync(pdfs, rejected, context, cancellationToken));
 
         await ShowSummaryAsync(outcome);

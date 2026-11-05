@@ -1,0 +1,85 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <SolidColorBrush x:Key="ScrollViewerScrollBarsSeparatorBackground" Color="Transparent" />
+  <SolidColorBrush x:Key="ScrollBarTrackHoverBrush" Color="{DynamicResource OnSurfaceColor}" Opacity="0.08" />
+  <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="{DynamicResource OnSurfaceColor}" Opacity="0.45" />
+  <SolidColorBrush x:Key="ScrollBarThumbHoverBrush" Color="{DynamicResource OnSurfaceColor}" Opacity="0.65" />
+  <SolidColorBrush x:Key="ScrollBarThumbPressedBrush" Color="{DynamicResource OnSurfaceColor}" Opacity="0.85" />
+
+  <ControlTheme x:Key="SlimScrollBarThumb" TargetType="Thumb">
+    <Setter Property="Background" Value="{DynamicResource ScrollBarThumbBrush}" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Margin="2" CornerRadius="3" Background="{TemplateBinding Background}" />
+      </ControlTemplate>
+    </Setter>
+    <Style Selector="^:pointerover">
+      <Setter Property="Background" Value="{DynamicResource ScrollBarThumbHoverBrush}" />
+    </Style>
+    <Style Selector="^:pressed">
+      <Setter Property="Background" Value="{DynamicResource ScrollBarThumbPressedBrush}" />
+    </Style>
+  </ControlTheme>
+
+  <ControlTheme x:Key="SlimScrollBarPageButton" TargetType="RepeatButton">
+    <Setter Property="Focusable" Value="False" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Background="Transparent" />
+      </ControlTemplate>
+    </Setter>
+  </ControlTheme>
+
+  <!-- Keep the full ten-pixel drag target while drawing a six-pixel thumb. -->
+  <ControlTheme x:Key="{x:Type ScrollBar}" TargetType="ScrollBar">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="MinWidth" Value="0" />
+    <Setter Property="MinHeight" Value="0" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Background="{TemplateBinding Background}" CornerRadius="5">
+          <Track Name="PART_Track"
+                 Minimum="{TemplateBinding Minimum}"
+                 Maximum="{TemplateBinding Maximum}"
+                 Value="{TemplateBinding Value, Mode=TwoWay}"
+                 ViewportSize="{TemplateBinding ViewportSize}"
+                 Orientation="{TemplateBinding Orientation}"
+                 DeferThumbDrag="{TemplateBinding ScrollViewer.IsDeferredScrollingEnabled}">
+            <Track.DecreaseButton>
+              <RepeatButton Name="PART_PageUpButton" Theme="{StaticResource SlimScrollBarPageButton}"
+                            AutomationProperties.Name="向前翻页" />
+            </Track.DecreaseButton>
+            <Track.IncreaseButton>
+              <RepeatButton Name="PART_PageDownButton" Theme="{StaticResource SlimScrollBarPageButton}"
+                            AutomationProperties.Name="向后翻页" />
+            </Track.IncreaseButton>
+            <Thumb Theme="{StaticResource SlimScrollBarThumb}" AutomationProperties.Name="滚动位置" />
+          </Track>
+        </Border>
+      </ControlTemplate>
+    </Setter>
+    <Style Selector="^:vertical">
+      <Setter Property="Width" Value="10" />
+      <Setter Property="ContextFlyout" Value="{StaticResource VerticalScrollBarContextFlyout}" />
+      <Style Selector="^ /template/ Track#PART_Track">
+        <Setter Property="IsDirectionReversed" Value="True" />
+      </Style>
+      <Style Selector="^ /template/ Thumb">
+        <Setter Property="MinHeight" Value="24" />
+      </Style>
+    </Style>
+    <Style Selector="^:horizontal">
+      <Setter Property="Height" Value="10" />
+      <Setter Property="ContextFlyout" Value="{StaticResource HorizontalScrollBarContextFlyout}" />
+      <Style Selector="^ /template/ Thumb">
+        <Setter Property="MinWidth" Value="24" />
+      </Style>
+    </Style>
+    <Style Selector="^:pointerover">
+      <Setter Property="Background" Value="{DynamicResource ScrollBarTrackHoverBrush}" />
+    </Style>
+    <Style Selector="^:disabled">
+      <Setter Property="Opacity" Value="0.3" />
+    </Style>
+  </ControlTheme>
+</ResourceDictionary>

@@ -4,6 +4,36 @@ namespace Patchouli.Tests;
 
 public sealed class NugetResolverPreflightTests
 {
+    [Theory]
+    [InlineData("9.0.999", false)]
+    [InlineData("10.0.100", true)]
+    [InlineData("11.0.100-preview.1", true)]
+    [InlineData("not-sdk", false)]
+    public void Sdk_must_support_the_current_host_target(string version, bool expected)
+    {
+        Assert.Equal(expected, NugetResolverPreflight.supportsSdkVersion(version));
+    }
+
+    [Fact]
+    public async Task Runtime_only_and_incompatible_hosts_do_not_hide_a_later_usable_sdk()
+    {
+        List<string> visited = [];
+        NugetSdkProbeResult result = await NugetResolverPreflight.selectSdkHostAsync(
+            ["runtime-only", "older-sdk", "usable-sdk", "unused"],
+            (host, _) =>
+            {
+                visited.Add(host);
+                return Task.FromResult(host switch
+                {
+                    "runtime-only" => NugetSdkProbeResult.NewRuntimeOnly(host),
+                    "older-sdk" => NugetSdkProbeResult.NewSdkIncompatible(host),
+                    _ => NugetSdkProbeResult.NewSdkAvailable(host)
+                });
+            }, CancellationToken.None);
+        Assert.True(result.IsSdkAvailable);
+        Assert.Equal(new[] { "runtime-only", "older-sdk", "usable-sdk" }, visited);
+    }
+
     [Fact]
     public void CandidatePathsKeepExplicitRuntimePathAndPathPrecedenceBeforeWindowsGlobals()
     {

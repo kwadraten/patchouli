@@ -162,7 +162,8 @@ public sealed partial class PdfBBoxViewModel : ViewModelBase
         Raise(nameof(HandleOwner));
     }
 
-    public int ZIndex => IsSelected ? 1 : 0;
+    // Selection must not obscure a later-numbered overlapping box's hit target.
+    public int ZIndex => ReadingOrder;
 
     [ExcludeFromDerivedGeneration] public bool ShowHandles => IsSelected && Workspace.IsEditMode;
 

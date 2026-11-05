@@ -1,11 +1,16 @@
 using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
+using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.UI;
 using Patchouli.UI.Themes;
@@ -224,6 +229,126 @@ public sealed class ThemePaletteApplierTests(AvaloniaSharedSessionFixture headle
 
             window.Close();
             return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Slim_scrollbars_and_inverse_status_buttons_keep_their_interaction_states_across_themes()
+    {
+        await headless.Session.Dispatch(() =>
+        {
+            ScrollViewer viewer = new()
+            {
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+                AllowAutoHide = false,
+                Content = new Border { Width = 1200, Height = 1200 }
+            };
+            Button button = new() { Content = "MCP: 运行中", Classes = { "statusBar" } };
+            Border status = new() { Child = button };
+            Grid layout = new() { RowDefinitions = new RowDefinitions("*,28") };
+            layout.Children.Add(viewer);
+            Grid.SetRow(status, 1);
+            layout.Children.Add(status);
+            Window window = new() { Width = 500, Height = 350, Content = layout };
+            window.Show();
+            try
+            {
+                foreach (string mode in new[] { UiPreferences.ThemeModeLight, UiPreferences.ThemeModeDark })
+                {
+                    ThemePaletteApplier.Apply(UiColorPalettes.DefaultPaletteId, mode);
+                    status.Background = (IBrush)Application.Current!.FindResource("InverseSurfaceBrush")!;
+                    viewer.Offset = default;
+                    window.MouseMove(new Point(20, 20));
+                    window.UpdateLayout();
+                    ScrollBar[] bars = viewer.GetVisualDescendants().OfType<ScrollBar>().ToArray();
+                    bars.Should().HaveCount(2);
+                    foreach (ScrollBar bar in bars)
+                    {
+                        bool vertical = bar.Orientation == Orientation.Vertical;
+                        (vertical ? bar.Bounds.Width : bar.Bounds.Height).Should().Be(10);
+                        ((ISolidColorBrush)bar.Background!).Color.A.Should().Be(0);
+                        Track track = bar.GetVisualDescendants().OfType<Track>().Single();
+                        track.IsDirectionReversed.Should().Be(vertical);
+                        Thumb thumb = track.Thumb!;
+                        Point start = thumb.TranslatePoint(new Point(5, 5), window)!.Value;
+                        window.MouseMove(start);
+                        bar.Background!.Opacity.Should().BeInRange(0.01, 0.2);
+                        window.MouseDown(start, MouseButton.Left);
+                        Point end = start + (vertical ? new Vector(0, 40) : new Vector(40, 0));
+                        window.MouseMove(end);
+                        window.MouseUp(end, MouseButton.Left);
+                        (vertical ? viewer.Offset.Y : viewer.Offset.X).Should().BeGreaterThan(0);
+                        window.MouseMove(new Point(20, 20));
+                        ((ISolidColorBrush)bar.Background!).Color.A.Should().Be(0);
+                    }
+
+                    ContentPresenter presenter = button.GetVisualDescendants().OfType<ContentPresenter>().First();
+                    Point buttonPoint = button.TranslatePoint(new Point(10, 10), window)!.Value;
+                    Color inverseText = ((ISolidColorBrush)Application.Current!.FindResource("InverseOnSurfaceBrush")!)
+                        .Color;
+                    window.MouseMove(buttonPoint);
+                    ((ISolidColorBrush)presenter.Background!).Color.Should().Be(inverseText);
+                    presenter.Background.Opacity.Should().Be(0.12);
+                    window.MouseDown(buttonPoint, MouseButton.Left);
+                    presenter.Background.Opacity.Should().Be(0.2);
+                    window.MouseUp(buttonPoint, MouseButton.Left);
+                    string previewDirectory = TestPaths.FromRepositoryRoot(".tmp", "tests", "scrollbar-previews");
+                    Directory.CreateDirectory(previewDirectory);
+                    using RenderTargetBitmap bitmap = new(new PixelSize(500, 350));
+                    bitmap.Render(window);
+                    bitmap.Save(Path.Combine(previewDirectory, $"scrollbars-status-{mode}.png"));
+                }
+
+                return true;
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Mcp_popup_copy_button_keeps_dark_surface_states_in_both_application_themes()
+    {
+        await headless.Session.Dispatch(() =>
+        {
+            Button copy = new() { Classes = { "mcpPopupAction" }, Content = "复制", Width = 30, Height = 30 };
+            Window window = new()
+            {
+                Width = 200, Height = 100,
+                Content = new Border { Background = Brush.Parse("#2E2E2E"), Child = copy }
+            };
+            window.Show();
+            try
+            {
+                foreach (string mode in new[] { UiPreferences.ThemeModeLight, UiPreferences.ThemeModeDark })
+                {
+                    ThemePaletteApplier.Apply(UiColorPalettes.DefaultPaletteId, mode);
+                    window.UpdateLayout();
+                    ContentPresenter presenter = copy.GetVisualDescendants().OfType<ContentPresenter>().First();
+                    Point point = copy.TranslatePoint(new Point(15, 15), window)!.Value;
+                    window.MouseMove(new Point(5, 5));
+                    ((ISolidColorBrush)presenter.Background!).Color.Should().Be(Color.Parse("#3E3E3E"));
+                    window.MouseMove(point);
+                    ((ISolidColorBrush)presenter.Background!).Color.Should().Be(Color.Parse("#505050"));
+                    ((ISolidColorBrush)presenter.Foreground!).Color.Should().Be(Colors.White);
+                    window.MouseDown(point, MouseButton.Left);
+                    ((ISolidColorBrush)presenter.Background!).Color.Should().Be(Color.Parse("#626262"));
+                    window.MouseUp(point, MouseButton.Left);
+                    copy.IsEnabled = false;
+                    presenter.Opacity.Should().Be(0.4);
+                    ((ISolidColorBrush)presenter.Background!).Color.Should().Be(Color.Parse("#3E3E3E"));
+                    copy.IsEnabled = true;
+                }
+
+                return true;
+            }
+            finally
+            {
+                window.Close();
+            }
         }, CancellationToken.None);
     }
 

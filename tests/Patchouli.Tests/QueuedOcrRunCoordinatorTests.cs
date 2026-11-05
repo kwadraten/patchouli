@@ -385,25 +385,25 @@ public sealed class QueuedOcrRunCoordinatorTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages, CancellationToken c = default,
-            IProgress<OcrTaskStageProgress>? progress = null)
+            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
         {
             return RunAsync("pages", c);
         }
 
         public Task<Result<OcrRun>> RunWorkingOnPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            CancellationToken c = default)
+            CancellationToken c = default, int rotationDegrees = 0)
         {
             return RunAsync("working-page", c);
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            NormalizedBBox bbox, CancellationToken c = default)
+            NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
         {
             return RunAsync("region", c);
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
-            PageId page, NormalizedBBox bbox, CancellationToken c = default)
+            PageId page, NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
         {
             RegionCandidateContext = SynchronizationContext.Current;
             Calls.Add("region_candidate");

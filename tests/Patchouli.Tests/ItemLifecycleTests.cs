@@ -11,6 +11,60 @@ namespace Patchouli.Tests;
 
 public sealed class ItemLifecycleTests
 {
+    [Theory]
+    [InlineData("newspaper")]
+    [InlineData("web")]
+    [InlineData("Book")]
+    [InlineData("article_newspaper")]
+    [InlineData("unknown")]
+    [InlineData("")]
+    public async Task Public_item_writes_reject_nonstandard_types_without_mutating_the_library(string itemType)
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata existing = (await context.Items.CreateItemAsync("book", "Original")).Value;
+        long revision = await context.RevisionAsync();
+        UpdateItemRequest update = new(itemType, "Must not be saved");
+
+        Result<ItemMetadata>[] results =
+        [
+            await context.Items.CreateItemAsync(itemType, "Invalid"),
+            await context.Items.CreateItemAsync(new CreateItemRequest(itemType, "Invalid")),
+            await context.Items.CreateItemWithPrimaryDocumentAsync(new CreateItemRequest(itemType, "Invalid"),
+                Core.Ids.FileAssetId.New()),
+            await context.Items.UpdateItemAsync(existing.ItemId, update),
+            await context.Items.ReplaceItemAsync(existing.ItemId, update, []),
+            await context.Items.UpdateAndAddIdentifiersAsync(existing.ItemId, update,
+                [new ItemIdentifierInput("url", "https://example.test/must-not-be-saved")])
+        ];
+
+        foreach (Result<ItemMetadata> result in results)
+        {
+            result.IsFailure.Should().BeTrue();
+            result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+            result.ErrorMessage.Should().Contain("CSL-JSON");
+        }
+
+        (await context.Items.GetItemAsync(existing.ItemId)).Value.Should().BeEquivalentTo(existing);
+        (await context.Query.ListRowsAsync()).Value.Should().ContainSingle();
+        (await context.RevisionAsync()).Should().Be(revision);
+    }
+
+    [Fact]
+    public async Task Public_item_writes_accept_every_supported_type_including_general()
+    {
+        await using TestContext context = await CreateContextAsync();
+        foreach (string itemType in CslItemTypeDisplayNames.Names.Keys)
+        {
+            Result<ItemMetadata> created = await context.Items.CreateItemAsync($" {itemType} ", "Supported type");
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            created.Value.ItemType.Should().Be(itemType);
+            Result<ItemMetadata> updated = await context.Items.UpdateItemAsync(created.Value.ItemId,
+                new UpdateItemRequest(itemType, "Updated"));
+            updated.IsSuccess.Should().BeTrue(updated.ErrorMessage);
+            updated.Value.ItemType.Should().Be(itemType);
+        }
+    }
+
     [Fact]
     public async Task DeleteItem_soft_deletes_and_hides_from_active_lists()
     {

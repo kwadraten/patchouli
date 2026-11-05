@@ -116,12 +116,12 @@ public sealed class MetadataLookupSettingsTests
     }
 
     [Fact]
-    public void Changing_category_does_not_discard_unsaved_settings()
+    public async Task Changing_category_does_not_discard_unsaved_settings()
     {
         string path = TemporarySettings("{}");
         try
         {
-            MainWindowViewModel main = new(settingsPath: path);
+            await using MainWindowViewModel main = new(settingsPath: path);
             MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
             NavCategoryViewModel metadataCategory = main.Settings.Categories.Single(category =>
                 ReferenceEquals(category.Content, metadata));
@@ -187,7 +187,7 @@ public sealed class MetadataLookupSettingsTests
                 Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = databasePath }
             };
             initial.Save(settingsPath).IsSuccess.Should().BeTrue();
-            MainWindowViewModel main = new(settingsPath: settingsPath);
+            await using MainWindowViewModel main = new(settingsPath: settingsPath);
             HostServices services = await main.ServicesAsync();
             (await services.Library.CreateLibraryAsync("Synced metadata")).IsSuccess.Should().BeTrue();
             SyncSettingsViewModel sync = main.Settings.SyncSettings;
@@ -203,14 +203,19 @@ public sealed class MetadataLookupSettingsTests
             (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().NotBeNull();
             File.ReadAllText(settingsPath).Should().NotContain("\"MetadataLookup\"");
 
-            MainWindowViewModel restarted = new(settingsPath: settingsPath);
-            await restarted.ServicesAsync();
-            restarted.Settings.MetadataLookupSettings.Sources[0].Enabled.Should().BeFalse();
+            // The restart probe shares the same runtime database; keeping it alive across the
+            // opt-out below races the setting deletion on a loaded machine, so scope it out first.
+            {
+                await using MainWindowViewModel restarted = new(settingsPath: settingsPath);
+                await restarted.ServicesAsync();
+                restarted.Settings.MetadataLookupSettings.Sources[0].Enabled.Should().BeFalse();
+            }
 
             string switchedSyncRoot = Path.Combine(root, "sync-switched");
             sync.SyncRoot = switchedSyncRoot;
             sync.SyncMetadataLookup = false;
             await sync.SaveAsync();
+            sync.LastError.Should().BeNull("opting out must persist");
 
             (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().BeNull();
             PatchouliAppSettings persisted = PatchouliAppSettings.Load(settingsPath);
@@ -227,7 +232,7 @@ public sealed class MetadataLookupSettingsTests
         finally
         {
             SqliteTestCleanup.ReleasePools(databasePath);
-            Directory.Delete(root, true);
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -369,6 +374,7 @@ public sealed class MetadataLookupSettingsTests
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-appservices-metadata-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         string settingsPath = Path.Combine(root, "appsettings.json");
+        HostServices? services = null;
         try
         {
             string syncRoot = Path.Combine(root, "sync");
@@ -397,7 +403,7 @@ public sealed class MetadataLookupSettingsTests
             };
             settings.Save(settingsPath).IsSuccess.Should().BeTrue();
 
-            HostServices services = await HostServices.CreateAsync(database.Path, settings, settingsPath);
+            services = await HostServices.CreateAsync(database.Path, settings, settingsPath);
             FieldInfo field = typeof(HostServices).GetField("_metadataLookupPreferences",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> preferences =
@@ -408,6 +414,11 @@ public sealed class MetadataLookupSettingsTests
         }
         finally
         {
+            if (services is not null)
+            {
+                await services.ShutdownAsync();
+            }
+
             Directory.Delete(root, true);
         }
     }

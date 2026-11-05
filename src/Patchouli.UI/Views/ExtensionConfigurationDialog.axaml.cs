@@ -56,7 +56,7 @@ public sealed partial class ExtensionConfigurationDialog : Window
             MinWidth = 480;
             Width = _formWidth;
             Position = _formPosition;
-            ToggleSourceButton.Content = "编辑扩展源码 >>";
+            ToggleSourceButton.Content = "扩展源码";
         }
         else
         {
@@ -82,6 +82,19 @@ public sealed partial class ExtensionConfigurationDialog : Window
     private void ToggleSourceClicked(object? sender, RoutedEventArgs args)
     {
         ToggleSource();
+    }
+
+    private void OpenSdkDownloadClicked(object? sender, RoutedEventArgs args)
+    {
+        OpenSdkDownloadAsync().Observe(nameof(ExtensionConfigurationDialog), "open-sdk-download");
+    }
+
+    private async Task OpenSdkDownloadAsync()
+    {
+        if (GetTopLevel(this)?.Launcher is { } launcher)
+        {
+            await launcher.LaunchUriAsync(new Uri("https://dotnet.microsoft.com/download"));
+        }
     }
 
     private void DiscardClicked(object? sender, RoutedEventArgs args)

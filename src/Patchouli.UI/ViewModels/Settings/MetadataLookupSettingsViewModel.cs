@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Extensions.Contracts;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -12,6 +14,7 @@ public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionVie
 {
     private readonly MainWindowViewModel _main;
     private bool _isDirty;
+    private readonly Dictionary<string, ExtensionListItem> _customExtensions = new(StringComparer.Ordinal);
 
     public MetadataLookupSettingsViewModel(MainWindowViewModel main)
     {
@@ -19,6 +22,7 @@ public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionVie
         RestoreDefaultsCommand = new RelayCommand(_ => Load(MetadataLookupAppSettings.Default(), true));
         SaveCommand = new AsyncCommand(SaveAsync);
         DiscardCommand = new AsyncCommand(DiscardAsync);
+        RefreshCommand = new AsyncCommand(RefreshExtensionsAsync);
         Load(_main.AppOptions.MetadataLookup, false);
     }
 
@@ -28,6 +32,37 @@ public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionVie
     public RelayCommand RestoreDefaultsCommand { get; }
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
+    public AsyncCommand RefreshCommand { get; }
+
+    public override Task LoadAsync(CancellationToken cancellationToken = default)
+    {
+        return _main.HasOpenRuntimeDatabase ? RefreshExtensionsAsync() : Task.CompletedTask;
+    }
+
+    public async Task RefreshExtensionsAsync()
+    {
+        using ExtensionSettingsViewModel editor = _main.Settings.CreateExtensionEditor();
+        await editor.LoadAsync();
+        foreach (ExtensionListItem item in editor.Extensions.Where(item => item.Kind == ExtensionKind.Metadata))
+        {
+            string sourceId = item.Id.StartsWith("metadata.", StringComparison.Ordinal)
+                ? item.Id["metadata.".Length..]
+                : item.Id;
+            if (Definitions.ContainsKey(sourceId))
+            {
+                continue;
+            }
+
+            _customExtensions[sourceId] = item;
+            if (!Sources.Any(row => row.SourceId == sourceId))
+            {
+                Sources.Add(new MetadataSourceSettingsRowViewModel(this, sourceId, item.Name + " · " + item.Id,
+                    item.Description, false, item.Id));
+            }
+        }
+
+        RefreshPositions();
+    }
 
     public override bool SupportsEditing => true;
 
@@ -120,7 +155,8 @@ public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionVie
                     ? definition
                     : new MetadataSourceDescriptor(preference.SourceId, "其他标识符来源");
             Sources.Add(new MetadataSourceSettingsRowViewModel(this, preference.SourceId, descriptor.Name,
-                descriptor.Description, preference.Enabled));
+                descriptor.Description, preference.Enabled,
+                _customExtensions.GetValueOrDefault(preference.SourceId)?.Id));
         }
 
         RefreshPositions();
@@ -167,12 +203,12 @@ public sealed partial class MetadataSourceSettingsRowViewModel : ViewModelBase
     private bool _isConstructing;
 
     internal MetadataSourceSettingsRowViewModel(MetadataLookupSettingsViewModel parent, string sourceId, string name,
-        string description, bool enabled)
+        string description, bool enabled, string? extensionId = null)
     {
         _isConstructing = true;
         _parent = parent;
         SourceId = sourceId;
-        ExtensionId = "metadata." + sourceId;
+        ExtensionId = extensionId ?? "metadata." + sourceId;
         Name = name;
         Description = description;
         Enabled = enabled;

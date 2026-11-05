@@ -132,6 +132,8 @@ public sealed class ItemPurgeServiceTests
     {
         await using Ctx c = await Ctx.Create();
         _ = await c.InsertTrashedItemWithPayloadAsync();
+        SearchIndexRebuilder rebuilder = new(c.Database.ConnectionFactory, c.Clock);
+        (await rebuilder.EnsureCacheAsync()).IsSuccess.Should().BeTrue();
         string staleTargetUnitId = SearchUnitId.New().ToString();
         string unrelatedDocumentId = DocumentInstanceId.New().ToString();
         string unrelatedPageId = PageId.New().ToString();
@@ -141,7 +143,6 @@ public sealed class ItemPurgeServiceTests
         await c.InsertMappedFtsRowAsync(unrelatedDocumentId, unrelatedUnitId, unrelatedPageId,
             "unrelated text");
 
-        SearchIndexRebuilder rebuilder = new(c.Database.ConnectionFactory, c.Clock);
         Result rebuilt = await rebuilder.RebuildFtsForDocumentInstanceAsync(c.DocumentInstanceId);
 
         rebuilt.IsSuccess.Should().BeTrue(rebuilt.ErrorMessage);

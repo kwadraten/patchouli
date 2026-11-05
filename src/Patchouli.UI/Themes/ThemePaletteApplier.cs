@@ -56,6 +56,14 @@ public static class ThemePaletteApplier
         UiColorPalette palette = UiColorPalettes.Resolve(resolvedPaletteId);
         IReadOnlyDictionary<string, string> colors = palette.GetColors(isDark);
 
+        // Fluent controls outside the custom templates must share the palette accent as well.
+        Color accent = Color.Parse(colors["PrimaryColor"]);
+        app.Resources["SystemAccentColor"] = accent;
+        foreach (string tone in new[] { "Light1", "Light2", "Light3", "Dark1", "Dark2", "Dark3" })
+        {
+            app.Resources["SystemAccentColor" + tone] = accent;
+        }
+
         foreach ((string colorKey, string hex) in colors)
         {
             Color color = Color.Parse(hex);

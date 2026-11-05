@@ -35,7 +35,7 @@
                                               IsVisible="{Binding IsDirectoryPath}" IsEditable="True"
                                               DialogTitle="{Binding Descriptor.Label}"
                                               PlaceholderText="留空使用默认目录" />
-                  <CheckBox IsChecked="{Binding BooleanValue}" IsVisible="{Binding IsBoolean}" Content="启用" />
+                  <ToggleSwitch IsChecked="{Binding BooleanValue}" IsVisible="{Binding IsBoolean}" Content="启用" />
                   <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Value}"
                             IsVisible="{Binding IsChoice}" HorizontalAlignment="Stretch" />
                   <ComboBox ItemsSource="{Binding CredentialReferences}" SelectedItem="{Binding Value}"
@@ -66,19 +66,20 @@
               <Button Content="填入默认配置" Command="{Binding ResetCommand}" />
               <Button Content="清空派生缓存" Command="{Binding ClearCacheCommand}" />
               <TextBlock Text="源码草稿独立保存。应用源码会切换后续任务使用的版本，已启动的任务保留原版本。"
-                         FontSize="12" TextWrapping="Wrap" />
-              <Button x:Name="ActivateSourceButton" Content="应用源码" Command="{Binding ActivateCommand}" />
-              <TextBox Text="{Binding CopyId}" PlaceholderText="新扩展 ID" />
-              <Button Content="复制为自定义扩展" Command="{Binding CopyCommand}" />
-              <Button Content="将运行版本保存为恢复副本" Command="{Binding PromoteCommand}" />
-              <Button Content="回滚运行版本" Command="{Binding RollbackCommand}" />
+                         FontSize="12" TextWrapping="Wrap" IsVisible="{Binding !IsSourceReadOnly}" />
+              <Button x:Name="ActivateSourceButton" Content="应用源码" Command="{Binding ActivateCommand}"
+                      IsVisible="{Binding !IsSourceReadOnly}" />
+              <Button Content="将运行版本保存为恢复副本" Command="{Binding PromoteCommand}"
+                      IsVisible="{Binding !IsSourceReadOnly}" />
+              <Button Content="回滚运行版本" Command="{Binding RollbackCommand}"
+                      IsVisible="{Binding !IsSourceReadOnly}" />
             </StackPanel>
           </Expander>
           <Expander Header="样例翻译（会发送请求）" IsVisible="{Binding IsTranslation}">
             <StackPanel Spacing="8" Margin="8">
               <TextBox Text="{Binding SampleText}" AcceptsReturn="True" MinHeight="64" />
               <Button Content="测试已应用的引擎" Command="{Binding TestCommand}" />
-              <Button Content="测试当前草稿" Command="{Binding TestDraftCommand}" />
+              <Button Content="测试当前草稿" Command="{Binding TestDraftCommand}" IsVisible="{Binding !IsSourceReadOnly}" />
               <TextBlock Text="{Binding SampleResult}" TextWrapping="Wrap" FontSize="12" />
             </StackPanel>
           </Expander>
@@ -91,13 +92,15 @@
                     SelectedItem="{Binding SelectedSourceFile, Mode=TwoWay}" HorizontalAlignment="Stretch"
                     AutomationProperties.Name="扩展源码文件" />
           <Button x:Name="CheckAndSaveSourceButton" Grid.Column="1" Content="检查并保存"
-                  Command="{Binding CheckAndSaveSourceCommand}" />
+                  Command="{Binding CheckAndSaveSourceCommand}" IsVisible="{Binding !IsSourceReadOnly}" />
         </Grid>
         <TextBlock Grid.Row="1" Text="检查通过后保存源码草稿并更新左侧表单；应用源码后才切换运行版本。"
-                   FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                   FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                   IsVisible="{Binding !IsSourceReadOnly}" />
         <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
                 CornerRadius="6" Background="{DynamicResource SurfaceContainerLowestBrush}" Padding="6">
           <controls:FSharpSourceEditor x:Name="SourceEditor" ContentText="{Binding SourceText}"
+                                       IsReadOnly="{Binding IsSourceReadOnly}"
                                        ShowLineNumbers="True" FontSize="13"
                                        FontFamily="Cascadia Mono,Consolas,monospace"
                                        Background="Transparent" Foreground="{DynamicResource OnSurfaceBrush}"
@@ -123,6 +126,9 @@
       </Grid>
     </Grid>
     <StackPanel Grid.Row="3" Spacing="6">
+      <Button x:Name="InstallSdkButton" Content="安装 .NET SDK" IsVisible="{Binding RequiresSdk}"
+              Click="OpenSdkDownloadClicked"
+              ToolTip.Tip="打开 Microsoft 官方 SDK 下载页面；安装后可重新检查源码。" />
       <TextBlock x:Name="EditorStatus" Text="{Binding Status}" TextWrapping="Wrap" FontSize="12"
                  Foreground="{DynamicResource OnSurfaceVariantBrush}" />
       <TextBlock Text="放弃会丢弃未保存的修改；已独立保存的源码草稿和已应用的版本会保留。"
@@ -132,7 +138,7 @@
       <Button x:Name="SaveConfigurationButton" Content="保存" Classes="Primary" Click="SaveClicked"
               IsEnabled="{Binding CanSaveConfiguration}" />
       <Button x:Name="DiscardConfigurationButton" Grid.Column="1" Content="放弃" Click="DiscardClicked" />
-      <Button x:Name="ToggleSourceButton" Grid.Column="3" Content="编辑扩展源码 &gt;&gt;" Click="ToggleSourceClicked" />
+      <Button x:Name="ToggleSourceButton" Grid.Column="3" Content="扩展源码" Click="ToggleSourceClicked" />
     </Grid>
   </Grid>
 </Window>

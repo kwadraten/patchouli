@@ -303,7 +303,8 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase, IAsyncDispos
         basic.Fields.Add(Field("条目类型", CslItemTypeDisplayNames.For(metadata.ItemType)));
         AddIfPresent(basic.Fields, "标题", metadata.Title);
         AddIfPresent(basic.Fields, "作者", FormatCreators(metadata.Creators));
-        AddIfPresent(basic.Fields, "年份", metadata.Date);
+        AddIfPresent(basic.Fields, "出版时间", ItemDateText.Format(
+            metadata.Dates.FirstOrDefault(date => date.Role == ItemDateRoles.Issued), metadata.Date));
         AddIfPresent(basic.Fields, "语言", metadata.Language);
         AddIfPresent(basic.Fields, "状态", metadata.Status);
         AddIfPresent(basic.Fields, LabelFor(fieldLabels, "container-title", "期刊/出处"), metadata.PublicationTitle);

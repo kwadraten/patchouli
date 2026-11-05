@@ -1,0 +1,204 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Fluent control states share the selected palette and update with theme changes. -->
+  <SolidColorBrush x:Key="AccentButtonBackground" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="AccentButtonBackgroundDisabled" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonBorderBrushDisabled" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonForeground" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonForegroundDisabled" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ButtonBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ButtonBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ButtonForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ButtonForegroundPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerCalendarGlyphForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerCalendarGlyphForegroundDisabled"
+                   Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="CalendarDatePickerTextForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundBorderBrushFocused" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundBorderBrushUnfocused" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ComboBoxBackgroundUnfocused" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ComboBoxBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownBackground" Color="{DynamicResource SurfaceContainerLowestColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownGlyphForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocused" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocusedPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxForegroundFocused" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxForegroundFocusedPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ComboBoxPlaceHolderForeground" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ComboBoxPlaceHolderForegroundFocusedPressed" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemBackground" Color="Transparent" />
+  <SolidColorBrush x:Key="MenuFlyoutItemBackgroundDisabled" Color="Transparent" />
+  <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemForegroundPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForeground"
+                   Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundDisabled"
+                   Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPointerOver"
+                   Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPressed"
+                   Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutPresenterBackground" Color="{DynamicResource SurfaceContainerLowestColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutPresenterBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutSubItemChevron" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutSubItemChevronDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutSubItemChevronPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutSubItemChevronPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="MenuFlyoutSubItemChevronSubMenuOpened" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="RadioButtonBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="RadioButtonBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="RadioButtonBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphFill" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphFillDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphFillPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphFillPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphStroke" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphStrokeDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphStrokePointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonCheckGlyphStrokePressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="RadioButtonForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="RadioButtonForegroundPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillDisabled" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPointerOver"
+                   Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFillPressed" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStrokeDisabled" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStrokePointerOver" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStrokePressed" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseFill" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseFillDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseFillPointerOver" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseFillPressed" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseStroke" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseStrokeDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseStrokePointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="RadioButtonOuterEllipseStrokePressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="SliderContainerBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderContainerBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderContainerBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="SliderContainerBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="SliderThumbBackground" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="SliderThumbBackgroundDisabled" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="SliderThumbBackgroundPointerOver" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="SliderThumbBackgroundPressed" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="SliderTickBarFill" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderTickBarFillDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackFill" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackFillDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackFillPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="SliderTrackFillPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="SliderTrackValueFill" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackValueFillDisabled" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackValueFillPointerOver" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="SliderTrackValueFillPressed" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="SystemControlErrorTextForegroundBrush" Color="{DynamicResource ErrorColor}" />
+  <SolidColorBrush x:Key="TextControlBackground" Color="{DynamicResource SurfaceContainerLowestColor}" />
+  <SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="{DynamicResource SurfaceContainerLowestColor}" />
+  <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="{DynamicResource SurfaceContainerLowestColor}" />
+  <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="TextControlBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlButtonBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="TextControlButtonForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlButtonForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlButtonForegroundPressed" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="TextControlForegroundFocused" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="TextControlSelectionHighlightColor" Color="{DynamicResource SelectionColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackground" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedDisabled" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="{DynamicResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundIndeterminate" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundIndeterminateDisabled" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundIndeterminatePointerOver"
+                   Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundIndeterminatePressed"
+                   Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundPointerOver" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBackgroundPressed" Color="{DynamicResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushChecked" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushCheckedDisabled" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushCheckedPointerOver" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushCheckedPressed" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushDisabled" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushIndeterminate" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushIndeterminateDisabled" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushIndeterminatePointerOver" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushIndeterminatePressed" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushPointerOver" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ToggleButtonBorderBrushPressed" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForeground" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundCheckedDisabled" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundDisabled" Color="{DynamicResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundIndeterminate" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundIndeterminateDisabled" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundIndeterminatePointerOver" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundIndeterminatePressed" Color="{DynamicResource OnPrimaryColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundPointerOver" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="ToggleButtonForegroundPressed" Color="{DynamicResource OnSurfaceColor}" />
+</ResourceDictionary>

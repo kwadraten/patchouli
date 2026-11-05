@@ -26,8 +26,13 @@ public sealed class PageMapResolverTests
         DocumentBoxId b = Box("02");
         DocumentBoxId c = Box("03");
         return new DocumentPageMap(DocId, [],
-            [new LogicalPaginationRule(5, 6, 1,
-                [new LogicalPageReadingEntry(a, 5), new LogicalPageReadingEntry(b, 5), new LogicalPageReadingEntry(c, 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 1,
+                [
+                    new LogicalPageReadingEntry(a, 5), new LogicalPageReadingEntry(b, 5),
+                    new LogicalPageReadingEntry(c, 6)
+                ])
+            ],
             [], []);
     }
 
@@ -85,7 +90,8 @@ public sealed class PageMapResolverTests
     public void Logical_forward_paused_rule_reports_diagnostic_and_stays_unresolved()
     {
         DocumentPageMap map = LogicalMap();
-        var health = new[] { new LogicalRuleHealth(0, true, [new MapDiagnostic("logical_page_deleted", "x")]) };
+        LogicalRuleHealth[] health = new[]
+            { new LogicalRuleHealth(0, true, [new MapDiagnostic("logical_page_deleted", "x")]) };
 
         ForwardResolution resolution =
             PageMapResolver.ResolveForward(map, health, new NavigationPosition(5, Box("01")));
@@ -134,7 +140,7 @@ public sealed class PageMapResolverTests
     public void Reverse_skips_paused_rules()
     {
         DocumentPageMap map = LogicalMap();
-        var health = new[] { new LogicalRuleHealth(0, true, [new MapDiagnostic("x", "y")]) };
+        LogicalRuleHealth[] health = new[] { new LogicalRuleHealth(0, true, [new MapDiagnostic("x", "y")]) };
 
         PageMapResolver.ResolveReverse(map, health, 1).Should().BeEmpty();
     }
@@ -144,8 +150,10 @@ public sealed class PageMapResolverTests
     {
         DocumentPageMap map = new(DocId,
             [new PhysicalPaginationRule(1, 10, 1)],
-            [new LogicalPaginationRule(5, 6, 1,
-                [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 1,
+                    [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 6)])
+            ],
             [], []);
 
         PageMapValidator.Validate(map).Should()
@@ -156,8 +164,10 @@ public sealed class PageMapResolverTests
     public void Validator_rejects_logical_range_with_a_physical_page_missing_logical_pages()
     {
         DocumentPageMap map = new(DocId, [],
-            [new LogicalPaginationRule(5, 7, 1,
-                [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 7)])],
+            [
+                new LogicalPaginationRule(5, 7, 1,
+                    [new LogicalPageReadingEntry(Box("01"), 5), new LogicalPageReadingEntry(Box("02"), 7)])
+            ],
             [], []);
 
         PageMapValidator.Validate(map).Should()
@@ -224,7 +234,7 @@ public sealed class PageMapResolverTests
     public void Invalidation_keeps_text_only_changes_healthy()
     {
         DocumentPageMap map = LogicalMap();
-        var current = new[]
+        CurrentLogicalPageState[] current = new[]
         {
             new CurrentLogicalPageState(Box("01"), 5, Box("02")),
             new CurrentLogicalPageState(Box("02"), 5, Box("03")),
@@ -239,7 +249,7 @@ public sealed class PageMapResolverTests
     public void Invalidation_marks_deleted_logical_pages_and_missing_endpoints()
     {
         DocumentPageMap map = LogicalMap();
-        var current = new[]
+        CurrentLogicalPageState[] current = new[]
         {
             new CurrentLogicalPageState(Box("02"), 5, null),
             new CurrentLogicalPageState(Box("03"), 6, null)
@@ -254,7 +264,7 @@ public sealed class PageMapResolverTests
     public void Invalidation_marks_added_logical_pages_and_page_moves()
     {
         DocumentPageMap map = LogicalMap();
-        var current = new[]
+        CurrentLogicalPageState[] current = new[]
         {
             new CurrentLogicalPageState(Box("01"), 5, null),
             new CurrentLogicalPageState(Box("02"), 6, null),
@@ -274,7 +284,7 @@ public sealed class PageMapResolverTests
     {
         DocumentPageMap map = LogicalMap();
         // Stored order on page 5: Box01 -> Box02. The current sibling chain says Box02 -> Box01.
-        var current = new[]
+        CurrentLogicalPageState[] current = new[]
         {
             new CurrentLogicalPageState(Box("02"), 5, Box("01")),
             new CurrentLogicalPageState(Box("01"), 5, null),
@@ -296,7 +306,7 @@ public sealed class PageMapResolverTests
                 new LogicalPaginationRule(4, 4, 20, [new LogicalPageReadingEntry(d, 4)])
             ],
             [], []);
-        var current = new[] { new CurrentLogicalPageState(d, 4, null) };
+        CurrentLogicalPageState[] current = new[] { new CurrentLogicalPageState(d, 4, null) };
 
         IReadOnlyList<LogicalRuleHealth> health = PageMapInvalidation.CheckHealth(map, current);
         health[0].NeedsRepair.Should().BeTrue();
@@ -340,7 +350,8 @@ public sealed class PageMapResolverTests
         {
             Chapters = [ChapterNode.Leaf("ch1", "第一章", new NavigationPosition(5, Box("01")))]
         };
-        var health = new[] { new LogicalRuleHealth(0, true, [new MapDiagnostic("logical_page_deleted", "x")]) };
+        LogicalRuleHealth[] health = new[]
+            { new LogicalRuleHealth(0, true, [new MapDiagnostic("logical_page_deleted", "x")]) };
 
         ResolvedChapterNode chapter = PageMapResolver.ResolveChapters(map, health).Single();
         chapter.PrintedNumber.Should().BeNull();

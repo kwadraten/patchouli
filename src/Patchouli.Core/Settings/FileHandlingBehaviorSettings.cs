@@ -16,7 +16,7 @@ public enum FileHandlingBehavior
     /// Move the file to the first file search root, then compute BLAKE3 and register.
     /// Fails explicitly if no search root exists or the first root is not writable/available.
     /// </summary>
-    MoveToFirstSearchRoot = 1,
+    MoveToFirstSearchRoot = 1
 }
 
 /// <summary>

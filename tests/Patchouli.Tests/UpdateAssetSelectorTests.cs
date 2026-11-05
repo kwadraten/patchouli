@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using FluentAssertions;
+using Patchouli.Core.Results;
 using Patchouli.Core.Update;
 
 namespace Patchouli.Tests;
@@ -15,7 +16,7 @@ public sealed class UpdateAssetSelectorTests
     private static ReleaseInfo MakeRelease(string tag, params ReleaseAssetInfo[] assets)
     {
         return new ReleaseInfo(tag, UpdateVersion.Parse(tag), "title", "body",
-            IsDraft: false, IsPrerelease: false, PublishedAt: null, assets);
+            false, false, null, assets);
     }
 
     private static ReleaseAssetInfo Asset(string name)
@@ -30,7 +31,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseAssetInfo smoke = Asset("Patchouli.NET-0.3.13-win-x64-smoke-setup.exe");
         ReleaseInfo release = MakeRelease("v0.3.13", smoke, formal);
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(formal);
@@ -44,7 +46,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseInfo release = MakeRelease("v0.3.13",
             Asset("Patchouli-0.3.13-smoke-win-x64-setup.exe"));
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsFailure.Should().BeTrue();
         result.ErrorMessage.Should().Contain("安装包");
@@ -57,7 +60,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseInfo release = MakeRelease("v0.3.13",
             Asset("Patchouli.NET-0.3.13-win-x64-setup.exe"), dmg);
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.OSX, System.Runtime.InteropServices.Architecture.Arm64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.OSX,
+            System.Runtime.InteropServices.Architecture.Arm64);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(dmg);
@@ -69,7 +73,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseInfo release = MakeRelease("v0.3.13",
             Asset("Patchouli.NET-0.3.13-osx-arm64.dmg"));
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.OSX, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.OSX,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsFailure.Should().BeTrue();
     }
@@ -81,7 +86,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseInfo release = MakeRelease("v0.3.13",
             Asset("Patchouli.NET-0.3.13-win-x64-setup.exe"), appImage);
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Linux, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Linux,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(appImage);
@@ -92,7 +98,8 @@ public sealed class UpdateAssetSelectorTests
     {
         ReleaseInfo release = MakeRelease("v0.3.13");
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Linux, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Linux,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsFailure.Should().BeTrue();
         result.ErrorMessage.Should().Contain("-linux-x64.AppImage");
@@ -105,7 +112,8 @@ public sealed class UpdateAssetSelectorTests
         ReleaseAssetInfo current = Asset("Patchouli.NET-0.3.13-win-x64-setup.exe");
         ReleaseInfo release = MakeRelease("v0.3.13", older, current);
 
-        var result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows, System.Runtime.InteropServices.Architecture.X64);
+        Result<ReleaseAssetInfo> result = UpdateAssetSelector.SelectAsset(release, OSPlatform.Windows,
+            System.Runtime.InteropServices.Architecture.X64);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(current);
@@ -115,7 +123,8 @@ public sealed class UpdateAssetSelectorTests
     public void Null_release_is_rejected()
     {
         FluentActions.Invoking(() =>
-                UpdateAssetSelector.SelectAsset(null!, OSPlatform.Linux, System.Runtime.InteropServices.Architecture.X64))
+                UpdateAssetSelector.SelectAsset(null!, OSPlatform.Linux,
+                    System.Runtime.InteropServices.Architecture.X64))
             .Should().Throw<ArgumentNullException>();
     }
 }

@@ -17,6 +17,7 @@ using Patchouli.UI.Views;
 namespace Patchouli.Tests;
 
 [Collection("Avalonia")]
+[Trait("Category", "ui")]
 public sealed class UiFeedbackTests
 {
     [Fact]
@@ -115,7 +116,7 @@ public sealed class UiFeedbackTests
     }
 
     [Fact]
-    public async Task Page_edit_mode_always_shows_boxes_and_blocks_chapter_switching()
+    public async Task Page_edit_mode_shows_box_sidebar_and_allows_view_switches()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
@@ -131,8 +132,7 @@ public sealed class UiFeedbackTests
             typeof(PdfWorkspaceViewModel).GetProperty(nameof(workspace.IsEditMode))!.SetValue(workspace, true);
             workspace.IsBoxSidebarVisible.Should().BeTrue();
             workspace.IsNavigationSidebarVisible.Should().BeFalse();
-            workspace.ShowChaptersTabCommand.CanExecute(null).Should().BeFalse();
-            await workspace.ShowChaptersTabCommand.ExecuteAsync();
+            workspace.ShowChaptersTabCommand.CanExecute(null).Should().BeTrue();
             workspace.IsBoxSidebarVisible.Should().BeTrue();
             PdfWorkspacePage page = new() { DataContext = workspace };
             Window window = new() { Width = 1280, Height = 900, Content = page };

@@ -18,6 +18,55 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class ItemEditorTagsCollectionsTests
 {
+    [Theory]
+    [InlineData("[[2015]]", "2015")]
+    [InlineData("[[2015,6]]", "2015-06")]
+    [InlineData("[[2015,6,9]]", "2015-06-09")]
+    public async Task Publication_date_preserves_precision_and_calendar_selection_saves(string parts, string text)
+    {
+        await RunAsync(async (main, services) =>
+        {
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest("book", "出版时间",
+                Dates: [new ItemDateInput(ItemDateRoles.Issued, parts, true)]));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+            ItemEditorViewModel editor = main.ItemEditor;
+            ItemFieldDescriptor field = editor.Fields.Single(candidate => candidate.Key == "IssuedDate");
+            field.Label.Should().Be("出版时间");
+            field.Value.Should().Be(text);
+            Window window = new()
+                { Width = 1120, Height = 1000, Content = new ItemEditorPage { DataContext = editor } };
+            window.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                CalendarDatePicker picker = window.GetVisualDescendants().OfType<CalendarDatePicker>()
+                    .Single(candidate => ReferenceEquals(candidate.DataContext, field));
+                Button calendarButton = picker.GetVisualDescendants().OfType<Button>()
+                    .Single(button => button.Name == "PART_Button");
+                calendarButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+                picker.IsDropDownOpen.Should().BeTrue();
+                picker.IsDropDownOpen = false;
+                field.Value.Should().Be(text);
+                await editor.SaveCommand.ExecuteAsync();
+                ItemDate saved = (await services.Items.GetItemAsync(created.Value.ItemId)).Value.Dates.Single();
+                saved.DatePartsJson.Should().Be(parts);
+                saved.Circa.Should().BeTrue();
+                picker.SelectedDate = new DateTime(2024, 2, 29);
+                editor.IssuedDate.Should().Be("2024-02-29");
+                await editor.SaveCommand.ExecuteAsync();
+                saved = (await services.Items.GetItemAsync(created.Value.ItemId)).Value.Dates.Single();
+                saved.DatePartsJson.Should().Be("[[2024,2,29]]");
+                await editor.LoadAsync(created.Value.ItemId.ToString());
+                editor.IssuedDate.Should().Be("2024-02-29");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
     [Fact]
     public async Task Classification_section_matches_sidebar_tag_chips_and_stages_tags_and_collections_until_save()
     {
@@ -62,7 +111,7 @@ public sealed class ItemEditorTagsCollectionsTests
                     .Single(button => button.Name == "RemoveEditorTagButton" &&
                                       button.DataContext is EditorTagViewModel tag && tag.Name == "原标签");
                 remove.Command!.Execute(remove.CommandParameter);
-                window.GetVisualDescendants().OfType<CheckBox>()
+                window.GetVisualDescendants().OfType<ToggleSwitch>()
                     .Single(box => box.DataContext is CollectionSelectionItemViewModel row && row.Name == "待读文献")
                     .IsChecked = true;
                 editor.HasUnsavedChanges.Should().BeTrue();

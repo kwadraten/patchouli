@@ -233,6 +233,8 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach (string id in BuiltInOcrExtensions.PackageIds
                      .Concat(BuiltInPdfTextLayerExtensions.Packages.Select(package => package.Id))
+                     .Concat(BuiltInLayoutRecognitionExtensions.Packages.Select(package => package.Id))
+                     .Concat(BuiltInLayoutRecognitionExtensions.Packages.Select(package => package.Id))
                      .Concat(BuiltInTranslationExtensions.Packages.Select(package => package.Id))
                      .Concat(BuiltInMetadataExtensions.Packages.Select(package => package.Id))
                      .Concat(services.TranslationExtensions.ListWorkingPackages())

@@ -138,7 +138,16 @@ public sealed class FileImportMigrationTests : IDisposable
             new AppliedMigration("052", "052_create_document_page_maps"),
             new AppliedMigration("053", "053_add_page_translation_target_language"),
             new AppliedMigration("054", "054_document_box_continuation_state"),
-            new AppliedMigration("055", "055_normalize_page_coordinate_basis"));
+            new AppliedMigration("055", "055_normalize_page_coordinate_basis"),
+            new AppliedMigration("056", "056_index_file_location_paths"),
+            new AppliedMigration("057", "057_sql_browse_indexes"),
+            new AppliedMigration("058", "058_create_library_tag_definitions"));
+        (await connection.QueryAsync<string>(
+                "select name from pragma_index_info('idx_known_file_locations_path_file_asset_id') order by seqno;"))
+            .Should().Equal("path", "file_asset_id");
+        (await connection.QueryAsync<string>(
+                "select name from pragma_index_info('idx_items_active_browse') order by seqno;"))
+            .Should().Equal("deleted_at", "merged_into_item_id", "updated_at", "item_id");
         (await connection.ExecuteScalarAsync<int>(
                 "select count(*) from pragma_table_info('file_search_root_definitions') where name = 'sort_order';"))
             .Should().Be(1);

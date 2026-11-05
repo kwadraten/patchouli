@@ -54,7 +54,7 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
     public OcrComponentCatalogSettingsViewModel(MainWindowViewModel main, ExtensionKind kind)
     {
         ArgumentNullException.ThrowIfNull(main);
-        if (kind is not (ExtensionKind.Ocr or ExtensionKind.PdfTextLayer))
+        if (kind is not (ExtensionKind.Ocr or ExtensionKind.PdfTextLayer or ExtensionKind.LayoutRecognition))
         {
             throw new ArgumentOutOfRangeException(nameof(kind), kind,
                 "The component catalog only lists OCR engines or PDF text-layer providers.");
@@ -62,10 +62,12 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
 
         _main = main;
         Kind = kind;
-        Title = kind == ExtensionKind.Ocr ? "OCR 引擎" : "文本层提取算法";
-        Description = kind == ExtensionKind.Ocr
-            ? "预设编排从这里选择图像 OCR 引擎；齿轮打开引擎扩展的配置与源码，MinerU 为内置引擎。"
-            : "独立的 PDF 文本层提取提供器，与图像 OCR 引擎解耦；齿轮打开提供器扩展的配置与源码。";
+        Title = kind == ExtensionKind.LayoutRecognition ? "版面识别模型" : kind == ExtensionKind.Ocr ? "OCR 引擎" : "文本层提取算法";
+        Description = kind == ExtensionKind.LayoutRecognition
+            ? ""
+            : kind == ExtensionKind.Ocr
+                ? "预设编排从这里选择图像 OCR 引擎；齿轮打开引擎扩展的配置与源码，MinerU 为内置引擎。"
+                : "独立的 PDF 文本层提取提供器，与图像 OCR 引擎解耦；齿轮打开提供器扩展的配置与源码。";
         RefreshCommand = new AsyncCommand(() => LoadAsync());
     }
 
@@ -74,6 +76,12 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
     public string Description { get; }
     public ObservableCollection<OcrComponentRowViewModel> Components { get; } = [];
     public AsyncCommand RefreshCommand { get; }
+
+    public async Task AddAsync(Window owner)
+    {
+        await ExtensionCreationDialog.ShowAsync(owner, new ExtensionCreationViewModel(_main, Kind), _main.Settings);
+        await LoadAsync();
+    }
 
     /// <summary>Test seam: invoked instead of showing the real MinerU dialog window.</summary>
     internal Func<MinerUConfigurationDialogViewModel, Task>? MinerUDialogShower { get; set; }
@@ -274,7 +282,7 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
                     bundled.All(package => package.Id != packageId), cancellationToken));
             }
         }
-        else
+        else if (Kind == ExtensionKind.PdfTextLayer)
         {
             foreach (PdfTextLayerDefinition provider in services.OcrEngineRuntime.ListTextLayerDefinitions())
             {
@@ -333,7 +341,8 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
                 }
 
                 rows.Add(await BuildPackageRowAsync(metadata.Id, metadata.Name, metadata.Summary,
-                    package.Id, manager, bundled, generations, true, cancellationToken));
+                    package.Id, manager, bundled, generations, bundled.All(p => p.Id != package.Id),
+                    cancellationToken));
             }
             catch (ExtensionMetadataException)
             {

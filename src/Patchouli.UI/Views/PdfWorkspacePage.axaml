@@ -47,6 +47,10 @@
     <StaticResource ResourceKey="BBoxContextMenu" />
   </FlyoutBase.AttachedFlyout>
   <UserControl.Styles>
+    <Style Selector="ListBox#BookSearchItems ListBoxItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
     <Style Selector="Border.ChapterRow.selected">
       <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
     </Style>
@@ -173,6 +177,17 @@
       <Setter Property="Padding" Value="14" />
       <Setter Property="Margin" Value="12,0,12,12" />
     </Style>
+    <Style Selector="Border.SearchHitRow">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="8,5" />
+    </Style>
+    <Style Selector="Border.SearchHitRow.selected">
+      <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
     <Style Selector="Border.SidebarHeader">
       <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
       <Setter Property="BorderThickness" Value="0,0,0,1" />
@@ -215,6 +230,20 @@
             <TextBlock Text="+" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                        VerticalAlignment="Center" />
           </Button>
+          <Button Classes="ToolbarButton" Command="{Binding CycleFitModeCommand}" MinWidth="40"
+                  ToolTip.Tip="显示大小：自由 / 适合高度 / 适合宽度" AutomationProperties.Name="切换显示大小">
+            <TextBlock Text="{Binding FitModeText}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}"
+                       VerticalAlignment="Center" HorizontalAlignment="Center" />
+          </Button>
+          <Button Classes="ToolbarButton" Command="{Binding RotatePageCommand}"
+                  ToolTip.Tip="顺时针旋转 90°" AutomationProperties.Name="旋转页面">
+            <lucide:Lucide Icon="RotateCw" Width="14" Height="14"
+                           StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+          </Button>
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding ShowBoundingBoxes}"
+                        ToolTip.Tip="显示/隐藏边界框" AutomationProperties.Name="边界框显示">
+            <lucide:Lucide Icon="Eye" Width="15" Height="15" Margin="0,-2,0,0" />
+          </ToggleButton>
 
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="8,0" />
 
@@ -242,24 +271,6 @@
               <TextBlock Text="阅读模式" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
             </StackPanel>
           </Button>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <!-- One-click page OCR: RunCurrentPageOcrCommand already plans logical pages when the
-               current revision has them and falls back to the whole physical page otherwise. -->
-            <Button IsVisible="{Binding IsEditMode}" Command="{Binding RunCurrentPageOcrCommand}"
-                    ToolTip.Tip="{Binding OcrPresetStatusText}">
-              <StackPanel Orientation="Horizontal" Spacing="4">
-                <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
-                <TextBlock Text="当前页 OCR" FontSize="12" />
-              </StackPanel>
-            </Button>
-            <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
-              <StackPanel Orientation="Horizontal" Spacing="4">
-                <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
-                <TextBlock Text="编辑 OCR 结果" FontSize="12" />
-              </StackPanel>
-            </Button>
-
-          </StackPanel>
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0" />
 
           <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}"
@@ -295,195 +306,214 @@
               <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}"
                       CornerRadius="4" BoxShadow="0 4 16 #22000000">
                 <Grid MinWidth="360" MinHeight="480">
-                  <Border Background="Transparent" PointerPressed="OnCanvasBackgroundPressed" />
-                  <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}"
-                         Height="{Binding ActualHeightPixels}" Stretch="None" IsVisible="{Binding HasImage}"
-                         IsHitTestVisible="False" />
+                  <!-- Display rotation wraps exactly the page-pixel layer (page image plus the
+                       box/overlay stack), so box and pointer coordinates stay in unrotated page
+                       pixels while the rendered page turns. Chrome overlays (page badge, source
+                       warning, empty state) stay upright outside the transform. -->
+                  <LayoutTransformControl x:Name="PageRotationHost" HorizontalAlignment="Left"
+                                          VerticalAlignment="Top">
+                    <LayoutTransformControl.LayoutTransform>
+                      <RotateTransform Angle="{Binding ViewportRotationAngle}" />
+                    </LayoutTransformControl.LayoutTransform>
+                    <Grid x:Name="PageVisualLayer" Width="{Binding ActualWidthPixels}"
+                          Height="{Binding ActualHeightPixels}">
+                      <Border Background="Transparent" PointerPressed="OnCanvasBackgroundPressed" />
+                      <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}"
+                             Height="{Binding ActualHeightPixels}" Stretch="None" IsVisible="{Binding HasImage}"
+                             IsHitTestVisible="False" />
 
-                  <ItemsControl x:Name="BBoxItems" ItemsSource="{Binding BoundingBoxes}"
-                                Width="{Binding ActualWidthPixels}"
-                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
-                    <ItemsControl.ItemContainerTheme>
-                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
-                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                        <Setter Property="ZIndex" Value="{Binding ZIndex}" />
-                      </ControlTheme>
-                    </ItemsControl.ItemContainerTheme>
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <Canvas />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                        <Border Classes="BBox"
-                                Classes.selected="{Binding IsSelected}"
-                                Classes.draft="{Binding IsDraft}"
-                                Classes.suppressed="{Binding IsSuppressed}"
-                                Classes.overlapWarning="{Binding HasOverlapWarning}"
-                                BorderBrush="{Binding VisualBoxColor}"
-                                Width="{Binding Width}"
-                                Height="{Binding Height}"
-                                Cursor="Hand"
-                                PointerPressed="OnBBoxPointerPressed"
-                                PointerMoved="OnBBoxPointerMoved"
-                                PointerReleased="OnBBoxPointerReleased"
-                                ContextRequested="OnBBoxContextRequested">
-                          <!-- Null content avoids creating six handle controls per unselected box. -->
-                          <ContentControl Content="{Binding HandleOwner}" IsHitTestVisible="False"
-                                          HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
-                            <ContentControl.ContentTemplate>
-                              <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                                <Panel>
-                                  <lucide:Lucide Icon="Move" Width="14" Height="14"
-                                                 HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                 StrokeBrush="{Binding VisualBoxColor}" />
-                                  <Ellipse Width="10" Height="10" Fill="White"
-                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                           HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-5" />
-                                  <Ellipse Width="10" Height="10" Fill="White"
-                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                           HorizontalAlignment="Right" VerticalAlignment="Top" Margin="-5" />
-                                  <Ellipse Width="10" Height="10" Fill="White"
-                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                           HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-5" />
-                                  <Ellipse Width="10" Height="10" Fill="White"
-                                           Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
-                                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
-                                </Panel>
-                              </DataTemplate>
-                            </ContentControl.ContentTemplate>
-                          </ContentControl>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                      <ItemsControl x:Name="BBoxItems" ItemsSource="{Binding BoundingBoxes}"
+                                    Width="{Binding ActualWidthPixels}"
+                                    Height="{Binding ActualHeightPixels}" IsVisible="{Binding AreBoundingBoxesVisible}">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                            <Setter Property="ZIndex" Value="{Binding ZIndex}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                            <Border Classes="BBox"
+                                    Classes.selected="{Binding IsSelected}"
+                                    Classes.draft="{Binding IsDraft}"
+                                    Classes.suppressed="{Binding IsSuppressed}"
+                                    Classes.overlapWarning="{Binding HasOverlapWarning}"
+                                    BorderBrush="{Binding VisualBoxColor}"
+                                    Width="{Binding Width}"
+                                    Height="{Binding Height}"
+                                    Cursor="Hand"
+                                    PointerPressed="OnBBoxPointerPressed"
+                                    PointerMoved="OnBBoxPointerMoved"
+                                    PointerReleased="OnBBoxPointerReleased"
+                                    ContextRequested="OnBBoxContextRequested">
+                              <!-- Null content avoids creating six handle controls per unselected box. -->
+                              <ContentControl Content="{Binding HandleOwner}" IsHitTestVisible="False"
+                                              HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                                <ContentControl.ContentTemplate>
+                                  <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                                    <Panel>
+                                      <lucide:Lucide Icon="Move" Width="14" Height="14"
+                                                     HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                     StrokeBrush="{Binding VisualBoxColor}" />
+                                      <Ellipse Width="10" Height="10" Fill="White"
+                                               Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-5" />
+                                      <Ellipse Width="10" Height="10" Fill="White"
+                                               Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="-5" />
+                                      <Ellipse Width="10" Height="10" Fill="White"
+                                               Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                               HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-5" />
+                                      <Ellipse Width="10" Height="10" Fill="White"
+                                               Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                               HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
+                                    </Panel>
+                                  </DataTemplate>
+                                </ContentControl.ContentTemplate>
+                              </ContentControl>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
 
-                  <!-- Overlap warning markers (drawn over the intersection of overlapping boxes) -->
-                  <ItemsControl x:Name="OverlapItems" ItemsSource="{Binding OverlapMarkers}"
-                                Width="{Binding ActualWidthPixels}"
-                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
-                    <ItemsControl.ItemContainerTheme>
-                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfOverlapMarkerViewModel">
-                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                      </ControlTheme>
-                    </ItemsControl.ItemContainerTheme>
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <Canvas />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:PdfOverlapMarkerViewModel">
-                        <Rectangle Classes="overlapMark"
-                                   Width="{Binding Width}"
-                                   Height="{Binding Height}"
-                                   Cursor="Hand"
-                                   ToolTip.Tip="边界框重叠,点击选中两个框"
-                                   PointerPressed="OnOverlapMarkerPressed" />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                      <!-- Sidebar hover reveal: while the box layer is hidden, the single hovered
+                       box is drawn on the page from its page-pixel geometry. -->
+                      <Border Classes="BBox" BorderBrush="{Binding HoverBoxColor}"
+                              Width="{Binding HoverBoxWidth}" Height="{Binding HoverBoxHeight}"
+                              Margin="{Binding HoverBoxMargin}"
+                              HorizontalAlignment="Left" VerticalAlignment="Top"
+                              IsHitTestVisible="False" IsVisible="{Binding IsHoverBoxVisible}" />
 
-                  <!-- Paragraph continuation links (dashed connectors between same-paragraph boxes) -->
-                  <ItemsControl x:Name="ContinuationItems" ItemsSource="{Binding ContinuationLinks}"
-                                Width="{Binding ActualWidthPixels}"
-                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}"
-                                IsHitTestVisible="False">
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <Canvas />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:PdfContinuationLinkViewModel">
-                        <Line Classes="continuationLink"
-                              StartPoint="{Binding Start}"
-                              EndPoint="{Binding End}" />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                      <!-- Overlap warning markers (drawn over the intersection of overlapping boxes) -->
+                      <ItemsControl x:Name="OverlapItems" ItemsSource="{Binding OverlapMarkers}"
+                                    IsHitTestVisible="False"
+                                    Width="{Binding ActualWidthPixels}"
+                                    Height="{Binding ActualHeightPixels}" IsVisible="{Binding AreBoundingBoxesVisible}">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfOverlapMarkerViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:PdfOverlapMarkerViewModel">
+                            <Rectangle Classes="overlapMark"
+                                       Width="{Binding Width}"
+                                       Height="{Binding Height}" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
 
-                  <!-- Cross-page continuation badges (source paragraph text lives on an earlier page) -->
-                  <ItemsControl x:Name="CrossPageContinuationItems"
-                                ItemsSource="{Binding CrossPageContinuationMarkers}"
-                                Width="{Binding ActualWidthPixels}"
-                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
-                    <ItemsControl.ItemContainerTheme>
-                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfCrossPageContinuationViewModel">
-                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                      </ControlTheme>
-                    </ItemsControl.ItemContainerTheme>
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <Canvas />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:PdfCrossPageContinuationViewModel">
-                        <Border Classes="crossPageMark"
-                                Cursor="Hand"
-                                ToolTip.Tip="该框与上一页的源框属于同一段落,点击跳转到源框"
-                                PointerPressed="OnCrossPageMarkPressed">
-                          <TextBlock Text="{Binding Label}" FontSize="11" Foreground="#1B5E20" />
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                      <!-- Paragraph continuation links (dashed connectors between same-paragraph boxes) -->
+                      <ItemsControl x:Name="ContinuationItems" ItemsSource="{Binding ContinuationLinks}"
+                                    Width="{Binding ActualWidthPixels}"
+                                    Height="{Binding ActualHeightPixels}" IsVisible="{Binding AreBoundingBoxesVisible}"
+                                    IsHitTestVisible="False">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:PdfContinuationLinkViewModel">
+                            <Line Classes="continuationLink"
+                                  StartPoint="{Binding Start}"
+                                  EndPoint="{Binding End}" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
 
-                  <!-- Drawing Overlay (Captures mouse events) -->
-                  <Border Background="Transparent"
-                          Width="{Binding ActualWidthPixels}"
-                          Height="{Binding ActualHeightPixels}"
-                          IsVisible="{Binding HasImage}"
-                          IsHitTestVisible="{Binding IsRectToolActive}"
-                          PointerPressed="OnCanvasPointerPressed"
-                          PointerMoved="OnCanvasPointerMoved"
-                          PointerReleased="OnCanvasPointerReleased" />
+                      <!-- Cross-page continuation badges (source paragraph text lives on an earlier page) -->
+                      <ItemsControl x:Name="CrossPageContinuationItems"
+                                    ItemsSource="{Binding CrossPageContinuationMarkers}"
+                                    Width="{Binding ActualWidthPixels}"
+                                    Height="{Binding ActualHeightPixels}" IsVisible="{Binding AreBoundingBoxesVisible}">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfCrossPageContinuationViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:PdfCrossPageContinuationViewModel">
+                            <Border Classes="crossPageMark"
+                                    Cursor="Hand"
+                                    ToolTip.Tip="该框与上一页的源框属于同一段落,点击跳转到源框"
+                                    PointerPressed="OnCrossPageMarkPressed">
+                              <TextBlock Text="{Binding Label}" FontSize="11" Foreground="#1B5E20" />
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
 
-                  <!-- Selection Drawing Preview -->
-                  <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
-                          IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                    <Border Classes="BBox draft"
-                            BorderBrush="DarkOrange"
-                            Canvas.Left="{Binding SelectionLeft}"
-                            Canvas.Top="{Binding SelectionTop}"
-                            Width="{Binding SelectionWidth}"
-                            Height="{Binding SelectionHeight}"
-                            IsVisible="{Binding SelectionVisible}" />
-                  </Canvas>
+                      <!-- Drawing Overlay (Captures mouse events) -->
+                      <Border Background="Transparent"
+                              Width="{Binding ActualWidthPixels}"
+                              Height="{Binding ActualHeightPixels}"
+                              IsVisible="{Binding HasImage}"
+                              IsHitTestVisible="{Binding IsRectToolActive}"
+                              PointerPressed="OnCanvasPointerPressed"
+                              PointerMoved="OnCanvasPointerMoved"
+                              PointerReleased="OnCanvasPointerReleased" />
 
-                  <!-- Split Draft Boxes Overlay -->
-                  <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
-                                Width="{Binding ActualWidthPixels}"
-                                Height="{Binding ActualHeightPixels}"
-                                IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                    <ItemsControl.ItemContainerTheme>
-                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
-                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                      </ControlTheme>
-                    </ItemsControl.ItemContainerTheme>
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <Canvas />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
+                      <!-- Selection Drawing Preview -->
+                      <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                              IsVisible="{Binding HasImage}" IsHitTestVisible="False">
                         <Border Classes="BBox draft"
                                 BorderBrush="DarkOrange"
-                                Width="{Binding Width}"
-                                Height="{Binding Height}">
-                          <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="Bold"
-                                     Foreground="DarkOrange" />
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                                Canvas.Left="{Binding SelectionLeft}"
+                                Canvas.Top="{Binding SelectionTop}"
+                                Width="{Binding SelectionWidth}"
+                                Height="{Binding SelectionHeight}"
+                                IsVisible="{Binding SelectionVisible}" />
+                      </Canvas>
+
+                      <!-- Split Draft Boxes Overlay -->
+                      <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
+                                    Width="{Binding ActualWidthPixels}"
+                                    Height="{Binding ActualHeightPixels}"
+                                    IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
+                            <Border Classes="BBox draft"
+                                    BorderBrush="DarkOrange"
+                                    Width="{Binding Width}"
+                                    Height="{Binding Height}">
+                              <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="Bold"
+                                         Foreground="DarkOrange" />
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </Grid>
+                  </LayoutTransformControl>
 
                   <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center"
                               IsVisible="{Binding HasNoImage}">
@@ -576,7 +606,7 @@
             <!-- View mode: tabbed sidebar — page content (read-only Markdown preview) or version history -->
             <Grid RowDefinitions="Auto,*" IsVisible="{Binding IsNavigationSidebarVisible}">
               <Border Classes="SidebarHeader">
-                <Grid ColumnDefinitions="Auto,*" Height="32">
+                <Grid ColumnDefinitions="Auto,*,Auto" Height="32">
                   <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
                     <TextBlock Text="{Binding SidebarTabTitle}" FontSize="16" FontWeight="SemiBold"
                                VerticalAlignment="Center" />
@@ -588,12 +618,25 @@
                           <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
+                          <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <Separator />
+                          <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
                       </Button.Flyout>
                       <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
                                      StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                     </Button>
                   </StackPanel>
+                  <Button x:Name="PageOcrButton" Grid.Column="1" Classes="ToolbarButton"
+                          Command="{Binding RunCurrentPageOcrCommand}" IsVisible="{Binding IsContentTabActive}"
+                          HorizontalAlignment="Right" ToolTip.Tip="当前页 OCR" AutomationProperties.Name="当前页 OCR">
+                    <lucide:Lucide Icon="ScanText" Width="16" Height="16" />
+                  </Button>
+                  <Button x:Name="EditPageButton" Grid.Column="2" Classes="ToolbarButton"
+                          Command="{Binding EnterEditModeCommand}" IsVisible="{Binding IsContentTabActive}"
+                          HorizontalAlignment="Right" ToolTip.Tip="编辑页面" AutomationProperties.Name="编辑页面">
+                    <lucide:Lucide Icon="Pencil" Width="16" Height="16" />
+                  </Button>
                   <StackPanel x:Name="ChapterHeaderActions" Grid.Column="1" Orientation="Horizontal" Spacing="4"
                               HorizontalAlignment="Right" VerticalAlignment="Center"
                               IsVisible="{Binding IsChaptersTabActive}"
@@ -790,14 +833,105 @@
                     </ItemsControl>
                   </StackPanel>
                 </ScrollViewer>
+                <!-- Tab: whole-book search (scoped to the current document) -->
+                <Grid IsVisible="{Binding IsSearchTabActive}" RowDefinitions="Auto,Auto,*" Margin="16,8">
+                  <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="4" VerticalAlignment="Center">
+                    <TextBox Text="{Binding BookSearchQuery}" Height="30" VerticalContentAlignment="Center"
+                             PlaceholderText="搜索全书"
+                             AutomationProperties.Name="全书搜索关键词">
+                      <TextBox.KeyBindings>
+                        <KeyBinding Gesture="Enter" Command="{Binding RunBookSearchCommand}" />
+                      </TextBox.KeyBindings>
+                    </TextBox>
+                    <Button Grid.Column="1" Classes="ToolbarButton" Command="{Binding RunBookSearchCommand}"
+                            ToolTip.Tip="搜索" AutomationProperties.Name="搜索">
+                      <lucide:Lucide Icon="Search" Width="15" Height="15"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                    <Button Grid.Column="2" Classes="ToolbarButton" Command="{Binding PreviousBookSearchMatchCommand}"
+                            ToolTip.Tip="上一个匹配" AutomationProperties.Name="上一个匹配">
+                      <lucide:Lucide Icon="ChevronUp" Width="15" Height="15"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                    <Button Grid.Column="3" Classes="ToolbarButton" Command="{Binding NextBookSearchMatchCommand}"
+                            ToolTip.Tip="下一个匹配" AutomationProperties.Name="下一个匹配">
+                      <lucide:Lucide Icon="ChevronDown" Width="15" Height="15"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                    <TextBlock Grid.Column="4" Text="{Binding BookSearchMatchPositionText}" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center"
+                               MinWidth="36" TextAlignment="Right" />
+                  </Grid>
+                  <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,4">
+                    <ProgressBar IsIndeterminate="True" Width="14" Height="14" VerticalAlignment="Center"
+                                 IsVisible="{Binding IsBookSearchRunning}" />
+                    <TextBlock Text="{Binding BookSearchStatusText}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                  </StackPanel>
+                  <Grid Grid.Row="2">
+                    <ListBox x:Name="BookSearchItems" ItemsSource="{Binding BookSearchResults}"
+                             SelectedItem="{Binding SelectedBookSearchResult, Mode=OneWay}"
+                             SelectionChanged="OnBookSearchSelectionChanged"
+                             Background="Transparent" BorderThickness="0" Padding="0">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:BookSearchResultViewModel">
+                          <Border Classes="SearchHitRow" Classes.selected="{Binding IsSelected}"
+                                  Margin="0,0,0,6" ToolTip.Tip="{Binding Unit.Text}">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                              <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4"
+                                      Padding="6,2" VerticalAlignment="Top">
+                                <TextBlock Text="{Binding BadgeText}" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </Border>
+                              <Grid Grid.Column="1" ColumnDefinitions="*,Auto,*">
+                                <TextBlock Text="{Binding Prefix}" FontSize="12" VerticalAlignment="Center"
+                                           HorizontalAlignment="Right" TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding Hit}" FontSize="12" FontWeight="Bold"
+                                           VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="{Binding Suffix}" FontSize="12"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </Grid>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                    <lucide:Lucide Icon="Search" Width="32" Height="32"
+                                   HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,24"
+                                   StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.25"
+                                   IsVisible="{Binding HasNoBookSearchResults}" />
+                  </Grid>
+                </Grid>
               </Grid>
             </Grid>
 
             <!-- Edit mode: Box tree -->
             <Grid RowDefinitions="Auto,*,Auto,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
               <Border Classes="SidebarHeader">
-                <Grid ColumnDefinitions="*,Auto">
-                  <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <Grid ColumnDefinitions="Auto,*" Height="32">
+                  <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding SidebarTabTitle}" FontSize="16" FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <Button Background="Transparent" BorderThickness="0" Padding="4" VerticalAlignment="Center"
+                            ToolTip.Tip="切换侧栏视图">
+                      <Button.Flyout>
+                        <MenuFlyout>
+                          <MenuItem Header="页面内容" Command="{Binding ShowContentTabCommand}" />
+                          <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
+                          <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
+                          <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
+                          <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <Separator />
+                          <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
+                        </MenuFlyout>
+                      </Button.Flyout>
+                      <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                  </StackPanel>
                 </Grid>
               </Border>
               <Grid Grid.Row="1">

@@ -24,6 +24,8 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+
+    [ExcludeFromDerivedGeneration] public MainWindowViewModel SearchControls => _main;
     private readonly List<SearchRewriteRuleId> _pendingDeletions = [];
     private bool _isDirty;
     private long _editRevision;
@@ -53,6 +55,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
         DiscardCommand = new AsyncCommand(DiscardAsync);
         PreviewCommand = new AsyncCommand(PreviewAsync);
         OpenccOptions = new ObservableCollection<string>(OpenccConfigs.All);
+        Awareness = new SearchPageAwarenessSettingsViewModel(main);
         RuleTypeOptions =
         [
             new SearchRewriteRuleTypeOption(SearchRuleType.Literal, "字面匹配"),
@@ -87,6 +90,12 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     public override bool SupportsEditing => true;
 
+    /// <summary>The 「搜索框页面感知」 tab beside the rewrite table: per-workspace-kind toolbar
+    /// search modes persisted as device-local UI preferences, outside this section's dirty/save
+    /// lifecycle.</summary>
+    [ExcludeFromDerivedGeneration]
+    public SearchPageAwarenessSettingsViewModel Awareness { get; }
+
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
 
     [ExcludeFromDerivedGeneration] public override bool CanSave => IsDirty;
@@ -95,7 +104,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     [ObservableProperty]
     public partial string PreviewSummary { get; private set; } =
-        "输入示例查询后点击「预览」。预览按需构建重写计划，不受「启用查询重写」开关影响。";
+        string.Empty;
 
     [ObservableProperty] public partial bool PreviewIsError { get; private set; }
 
@@ -105,6 +114,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        Awareness.RefreshFromPersisted();
         if (IsDirty || IsSaving)
         {
             return;

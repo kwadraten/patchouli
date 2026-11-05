@@ -108,7 +108,7 @@
                             <TextBox Text="{Binding Suffix}" PlaceholderText="如 and passim" />
                           </StackPanel>
                         </Grid>
-                        <CheckBox Content="隐藏作者 (suppress-author)" IsChecked="{Binding SuppressAuthor}" />
+                        <ToggleSwitch Content="隐藏作者 (suppress-author)" IsChecked="{Binding SuppressAuthor}" />
                       </StackPanel>
                     </Border>
                   </DataTemplate>

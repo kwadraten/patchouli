@@ -384,13 +384,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         return new LibraryChangeSet(
-            changeSets.Max(changeSet => changeSet.NewRevision),
-            changeSets.SelectMany(changeSet => changeSet.ItemIds).Distinct().ToArray(),
-            changeSets.SelectMany(changeSet => changeSet.DocumentInstanceIds).Distinct().ToArray(),
-            changeSets.SelectMany(changeSet => changeSet.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
-            changeSets.SelectMany(changeSet => changeSet.PageIds).Distinct().ToArray(),
-            changeSets.SelectMany(changeSet => changeSet.OcrRunIds).Distinct().ToArray(),
-            changeSets.SelectMany(changeSet => changeSet.CollectionIds).Distinct().ToArray());
+                changeSets.Max(changeSet => changeSet.NewRevision),
+                changeSets.SelectMany(changeSet => changeSet.ItemIds).Distinct().ToArray(),
+                changeSets.SelectMany(changeSet => changeSet.DocumentInstanceIds).Distinct().ToArray(),
+                changeSets.SelectMany(changeSet => changeSet.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
+                changeSets.SelectMany(changeSet => changeSet.PageIds).Distinct().ToArray(),
+                changeSets.SelectMany(changeSet => changeSet.OcrRunIds).Distinct().ToArray(),
+                changeSets.SelectMany(changeSet => changeSet.CollectionIds).Distinct().ToArray())
+            { TagCatalogChanged = changeSets.Any(changeSet => changeSet.TagCatalogChanged) };
     }
 
     [ObservableProperty] public partial string LibraryName { get; set; } = "我的书库";
@@ -2075,7 +2076,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (changeSet.ItemIds.Count > 0 || changeSet.DocumentInstanceIds.Count > 0)
+        if (changeSet.ItemIds.Count > 0 || changeSet.DocumentInstanceIds.Count > 0 || changeSet.TagCatalogChanged)
         {
             // An active tag filter is reconciled from one refreshed cache snapshot below. Avoid
             // first projecting unfiltered rows by ID, which would expose a transient invalid grid

@@ -22,6 +22,26 @@ namespace Patchouli.Tests;
 public sealed class ItemMergeServiceTests
 {
     [Fact]
+    public async Task Merge_rejects_a_legacy_nonstandard_target_type_before_changing_either_item()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata source = (await context.Items.CreateItemAsync("book", "Source")).Value;
+        ItemMetadata target = (await context.Items.CreateItemAsync("book", "Target")).Value;
+        await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("update items set item_type = 'newspaper' where item_id = @Id",
+            new { Id = target.ItemId.ToString() });
+
+        Result result = await context.MergeItems.MergeAsync(source.ItemId, target.ItemId, [], _ => false);
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        result.ErrorMessage.Should().Contain("CSL-JSON");
+        (await context.Items.GetItemAsync(source.ItemId)).Value.Should().BeEquivalentTo(source);
+        ItemMetadata unchangedTarget = (await context.Items.GetItemAsync(target.ItemId)).Value;
+        unchangedTarget.Should().BeEquivalentTo(target with { ItemType = "newspaper" });
+    }
+
+    [Fact]
     public async Task BuildMergePreviewAsync_detects_conflicts_and_missing_fields()
     {
         await using TestContext context = await CreateContextAsync();

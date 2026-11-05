@@ -37,7 +37,7 @@ public sealed class GitHubReleaseSource : IUpdateSource
             if (!_httpClient.DefaultRequestHeaders.Contains("User-Agent"))
             {
                 _httpClient.DefaultRequestHeaders.UserAgent.Add(
-                    new ProductInfoHeaderValue("Patchouli.NET", Patchouli.Core.BuildInfo.Version));
+                    new ProductInfoHeaderValue("Patchouli.NET", Core.BuildInfo.Version));
             }
 
             using HttpResponseMessage response = await _httpClient

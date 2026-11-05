@@ -39,11 +39,12 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     public ExtensionSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
+        Diagnostics.CollectionChanged += (_, _) => Raise(nameof(RequiresSdk));
         RefreshCommand = EditorCommand(() => LoadAsync());
         SaveConfigurationCommand = EditorCommand(SaveConfigurationAsync);
-        SaveSourceCommand = EditorCommand(SaveSourceAsync);
-        CheckCommand = EditorCommand(CheckAsync);
-        ActivateCommand = EditorCommand(ActivateAsync);
+        SaveSourceCommand = EditorCommand(SaveSourceAsync, true);
+        CheckCommand = EditorCommand(CheckAsync, true);
+        ActivateCommand = EditorCommand(ActivateAsync, true);
         CopyCommand = EditorCommand(CopyAsync);
         TestCommand = EditorCommand(TestAsync);
         PromoteCommand = EditorCommand(PromoteAsync);
@@ -51,8 +52,8 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         ResetCommand = new RelayCommand(_ => ResetConfiguration());
         ApplyStableParametersCommand = new RelayCommand(_ => ApplyStableTranslationParameters());
         ClearCacheCommand = EditorCommand(ClearCacheAsync);
-        TestDraftCommand = EditorCommand(TestDraftAsync);
-        CheckAndSaveSourceCommand = EditorCommand(CheckAndSaveSourceAsync);
+        TestDraftCommand = EditorCommand(TestDraftAsync, true);
+        CheckAndSaveSourceCommand = EditorCommand(CheckAndSaveSourceAsync, true);
     }
 
     public ObservableCollection<ExtensionListItem> Extensions { get; } = [];
@@ -71,6 +72,14 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
     [ObservableProperty] public partial string ActiveFingerprintText { get; set; } = "";
     [ObservableProperty] public partial string ConfigurationRevisionText { get; set; } = "";
     [ObservableProperty] public partial bool IsConfigurationSchemaAvailable { get; set; }
+    [ObservableProperty] public partial bool IsSourceReadOnly { get; set; } = true;
+
+    public bool CanEditSource => CanEdit && !IsSourceReadOnly;
+
+    // CollectionChanged explicitly invalidates this projection.
+    [ExcludeFromDerivedGeneration]
+    public bool RequiresSdk => Diagnostics.Any(item => item.Code is "EXT0033" or "EXT0034" or "EXT0035" or "EXT0037");
+
     public bool CanEdit => !IsEditorBusy && !IsEditorLoading;
     public bool CanSaveConfiguration => IsConfigurationSchemaAvailable && !IsEditorBusy && !IsEditorLoading;
     public bool IsTranslation => SelectedExtension?.Kind == ExtensionKind.Translation;
@@ -114,9 +123,19 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
         _loadCancellation?.Cancel();
     }
 
-    private AsyncCommand EditorCommand(Func<Task> operation)
+    private AsyncCommand EditorCommand(Func<Task> operation, bool sourceMutation = false)
     {
-        return new AsyncCommand(() => RunEditorOperationAsync(operation));
+        return new AsyncCommand(() => RunEditorOperationAsync(async () =>
+        {
+            if (sourceMutation && IsSourceReadOnly)
+            {
+                LastError = "内置扩展源码为只读，请从扩展列表添加独立的自定义扩展。";
+                Status = LastError;
+                return;
+            }
+
+            await operation();
+        }));
     }
 
     public Task<bool> SaveDialogAsync()
@@ -163,7 +182,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
     partial void OnSourceTextChanged(string value)
     {
-        if (!_loadingSource && SelectedSourceFile is { } file)
+        if (!_loadingSource && !IsSourceReadOnly && SelectedSourceFile is { } file)
         {
             _draftSources[file] = value;
         }
@@ -197,6 +216,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
 
     partial void OnSelectedExtensionChanged(ExtensionListItem? value)
     {
+        IsSourceReadOnly = value is null || _services is null || _services.TranslationExtensions.IsBuiltIn(value.Id);
         Raise(nameof(EditorTitle));
         Raise(nameof(IsTranslation));
         Raise(nameof(IsStableTraditionalTranslation));
@@ -411,7 +431,7 @@ public sealed partial class ExtensionSettingsViewModel : SettingsSectionViewMode
                 services.TranslationExtensions.BundledPackageSnapshots, item.Id, cancellationToken);
             ExtensionConfigSnapshot configured = await manager.ReadConfigAsync(item.Id, cancellationToken);
             configured = await OcrMultimodalLegacySeed.EnsureSeededAsync(manager, item.Id, configured,
-                legacyOcrSettings, services.OcrStorage, cancellationToken);
+                legacyOcrSettings, cancellationToken);
             ExtensionConfigurationDescription described =
                 await services.TranslationExtensions.GetConfigurationDescriptionAsync(item.Id, cancellationToken);
             return (loaded, configured, described);

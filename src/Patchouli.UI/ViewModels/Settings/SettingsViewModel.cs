@@ -66,6 +66,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
+        LayoutModelCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.LayoutRecognition);
         OcrEngineCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.Ocr);
         OcrTextLayerCatalog =
             new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.PdfTextLayer);
@@ -90,7 +91,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         ISettingsSection[] sections =
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
-            OcrEngineCatalog, OcrTextLayerCatalog,
+            OcrEngineCatalog, OcrTextLayerCatalog, LayoutModelCatalog,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
             CaywSettings,
@@ -126,7 +127,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("extensions", "其他扩展", ExtensionSettings),
             new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
-            new SettingsSectionEntryViewModel("search_rewrite", "搜索", SearchRewriteSettings),
+            new SettingsSectionEntryViewModel("search_rewrite", "搜索重写", SearchRewriteSettings),
             new SettingsSectionEntryViewModel("csl_localization", "题录本地化", CslLocalizationSettings),
             new SettingsSectionEntryViewModel("csl_installed", "已安装样式", CslStyleManager),
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
@@ -142,6 +143,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // The two catalog tabs live only inside the recognition group (not in SectionEntries);
         // give them titles so save/validation summaries never hit a missing-key lookup.
+        _sectionTitles[LayoutModelCatalog] = "版面识别模型列表";
         _sectionTitles[OcrEngineCatalog] = "OCR 引擎列表";
         _sectionTitles[OcrTextLayerCatalog] = "文本层提取算法列表";
 
@@ -155,6 +157,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // provider catalog → translation. The separate multimodal OCR page is gone; its
         // configuration lives in the engine catalog's extension dialogs.
         SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr_presets"),
+            new SettingsSectionEntryViewModel("layout_models", "版面识别模型列表", LayoutModelCatalog),
             new SettingsSectionEntryViewModel("ocr_engines", "OCR 引擎列表", OcrEngineCatalog),
             new SettingsSectionEntryViewModel("ocr_textlayer", "文本层提取算法列表",
                 OcrTextLayerCatalog),
@@ -163,6 +166,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
         SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"), Entry("csl_cayw"));
+        SettingsSectionGroupViewModel search = new(Entry("search_rewrite"),
+            new SettingsSectionEntryViewModel("search_awareness", "搜索框页面感知", SearchRewriteSettings.Awareness));
         Categories =
         [
             new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
@@ -170,7 +175,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("文献加工", "ScanText", recognition),
             new NavCategoryViewModel("AI集成", "Sparkles", ai),
             new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
-            new NavCategoryViewModel("搜索", "Filter", SearchRewriteSettings),
+            new NavCategoryViewModel("搜索", "Filter", search),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
             new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
             new NavCategoryViewModel("更新设置", "Download", UpdateSettings)
@@ -219,6 +224,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
+    public OcrComponentCatalogSettingsViewModel LayoutModelCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrEngineCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrTextLayerCatalog { get; }
     public LlmSettingsViewModel LlmSettings { get; }
@@ -227,6 +233,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public ExtensionSettingsViewModel CreateExtensionEditor()
     {
         return new ExtensionSettingsViewModel(_main);
+    }
+
+    public ExtensionCreationViewModel CreateExtensionDraft(ExtensionKind kind)
+    {
+        return new ExtensionCreationViewModel(_main, kind);
     }
 
     public AgentIntegrationSettingsViewModel AgentIntegrationSettings { get; }

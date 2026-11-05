@@ -86,10 +86,15 @@
                           <StackPanel Orientation="Horizontal" Spacing="6">
                             <TextBlock Text="{Binding Name}" FontSize="12"
                                        Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
-                            <Button Content="×" Padding="0" FontSize="12" Width="16" Height="16"
+                            <Button Padding="0" Width="16" Height="16"
+                                    VerticalAlignment="Center"
+                                    HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                     Background="Transparent"
-                                    Command="{Binding RemoveCommand}" />
+                                    Command="{Binding RemoveCommand}" ToolTip.Tip="移除标签">
+                              <lucide:Lucide Icon="X" Width="12" Height="12"
+                                             StrokeBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            </Button>
                           </StackPanel>
                         </Border>
                       </DataTemplate>

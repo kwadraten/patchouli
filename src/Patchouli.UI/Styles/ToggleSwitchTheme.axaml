@@ -1,0 +1,63 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ControlTheme x:Key="{x:Type ToggleSwitch}" TargetType="ToggleSwitch">
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+    <Setter Property="HorizontalAlignment" Value="Left" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+    <Setter Property="MinHeight" Value="32" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Background="Transparent">
+          <Grid Width="40" Height="22" VerticalAlignment="Center">
+            <Border x:Name="SwitchTrack" CornerRadius="11" BorderThickness="1"
+                    Background="{DynamicResource SurfaceContainerHighBrush}"
+                    BorderBrush="{DynamicResource OutlineVariantBrush}" />
+            <Canvas x:Name="PART_SwitchKnob" Width="20" Height="22" HorizontalAlignment="Left">
+              <Grid x:Name="PART_MovingKnobs" Width="20" Height="22">
+                <Ellipse x:Name="SwitchThumb" Width="14" Height="14" />
+              </Grid>
+            </Canvas>
+            <Border x:Name="MixedIndicator" Width="12" Height="3" CornerRadius="1.5"
+                    Background="{DynamicResource PrimaryBrush}" IsVisible="False" />
+          </Grid>
+          <ContentPresenter x:Name="PART_ContentPresenter" Grid.Column="1"
+                            Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                            VerticalAlignment="Center" RecognizesAccessKey="True" />
+        </Grid>
+      </ControlTemplate>
+    </Setter>
+    <Style Selector="^:checked /template/ Border#SwitchTrack">
+      <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryContainerBrush}" />
+    </Style>
+    <Style Selector="^ /template/ Ellipse#SwitchThumb">
+      <Setter Property="Fill" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    </Style>
+    <Style Selector="^:checked /template/ Ellipse#SwitchThumb">
+      <Setter Property="Fill" Value="{DynamicResource SurfaceBrush}" />
+    </Style>
+    <Style Selector="^:indeterminate /template/ Border#SwitchTrack">
+      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="^:indeterminate /template/ Canvas#PART_SwitchKnob">
+      <Setter Property="Opacity" Value="0" />
+    </Style>
+    <Style Selector="^:indeterminate /template/ Border#MixedIndicator">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="^:pointerover /template/ Border#SwitchTrack">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="^:focus-visible /template/ Border#SwitchTrack">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+    <Style Selector="^:pressed /template/ Border#SwitchTrack">
+      <Setter Property="Opacity" Value="0.8" />
+    </Style>
+    <Style Selector="^:disabled">
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+  </ControlTheme>
+</ResourceDictionary>

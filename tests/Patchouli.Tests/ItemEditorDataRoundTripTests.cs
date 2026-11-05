@@ -223,7 +223,10 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             saved.Value.TitleShort.Should().Be("Short classic");
             saved.Value.Status.Should().Be("draft");
             saved.Value.Dates.Should().Contain(date =>
-                date.Role == ItemDateRoles.OriginalDate && date.Literal == "1901");
+                date.Role == ItemDateRoles.OriginalDate && date.DatePartsJson == "[[1901]]" && date.Literal == null);
+
+            await main.ItemEditor.LoadAsync(created.Value.ItemId.ToString());
+            main.ItemEditor.Fields.Single(field => field.Key == "OriginalDate").Value.Should().Be("1901");
         }
         finally
         {

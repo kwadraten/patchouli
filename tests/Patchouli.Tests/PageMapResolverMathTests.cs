@@ -31,7 +31,8 @@ public sealed class PageMapResolverMathTests
 
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(1)).PrintedNumber.Should().Be(1);
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(50)).PrintedNumber.Should().Be(50);
-        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(100)).PrintedNumber.Should().Be(100);
+        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(100)).PrintedNumber.Should()
+            .Be(100);
     }
 
     [Fact]
@@ -42,7 +43,8 @@ public sealed class PageMapResolverMathTests
 
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(13)).PrintedNumber.Should().Be(13);
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(62)).PrintedNumber.Should().Be(62);
-        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(112)).PrintedNumber.Should().Be(112);
+        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(112)).PrintedNumber.Should()
+            .Be(112);
     }
 
     [Fact]
@@ -78,8 +80,10 @@ public sealed class PageMapResolverMathTests
             [], [], []);
 
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(10)).PrintedNumber.Should().Be(10);
-        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(11)).PrintedNumber.Should().Be(101);
-        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(12)).PrintedNumber.Should().Be(102);
+        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(11)).PrintedNumber.Should()
+            .Be(101);
+        PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(12)).PrintedNumber.Should()
+            .Be(102);
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(13)).PrintedNumber.Should().Be(11);
         PageMapResolver.ResolveForward(map, NoLogicalRules(), new NavigationPosition(20)).PrintedNumber.Should().Be(18);
 
@@ -207,8 +211,10 @@ public sealed class PageMapResolverMathTests
         DocumentBoxId box = Box("01");
         DocumentPageMap map = new(DocId,
             [new PhysicalPaginationRule(1, 10, 1)],
-            [new LogicalPaginationRule(5, 6, 50,
-                [new LogicalPageReadingEntry(box, 5), new LogicalPageReadingEntry(Box("02"), 6)])],
+            [
+                new LogicalPaginationRule(5, 6, 50,
+                    [new LogicalPageReadingEntry(box, 5), new LogicalPageReadingEntry(Box("02"), 6)])
+            ],
             [], []);
 
         ForwardResolution resolution =

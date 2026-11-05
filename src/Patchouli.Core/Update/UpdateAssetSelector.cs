@@ -38,7 +38,7 @@ public static class UpdateAssetSelector
                 "-osx-arm64.dmg",
             var (os, arch) when os == OSPlatform.Linux && arch == Architecture.X64 =>
                 "-linux-x64.AppImage",
-            _ => null,
+            _ => null
         };
 
         if (suffix is null)
@@ -63,8 +63,8 @@ public static class UpdateAssetSelector
         // Prefer the asset whose embedded version matches the release version;
         // fall back to the first candidate if naming ever drifts.
         string versionText = release.Version.ToString();
-        ReleaseAssetInfo selected = candidates.FirstOrDefault(
-            asset => asset.Name.Contains(versionText, StringComparison.OrdinalIgnoreCase))
+        ReleaseAssetInfo selected =
+            candidates.FirstOrDefault(asset => asset.Name.Contains(versionText, StringComparison.OrdinalIgnoreCase))
             ?? candidates[0];
 
         return Result<ReleaseAssetInfo>.Success(selected);
@@ -82,7 +82,7 @@ public static class UpdateAssetSelector
             Architecture.X86 => "x86",
             Architecture.Arm64 => "arm64",
             Architecture.Arm => "arm",
-            _ => architecture.ToString().ToLowerInvariant(),
+            _ => architecture.ToString().ToLowerInvariant()
         };
         return $"{os} {arch}";
     }

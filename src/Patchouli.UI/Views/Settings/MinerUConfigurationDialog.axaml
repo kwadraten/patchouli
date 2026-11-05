@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia"
         xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
         x:Class="Patchouli.UI.Views.Settings.MinerUConfigurationDialog"
         x:DataType="settings:MinerUConfigurationDialogViewModel"
@@ -42,9 +43,11 @@
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </StackPanel>
 
-        <Button Content="移除凭据" Command="{Binding RemoveCredentialCommand}"
+        <Button Command="{Binding RemoveCredentialCommand}"
                 IsEnabled="{Binding HasPersistedCredential}" Classes="Danger"
-                HorizontalAlignment="Left" AutomationProperties.Name="移除 MinerU 凭据" />
+                HorizontalAlignment="Left" AutomationProperties.Name="移除 MinerU 凭据" ToolTip.Tip="移除凭据">
+          <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+        </Button>
 
         <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
                    Foreground="{DynamicResource OnSurfaceVariantBrush}"

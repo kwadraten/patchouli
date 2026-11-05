@@ -29,7 +29,7 @@ internal static class UpdateInstallability
                 HasMatchingInnoInstallRecord(installDirectory));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
-                                          System.Security.SecurityException or ArgumentException)
+                                              System.Security.SecurityException or ArgumentException)
         {
             // Any uncertainty falls back to the GitHub Release manual path.
             return false;
@@ -48,9 +48,12 @@ internal static class UpdateInstallability
         string[] managedRoots =
         [
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "scoop", "apps"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Packages"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Links"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "chocolatey", "lib"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft",
+                "WinGet", "Packages"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft",
+                "WinGet", "Links"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "chocolatey",
+                "lib"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps")
         ];
 

@@ -354,7 +354,8 @@ public sealed record UiPreferences(
     string LibraryGridSortColumn = "",
     bool LibraryGridSortDescending = false,
     string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide,
-    string ThemeMode = UiPreferences.ThemeModeSystem)
+    string ThemeMode = UiPreferences.ThemeModeSystem,
+    Dictionary<string, string>? SearchPageModes = null)
 {
     public const double DefaultReadingFontSize = 14;
 
@@ -642,7 +643,8 @@ public sealed record PatchouliAppSettings(
                     UiPreferences.NormalizeReadingCompareMode(
                         ReadString(ui, "ReadingCompareMode", defaults.Ui.ReadingCompareMode)),
                     UiPreferences.NormalizeThemeMode(
-                        ReadString(ui, "ThemeMode", defaults.Ui.ThemeMode))))
+                        ReadString(ui, "ThemeMode", defaults.Ui.ThemeMode)),
+                    ReadStringStringDict(ui, "SearchPageModes", defaults.Ui.SearchPageModes)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -862,7 +864,8 @@ public sealed record PatchouliAppSettings(
                 Ui.LibraryGridSortColumn,
                 Ui.LibraryGridSortDescending,
                 Ui.ReadingCompareMode,
-                Ui.ThemeMode
+                Ui.ThemeMode,
+                Ui.SearchPageModes
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -1062,7 +1065,8 @@ public sealed record PatchouliAppSettings(
                     Ui.LibraryGridSortColumn,
                     Ui.LibraryGridSortDescending,
                     Ui.ReadingCompareMode,
-                    Ui.ThemeMode
+                    Ui.ThemeMode,
+                    Ui.SearchPageModes
                 });
             }
 
@@ -2044,6 +2048,31 @@ public sealed record PatchouliAppSettings(
             if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out int number))
             {
                 dict[property.Name] = number;
+            }
+        }
+
+        return dict;
+    }
+
+    private static Dictionary<string, string>? ReadStringStringDict(JsonElement? section, string name,
+        Dictionary<string, string>? fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        if (!element.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        Dictionary<string, string> dict = new();
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is { } text)
+            {
+                dict[property.Name] = text;
             }
         }
 

@@ -7,6 +7,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
@@ -278,6 +279,147 @@ public sealed class LibraryItemQueryServiceTests
 
         count.IsSuccess.Should().BeTrue(count.ErrorMessage);
         count.Value.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GetSearchFilterOptions_correlates_primary_documents_and_preserves_all_catalogue_values()
+    {
+        await using TestContext context = await CreateContextAsync();
+
+        // 1. Item without any document -> no_primary_document
+        Result<ItemMetadata> noDocItem = await context.Items.CreateItemAsync("book", "Item without document");
+        noDocItem.IsSuccess.Should().BeTrue();
+
+        // 2. Item with document and failed OCR -> ocr_failed
+        Result<ItemMetadata> failedOcrItem = await context.Items.CreateItemAsync("book", "Item with failed OCR");
+        failedOcrItem.IsSuccess.Should().BeTrue();
+        Result<DocumentInstance> failedDoc = await context.Documents.AttachDocumentInstanceAsync(
+            failedOcrItem.Value.ItemId, null, DocumentInstanceType.PrimaryScan, makePrimary: true);
+        failedDoc.IsSuccess.Should().BeTrue();
+
+        string presetId = OcrPresetId.New().ToString();
+        string presetVersionId = OcrPresetVersionId.New().ToString();
+        string runId = OcrRunId.New().ToString();
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection =
+                     context.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            string libraryId = (await connection.ExecuteScalarAsync<string?>(
+                "select library_id from library_metadata limit 1;"))!;
+            await connection.ExecuteAsync(
+                """
+                insert into ocr_presets values (@PresetId, @LibraryId, 'MinerU', null, @VersionId, 0, @Now, @Now);
+                insert into ocr_preset_versions values (@VersionId, @PresetId, 'mineru', 'mineru-default', null, '{}', 1, @Now);
+                insert into ocr_runs (
+                    ocr_run_id, document_instance_id, preset_id, preset_version_id, engine_id, model_id,
+                    parameters_snapshot_json, source_tree_revision_id, output_tree_revision_id, retry_of_run_id,
+                    state, created_at, updated_at, hidden)
+                values (@RunId, @DocumentId, @PresetId, @VersionId, 'mineru', 'mineru-default', '{}', null, null,
+                        null, 'failed', @Now, @Now, 0);
+                """,
+                new
+                {
+                    PresetId = presetId,
+                    LibraryId = libraryId,
+                    VersionId = presetVersionId,
+                    RunId = runId,
+                    DocumentId = failedDoc.Value.DocumentInstanceId.ToString(),
+                    Now = context.Clock.UtcNow.ToString("O")
+                });
+        }
+
+        // 3. Item with indexed document -> indexed
+        Result<ItemMetadata> indexedItem = await context.Items.CreateItemAsync("book", "Item with indexed doc");
+        indexedItem.IsSuccess.Should().BeTrue();
+        Result<DocumentInstance> indexedDoc = await context.Documents.AttachDocumentInstanceAsync(
+            indexedItem.Value.ItemId, null, DocumentInstanceType.PrimaryScan, makePrimary: true);
+        indexedDoc.IsSuccess.Should().BeTrue();
+        Result<Page> page = await context.Pages.CreatePageAsync(indexedDoc.Value.DocumentInstanceId, 0, "1", null,
+            null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
+        page.IsSuccess.Should().BeTrue();
+        await BoxTreeTestData.CommitTextAsync(context.Database.ConnectionFactory, context.Clock,
+            indexedDoc.Value.DocumentInstanceId, page.Value.PageId, "indexable text");
+        await context.SearchUnits.RebuildForDocumentInstanceAsync(indexedDoc.Value.DocumentInstanceId);
+        await context.SearchIndex.RebuildFtsForDocumentInstanceAsync(indexedDoc.Value.DocumentInstanceId);
+
+        // Act
+        Result<BibliographicSearchFilterOptions> optionsResult = await context.Query.GetSearchFilterOptionsAsync();
+
+        // Assert
+        optionsResult.IsSuccess.Should().BeTrue(optionsResult.ErrorMessage);
+        BibliographicSearchFilterOptions options = optionsResult.Value;
+
+        // All 3 catalog states must be present; unqualified item_id bug caused all items to collapse to 'ocr_failed'
+        options.OcrIndexStatuses.Select(s => s.Value).Should().BeEquivalentTo([
+            "no_primary_document",
+            "ocr_failed",
+            "indexed"
+        ]);
+
+        options.OcrIndexStatuses.Should().Contain(s => s.Value == "no_primary_document" && s.Label == "无主文档");
+        options.OcrIndexStatuses.Should().Contain(s => s.Value == "ocr_failed" && s.Label == "OCR 失败");
+        options.OcrIndexStatuses.Should().Contain(s => s.Value == "indexed" && s.Label == "已索引");
+    }
+
+    [Fact]
+    public async Task Keyset_pages_traverse_trash_items_with_exact_seek_order()
+    {
+        await using TestContext context = await CreateContextAsync();
+        List<ItemId> createdTrashIds = new();
+        for (int index = 0; index < 5; index++)
+        {
+            context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+            Result<ItemMetadata> created = await context.Items.CreateItemAsync("book", $"Trash Paged Item {index}");
+            await context.Items.DeleteItemAsync(created.Value.ItemId);
+            createdTrashIds.Add(created.Value.ItemId);
+        }
+
+        List<string> seen = new();
+        LibraryItemCursor? cursor = null;
+        int pages = 0;
+        while (true)
+        {
+            Result<LibraryItemPage> pageResult = await context.Query.ListTrashedRowsAsync(2, cursor);
+            pageResult.IsSuccess.Should().BeTrue();
+            LibraryItemPage page = pageResult.Value;
+            pages++;
+            foreach (LibraryItemRow row in page.Rows)
+            {
+                seen.Should().NotContain(row.ItemId.ToString());
+                seen.Add(row.ItemId.ToString());
+            }
+
+            if (!page.HasMore)
+            {
+                break;
+            }
+
+            cursor = page.NextCursor;
+        }
+
+        seen.Should().HaveCount(5);
+        pages.Should().Be(3);
+        seen.Distinct().Should().HaveCount(seen.Count);
+    }
+
+    [Fact]
+    public async Task Metadata_search_uses_the_library_rewrite_switch_before_filtering_and_limiting()
+    {
+        await using TestContext context = await CreateContextAsync();
+        LibraryIdentityService library = new(context.Database.ConnectionFactory, context.Clock);
+        SearchProfileService profiles = new(context.Database.ConnectionFactory, library, context.Clock,
+            new OpenccTextConverter());
+        LibraryItemQueryService query = new(context.Database.ConnectionFactory, profiles);
+        ItemMetadata expected = (await context.Items.CreateItemAsync("book", "臺灣史")).Value;
+        (await profiles.AddRewriteRuleAsync(null, SearchRuleType.Literal, "台湾", "臺灣",
+            SearchRewriteDirection.Replace, 0, null)).IsSuccess.Should().BeTrue();
+        BibliographicItemSearch request = new("台湾", [], 1);
+        (await profiles.SetRewriteEnabledAsync(false)).IsSuccess.Should().BeTrue();
+        (await query.SearchRowsAsync(request)).Value.Should().BeEmpty();
+        (await profiles.SetRewriteEnabledAsync(true)).IsSuccess.Should().BeTrue();
+        (await query.SearchRowsAsync(request)).Value.Should().ContainSingle().Which.ItemId.Should().Be(expected.ItemId);
+        (await profiles.SetRewriteEnabledAsync(false)).IsSuccess.Should().BeTrue();
+        (await query.SearchRowsAsync(request)).Value.Should().BeEmpty();
     }
 
     private static async Task<TestContext> CreateContextAsync()

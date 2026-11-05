@@ -58,7 +58,7 @@ public sealed class PageImageViewMathTests
     {
         // A4-ish page in points; a small region should render at higher DPI than the page.
         Page page = FakePage(595, 842);
-        var region = new NormalizedBBox(0.1, 0.1, 0.2, 0.2);
+        NormalizedBBox region = new(0.1, 0.1, 0.2, 0.2);
 
         int regionDpi = PageImageViewService.ChooseDpi(page, region, 2048);
         int pageDpi = PageImageViewService.ChooseDpi(page, new NormalizedBBox(0, 0, 1, 1), 2048);
@@ -100,7 +100,7 @@ public sealed class PageImageViewMathTests
     [InlineData(1, 8192, true)]
     public void PageImageViewRequest_validate_bounds(int pageIndex, int maxEdge, bool expectedOk)
     {
-        var request = new PageImageViewRequest(
+        PageImageViewRequest request = new(
             DocumentInstanceId.New(), pageIndex, null, null,
             false, PageImageViewContext.Page, maxEdge);
 
@@ -155,11 +155,13 @@ public sealed class PageImageViewMathTests
         PageImageViewService.ComputeOutputSize(612, 792, maxEdge).Should().Be((612, 792));
     }
 
-    private static Page FakePage(double? width, double? height) =>
-        new(
+    private static Page FakePage(double? width, double? height)
+    {
+        return new Page(
             PageId.New(),
             DocumentInstanceId.New(),
             0, "1", width, height,
             0, "pdfium", width, height, "v1", null,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+    }
 }

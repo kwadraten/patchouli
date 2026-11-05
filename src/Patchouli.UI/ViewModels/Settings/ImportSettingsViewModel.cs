@@ -25,7 +25,7 @@ public sealed class FileHandlingBehaviorOption
     public static IReadOnlyList<FileHandlingBehaviorOption> All { get; } =
     [
         new(FileHandlingBehavior.KeepInPlace, "保留在原位置（默认）"),
-        new(FileHandlingBehavior.MoveToFirstSearchRoot, "移动到第一个文件搜索根"),
+        new(FileHandlingBehavior.MoveToFirstSearchRoot, "移动到第一个文件搜索根")
     ];
 
     public static FileHandlingBehaviorOption FromValue(FileHandlingBehavior value)
@@ -171,11 +171,9 @@ public sealed partial class ImportSettingsViewModel : SettingsSectionViewModelBa
     /// <summary>The available behavior options shown in the UI.</summary>
     public IReadOnlyList<FileHandlingBehaviorOption> BehaviorOptions => FileHandlingBehaviorOption.All;
 
-    [ObservableProperty]
-    public partial FileHandlingBehaviorOption? McpAddBehaviorOption { get; set; }
+    [ObservableProperty] public partial FileHandlingBehaviorOption? McpAddBehaviorOption { get; set; }
 
-    [ObservableProperty]
-    public partial FileHandlingBehaviorOption? PdfDragDropBehaviorOption { get; set; }
+    [ObservableProperty] public partial FileHandlingBehaviorOption? PdfDragDropBehaviorOption { get; set; }
 
     private bool _isLoadingBehavior;
 

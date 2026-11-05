@@ -152,7 +152,7 @@ internal static class OcrMultimodalLegacySeed
     /// </summary>
     public static async Task<ExtensionConfigSnapshot> EnsureSeededAsync(IExtensionManager manager,
         string extensionId, ExtensionConfigSnapshot config, LlmAppSettings legacy,
-        OcrStorageLocations? storage, CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(manager);
         ArgumentNullException.ThrowIfNull(config);
@@ -161,13 +161,12 @@ internal static class OcrMultimodalLegacySeed
             return config;
         }
 
-        ExtensionConfigSnapshot seeded = new(CreateValues(legacy, storage), config.Revision + 1);
+        ExtensionConfigSnapshot seeded = new(CreateValues(legacy), config.Revision + 1);
         await manager.SaveConfigAsync(extensionId, seeded, cancellationToken);
         return seeded;
     }
 
-    internal static Dictionary<string, string> CreateValues(LlmAppSettings legacy,
-        OcrStorageLocations? storage)
+    internal static Dictionary<string, string> CreateValues(LlmAppSettings legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
         (string providerId, string model) = legacy.OcrSelection;
@@ -180,9 +179,6 @@ internal static class OcrMultimodalLegacySeed
                 ? ""
                 : JsonSerializer.Serialize(new { providerId, model }),
             ["model-id"] = model,
-            ["model-path"] = legacy.OcrUseLocalLayout && storage is not null
-                ? storage.GetLayoutModelPath(layoutModel)
-                : "",
             ["use-local-layout"] = legacy.OcrUseLocalLayout ? "true" : "false",
             ["layout-model"] = layoutModel,
             ["concurrency"] = Math.Clamp(legacy.OcrConcurrency, 1, OcrPerformanceSettings.MaxConcurrency)

@@ -102,8 +102,8 @@
                       Padding="8" Margin="0,0,0,6">
                 <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="3"
                       RowSpacing="4">
-                  <CheckBox IsChecked="{Binding IsIncluded, Mode=TwoWay}" VerticalAlignment="Top"
-                            ToolTip.Tip="导入此章节" />
+                  <ToggleSwitch IsChecked="{Binding IsIncluded, Mode=TwoWay}" VerticalAlignment="Top"
+                                ToolTip.Tip="导入此章节" />
                   <TextBlock Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding Title}" TextWrapping="Wrap"
                              VerticalAlignment="Center" />
                   <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourceText}" FontSize="11"
@@ -128,14 +128,14 @@
           </DataTemplate>
         </ItemsControl.ItemTemplate>
       </ItemsControl>
-      <CheckBox IsChecked="{Binding ReplaceExisting, Mode=TwoWay}" HorizontalContentAlignment="Stretch"
-                ToolTip.Tip="默认追加到现有目录；勾选后将替换全部章节。">
+      <ToggleSwitch IsChecked="{Binding ReplaceExisting, Mode=TwoWay}" HorizontalContentAlignment="Stretch"
+                    ToolTip.Tip="默认追加到现有目录；勾选后将替换全部章节。">
         <TextBlock Text="替换现有目录" TextWrapping="Wrap" />
-      </CheckBox>
-      <CheckBox IsChecked="{Binding ConfirmReplacement, Mode=TwoWay}" IsVisible="{Binding ReplaceExisting}"
-                HorizontalContentAlignment="Stretch">
+      </ToggleSwitch>
+      <ToggleSwitch IsChecked="{Binding ConfirmReplacement, Mode=TwoWay}" IsVisible="{Binding ReplaceExisting}"
+                    HorizontalContentAlignment="Stretch">
         <TextBlock Text="确认替换全部章节" TextWrapping="Wrap" />
-      </CheckBox>
+      </ToggleSwitch>
       <Expander Header="导入后的目录" HorizontalAlignment="Stretch">
         <ItemsControl ItemsSource="{Binding SelectedPreviewTree}">
           <ItemsControl.ItemTemplate>

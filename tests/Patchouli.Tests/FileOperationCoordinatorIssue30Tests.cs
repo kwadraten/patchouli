@@ -15,8 +15,10 @@ public sealed class FileOperationCoordinatorIssue30Tests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
-    private static string PathFor(string name) =>
-        Path.Combine(Path.GetTempPath(), $"issue30-{Guid.NewGuid():N}", name);
+    private static string PathFor(string name)
+    {
+        return Path.Combine(Path.GetTempPath(), $"issue30-{Guid.NewGuid():N}", name);
+    }
 
     [Fact]
     public async Task TryClaim_fails_while_another_lease_holds_the_path_and_succeeds_after_release()

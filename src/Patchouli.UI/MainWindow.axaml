@@ -60,6 +60,9 @@
   </Window.Resources>
 
   <Window.Styles>
+    <Style Selector="Menu.toolbar > MenuItem">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
     <Style Selector="TextBlock.statusBar">
       <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
     </Style>
@@ -73,7 +76,7 @@
     <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}"
             BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
-        <Menu VerticalAlignment="Center" Background="Transparent">
+        <Menu Classes="toolbar" VerticalAlignment="Center" Background="Transparent">
           <MenuItem Header="书库">
             <MenuItem Header="打开其他书库…" Command="{Binding OpenOtherLibraryCommand}" />
             <Separator />
@@ -279,7 +282,7 @@
           </MenuItem>
         </Menu>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="0" VerticalAlignment="Center">
-          <Menu Height="24" Background="Transparent" FontSize="12">
+          <Menu Classes="toolbar" Height="24" Background="Transparent" FontSize="12">
             <MenuItem ToolTip.Tip="{Binding ToolbarSearchMode.Hint}">
               <MenuItem.Header>
                 <StackPanel Orientation="Horizontal" Spacing="8">
@@ -297,13 +300,22 @@
                         IsChecked="{Binding IsToolbarFullTextSearch, Mode=OneWay}"
                         Command="{Binding SelectToolbarSearchModeCommand}"
                         CommandParameter="{Binding ToolbarSearchModeOptions[1]}" />
+              <MenuItem Header="{Binding ToolbarSearchModeOptions[2].Label}" ToggleType="Radio"
+                        x:Name="ToolbarDocumentSearchMenuItem" IsVisible="{Binding IsToolbarDocumentSearchAvailable}"
+                        GroupName="ToolbarSearchMode"
+                        IsChecked="{Binding IsToolbarDocumentFullTextSearch, Mode=OneWay}"
+                        Command="{Binding SelectToolbarSearchModeCommand}"
+                        CommandParameter="{Binding ToolbarSearchModeOptions[2]}" />
+              <Separator />
+              <MenuItem x:Name="ToolbarPageAwareMenuItem" Header="页面感知" ToggleType="CheckBox"
+                        IsChecked="{Binding IsToolbarSearchPageAware, Mode=TwoWay}" />
             </MenuItem>
           </Menu>
           <Border BorderThickness="0,0,1,0" BorderBrush="{DynamicResource OutlineVariantBrush}"
                   Height="24" VerticalAlignment="Center" />
           <TextBox Width="220" Height="24" FontSize="12" CornerRadius="0" BorderThickness="0"
                    Background="Transparent"
-                   PlaceholderText="搜索文献库或输入 patchouli:// URI..."
+                   PlaceholderText="搜索"
                    IsEnabled="{Binding IsSearchEnabled}" Text="{Binding ToolbarSearchQuery}"
                    VerticalContentAlignment="Center" KeyDown="OnToolbarSearchKeyDown">
             <TextBox.InnerLeftContent>
@@ -372,7 +384,7 @@
             </MultiBinding>
           </Classes.error>
         </TextBlock>
-        <Button Grid.Column="2" Background="Transparent" BorderThickness="0" Padding="6,2" VerticalAlignment="Center">
+        <Button Grid.Column="2" Classes="statusBar" Padding="6,2" VerticalAlignment="Center">
           <Button.Styles>
             <Style Selector="FlyoutPresenter">
               <Setter Property="Background" Value="#2E2E2E" />
@@ -415,7 +427,8 @@
                           </Style>
                         </TextBox.Styles>
                       </TextBox>
-                      <Button Grid.Column="1" Width="26" Height="26" Padding="0" Background="#3E3E3E"
+                      <Button Grid.Column="1" Classes="mcpPopupAction" Width="26" Height="26" Padding="0"
+                              ToolTip.Tip="复制服务地址"
                               Click="OnCopyMcpAddressClick">
                         <lucide:Lucide Icon="Copy" Width="12" Height="12" StrokeBrush="#FFFFFF" />
                       </Button>

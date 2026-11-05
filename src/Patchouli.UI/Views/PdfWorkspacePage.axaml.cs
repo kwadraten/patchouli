@@ -140,6 +140,24 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         // Tunnel so Ctrl+wheel is handled (and swallowed) before ScrollViewer's own bubble-phase scrolling.
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
             RoutingStrategies.Tunnel);
+        // Viewport fit modes need the scroller's live viewport extent; PropertyChanged reports
+        // scrollbar-visibility changes too, which SizeChanged alone would miss.
+        PdfScrollViewer.PropertyChanged += OnPdfScrollViewerPropertyChanged;
+        // Sidebar hover reveal: hovering a reading block or a box-tree row temporarily shows the
+        // matching canvas box while the box layer is hidden (ShowBoundingBoxes == false).
+        // handledEventsToo: the reading view marks moves handled while drag-selecting.
+        ReadingView.AddHandler(PointerMovedEvent, OnReadingSurfacePointerMoved,
+            RoutingStrategies.Bubble, true);
+        ReadingView.AddHandler(PointerExitedEvent, OnReadingSurfacePointerExited,
+            RoutingStrategies.Bubble, true);
+        TranslationReadingView.AddHandler(PointerMovedEvent, OnReadingSurfacePointerMoved,
+            RoutingStrategies.Bubble, true);
+        TranslationReadingView.AddHandler(PointerExitedEvent, OnReadingSurfacePointerExited,
+            RoutingStrategies.Bubble, true);
+        BoxTreeItems.AddHandler(PointerMovedEvent, OnBoxTreePointerMoved,
+            RoutingStrategies.Bubble, true);
+        BoxTreeItems.AddHandler(PointerExitedEvent, OnBoxTreePointerExited,
+            RoutingStrategies.Bubble, true);
         BookReadingScroller.ScrollChanged += OnBookReadingScrollChanged;
         BookReadingScroller.LayoutUpdated += OnBookReadingScrollerLayoutUpdated;
         BookReadingView.Measured += OnBookReadingViewMeasured;
@@ -189,6 +207,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         UnsubscribeWorkspaceEvents();
         _workspace = _isClosed ? null : DataContext as PdfWorkspaceViewModel;
         SubscribeWorkspaceEvents();
+        _workspace?.InitializeViewport();
+        PushViewportSize();
         if (VisualRoot is not null && !_isClosed)
         {
             ReplayBookReadingIfNeeded();
@@ -279,6 +299,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         }
 
         SubscribeWorkspaceEvents();
+        _workspace?.InitializeViewport();
+        PushViewportSize();
         ReplayBookReadingIfNeeded();
     }
 
@@ -307,6 +329,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         TranslationReadingView.IsActive = true;
         BookReadingView.IsActive = true;
         SubscribeWorkspaceEvents();
+        _workspace?.InitializeViewport();
+        PushViewportSize();
         if (_workspace is { } workspace)
         {
             string family = workspace.BookReadingFontFamily;
@@ -350,6 +374,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         ReadingView.IsActive = false;
         TranslationReadingView.IsActive = false;
         BookReadingView.IsActive = false;
+        _workspace?.SetSidebarHoverBox(null);
     }
 
     public void OnTabClosed()
@@ -380,12 +405,22 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _bookReadingTranslationScenes.Clear();
         _bookReadingScenesDirty = false;
         BookReadingBadgeRail.Children.Clear();
+        _workspace?.SetSidebarHoverBox(null);
         _workspace = null;
     }
 
     private void OnReadingBlockClicked(object? sender, ReadingBlockActivation activation)
     {
         _workspace?.SelectReadingBlock(activation.BoxId);
+    }
+
+    private void OnBookSearchSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_workspace is not null && sender is ListBox { SelectedItem: BookSearchResultViewModel result } &&
+            !ReferenceEquals(_workspace.SelectedBookSearchResult, result))
+        {
+            _workspace.JumpToBookSearchResultAsync(result).Observe(nameof(PdfWorkspacePage), "book-search-result");
+        }
     }
 
     // Issue #21: the view hands over the link's actual target URL; navigation goes through the
@@ -424,15 +459,14 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         }
 
         Focus();
-        bool additive = !properties.IsRightButtonPressed && e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool wasSelected = bbox.IsSelected;
         if (!properties.IsRightButtonPressed || !wasSelected)
         {
-            pdf.SelectBox(bbox, additive);
+            pdf.SelectBox(bbox, false);
         }
 
         e.Handled = true;
-        if (!pdf.IsEditMode || additive || !wasSelected ||
+        if (!pdf.IsEditMode || !wasSelected ||
             !e.GetCurrentPoint(control).Properties.IsLeftButtonPressed ||
             this.FindControl<ItemsControl>("BBoxItems") is not { } boxes)
         {
@@ -629,12 +663,84 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         e.Handled = true;
         Point position = e.GetPosition(scroll);
         Vector offset = scroll.Offset;
+        // Ctrl+wheel is a manual zoom: drop any active fit mode back to Free first.
+        pdf.OnManualZoomChanging();
         pdf.AdjustZoom(e.Delta.Y > 0 ? 0.1 : -0.1);
         double scale = pdf.Zoom / oldZoom;
         double x = (offset.X + position.X) * scale - position.X;
         double y = (offset.Y + position.Y) * scale - position.Y;
         Dispatcher.UIThread.Post(() => scroll.Offset = new Vector(Math.Max(0, x), Math.Max(0, y)),
             DispatcherPriority.Render);
+    }
+
+    private void OnPdfScrollViewerPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == ScrollViewer.ViewportProperty)
+        {
+            PushViewportSize();
+        }
+    }
+
+    private void PushViewportSize()
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        Size viewport = PdfScrollViewer.Viewport;
+        _workspace.UpdateViewportSize(viewport.Width, viewport.Height);
+    }
+
+    // Sidebar hover reveal for the view-mode reading surface: the measured block under the
+    // pointer maps to a source box id; while the box layer is hidden the workspace draws just
+    // that box on the page. Blocks without a box link clear the reveal.
+    private void OnReadingSurfacePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_workspace is null || sender is not ReadingView view)
+        {
+            return;
+        }
+
+        Point position = e.GetPosition(view);
+        DocumentBoxId? boxId = view.GetMeasuredBlocks()
+            .Where(block => block.BoxId is not null && block.Bounds.Contains(position))
+            .Select(block => block.BoxId)
+            .FirstOrDefault();
+        _workspace.SetSidebarHoverBoxId(boxId);
+    }
+
+    private void OnReadingSurfacePointerExited(object? sender, PointerEventArgs e)
+    {
+        // PointerExited bubbles for every child the pointer leaves; keep the reveal while the
+        // pointer is still inside the view's bounds.
+        if (sender is ReadingView view && new Rect(view.Bounds.Size).Contains(e.GetPosition(view)))
+        {
+            return;
+        }
+
+        _workspace?.SetSidebarHoverBox(null);
+    }
+
+    // Sidebar hover reveal for the edit-mode box tree: resolve the TreeRow under the pointer
+    // the same way the drag/drop handlers do.
+    private void OnBoxTreePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        PdfBBoxViewModel? box = FindTreeRowAt(e.GetPosition(BoxTreeItems))?.DataContext as PdfBBoxViewModel;
+        _workspace.SetSidebarHoverBox(box);
+    }
+
+    private void OnBoxTreePointerExited(object? sender, PointerEventArgs e)
+    {
+        if (FindTreeRowAt(e.GetPosition(BoxTreeItems)) is null)
+        {
+            _workspace?.SetSidebarHoverBox(null);
+        }
     }
 
     private enum BBoxDragZone
@@ -775,15 +881,6 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         }
     }
 
-    private void OnOverlapMarkerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (sender is Control { DataContext: PdfOverlapMarkerViewModel marker } && _workspace is not null)
-        {
-            _workspace.SelectOverlapPair(marker);
-            e.Handled = true;
-        }
-    }
-
     private void OnCrossPageMarkPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is Control { DataContext: PdfCrossPageContinuationViewModel marker } && _workspace is not null)
@@ -817,7 +914,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         e.Handled = true;
         if (int.TryParse(textBox.Text, out int pageNumber))
         {
-            _ = _workspace.GoToPageAsync(pageNumber);
+            _workspace.GoToPageAsync(pageNumber).Observe(nameof(PdfWorkspacePage), "page-number");
         }
         else
         {

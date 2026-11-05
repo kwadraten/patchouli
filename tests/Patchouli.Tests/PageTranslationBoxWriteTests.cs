@@ -10,6 +10,186 @@ namespace Patchouli.Tests;
 
 public sealed class PageTranslationBoxWriteTests
 {
+    [Theory]
+    [InlineData("* 本论文 **译文**", "\\* 本论文 **译文**", false)]
+    [InlineData("12) 此表说明", "12\\) 此表说明", false)]
+    [InlineData("2. 明代海禁", "2\\. 明代海禁", false)]
+    [InlineData("- 第一行\n延续正文", "\\- 第一行\n延续正文", false)]
+    [InlineData("+ 行首文字", "\\+ 行首文字", false)]
+    [InlineData("12) 此表说明", "12\\) 此表说明", true)]
+    public async Task Accidental_paragraph_list_markers_are_escaped_and_committed_without_a_retry(
+        string candidate, string expected, bool fullPage)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId id = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(Leaf(id, 0, "Source paragraph"));
+        Result<PageTranslationStatus> written;
+        if (fullPage)
+        {
+            PageXmlTranslation before = (await context.Translations.GetPageXmlAsync(
+                context.DocumentId, context.PageId, 1)).Value;
+            XDocument xml = XDocument.Parse(before.Xml);
+            XElement box = Assert.Single(xml.Descendants("box"));
+            box.SetAttributeValue("translated", "true");
+            box.Element("payload")!.Value = candidate;
+            written = await context.Translations.PutPageXmlAsync(context.DocumentId, context.PageId, 1, xml.ToString());
+        }
+        else
+        {
+            written = await context.Translations.PutBoxPayloadsAsync(context.DocumentId, context.PageId,
+                revision.TreeRevisionId, 0,
+                new Dictionary<DocumentBoxId, DocumentBoxPayload> { [id] = new TextBoxPayload(candidate) });
+        }
+
+        Assert.True(written.IsSuccess, written.ErrorMessage);
+        Assert.Equal(expected, Assert.Single(await context.ListTranslationRowsAsync()).TranslatedMd);
+        PageXmlTranslation fetched =
+            (await context.Translations.GetPageXmlAsync(context.DocumentId, context.PageId, 1)).Value;
+        Assert.Equal(expected, XDocument.Parse(fetched.Xml).Descendants("payload").Single().Value);
+        Assert.Equal("paragraph", Assert.Single(context.Markdown.Parse(expected).Blocks).Kind);
+    }
+
+    [Theory]
+    [InlineData("- translated item", true)]
+    [InlineData("translated paragraph", false)]
+    public async Task Actual_source_lists_are_preserved_and_cannot_be_silently_flattened(string candidate,
+        bool succeeds)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId id = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(Leaf(id, 0, "- source item"));
+        Result<PageTranslationStatus> written = await context.Translations.PutBoxPayloadsAsync(context.DocumentId,
+            context.PageId, revision.TreeRevisionId, 0,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload> { [id] = new TextBoxPayload(candidate) });
+        Assert.Equal(succeeds, written.IsSuccess);
+        if (succeeds)
+        {
+            Assert.Equal(candidate, Assert.Single(await context.ListTranslationRowsAsync()).TranslatedMd);
+        }
+        else
+        {
+            Assert.Empty(await context.ListTranslationRowsAsync());
+        }
+    }
+
+    [Fact]
+    public async Task Unsuccessful_list_fallback_returns_the_original_diff_and_does_not_write()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId id = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(Leaf(id, 0, "First\n\nSecond"));
+        Result<PageTranslationStatus> written = await context.Translations.PutBoxPayloadsAsync(context.DocumentId,
+            context.PageId, revision.TreeRevisionId, 0,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload> { [id] = new TextBoxPayload("- First\n\n## Second") });
+        Assert.True(written.IsFailure);
+        BoxContentError error = Assert.Single(Assert.IsType<BoxContentFailureDetails>(written.Details).Errors);
+        Assert.Contains(error.StructureDiff!, diff => diff.BlockIndex == 0 && diff.Actual == "list");
+        Assert.Empty(await context.ListTranslationRowsAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Empty_continuations_are_skipped_by_box_and_full_xml_writes(bool fullPage)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId head = DocumentBoxId.New();
+        DocumentBoxId follower = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(
+            Leaf(head, 0, "Source text"),
+            Leaf(follower, 1, "") with
+            {
+                ContinuesFromBoxId = head,
+                ContinuationState = DocumentContinuationState.LegacyUnrecovered
+            });
+
+        Result<PageTranslationStatus> written;
+        if (fullPage)
+        {
+            Result<PageXmlTranslation> before = await context.Translations.GetPageXmlAsync(
+                context.DocumentId, context.PageId, 1);
+            XDocument xml = XDocument.Parse(before.Value.Xml);
+            foreach (XElement box in xml.Descendants("box"))
+            {
+                box.SetAttributeValue("translated", "true");
+                box.Element("payload")!.Value = (string?)box.Attribute("id") == head.ToString() ? "译文" : "";
+            }
+
+            written = await context.Translations.PutPageXmlAsync(
+                context.DocumentId, context.PageId, 1, xml.ToString());
+        }
+        else
+        {
+            written = await context.Translations.PutBoxPayloadsAsync(
+                context.DocumentId, context.PageId, revision.TreeRevisionId, 0,
+                new Dictionary<DocumentBoxId, DocumentBoxPayload>
+                {
+                    [head] = new TextBoxPayload("译文"),
+                    [follower] = new TextBoxPayload("Ignored candidate text")
+                });
+        }
+
+        Assert.True(written.IsSuccess, written.ErrorMessage);
+        Assert.Equal(1, written.Value.TotalBoxCount);
+        Assert.Equal(1, written.Value.TranslatedBoxCount);
+        Assert.Empty(written.Value.StaleBoxIds);
+        Assert.Equal(head.ToString(), Assert.Single(await context.ListTranslationRowsAsync()).BoxId);
+        PageXmlTranslation fetched = (await context.Translations.GetPageXmlAsync(
+            context.DocumentId, context.PageId, 1)).Value;
+        Assert.Equal(1, fetched.Status.TotalBoxCount);
+        XElement unchanged = XDocument.Parse(fetched.Xml).Descendants("box")
+            .Single(box => (string?)box.Attribute("id") == follower.ToString());
+        Assert.Equal("", unchanged.Element("payload")!.Value);
+        Assert.Equal("false", (string?)unchanged.Attribute("translated"));
+        TranslatedPageMarkdown compiled = (await context.Translations.GetPageTranslationAsync(
+            context.DocumentId, context.PageId))!;
+        Assert.Equal(1, compiled.Status.TotalBoxCount);
+        Assert.Empty(compiled.Status.StaleBoxIds);
+    }
+
+    [Fact]
+    public async Task Empty_only_continuation_batch_keeps_translation_version_and_rows()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId head = DocumentBoxId.New();
+        DocumentBoxId follower = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(
+            Leaf(head, 0, "Source"), Leaf(follower, 1, "") with
+            {
+                ContinuesFromBoxId = head,
+                ContinuationState = DocumentContinuationState.LegacyUnrecovered
+            });
+        Result<PageTranslationStatus> written = await context.Translations.PutBoxPayloadsAsync(
+            context.DocumentId, context.PageId, revision.TreeRevisionId, 0,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload> { [follower] = new TextBoxPayload("") });
+        Assert.True(written.IsSuccess, written.ErrorMessage);
+        Assert.Equal(0, written.Value.Version);
+        Assert.Equal(1, written.Value.TotalBoxCount);
+        Assert.Equal([head], written.Value.StaleBoxIds);
+        Assert.Null(await context.GetHeaderAsync());
+        Assert.Empty(await context.ListTranslationRowsAsync());
+    }
+
+    [Fact]
+    public async Task Nonempty_continuation_still_requires_a_structure_preserving_translation()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        DocumentBoxId head = DocumentBoxId.New();
+        DocumentBoxId follower = DocumentBoxId.New();
+        DocumentTreeRevision revision = await context.CommitAsync(
+            Leaf(head, 0, "Source"), Leaf(follower, 1, "Continued text") with { ContinuesFromBoxId = head });
+        Result<PageTranslationStatus> written = await context.Translations.PutBoxPayloadsAsync(
+            context.DocumentId, context.PageId, revision.TreeRevisionId, 0,
+            new Dictionary<DocumentBoxId, DocumentBoxPayload>
+                { [follower] = new TextBoxPayload("## Changed heading") });
+        Assert.True(written.IsFailure);
+        BoxContentError error = Assert.Single(Assert.IsType<BoxContentFailureDetails>(written.Details).Errors);
+        TranslationStructureError diff = Assert.Single(error.StructureDiff!);
+        Assert.Equal("paragraph", diff.Expected);
+        Assert.Equal("heading level 2", diff.Actual);
+        Assert.Empty(await context.ListTranslationRowsAsync());
+    }
+
     [Fact]
     public async Task Box_write_upserts_one_leaf_preserves_valid_siblings_and_returns_committed_version()
     {
@@ -172,14 +352,19 @@ public sealed class PageTranslationBoxWriteTests
         XDocument edited = XDocument.Parse(pageXml.Value.Xml);
         XElement box = Assert.Single(edited.Descendants("box"));
         box.SetAttributeValue("translated", "true");
-        box.Element("payload")!.Value = "- translated list item";
+        box.Element("payload")!.Value = "## translated heading";
 
         Result<PageTranslationStatus> result = await translations.PutPageXmlAsync(
             context.DocumentId, context.PageId, 1, edited.ToString(SaveOptions.DisableFormatting));
 
         Assert.True(result.IsFailure, result.ErrorMessage);
         Assert.Equal("validation_failed", result.ErrorCode);
-        Assert.IsType<BoxContentFailureDetails>(result.Details);
+        BoxContentError error = Assert.Single(Assert.IsType<BoxContentFailureDetails>(result.Details).Errors);
+        Assert.Equal(boxId.ToString(), error.BoxId);
+        TranslationStructureError diff = Assert.Single(error.StructureDiff!);
+        Assert.Equal(0, diff.BlockIndex);
+        Assert.Equal("paragraph", diff.Expected);
+        Assert.Equal("heading level 2", diff.Actual);
         Assert.Empty(await context.ListTranslationRowsAsync());
         Assert.Null(await context.GetHeaderAsync());
     }

@@ -11,8 +11,10 @@ public sealed class MoveTargetNamerTests
 {
     private static string Root => Path.Combine(Path.DirectorySeparatorChar.ToString(), "roots", "first");
 
-    private static Task<MoveCandidateIdentity?> NoExisting(string candidate) =>
-        Task.FromResult<MoveCandidateIdentity?>(null);
+    private static Task<MoveCandidateIdentity?> NoExisting(string candidate)
+    {
+        return Task.FromResult<MoveCandidateIdentity?>(null);
+    }
 
     [Fact]
     public async Task PlanAsync_file_already_inside_root_keeps_position()
@@ -42,9 +44,12 @@ public sealed class MoveTargetNamerTests
     public async Task PlanAsync_identical_content_at_name_reuses_as_is()
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "paper.pdf");
-        var sourceIdentity = new MoveCandidateIdentity(100, "same-hash");
-        Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(new MoveCandidateIdentity(100, "same-hash"));
+        MoveCandidateIdentity sourceIdentity = new(100, "same-hash");
+
+        Task<MoveCandidateIdentity?> Probe(string candidate)
+        {
+            return Task.FromResult<MoveCandidateIdentity?>(new MoveCandidateIdentity(100, "same-hash"));
+        }
 
         MoveTargetPlan plan = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
 
@@ -57,12 +62,15 @@ public sealed class MoveTargetNamerTests
     public async Task PlanAsync_same_name_different_content_gains_numeric_suffix()
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "paper.pdf");
-        var sourceIdentity = new MoveCandidateIdentity(100, "new-hash");
-        Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(
+        MoveCandidateIdentity sourceIdentity = new(100, "new-hash");
+
+        Task<MoveCandidateIdentity?> Probe(string candidate)
+        {
+            return Task.FromResult<MoveCandidateIdentity?>(
                 candidate.EndsWith("paper.pdf", StringComparison.Ordinal)
                     ? new MoveCandidateIdentity(200, "other-hash")
                     : null);
+        }
 
         MoveTargetPlan plan = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
 
@@ -74,13 +82,16 @@ public sealed class MoveTargetNamerTests
     public async Task PlanAsync_skips_multiple_taken_names_deterministically()
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "paper.pdf");
-        var sourceIdentity = new MoveCandidateIdentity(100, "new-hash");
-        Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(
+        MoveCandidateIdentity sourceIdentity = new(100, "new-hash");
+
+        Task<MoveCandidateIdentity?> Probe(string candidate)
+        {
+            return Task.FromResult<MoveCandidateIdentity?>(
                 candidate.EndsWith("paper-2.pdf", StringComparison.Ordinal) ||
                 candidate.EndsWith("paper.pdf", StringComparison.Ordinal)
                     ? new MoveCandidateIdentity(999, "other-hash")
                     : null);
+        }
 
         MoveTargetPlan plan = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
 
@@ -92,14 +103,17 @@ public sealed class MoveTargetNamerTests
     public async Task PlanAsync_same_plan_for_same_probes_is_deterministic()
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "paper.pdf");
-        var sourceIdentity = new MoveCandidateIdentity(100, "new-hash");
+        MoveCandidateIdentity sourceIdentity = new(100, "new-hash");
+
         // First two names taken with different content; the third is free.
-        Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(
+        Task<MoveCandidateIdentity?> Probe(string candidate)
+        {
+            return Task.FromResult<MoveCandidateIdentity?>(
                 candidate.EndsWith("paper-2.pdf", StringComparison.Ordinal) ||
                 candidate.EndsWith("paper.pdf", StringComparison.Ordinal)
                     ? new MoveCandidateIdentity(5, "taken")
                     : null);
+        }
 
         MoveTargetPlan first = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
         MoveTargetPlan second = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
@@ -111,12 +125,15 @@ public sealed class MoveTargetNamerTests
     public async Task PlanAsync_preserves_extension_in_suffixed_names()
     {
         string source = Path.Combine(Path.DirectorySeparatorChar.ToString(), "incoming", "my.paper.v2.pdf");
-        var sourceIdentity = new MoveCandidateIdentity(100, "new-hash");
-        Task<MoveCandidateIdentity?> Probe(string candidate) =>
-            Task.FromResult<MoveCandidateIdentity?>(
+        MoveCandidateIdentity sourceIdentity = new(100, "new-hash");
+
+        Task<MoveCandidateIdentity?> Probe(string candidate)
+        {
+            return Task.FromResult<MoveCandidateIdentity?>(
                 candidate.EndsWith("my.paper.v2.pdf", StringComparison.Ordinal)
                     ? new MoveCandidateIdentity(5, "taken")
                     : null);
+        }
 
         MoveTargetPlan plan = await MoveTargetNamer.PlanAsync(source, Root, sourceIdentity, Probe);
 

@@ -23,6 +23,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
 
     private readonly string _root = Directory.CreateDirectory(
         Path.Combine(Path.GetTempPath(), $"patchouli-update-coord-{Guid.NewGuid():N}")).FullName;
+
     private readonly FixedClock _clock = new(new DateTimeOffset(2026, 10, 20, 0, 42, 0, TimeSpan.Zero));
     private readonly FakeUpdateSource _source = new();
     private readonly List<string> _deliveredFiles = [];
@@ -46,9 +47,16 @@ public sealed class UpdateCoordinatorTests : IDisposable
         Func<HttpRequestMessage, Task<HttpResponseMessage>>? handler = null)
     {
         Func<HttpRequestMessage, Task<HttpResponseMessage>> effective = handler
-            ?? (request => Task.FromResult(request.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal)
-                ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                : BytesResponse(Encoding.UTF8.GetBytes(new string('x', 512)))));
+                                                                        ?? (request =>
+                                                                            Task.FromResult(
+                                                                                request.RequestUri!.AbsoluteUri
+                                                                                    .EndsWith(".sha256",
+                                                                                        StringComparison.Ordinal)
+                                                                                    ? new HttpResponseMessage(
+                                                                                        HttpStatusCode.NotFound)
+                                                                                    : BytesResponse(
+                                                                                        Encoding.UTF8.GetBytes(
+                                                                                            new string('x', 512)))));
         return new UpdateDownloader(new HttpClient(new AsyncFakeHandler(effective)));
     }
 
@@ -66,7 +74,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
 
     private static HttpResponseMessage BytesResponse(byte[] payload)
     {
-        var content = new ByteArrayContent(payload);
+        ByteArrayContent content = new(payload);
         content.Headers.ContentLength = payload.Length;
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
     }
@@ -74,7 +82,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
     private static ReleaseInfo MakeRelease(string tag, params ReleaseAssetInfo[] assets)
     {
         return new ReleaseInfo(tag, UpdateVersion.Parse(tag), "title", "body",
-            IsDraft: false, IsPrerelease: false, PublishedAt: null, assets);
+            false, false, null, assets);
     }
 
     private static ReleaseAssetInfo Asset(string name, long size = 512)
@@ -108,8 +116,8 @@ public sealed class UpdateCoordinatorTests : IDisposable
     [Fact]
     public async Task Second_concurrent_check_returns_AlreadyRunning()
     {
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _source.Handler = async _ =>
         {
             entered.SetResult();
@@ -118,10 +126,10 @@ public sealed class UpdateCoordinatorTests : IDisposable
         };
         UpdateCoordinator coordinator = Coordinator();
 
-        Task<UpdateCheckOutcome> first = coordinator.CheckForUpdatesAsync(manual: true);
+        Task<UpdateCheckOutcome> first = coordinator.CheckForUpdatesAsync(true);
         await WithTimeout(entered.Task, "first check to reach the source");
 
-        UpdateCheckOutcome second = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome second = await coordinator.CheckForUpdatesAsync(true);
 
         second.Status.Should().Be(UpdateCheckStatus.AlreadyRunning);
         second.Release.Should().BeNull();
@@ -133,8 +141,8 @@ public sealed class UpdateCoordinatorTests : IDisposable
     [Fact]
     public async Task Download_started_during_a_check_is_rejected()
     {
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _source.Handler = async _ =>
         {
             entered.SetResult();
@@ -143,7 +151,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
         };
         UpdateCoordinator coordinator = Coordinator();
 
-        Task<UpdateCheckOutcome> check = coordinator.CheckForUpdatesAsync(manual: true);
+        Task<UpdateCheckOutcome> check = coordinator.CheckForUpdatesAsync(true);
         await WithTimeout(entered.Task, "check to reach the source");
 
         Result<VerifiedDownload> download = await coordinator.DownloadAsync(Asset("a.AppImage"));
@@ -158,8 +166,8 @@ public sealed class UpdateCoordinatorTests : IDisposable
     [Fact]
     public async Task Check_started_during_a_download_returns_AlreadyRunning()
     {
-        var requestReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDownload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource requestReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseDownload = new(TaskCreationOptions.RunContinuationsAsynchronously);
         byte[] payload = Encoding.UTF8.GetBytes(new string('x', 512));
         UpdateCoordinator coordinator = Coordinator(async request =>
         {
@@ -177,7 +185,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
             coordinator.DownloadAsync(Asset("Patchouli.NET-0.3.13-linux-x64.AppImage", payload.Length));
         await WithTimeout(requestReceived.Task, "download to start");
 
-        UpdateCheckOutcome check = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome check = await coordinator.CheckForUpdatesAsync(true);
 
         check.Status.Should().Be(UpdateCheckStatus.AlreadyRunning);
 
@@ -196,7 +204,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
             Result<ReleaseInfo?>.Success(NewerReleaseWithAllPlatformAssets()));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: false);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(false);
 
         outcome.Status.Should().Be(UpdateCheckStatus.SkippedRecently);
         _source.CallCount.Should().Be(0);
@@ -211,7 +219,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
             Result<ReleaseInfo?>.Success(NewerReleaseWithAllPlatformAssets()));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(true);
 
         outcome.Status.Should().Be(UpdateCheckStatus.UpdateAvailable);
         outcome.Release.Should().NotBeNull();
@@ -225,16 +233,16 @@ public sealed class UpdateCoordinatorTests : IDisposable
         _source.Handler = _ => Task.FromResult(
             Result<ReleaseInfo?>.Failure(AppErrorCodes.NetworkError, "boom"));
         UpdateCheckSettingsService settings = SettingsService();
-        UpdateCoordinator coordinator = new UpdateCoordinator(
+        UpdateCoordinator coordinator = new(
             _source, settings, Downloader(), new UpdateLauncher(), _clock, CurrentVersion);
 
-        UpdateCheckOutcome first = await coordinator.CheckForUpdatesAsync(manual: false);
+        UpdateCheckOutcome first = await coordinator.CheckForUpdatesAsync(false);
 
         first.Status.Should().Be(UpdateCheckStatus.CheckFailed);
         (await settings.GetSettingsAsync()).Value.LastCheckUtc.Should().Be(_clock.UtcNow);
 
         // No retry storm: the very next automatic check is throttled too.
-        UpdateCheckOutcome second = await coordinator.CheckForUpdatesAsync(manual: false);
+        UpdateCheckOutcome second = await coordinator.CheckForUpdatesAsync(false);
 
         second.Status.Should().Be(UpdateCheckStatus.SkippedRecently);
         _source.CallCount.Should().Be(1);
@@ -244,10 +252,10 @@ public sealed class UpdateCoordinatorTests : IDisposable
     public async Task Auto_check_disabled_returns_AutoCheckDisabled()
     {
         UpdateCheckSettingsService settings = SettingsService();
-        await settings.SaveSettingsAsync(new UpdateCheckSettings(false, LastCheckUtc: null));
+        await settings.SaveSettingsAsync(new UpdateCheckSettings(false, null));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: false);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(false);
 
         outcome.Status.Should().Be(UpdateCheckStatus.AutoCheckDisabled);
         _source.CallCount.Should().Be(0);
@@ -261,7 +269,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
         _source.Handler = _ => Task.FromResult(Result<ReleaseInfo?>.Success(MakeRelease(tag)));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(true);
 
         outcome.Status.Should().Be(UpdateCheckStatus.UpToDate);
         outcome.Asset.Should().BeNull();
@@ -274,7 +282,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
             MakeRelease("v0.3.13", Asset("Patchouli.NET-0.3.13.zip"))));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(true);
 
         outcome.Status.Should().Be(UpdateCheckStatus.NotAvailableForPlatform);
         outcome.Release.Should().NotBeNull();
@@ -288,7 +296,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
         _source.Handler = _ => Task.FromResult(Result<ReleaseInfo?>.Success(null));
         UpdateCoordinator coordinator = Coordinator();
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: true);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(true);
 
         outcome.Status.Should().Be(UpdateCheckStatus.UpToDate);
     }
@@ -299,10 +307,10 @@ public sealed class UpdateCoordinatorTests : IDisposable
         _source.Handler = _ => Task.FromResult(
             Result<ReleaseInfo?>.Success(NewerReleaseWithAllPlatformAssets()));
         UpdateCheckSettingsService settings = SettingsService();
-        UpdateCoordinator coordinator = new UpdateCoordinator(
+        UpdateCoordinator coordinator = new(
             _source, settings, Downloader(), new UpdateLauncher(), _clock, CurrentVersion);
 
-        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(manual: false);
+        UpdateCheckOutcome outcome = await coordinator.CheckForUpdatesAsync(false);
 
         outcome.Status.Should().Be(UpdateCheckStatus.UpdateAvailable);
         (await settings.GetSettingsAsync()).Value.LastCheckUtc.Should().Be(_clock.UtcNow);
@@ -311,6 +319,7 @@ public sealed class UpdateCoordinatorTests : IDisposable
     private sealed class FakeUpdateSource : IUpdateSource
     {
         public int CallCount;
+
         public Func<CancellationToken, Task<Result<ReleaseInfo?>>> Handler { get; set; } =
             _ => Task.FromResult(Result<ReleaseInfo?>.Success(null));
 

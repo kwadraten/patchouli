@@ -50,6 +50,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     private McpServerSettings? _discardBaseline;
     private bool _isConfirmingLeave;
     private bool _restartFailed;
+    private bool _hasLoadedSettings;
 
     public McpSettingsViewModel(MainWindowViewModel main)
         : this(
@@ -377,7 +378,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         _isConfirmingLeave = true;
         try
         {
-            _discardBaseline = _main.McpRunningSettings ?? _discardBaseline ?? _persistedSettings;
+            _discardBaseline = _main.McpAppliedSettings ?? _discardBaseline ?? _persistedSettings;
             ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
                 new ConfirmDialogViewModel("应用 MCP 设置？",
                     "MCP 设置已更改，需要保存并重启服务后才能生效。请选择放弃更改，或保存并重启后离开。",
@@ -468,6 +469,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             if (persisted.IsSuccess)
             {
                 _persistedSettings = persisted.Value;
+                _hasLoadedSettings = true;
             }
 
             SyncFromSettings(_persistedSettings);
@@ -621,9 +623,10 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         }
 
         _persistedSettings = result.Value;
+        _hasLoadedSettings = true;
         if (_discardBaseline is null || !hadPendingApplication)
         {
-            _discardBaseline = _main.McpRunningSettings ?? result.Value;
+            _discardBaseline = _main.McpAppliedSettings ?? result.Value;
         }
 
         SyncFromSettings(result.Value);
@@ -678,6 +681,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             }
 
             _persistedSettings = result.Value;
+            _hasLoadedSettings = true;
             if (revision == _editRevision)
             {
                 _settings = result.Value;
@@ -786,7 +790,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private void RefreshRequiresReload()
     {
-        RequiresReload = _restartFailed || (_main.McpRunningSettings is { } running &&
+        // Constructor defaults are not a persisted baseline until this section has loaded.
+        RequiresReload = _restartFailed || (_hasLoadedSettings && _main.McpAppliedSettings is { } running &&
                                             !SameConfiguration(running, _persistedSettings));
         Raise(nameof(LibraryPreviewHint));
     }

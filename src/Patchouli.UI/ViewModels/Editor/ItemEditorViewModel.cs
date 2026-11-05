@@ -2214,6 +2214,12 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
             // are preserved from the loaded item.
             if (role == ItemDateRoles.Issued || Fields.Concat(MoreFields).Any(field => field.Key == fieldKey))
             {
+                ItemDate? original = _loadedItem?.Dates.FirstOrDefault(date => date.Role == role);
+                if (original is not null && GetSavedFieldValue(fieldKey) == ItemDateText.Format(original, null))
+                {
+                    continue;
+                }
+
                 ReplaceDate(dates, role, GetSavedFieldValue(fieldKey));
             }
         }
@@ -2239,9 +2245,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
             return null;
         }
 
-        return trimmed.StartsWith('[')
-            ? new ItemDateInput(role, trimmed)
-            : new ItemDateInput(role, Literal: trimmed);
+        return ItemDateText.Build(role, trimmed);
     }
 
     private string SerializeTags()
@@ -2282,14 +2286,7 @@ public sealed partial class ItemEditorViewModel : ViewModelBase, IAsyncDisposabl
     private static string FormatDate(IEnumerable<ItemDate> dates, string role, string? fallback)
     {
         ItemDate? date = dates.FirstOrDefault(candidate => candidate.Role == role);
-        if (!string.IsNullOrWhiteSpace(date?.Literal))
-        {
-            return date.Literal;
-        }
-
-        return date is not null && date.DatePartsJson != "[]"
-            ? date.DatePartsJson
-            : fallback ?? "";
+        return ItemDateText.Format(date, fallback);
     }
 
     private void LoadTags(string tagsJson)

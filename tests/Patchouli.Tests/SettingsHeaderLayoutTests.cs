@@ -5,12 +5,16 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 using Patchouli.UI.Views;
+using Patchouli.UI.Themes;
+using Patchouli.Core.Search;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -33,7 +37,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
         await RunAsync(async (main, window, page) =>
         {
             await main.Settings.SelectSectionAsync("llm");
-            window.Height = 500;
+            window.Height = 320;
             Pump(window);
             SettingsSectionGroupViewModel group = main.Settings.ActiveTabbedGroup!;
             group.Should().NotBeNull();
@@ -86,8 +90,9 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
     }
 
     [Theory]
-    [InlineData("import", 5)]
+    [InlineData("import", 6)]
     [InlineData("library", 2)]
+    [InlineData("search_rewrite", 2)]
     public async Task Every_settings_group_switches_one_subpage_at_a_time_in_the_fixed_header(string sectionId,
         int expectedHeaders)
     {
@@ -140,12 +145,12 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
             runs.IsExpanded.Should().BeFalse();
             ToggleButton triangle = window.GetVisualDescendants().OfType<ToggleButton>().Single(control =>
                 AutomationProperties.GetName(control) == "展开 runs 子域权限" && control.IsEffectivelyVisible);
-            CheckBox parent = window.GetVisualDescendants().OfType<CheckBox>().Single(control =>
+            ToggleSwitch parent = window.GetVisualDescendants().OfType<ToggleSwitch>().Single(control =>
                 AutomationProperties.GetName(control) == "runs 全部子域 send 权限" && control.IsEffectivelyVisible);
             Click(window, triangle);
             runs.IsExpanded.Should().BeTrue();
             triangle.Content.Should().Be("▼");
-            CheckBox ocr = window.GetVisualDescendants().OfType<CheckBox>().Single(control =>
+            ToggleSwitch ocr = window.GetVisualDescendants().OfType<ToggleSwitch>().Single(control =>
                 AutomationProperties.GetName(control) == "runs/ocr" && control.IsEffectivelyVisible);
             ocr.GetVisualAncestors().OfType<Expander>().Should()
                 .BeEmpty("children belong to the runs table row, not a separate section");
@@ -166,6 +171,76 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
                 .BringIntoView();
             Pump(window);
             SavePreview(window, "settings-runs-send-tree.png");
+        });
+    }
+
+    [Theory]
+    [InlineData(800, "radix-grass", "dark")]
+    [InlineData(1280, "radix-violet", "light")]
+    public async Task Search_settings_switches_share_shell_state_and_rule_actions_remain_visible(
+        int width, string palette, string mode)
+    {
+        await RunAsync(async (main, window, page) =>
+        {
+            try
+            {
+                ThemePaletteApplier.Apply(palette, mode);
+                window.Width = width;
+                HostServices services = await main.ServicesAsync();
+                (await services.SearchProfiles.AddRewriteRuleAsync(null, SearchRuleType.SimplifiedTraditional,
+                    "s2t", "s2t", SearchRewriteDirection.Expand, 0, null)).IsSuccess.Should().BeTrue();
+                (await services.SearchProfiles.AddRewriteRuleAsync(null, SearchRuleType.Literal,
+                    "台", "臺", SearchRewriteDirection.Expand, 1, null)).IsSuccess.Should().BeTrue();
+                await main.Settings.SelectSectionAsync("search_rewrite");
+                await main.SetQueryRewriteEnabledAsync(false);
+                Pump(window);
+                ToggleSwitch rewrite = window.GetVisualDescendants().OfType<ToggleSwitch>()
+                    .Single(control => control.Name == "SearchRewriteEnabledSwitch" && control.IsEffectivelyVisible);
+                rewrite.IsChecked.Should().BeFalse();
+                IReadOnlyDictionary<string, string> colors = UiColorPalettes.Resolve(palette).GetColors(mode == "dark");
+                Border track = rewrite.GetVisualDescendants().OfType<Border>()
+                    .Single(control => control.Name == "SwitchTrack");
+                ((ISolidColorBrush)track.Background!).Color.Should()
+                    .Be(Color.Parse(colors["SurfaceContainerHighColor"]));
+                Click(window, rewrite);
+                main.QueryRewriteEnabled.Should().BeTrue();
+                ((ISolidColorBrush)track.Background!).Color.Should().Be(Color.Parse(colors["PrimaryContainerColor"]));
+                main.QueryRewriteEnabled = false;
+                Pump(window);
+                rewrite.IsChecked.Should().BeFalse();
+                Button[] deletes = window.GetVisualDescendants().OfType<Button>()
+                    .Where(control => control.Name == "DeleteRewriteRuleButton" && control.IsEffectivelyVisible)
+                    .ToArray();
+                deletes.Should().HaveCount(2);
+                foreach (Button delete in deletes)
+                {
+                    Point position = delete.TranslatePoint(default, window)!.Value;
+                    position.X.Should().BeGreaterThan(260);
+                    (position.X + delete.Bounds.Width).Should().BeLessThanOrEqualTo(window.ClientSize.Width);
+                }
+
+                SavePreview(window, $"search-rules-{width}-{mode}.png");
+                Click(window, deletes[1]);
+                main.Settings.SearchRewriteSettings.Rules.Should().ContainSingle();
+                (await main.Settings.SaveAllDirtySectionsAsync()).Should().BeTrue();
+                (await services.SearchProfiles.ListRulesAsync(null, true)).Value.Should().ContainSingle();
+                await main.Settings.SelectSectionAsync("search_awareness");
+                Pump(window);
+                ToggleSwitch awareness = window.GetVisualDescendants().OfType<ToggleSwitch>()
+                    .Single(control => control.Name == "SearchPageAwarenessSwitch" && control.IsEffectivelyVisible);
+                main.IsToolbarSearchPageAware = true;
+                Pump(window);
+                awareness.IsChecked.Should().BeTrue();
+                Click(window, awareness);
+                main.IsToolbarSearchPageAware.Should().BeFalse();
+                main.IsToolbarSearchPageAware = true;
+                Pump(window);
+                awareness.IsChecked.Should().BeTrue();
+            }
+            finally
+            {
+                ThemePaletteApplier.Apply("radix-violet", "light");
+            }
         });
     }
 
@@ -208,6 +283,8 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
 
     private static void Pump(Window window)
     {
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         window.UpdateLayout();
     }

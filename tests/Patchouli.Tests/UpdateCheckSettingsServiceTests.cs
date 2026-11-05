@@ -15,6 +15,7 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
 {
     private readonly string _root = Directory.CreateDirectory(
         Path.Combine(Path.GetTempPath(), $"patchouli-update-settings-{Guid.NewGuid():N}")).FullName;
+
     private readonly FixedClock _clock = new(new DateTimeOffset(2026, 10, 20, 0, 42, 0, TimeSpan.Zero));
 
     public void Dispose()
@@ -33,7 +34,7 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     public void Default_has_auto_check_enabled_and_no_last_check()
     {
         UpdateCheckSettings.Default().Should()
-            .Be(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null));
+            .Be(new UpdateCheckSettings(true, null));
     }
 
     [Fact]
@@ -48,10 +49,10 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     [Fact]
     public async Task AutoCheckEnabled_round_trips_through_save_and_load()
     {
-        var service = Service();
+        UpdateCheckSettingsService service = Service();
 
         Result<UpdateCheckSettings> saved = await service.SaveSettingsAsync(
-            new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: null));
+            new UpdateCheckSettings(false, null));
         Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
 
         saved.IsSuccess.Should().BeTrue();
@@ -63,8 +64,8 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     [Fact]
     public async Task LastCheckUtc_round_trips_through_save_and_load()
     {
-        var service = Service();
-        var stamp = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        UpdateCheckSettingsService service = Service();
+        DateTimeOffset stamp = new(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
 
         await service.SaveSettingsAsync(new UpdateCheckSettings(true, stamp));
         Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
@@ -76,8 +77,8 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     [Fact]
     public async Task RecordCheck_stamps_clock_time_and_preserves_the_switch()
     {
-        var service = Service();
-        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: null));
+        UpdateCheckSettingsService service = Service();
+        await service.SaveSettingsAsync(new UpdateCheckSettings(false, null));
 
         Result<UpdateCheckSettings> recorded = await service.RecordCheckAsync();
         Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
@@ -93,9 +94,9 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     public async Task Save_preserves_other_sections_in_shared_device_file()
     {
         await File.WriteAllTextAsync(SettingsPath, """{"McpServer": {"Port": 1234}}""");
-        var service = Service();
+        UpdateCheckSettingsService service = Service();
 
-        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: null));
+        await service.SaveSettingsAsync(new UpdateCheckSettings(false, null));
 
         string json = await File.ReadAllTextAsync(SettingsPath);
         json.Should().Contain("1234");
@@ -112,35 +113,35 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
     [Fact]
     public async Task SaveAutoCheckAsync_toggles_flag_and_preserves_last_check()
     {
-        var service = Service();
-        var stamp = new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
-        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: stamp));
+        UpdateCheckSettingsService service = Service();
+        DateTimeOffset stamp = new(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+        await service.SaveSettingsAsync(new UpdateCheckSettings(true, stamp));
 
         Result<UpdateCheckSettings> saved = await service.SaveAutoCheckAsync(false);
         Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
 
         saved.IsSuccess.Should().BeTrue();
-        saved.Value.Should().Be(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: stamp));
+        saved.Value.Should().Be(new UpdateCheckSettings(false, stamp));
         loaded.Value.Should().Be(saved.Value);
     }
 
     [Fact]
     public async Task SaveAutoCheckAsync_restores_flag_without_a_last_check()
     {
-        var service = Service();
-        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: false, LastCheckUtc: null));
+        UpdateCheckSettingsService service = Service();
+        await service.SaveSettingsAsync(new UpdateCheckSettings(false, null));
 
         Result<UpdateCheckSettings> saved = await service.SaveAutoCheckAsync(true);
 
         saved.IsSuccess.Should().BeTrue();
-        saved.Value.Should().Be(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null));
+        saved.Value.Should().Be(new UpdateCheckSettings(true, null));
     }
 
     [Fact]
     public async Task Concurrent_record_and_flag_save_stay_coherent_under_the_write_gate()
     {
-        var service = Service();
-        await service.SaveSettingsAsync(new UpdateCheckSettings(AutoCheckEnabled: true, LastCheckUtc: null));
+        UpdateCheckSettingsService service = Service();
+        await service.SaveSettingsAsync(new UpdateCheckSettings(true, null));
         // From here on the flag is false and every writer preserves it; this
         // keeps the final assertion deterministic under any interleaving.
         await service.SaveAutoCheckAsync(false);
@@ -150,13 +151,13 @@ public sealed class UpdateCheckSettingsServiceTests : IDisposable
         await Task.WhenAll(Enumerable.Range(0, 20).SelectMany(_ => new Task[]
         {
             service.RecordCheckAsync(),
-            service.SaveAutoCheckAsync(false),
+            service.SaveAutoCheckAsync(false)
         }));
         Result<UpdateCheckSettings> recorded = await service.RecordCheckAsync();
         Result<UpdateCheckSettings> loaded = await service.GetSettingsAsync();
 
         recorded.IsSuccess.Should().BeTrue();
         loaded.Value.Should().Be(new UpdateCheckSettings(
-            AutoCheckEnabled: false, LastCheckUtc: _clock.UtcNow));
+            false, _clock.UtcNow));
     }
 }

@@ -19,12 +19,14 @@ public sealed class PageMapInvalidationServiceTests
     {
         DocumentPageMap map = new(fixture.DocumentId,
             [new PhysicalPaginationRule(3, 3, 100)],
-            [new LogicalPaginationRule(1, 2, 1,
+            [
+                new LogicalPaginationRule(1, 2, 1,
                 [
                     new LogicalPageReadingEntry(fixture.BoxA, 1),
                     new LogicalPageReadingEntry(fixture.BoxB, 1),
                     new LogicalPageReadingEntry(fixture.BoxC, 2)
-                ])],
+                ])
+            ],
             [],
             chapters);
         return DocumentPageMapYamlCodec.Encode(map, true);
