@@ -47,6 +47,9 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
                 window.UpdateLayout();
 
                 OcrProviderSettingsViewModel settings = main.Settings.OcrProviderSettings;
+                window.GetVisualDescendants().OfType<CheckBox>().Should().Contain(checkBox =>
+                    checkBox.Content != null && checkBox.Content.ToString() == "启用不同OCR预设并行");
+                settings.EnableDifferentOcrPresetsParallel = true;
                 OcrPresetScopePickerViewModel[] pickers =
                 [
                     settings.DocumentPresetPicker, settings.PagePresetPicker,
@@ -76,6 +79,7 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
                 await settings.SavePresetRowAsync(row);
 
                 row.IsNew.Should().BeFalse();
+                settings.EnableDifferentOcrPresetsParallel.Should().BeTrue();
                 row.HasError.Should().BeFalse(row.StatusText);
                 row.IsDirty.Should().BeFalse();
                 grid.ItemsSource.Should().BeSameAs(settings.PresetRows);
@@ -100,6 +104,8 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
                     services.Library);
                 (await selectionService.ReadStoredSelectionsAsync()).Value.RegionPresetId.Should()
                     .Be(persisted.PresetId.ToString());
+                (await selectionService.ReadStoredSelectionsAsync()).Value.EnableDifferentOcrPresetsParallel
+                    .Should().BeTrue();
             }
             finally
             {

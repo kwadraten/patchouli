@@ -11,7 +11,8 @@ namespace Patchouli.Host;
 public sealed record OcrPresetSelections(
     string? DocumentPresetId = null,
     string? PagePresetId = null,
-    string? RegionPresetId = null)
+    string? RegionPresetId = null,
+    bool EnableDifferentOcrPresetsParallel = false)
 {
     public static readonly OcrPresetSelections Empty = new();
 

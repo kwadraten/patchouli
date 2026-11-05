@@ -630,6 +630,12 @@
                               SelectedItem="{Binding RegionPresetPicker.SelectedOption}"
                               HorizontalAlignment="Stretch" />
                   </Grid>
+                  <CheckBox Content="启用不同OCR预设并行"
+                            IsChecked="{Binding EnableDifferentOcrPresetsParallel}"
+                            AutomationProperties.Name="启用不同OCR预设并行" />
+                  <TextBlock Text="关闭时，不同预设的任务依次运行；开启时仍遵守现有资源并发上限。正在运行的任务不会被中断。"
+                             FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
 

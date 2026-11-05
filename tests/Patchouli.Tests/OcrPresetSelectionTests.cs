@@ -176,6 +176,30 @@ public sealed class OcrPresetSelectionTests
     }
 
     [Fact]
+    public async Task Parallel_preset_setting_is_isolated_per_library_and_preserves_scope_choices()
+    {
+        await using Context context = await Context.CreateAsync();
+        HostServices services = context.Services;
+        OcrPresetSelectionService selection = new(
+            new OcrPresetSelectionStore(context.SettingsPath), services.OcrPresets, services.Library);
+        OcrPreset preset = (await services.OcrPresets.CreatePresetAsync("Selected", null,
+            OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        (await selection.SaveSelectionAsync(OcrScope.Document, preset.PresetId)).IsSuccess.Should().BeTrue();
+        (await selection.ReadStoredSelectionsAsync()).Value.EnableDifferentOcrPresetsParallel.Should().BeFalse();
+        (await selection.SaveSettingsAsync(new Dictionary<OcrScope, OcrPresetId?>(), true)).IsSuccess
+            .Should().BeTrue();
+        OcrPresetSelections stored = (await selection.ReadStoredSelectionsAsync()).Value;
+        stored.EnableDifferentOcrPresetsParallel.Should().BeTrue();
+        stored.DocumentPresetId.Should().Be(preset.PresetId.ToString());
+
+        OcrPresetSelectionStore store = new(context.SettingsPath);
+        (await store.ReadAsync(LibraryId.New())).Value.EnableDifferentOcrPresetsParallel.Should().BeFalse();
+        (await selection.SaveSelectionAsync(OcrScope.Page, preset.PresetId)).IsSuccess.Should().BeTrue();
+        (await selection.ReadStoredSelectionsAsync()).Value.EnableDifferentOcrPresetsParallel.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Stored_invalid_selection_fails_instead_of_silent_fallback()
     {
         await using Context context = await Context.CreateAsync();
@@ -340,6 +364,7 @@ public sealed class OcrPresetSelectionTests
         : ILibraryIdentityService
     {
         public LibraryId CurrentLibraryId { get; } = currentLibraryId;
+
         public Task<Result<LibraryMetadata>> CreateLibraryAsync(string displayName,
             CancellationToken cancellationToken = default)
         {

@@ -283,7 +283,7 @@ public sealed class OcrPolicyRefactorTests
             .Should().BeFalse("the per-provider limit spans lanes");
         OcrQueueDispatchPolicy.CanRunNow(
                 TaskRow(adapterKind: OcrAdapterKind.CloudApi, engineId: "engine-b",
-                    providerId: "prov-b"), tasks, limits)
+                    providerId: "prov-b"), tasks, limits, true)
             .Should().BeTrue("one free slot remains in every dimension");
 
         tasks.Add(TaskRow(OcrQueueTaskState.Running, OcrAdapterKind.CloudApi,
@@ -292,6 +292,20 @@ public sealed class OcrPolicyRefactorTests
                 TaskRow(adapterKind: OcrAdapterKind.CloudApi, engineId: "engine-c",
                     providerId: "prov-c"), tasks, limits)
             .Should().BeFalse("the global ceiling is reached");
+    }
+
+    [Fact]
+    public void Different_presets_need_explicit_parallel_permission()
+    {
+        OcrQueueLimits limits = new(4, 1, 2, 1, 1);
+        OcrQueueTask running = TaskRow(OcrQueueTaskState.Running);
+        OcrQueueTask cloud = TaskRow(adapterKind: OcrAdapterKind.CloudApi, engineId: "cloud",
+            providerId: "cloud-provider");
+
+        OcrQueueDispatchPolicy.CanRunNow(cloud, [running], limits).Should().BeFalse();
+        OcrQueueDispatchPolicy.CanRunNow(cloud, [running], limits, true).Should().BeTrue();
+        OcrQueueDispatchPolicy.CanRunNow(cloud with { PresetId = running.PresetId }, [running], limits)
+            .Should().BeTrue();
     }
 
     [Fact]

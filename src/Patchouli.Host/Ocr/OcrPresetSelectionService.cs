@@ -129,6 +129,12 @@ public sealed class OcrPresetSelectionService(
     public async Task<Result> SaveSelectionsAsync(IReadOnlyDictionary<OcrScope, OcrPresetId?> selections,
         CancellationToken cancellationToken = default)
     {
+        return await SaveSettingsAsync(selections, null, cancellationToken);
+    }
+
+    public async Task<Result> SaveSettingsAsync(IReadOnlyDictionary<OcrScope, OcrPresetId?> selections,
+        bool? enableDifferentOcrPresetsParallel, CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(selections);
         Result<LibraryMetadata> current = await library.GetCurrentLibraryAsync(cancellationToken);
         if (current.IsFailure)
@@ -160,7 +166,9 @@ public sealed class OcrPresetSelectionService(
                 updated = updated.WithPreset(scope, presetId?.ToString());
             }
 
-            return updated;
+            return enableDifferentOcrPresetsParallel is { } enabled
+                ? updated with { EnableDifferentOcrPresetsParallel = enabled }
+                : updated;
         }, cancellationToken);
     }
 }

@@ -81,6 +81,17 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
     public OcrPresetScopePickerViewModel PagePresetPicker { get; }
     public OcrPresetScopePickerViewModel RegionPresetPicker { get; }
 
+    [ObservableProperty] public partial bool EnableDifferentOcrPresetsParallel { get; set; }
+
+    partial void OnEnableDifferentOcrPresetsParallelChanged(bool value)
+    {
+        if (!_isConstructing && !_isSyncing)
+        {
+            UpdateDirtyState();
+            MarkDirty("有未保存的更改");
+        }
+    }
+
     /// <summary>The inline composition rows; unsaved rows survive refreshes.</summary>
     [ExcludeFromDerivedGeneration]
     public ObservableCollection<OcrPresetCompositionRowViewModel> PresetRows { get; } = new();
@@ -145,6 +156,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
             DocumentPresetPicker.Apply(_activePresetOptions, _persistedSelections.DocumentPresetId);
             PagePresetPicker.Apply(_activePresetOptions, _persistedSelections.PagePresetId);
             RegionPresetPicker.Apply(_activePresetOptions, _persistedSelections.RegionPresetId);
+            EnableDifferentOcrPresetsParallel = _persistedSelections.EnableDifferentOcrPresetsParallel;
         }
         finally
         {
@@ -191,7 +203,10 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
         // ADO.NET/file IO off the dispatcher — SQLite async often runs synchronously.
         Result selectionsSaved =
-            await Task.Run(() => services.OcrSelections.SaveSelectionsAsync(selectionWrites));
+            await Task.Run(() => services.OcrSelections.SaveSettingsAsync(selectionWrites,
+                EnableDifferentOcrPresetsParallel != _persistedSelections.EnableDifferentOcrPresetsParallel
+                    ? EnableDifferentOcrPresetsParallel
+                    : null));
         if (selectionsSaved.IsFailure)
         {
             LastError = selectionsSaved.ErrorMessage;
@@ -211,7 +226,14 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
                 : selections.PagePresetId,
             RegionPresetPicker.SelectedOption.IsUnavailable
                 ? _persistedSelections.RegionPresetId
-                : selections.RegionPresetId);
+                : selections.RegionPresetId,
+            EnableDifferentOcrPresetsParallel);
+        Result<IOcrQueueScheduler> queue = await services.GetOcrQueueAsync();
+        if (queue.IsSuccess)
+        {
+            queue.Value.WakeScheduler();
+        }
+
         _editRevision++;
         UpdateDirtyState();
         LastError = null;
@@ -517,6 +539,8 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
         ApplyPresetSnapshots(snapshots);
         OcrPresetSelections selections = stored.IsSuccess ? stored.Value : OcrPresetSelections.Empty;
+        bool preserveParallelChoice =
+            EnableDifferentOcrPresetsParallel != _persistedSelections.EnableDifferentOcrPresetsParallel;
         _persistedSelections = selections;
         _activePresetOptions = snapshots
             .Where(snapshot => !snapshot.Preset.Archived && snapshot.Version is not null)
@@ -532,6 +556,10 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
             DocumentPresetPicker.Apply(_activePresetOptions, selections.DocumentPresetId);
             PagePresetPicker.Apply(_activePresetOptions, selections.PagePresetId);
             RegionPresetPicker.Apply(_activePresetOptions, selections.RegionPresetId);
+            if (!preserveParallelChoice)
+            {
+                EnableDifferentOcrPresetsParallel = selections.EnableDifferentOcrPresetsParallel;
+            }
         }
         finally
         {
@@ -607,7 +635,8 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
     {
         _isDirty = SelectedPresetId(DocumentPresetPicker) != _persistedSelections.DocumentPresetId ||
                    SelectedPresetId(PagePresetPicker) != _persistedSelections.PagePresetId ||
-                   SelectedPresetId(RegionPresetPicker) != _persistedSelections.RegionPresetId;
+                   SelectedPresetId(RegionPresetPicker) != _persistedSelections.RegionPresetId ||
+                   EnableDifferentOcrPresetsParallel != _persistedSelections.EnableDifferentOcrPresetsParallel;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }

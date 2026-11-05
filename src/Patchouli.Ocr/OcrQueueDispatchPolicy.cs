@@ -56,9 +56,14 @@ internal static class OcrQueueDispatchPolicy
     /// tasks claimed earlier in the same tick already count as running and narrow what follows.
     /// </summary>
     public static bool CanRunNow(OcrQueueTask candidate, IEnumerable<OcrQueueTask> tasks,
-        OcrQueueLimits limits)
+        OcrQueueLimits limits, bool allowDifferentPresetsConcurrent = false)
     {
         OcrQueueTask[] running = tasks.Where(x => x.State == OcrQueueTaskState.Running).ToArray();
+        if (!allowDifferentPresetsConcurrent && running.Any(x => x.PresetId != candidate.PresetId))
+        {
+            return false;
+        }
+
         if (running.Length >= limits.GlobalMaxConcurrent)
         {
             return false;

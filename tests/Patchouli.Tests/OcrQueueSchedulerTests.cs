@@ -319,7 +319,7 @@ public sealed class OcrQueueSchedulerTests
         Result<OcrQueueTask> taskA = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         Result<OcrQueueTask> taskB = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
-            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+            taskA.Value.PresetId, [PageId.New()], OcrQueuePriority.UserStartedDocument);
         await scheduler.RunOneSchedulingTickAsync();
         await WaitForAsync(() => executor.Executed.Length == 2);
         events.Clear();
@@ -473,7 +473,8 @@ public sealed class OcrQueueSchedulerTests
     {
         GatedExecutor executor = new();
         OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
-            limits: new OcrQueueLimits(4, 4, 4, 4, 4), loopInterval: TimeSpan.FromMilliseconds(5));
+            limits: new OcrQueueLimits(4, 4, 4, 4, 4), loopInterval: TimeSpan.FromMilliseconds(5),
+            allowDifferentPresetsConcurrent: _ => Task.FromResult(true));
         Result<OcrQueueTask> first = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
             OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
         Result<OcrQueueTask> second = await scheduler.EnqueueTestPagesAsync(DocumentInstanceId.New(),
@@ -486,6 +487,32 @@ public sealed class OcrQueueSchedulerTests
         await scheduler.WaitForIdleAsync();
         (await scheduler.GetTaskAsync(first.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Succeeded);
         (await scheduler.GetTaskAsync(second.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Succeeded);
+    }
+
+    [Fact]
+    public async Task Enabling_parallel_presets_releases_waiting_work_without_interrupting_running_task()
+    {
+        TaskCompletionSource enabled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        GatedExecutor executor = new();
+        OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
+            limits: new OcrQueueLimits(4, 1, 2, 1, 1), loopInterval: TimeSpan.FromMilliseconds(5),
+            allowDifferentPresetsConcurrent: _ => Task.FromResult(enabled.Task.IsCompleted));
+        Result<OcrQueueTask> local = await scheduler.EnqueueAsync(new OcrQueueTaskRequest(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, "local",
+            OcrAdapterKind.LocalLibrary, null, OcrQueuePriority.UserStartedDocument));
+        Result<OcrQueueTask> cloud = await scheduler.EnqueueAsync(new OcrQueueTaskRequest(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, "cloud",
+            OcrAdapterKind.CloudApi, "cloud-provider", OcrQueuePriority.UserStartedDocument));
+
+        await scheduler.RunOneSchedulingTickAsync();
+        await WaitForAsync(() => executor.Executed.Length == 1);
+        (await scheduler.GetTaskAsync(cloud.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Queued);
+
+        enabled.TrySetResult();
+        await scheduler.RunOneSchedulingTickAsync();
+        await WaitForAsync(() => executor.Executed.Length == 2);
+        executor.Release();
+        await scheduler.WaitForIdleAsync();
     }
 
     [Fact]

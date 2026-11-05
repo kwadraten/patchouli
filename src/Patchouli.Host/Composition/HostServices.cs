@@ -280,7 +280,12 @@ public sealed class HostServices
             loopErrorLogger: exception =>
                 _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
             activityTracker: activityTracker,
-            engineLeases: ocrEngineLeases);
+            engineLeases: ocrEngineLeases,
+            allowDifferentPresetsConcurrent: async token =>
+            {
+                Result<OcrPresetSelections> selections = await OcrSelections.ReadStoredSelectionsAsync(token);
+                return selections.IsSuccess && selections.Value.EnableDifferentOcrPresetsParallel;
+            });
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine,
             () => LlmSettings.OcrSelection.ProviderId, ocrEngineRuntime);
         OcrCommands = new OcrCommandService(

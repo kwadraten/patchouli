@@ -36,6 +36,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
     private readonly Action<Exception>? _loopErrorLogger;
     private readonly IHostActivityTracker? _activityTracker;
     private readonly OcrEngineLeaseRegistry? _engineLeases;
+    private readonly Func<CancellationToken, Task<bool>>? _allowDifferentPresetsConcurrent;
     private readonly TimeSpan _loopInterval;
     private LibraryId? _libraryId;
     private CancellationTokenSource? _loop;
@@ -97,18 +98,21 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
     public OcrQueueScheduler(LibraryId libraryId, IClock clock, IOcrQueueTaskExecutor executor,
         IOcrRetryPolicy? retry = null, OcrQueueLimits? limits = null, TimeSpan? loopInterval = null,
         Action<Exception>? loopErrorLogger = null, IHostActivityTracker? activityTracker = null,
-        OcrEngineLeaseRegistry? engineLeases = null)
+        OcrEngineLeaseRegistry? engineLeases = null,
+        Func<CancellationToken, Task<bool>>? allowDifferentPresetsConcurrent = null)
         : this(_ => Task.FromResult(Result<LibraryId>.Success(libraryId)), clock, executor, retry, limits,
-            loopInterval, loopErrorLogger, activityTracker, engineLeases)
+            loopInterval, loopErrorLogger, activityTracker, engineLeases, allowDifferentPresetsConcurrent)
     {
     }
 
     public OcrQueueScheduler(Func<CancellationToken, Task<Result<LibraryId>>> libraryIdResolver, IClock clock,
         IOcrQueueTaskExecutor executor, IOcrRetryPolicy? retry = null, OcrQueueLimits? limits = null,
         TimeSpan? loopInterval = null, Action<Exception>? loopErrorLogger = null,
-        IHostActivityTracker? activityTracker = null, OcrEngineLeaseRegistry? engineLeases = null)
+        IHostActivityTracker? activityTracker = null, OcrEngineLeaseRegistry? engineLeases = null,
+        Func<CancellationToken, Task<bool>>? allowDifferentPresetsConcurrent = null)
     {
         _engineLeases = engineLeases;
+        _allowDifferentPresetsConcurrent = allowDifferentPresetsConcurrent;
         _libraryIdResolver = libraryIdResolver;
         _clock = clock;
         _executor = executor;
@@ -456,22 +460,25 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
         OnChanged(rejected, OcrQueueChangeKind.Enqueued);
     }
 
-    public Task RunOneSchedulingTickAsync(CancellationToken c = default)
+    public async Task RunOneSchedulingTickAsync(CancellationToken c = default)
     {
         c.ThrowIfCancellationRequested();
+        bool allowDifferentPresetsConcurrent = _allowDifferentPresetsConcurrent is not null &&
+                                               await _allowDifferentPresetsConcurrent(c).ConfigureAwait(false);
         List<(OcrQueueTask Task, RunningAttempt Attempt)> claimed = [];
         lock (_stateLock)
         {
             if (Volatile.Read(ref _shutdownRequested) != 0)
             {
-                return Task.CompletedTask;
+                return;
             }
 
             OcrQueueTask[] eligible = OcrQueueDispatchPolicy.SelectDispatchCandidates(
                 _tasks.Values, _running.Keys, _clock.UtcNow, _pauses);
             foreach (OcrQueueTask candidate in eligible)
             {
-                if (!OcrQueueDispatchPolicy.CanRunNow(candidate, _tasks.Values, _limits))
+                if (!OcrQueueDispatchPolicy.CanRunNow(candidate, _tasks.Values, _limits,
+                        allowDifferentPresetsConcurrent))
                 {
                     continue;
                 }
@@ -498,8 +505,6 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler, IAsyncDisposable
             OnChanged(task, OcrQueueChangeKind.Updated);
             _ = Task.Run(() => ExecuteAndCompleteAsync(task, attempt), CancellationToken.None);
         }
-
-        return Task.CompletedTask;
     }
 
     public async Task WaitForIdleAsync(CancellationToken c = default)
