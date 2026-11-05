@@ -142,6 +142,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _refreshSuspended = true;
             _refreshDirty = true;
             _visibilityEpoch++;
+            _refreshScheduled = false;
             _scheduledRefresh.Disposable = null;
             _activeLoad?.Cancel();
             _snapshotCycleFinished.TrySetResult();
@@ -2232,6 +2233,12 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
             : !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorCode)
                 ? task.LastErrorCode!
                 : "";
+
+        if (!IsActive)
+        {
+            stage = null;
+            _stageKey = null;
+        }
 
         if (stage is not null && stage.Stage != _stageKey)
         {

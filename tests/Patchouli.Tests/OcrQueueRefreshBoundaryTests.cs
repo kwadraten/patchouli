@@ -229,6 +229,31 @@ public sealed class OcrQueueRefreshBoundaryTests(AvaloniaSharedSessionFixture he
     }
 
     [Fact]
+    public async Task Showing_queue_after_cancelling_pending_refresh_restarts_automatic_refresh()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAndShutdownAsync(session, async () =>
+        {
+            QueueFixture fixture = await SetupAsync("resume-pending-refresh");
+            TestScheduler timing = new();
+            OcrQueueViewModel queue = new(fixture.Main, timing, RealUiScheduler(), Throttle);
+            CountingRowService rows = new() { AutoRelease = true };
+            queue.OcrQueueRowsDecorator = rows.Wrap;
+            queue.ObserveQueue(fixture.Scheduler);
+
+            queue.StartObserving();
+            queue.StopObserving();
+            timing.AdvanceBy(Throttle.Ticks * 2);
+            rows.Calls.Should().Be(0);
+
+            queue.StartObserving();
+            await PumpUntilAsync(timing, () => rows.Calls >= 1);
+            rows.Calls.Should().Be(1);
+            queue.ActiveTaskRows.Should().ContainSingle();
+        }, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Hidden_during_load_cancels_the_snapshot_and_discards_its_result()
     {
         HeadlessUnitTestSession session = headless.Session;

@@ -159,6 +159,41 @@ public sealed class OcrQueuePresentationTests : IDisposable
         withProgress.StageText.Should().Be("排队中 · 3/3 页");
     }
 
+    [Theory]
+    [InlineData(OcrQueueTaskState.Succeeded)]
+    [InlineData(OcrQueueTaskState.Failed)]
+    [InlineData(OcrQueueTaskState.Cancelled)]
+    public void Finished_mineru_tasks_stop_displaying_the_retained_cloud_wait_timer(string finalState)
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        OcrQueueTask running = CreateTask(state: OcrQueueTaskState.Running,
+            engine: OcrEngineIds.MinerU, updatedAt: now);
+        OcrTaskProgressReport waiting = new(running.TaskId, OcrTaskStage.WaitingCloud, null, "running");
+        OcrQueueProgress pages = new(1, 0, 0, 1);
+        OcrQueueTaskViewModel row = new(running, "Doc", main.OcrQueue,
+            pages, waiting, null, now);
+
+        row.Update(running, "Doc", pages, waiting, null, now.AddSeconds(5));
+        row.StageText.Should().Contain("已等待 5 秒");
+
+        OcrQueueTask finished = running with { State = finalState, UpdatedAt = now.AddSeconds(9) };
+        row.Update(finished, "Doc", pages, waiting, finished.UpdatedAt, now.AddSeconds(9));
+        string finishedStage = row.StageText;
+        row.Update(finished, "Doc", pages, waiting, finished.UpdatedAt, now.AddMinutes(2));
+
+        row.StageText.Should().Be(finishedStage).And.Be("1/1 页");
+        row.StageText.Should().NotContain("已等待");
+        if (finalState == OcrQueueTaskState.Succeeded)
+        {
+            row.ProgressValue.Should().Be(100);
+        }
+
+        OcrQueueTaskViewModel reopened = new(finished, "Doc", main.OcrQueue,
+            pages, waiting, finished.UpdatedAt, now.AddHours(1));
+        reopened.StageText.Should().Be(finishedStage);
+    }
+
     [Fact]
     public void Active_rows_sort_running_first_and_focus_highlights_without_burying_running_work()
     {
