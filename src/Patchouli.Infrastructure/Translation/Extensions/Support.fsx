@@ -653,12 +653,17 @@ module Support =
             key)
         output, map
 
+    /// Best-effort restoration: providers that pad or split a token with whitespace still
+    /// restore, and a token the provider dropped or rewrote degrades to a lost atom rather
+    /// than a failed segment.
     let restore (translated: string) (map: Dictionary<string, string>) =
         let mutable output = translated
         for pair in map do
-            let occurrences = Regex.Matches(output, Regex.Escape(pair.Key), RegexOptions.IgnoreCase).Count
-            if occurrences <> 1 then invalidOp "The provider changed or omitted a protected structure token."
-            output <- Regex.Replace(output, Regex.Escape(pair.Key), MatchEvaluator(fun _ -> pair.Value), RegexOptions.IgnoreCase)
+            let pattern =
+                pair.Key
+                |> Seq.map (fun character -> Regex.Escape(string character))
+                |> String.concat "\\s*"
+            output <- Regex.Replace(output, pattern, MatchEvaluator(fun _ -> pair.Value), RegexOptions.IgnoreCase)
         output
 
     /// The SDK's ambient execution scope forwards this pause gate as a cross-worker progress step.

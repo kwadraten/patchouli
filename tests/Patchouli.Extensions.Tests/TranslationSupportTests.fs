@@ -27,6 +27,22 @@ type TranslationSupportTests() =
         Assert.Equal(original, restore protectedText map)
 
     [<Fact>]
+    member _.``production restoration tolerates padded split and dropped provider tokens`` () =
+        let original = "alpha ^{1} beta ^{2} gamma"
+        let protectedText, map = protect "test-identity" original
+        let tokens = map.Keys |> Seq.toArray
+        Assert.Equal(2, tokens.Length)
+        // A provider may pad a token with spaces, split it across a line break, or drop it.
+        let mangled =
+            protectedText
+                .Replace(tokens[0], tokens[0].Insert(12, " ").Insert(20, "\n"))
+                .Replace(tokens[1], "")
+        let restored = restore mangled map
+        Assert.Contains("{1}", restored)
+        Assert.DoesNotContain("{2}", restored)
+        Assert.DoesNotContain("ZXQPATCHOULI", restored)
+
+    [<Fact>]
     member _.``production batch builder honors item and character budgets`` () =
         let source = box "abcdefghij"
         let segments = segment 4 source
