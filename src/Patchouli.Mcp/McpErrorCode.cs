@@ -1,3 +1,4 @@
+using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
@@ -88,6 +89,20 @@ public static class McpErrorMappings
             "permission_denied" => McpErrorCode.PermissionDenied,
             "cancelled" or "operation_cancelled" => McpErrorCode.Cancelled,
             _ => McpErrorCode.Internal
+        };
+    }
+
+    public static McpErrorCode ToMetadataError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            MetadataLookupErrorCodes.UnsupportedIdentifier => McpErrorCode.InvalidArgument,
+            MetadataLookupErrorCodes.NotFound => McpErrorCode.NotFound,
+            MetadataLookupErrorCodes.RateLimited or MetadataLookupErrorCodes.QuotaUnavailable
+                or MetadataLookupErrorCodes.ProviderUnavailable or MetadataLookupErrorCodes.InvalidResponse =>
+                McpErrorCode.Unavailable,
+            MetadataLookupErrorCodes.Timeout => McpErrorCode.DeadlineExceeded,
+            _ => ToOcrError(errorCode)
         };
     }
 }

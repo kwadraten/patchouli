@@ -103,6 +103,71 @@ public sealed class MetadataCandidateApplicationTests
         unchanged.Identifiers.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Apply_persists_url_identifiers_verbatim_and_retains_existing_identifier_identity()
+    {
+        await using TemporarySqliteDatabase database = await CreateDatabaseAsync();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-10-20T00:00:00Z"));
+        LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
+        await libraries.CreateLibraryAsync("Metadata URL tests");
+        ItemService items = new(database.ConnectionFactory, libraries, clock);
+        ItemMetadata item = (await items.CreateItemAsync("general", "Original title")).Value;
+        ItemIdentifier existing = (await items.AddIdentifierAsync(item.ItemId,
+            BuiltInIdentifierSchemes.DOI, "10.1000/original", null)).Value;
+        MetadataCandidate candidate = new("cinii", "Revised title",
+            SuggestedItemType: "book", TypeConfidence: 1.0, Identifiers:
+            [
+                new MetadataIdentifier("url",
+                    "https://clioimg.hi.u-tokyo.ac.jp/viewer/list/idata/850/8500/07/0301/"),
+                new MetadataIdentifier("ncid", "BN12173012")
+            ]);
+        MetadataCandidateProposal proposal = new(item.ItemId, item.UpdatedAt, candidate, []);
+        MetadataLookupService lookup = new(items, new MetadataSourceRegistry([]));
+
+        Result<MetadataLookupOutcome> applied = await lookup.ApplyCandidateAsync(proposal);
+
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+        applied.Value.Item.Title.Should().Be("Revised title");
+        applied.Value.Item.ItemType.Should().Be("book");
+        applied.Value.Item.Identifiers.Should().ContainSingle(identifier =>
+            identifier.IdentifierId == existing.IdentifierId && identifier.Value == "10.1000/original");
+        applied.Value.Item.Identifiers.Should().ContainSingle(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.URL &&
+            identifier.Value == "https://clioimg.hi.u-tokyo.ac.jp/viewer/list/idata/850/8500/07/0301/");
+        applied.Value.Item.Identifiers.Should().ContainSingle(identifier =>
+            identifier.Scheme == BuiltInIdentifierSchemes.Ncid && identifier.Value == "BN12173012");
+    }
+
+    [Fact]
+    public async Task Unsupported_identifier_after_a_valid_url_rejects_the_whole_candidate()
+    {
+        await using TemporarySqliteDatabase database = await CreateDatabaseAsync();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-10-20T00:00:00Z"));
+        LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
+        await libraries.CreateLibraryAsync("Metadata URL rejection tests");
+        ItemService items = new(database.ConnectionFactory, libraries, clock);
+        ItemMetadata item = (await items.CreateItemAsync("general", "Original title")).Value;
+        MetadataCandidate candidate = new("cinii", "Candidate title",
+            SuggestedItemType: "book", TypeConfidence: 1.0, Identifiers:
+            [
+                new MetadataIdentifier("url",
+                    "https://clioimg.hi.u-tokyo.ac.jp/viewer/list/idata/850/8500/07/0301/"),
+                new MetadataIdentifier("unknown_scheme", "anything")
+            ]);
+        MetadataCandidateProposal proposal = new(item.ItemId, item.UpdatedAt, candidate, []);
+        MetadataLookupService lookup = new(items, new MetadataSourceRegistry([]));
+
+        Result<MetadataLookupOutcome> applied = await lookup.ApplyCandidateAsync(proposal);
+
+        applied.IsFailure.Should().BeTrue();
+        applied.ErrorCode.Should().Be(MetadataLookupErrorCodes.UnsupportedIdentifier);
+        ItemMetadata unchanged = (await items.GetItemAsync(item.ItemId)).Value;
+        unchanged.Title.Should().Be("Original title");
+        unchanged.ItemType.Should().Be("general");
+        unchanged.UpdatedAt.Should().Be(item.UpdatedAt);
+        unchanged.Identifiers.Should().BeEmpty();
+    }
+
     private static async Task<TemporarySqliteDatabase> CreateDatabaseAsync()
     {
         TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

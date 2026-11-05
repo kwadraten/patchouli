@@ -18,6 +18,10 @@ public sealed class MetadataLookupTests
     [InlineData("pmcid", "PMC000123", BuiltInIdentifierSchemes.Pmcid, "PMC123")]
     [InlineData("arxiv", "arXiv:2101.01234v3", BuiltInIdentifierSchemes.ArXiv, "2101.01234")]
     [InlineData("NDLBibID", "123456", BuiltInIdentifierSchemes.Ndlbibid, "123456")]
+    [InlineData("url", "https://clioimg.hi.u-tokyo.ac.jp/viewer/list/idata/850/8500/07/0301/",
+        BuiltInIdentifierSchemes.URL, "https://clioimg.hi.u-tokyo.ac.jp/viewer/list/idata/850/8500/07/0301/")]
+    [InlineData(" URL ", "  https://example.org/A%2FB?q=x%26y%3Dz#Section  ", BuiltInIdentifierSchemes.URL,
+        "https://example.org/A%2FB?q=x%26y%3Dz#Section")]
     public void Identifier_normalization_returns_canonical_scheme_and_value(string scheme, string value,
         string expectedScheme, string expectedValue)
     {
@@ -25,6 +29,18 @@ public sealed class MetadataLookupTests
 
         result.IsSuccess.Should().BeTrue(result.ErrorMessage);
         result.Value.Should().Be(new NormalizedIdentifier(expectedScheme, expectedValue));
+    }
+
+    [Theory]
+    [InlineData("url", " ", AppErrorCodes.ValidationFailed)]
+    [InlineData("unknown_scheme", "https://example.org/", MetadataLookupErrorCodes.UnsupportedIdentifier)]
+    public void Identifier_normalization_rejects_blank_values_and_unknown_schemes(string scheme, string value,
+        string expectedError)
+    {
+        Result<NormalizedIdentifier> result = IdentifierNormalizer.Normalize(scheme, value);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(expectedError);
     }
 
     [Fact]

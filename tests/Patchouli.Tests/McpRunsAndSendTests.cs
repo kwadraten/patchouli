@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
+using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -316,6 +317,70 @@ public sealed class McpRunsAndSendTests
         metadata.Applied.Should().ContainSingle().Which.SourceId.Should().Be("crossref");
     }
 
+    [Theory]
+    [InlineData(MetadataLookupErrorCodes.UnsupportedIdentifier, (int)McpErrorCode.InvalidArgument)]
+    [InlineData(MetadataLookupErrorCodes.NotFound, (int)McpErrorCode.NotFound)]
+    [InlineData(MetadataLookupErrorCodes.RateLimited, (int)McpErrorCode.Unavailable)]
+    [InlineData(MetadataLookupErrorCodes.QuotaUnavailable, (int)McpErrorCode.Unavailable)]
+    [InlineData(MetadataLookupErrorCodes.ProviderUnavailable, (int)McpErrorCode.Unavailable)]
+    [InlineData(MetadataLookupErrorCodes.InvalidResponse, (int)McpErrorCode.Unavailable)]
+    [InlineData(MetadataLookupErrorCodes.Timeout, (int)McpErrorCode.DeadlineExceeded)]
+    [InlineData(AppErrorCodes.Conflict, (int)McpErrorCode.RevisionConflict)]
+    [InlineData(AppErrorCodes.DatabaseError, (int)McpErrorCode.Internal)]
+    public async Task Metadata_apply_failure_maps_domain_errors_to_send_error_codes(string errorCode,
+        int expectedCode)
+    {
+        Guid itemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        StubMetadataRunsApi metadata = new()
+        {
+            ApplyFailure = (errorCode, "Identifier scheme 'unknown' is not supported.")
+        };
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            DomainPermissions = [new McpDomainPermission("runs/metadata", "send", true)]
+        };
+        McpCommandService commands = CreateService(new StubReadApi(), metadata: metadata,
+            permissions: _ => Task.FromResult(settings));
+
+        JsonElement args = JsonSerializer.SerializeToElement(new
+        {
+            expected_updated_at = "2026-10-22T00:00:00.0000000+00:00",
+            candidate = new
+            {
+                source_id = "crossref",
+                title = "A Study",
+                identifiers = new[] { new { scheme = "doi", value = "10.1000/xyz" } }
+            },
+            attempts = new[] { new { source_id = "crossref" } }
+        });
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> applied = await commands.SendAsync(
+            new McpActionSendRequest(McpResourceUris.ItemUri(new ItemId(itemId)), "apply", args,
+                "runs/metadata/control"));
+
+        applied.Error.Should().NotBeNull();
+        applied.Error!.Code.Should().Be(expectedCode);
+        applied.Error.Name.Should().Be(McpToolError.ErrorName((McpErrorCode)expectedCode));
+        applied.Envelope.Should().NotBeNull();
+        applied.Envelope!.Meta.State.Should().Be("rejected");
+        applied.Envelope.Entries.Should().BeEmpty();
+        string line = applied.Envelope.Message!.Error!;
+        if (expectedCode == (int)McpErrorCode.Internal)
+        {
+            line.Should().Contain("The host could not complete the request.");
+            line.Should().NotContain("Identifier scheme");
+        }
+        else
+        {
+            line.Should().NotContain("INTERNAL");
+            if (expectedCode == (int)McpErrorCode.InvalidArgument)
+            {
+                line.Should().Contain("Identifier scheme 'unknown' is not supported.");
+            }
+        }
+
+        metadata.Applied.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Metadata_enrich_batch_start_fetch_cancel_and_replay_dedup()
     {
@@ -618,6 +683,7 @@ public sealed class McpRunsAndSendTests
         public IReadOnlyList<McpMetadataApplyProjection> Applied => _applies;
         public IReadOnlyList<string> Enriched => _enriched;
         public string? Cancelled { get; private set; }
+        public (string Code, string Message)? ApplyFailure { get; set; }
 
         public Task<IReadOnlyList<(string Items, string? RequestId)>> BatchStarts()
         {
@@ -660,6 +726,11 @@ public sealed class McpRunsAndSendTests
             McpMetadataCandidateDto candidate, IReadOnlyList<McpMetadataAttemptDto> attempts,
             CancellationToken cancellationToken = default)
         {
+            if (ApplyFailure is { } failure)
+            {
+                return Task.FromResult(Result<McpMetadataApplyProjection>.Failure(failure.Code, failure.Message));
+            }
+
             McpMetadataApplyProjection applied = new(itemId, candidate.SourceId,
                 candidate.Identifiers ?? [], attempts);
             _applies.Add(applied);

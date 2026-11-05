@@ -81,7 +81,9 @@ public sealed partial class McpCommandService
             cancellationToken);
         if (outcome.IsFailure)
         {
-            return Fail(McpErrorMappings.ToOcrError(outcome.ErrorCode), outcome.ErrorMessage ?? "Message rejected.");
+            return Fail(endpoint == RunEndpointCatalog.Uri("metadata")
+                ? McpErrorMappings.ToMetadataError(outcome.ErrorCode)
+                : McpErrorMappings.ToOcrError(outcome.ErrorCode), outcome.ErrorMessage ?? "Message rejected.");
         }
 
         McpEnvelope<McpActionSendMeta, McpActionSendResult> envelope =

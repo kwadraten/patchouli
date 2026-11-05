@@ -33,6 +33,7 @@ public static class IdentifierNormalizer
             ["gnd"] = BuiltInIdentifierSchemes.Gnd,
             ["urn_nbn_de"] = BuiltInIdentifierSchemes.UrnNbnDe,
             ["urn:nbn:de"] = BuiltInIdentifierSchemes.UrnNbnDe,
+            ["url"] = BuiltInIdentifierSchemes.URL,
             ["ark"] = BuiltInIdentifierSchemes.Ark,
             ["frbnf"] = BuiltInIdentifierSchemes.Frbnf
         };
@@ -85,6 +86,11 @@ public static class IdentifierNormalizer
 
     private static string NormalizeValue(string scheme, string raw)
     {
+        if (scheme == BuiltInIdentifierSchemes.URL)
+        {
+            return raw.Trim();
+        }
+
         string value = Uri.UnescapeDataString(raw.Trim()).Trim();
         if (scheme == BuiltInIdentifierSchemes.DOI)
         {
