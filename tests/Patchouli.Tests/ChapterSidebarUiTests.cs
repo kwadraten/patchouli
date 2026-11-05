@@ -490,6 +490,14 @@ public sealed class ChapterSidebarUiTests
                     result.Definition.Chapters[0].Children.Should().ContainSingle().Which.ChapterId.Should()
                         .Be("first");
                     await workspace.ShowChaptersTabCommand.ExecuteAsync();
+                    for (int attempt = 0;
+                         attempt < 100 && !workspace.ChapterNodes.Any(node => node.HasChildren);
+                         attempt++)
+                    {
+                        await Task.Delay(20);
+                        Pump(window);
+                    }
+
                     workspace.ChapterNodes.First(node => node.HasChildren).IsExpanded = true;
                     SavePreview(window, 1200, "chapter-expanded");
                 }

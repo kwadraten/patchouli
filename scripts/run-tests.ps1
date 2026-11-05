@@ -50,6 +50,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Reads a batch summary's case entries (key + outcome only) through python.
+# Windows PowerShell's JSON parser cannot handle a Full suite's multi-megabyte
+# summary, and python is already required for summarization at this point.
+# json.dumps emits ASCII only, so the captured stdout is encoding-safe.
+function Read-SummaryCases([string]$Path) {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    $pythonArgs = @()
+    if (-not $python) {
+        $python = Get-Command py -ErrorAction SilentlyContinue
+        if ($python) { $pythonArgs += '-3' }
+    }
+    if (-not $python) { $python = Get-Command python3 -ErrorAction SilentlyContinue }
+    if (-not $python) { throw 'python not found — cannot read batch summary cases' }
+
+    $projection = @'
+import json, sys
+with open(sys.argv[1], encoding='utf-8-sig') as handle:
+    document = json.load(handle)
+print(json.dumps([{'key': case.get('key', ''), 'outcome': case.get('outcome', '')}
+                  for case in document.get('cases', [])]))
+'@
+    $output = & $python.Source @pythonArgs -c $projection $Path
+    if ($LASTEXITCODE -ne 0) { throw "python could not read $Path" }
+    $json = ($output -join [Environment]::NewLine)
+    # ConvertFrom-Json emits a top-level JSON array as a single pipeline item;
+    # assigning before collecting unwraps it for the caller.
+    $parsed = $json | ConvertFrom-Json
+    return @($parsed)
+}
+
 # --- suite manifest / batch plan ----------------------------------------------
 $suiteManifestData = $null
 $suiteManifestPath = if ([IO.Path]::IsPathRooted($SuiteManifest)) { $SuiteManifest } else { Join-Path $root $SuiteManifest }
@@ -490,10 +520,11 @@ if (-not $interrupted) {
         }
 
         try {
-            $detail = Get-Content -LiteralPath $batchSummary -Raw | ConvertFrom-Json
-            foreach ($case in @($detail.cases)) { $allCases.Add($case) }
+            $cases = @(Read-SummaryCases $batchSummary)
+            $batch['case_entries'] = $cases
+            foreach ($case in $cases) { $allCases.Add($case) }
         } catch {
-            $validationFailed += "batch '$($batch.name)': could not read $batchSummary for the union case set"
+            $validationFailed += "batch '$($batch.name)': could not read $batchSummary for the union case set: $($_.Exception.Message)"
         }
     }
     $manifest.batches_run = $runDirBatches
@@ -502,9 +533,8 @@ if (-not $interrupted) {
     # but the same case key must never be owned by two different resource batches.
     $caseOwners = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
     foreach ($batch in $runDirBatches) {
-        if (-not $batch.summary_path -or -not (Test-Path -LiteralPath $batch.summary_path)) { continue }
-        $detail = Get-Content -LiteralPath $batch.summary_path -Raw | ConvertFrom-Json
-        foreach ($case in @($detail.cases)) {
+        if (-not $batch.case_entries) { continue }
+        foreach ($case in @($batch.case_entries)) {
             $key = [string]$case.key
             if ($caseOwners.ContainsKey($key) -and $caseOwners[$key] -ne $batch.name) {
                 $validationFailed += "case appears in more than one resource batch: $key"
