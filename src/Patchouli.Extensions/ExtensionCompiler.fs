@@ -63,7 +63,7 @@ type ExtensionCompiler(checkRoot: string) =
     static let metadataCheck (package: ExtensionPackageSnapshot) =
         try
             let metadata = ExtensionEntryMetadata.Parse(package)
-            if metadata.HostApi <> ExtensionHostApi.Current then
+            if not (ExtensionHostApi.IsSupported(metadata.HostApi)) then
                 Error [| ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "EXT0007",
                     "The package targets an unsupported Patchouli extension host API.",
                     ExtensionSourceLocation("main.fsx", 1, 0, 1, 1)) |]
@@ -123,7 +123,7 @@ type ExtensionCompiler(checkRoot: string) =
                         ExtensionSourceLocation("main.fsx", 1, 0, 1, 1)))
                 return ExtensionCompilationResult(resultFor false [||] issues, "", "", false)
             else
-                let referencePaths = Array.append frameworkReferences.Value contractAssemblies
+                let referencePaths = Array.concat [ frameworkReferences.Value; contractAssemblies; SharedLibraries.paths() ]
                 let sourceDependencyHash = ExtensionArtifact.sourceHash package
                 let toolchainIdentity = ExtensionArtifact.runtimeToolchainIdentity()
                 let artifactKey = ExtensionArtifact.artifactKey package toolchainIdentity
@@ -184,7 +184,9 @@ type ExtensionCompiler(checkRoot: string) =
                                 dependencyResolution.CompilerOptions
                                 |> Array.filter (fun option ->
                                     not (option.StartsWith("-r:", StringComparison.Ordinal))
-                                    && not (option.StartsWith("--reference:", StringComparison.Ordinal)))
+                                    && not (option.StartsWith("--reference:", StringComparison.Ordinal))
+                                    && not (option.StartsWith("--define:", StringComparison.Ordinal))
+                                    && not (option.StartsWith("-d:", StringComparison.Ordinal)))
                             let contractLine = "\nlet __patchouli_extension_contract : Patchouli.Extensions.Contracts.IExtensionDefinition = extension\n"
                             File.AppendAllText(entry, contractLine)
                             let compilerArgs =

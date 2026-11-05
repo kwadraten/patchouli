@@ -47,6 +47,14 @@ type private OcrEngineFactoryDefinition<'Settings>(
     interface IExtensionSettingsDefinition with
         member _.SettingsType = typeof<'Settings>
 
+type private LayoutRecognitionFactoryDefinition<'Settings>(
+    run: 'Settings -> ILayoutRecognitionJob -> IExtensionResources -> CancellationToken -> Task) =
+    interface ILayoutRecognitionExtension with
+        member _.RunAsync(job, resources, token) =
+            run (ConfigSettings.Read<'Settings>(job.Config)) job resources token
+    interface IExtensionSettingsDefinition with
+        member _.SettingsType = typeof<'Settings>
+
 type private MetadataFactoryDefinition<'Settings>(
     sourceDefinition: MetadataSourceDefinition,
     run: 'Settings -> NormalizedIdentifier -> IExtensionResources -> CancellationToken -> Task<Result<MetadataCandidate>>) =
@@ -78,6 +86,12 @@ type private DerivedStateTranslationExtension(
 
 [<RequireQualifiedAccess>]
 module Extension =
+    /// Creates a caller-neutral layout recognition job implementation.
+    let createLayoutRecognition<'Settings>
+        (run: 'Settings -> ILayoutRecognitionJob -> IExtensionResources -> CancellationToken -> Task) : ILayoutRecognitionExtension =
+        if isNull (box run) then nullArg "run"
+        LayoutRecognitionFactoryDefinition<'Settings>(run) :> ILayoutRecognitionExtension
+
     /// Creates a translation implementation. Package identity and descriptor projection belong to the loader.
     let createTranslation<'Settings>
         (run: 'Settings -> ITranslationJob -> IExtensionResources -> CancellationToken -> Task) : ITranslationExtension =

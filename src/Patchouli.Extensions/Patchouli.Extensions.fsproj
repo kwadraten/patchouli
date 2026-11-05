@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Blake3" />
     <ProjectReference Include="..\Patchouli.Extensions.Contracts\Patchouli.Extensions.Contracts.csproj" />
+    <ProjectReference Include="..\Patchouli.Ocr.Engines\Patchouli.Ocr.Engines.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Capabilities.fs" />
@@ -18,6 +19,7 @@
     <Compile Include="Job.fs" />
     <Compile Include="OcrJob.fs" />
     <Compile Include="ExtensionFactories.fs" />
+    <Compile Include="SharedLibraries.fs" />
     <Compile Include="RuntimeFrameworkReferences.fs" />
     <Compile Include="ExtensionDiagnostics.fs" />
     <Compile Include="ExtensionArtifact.fs" />

@@ -103,7 +103,7 @@ public sealed class ExtensionEntryMetadataTests
     public void New_ocr_capabilities_keep_existing_v3_extension_metadata_compatible(string kind,
         ExtensionKind expectedKind)
     {
-        ExtensionHostApi.Current.Should().Be("patchouli.extensions/3");
+        ExtensionHostApi.Current.Should().Be("patchouli.extensions/4");
         string source = "/// <summary>Existing non-OCR extension.</summary>\n" +
                         $"/// <patchouli-extension id=\"test.parser\" kind=\"{kind}\" version=\"1.0.0\" host-api=\"patchouli.extensions/3\">\n" +
                         "/// <name>Existing extension</name>\n/// </patchouli-extension>\nlet extension = 1";
@@ -112,6 +112,35 @@ public sealed class ExtensionEntryMetadataTests
 
         metadata.Kind.Should().Be(expectedKind);
         metadata.HostApi.Should().Be("patchouli.extensions/3");
+    }
+
+    [Theory]
+    [InlineData("patchouli.extensions/3", "01.2.3", true)]
+    [InlineData("patchouli.extensions/4", "01.2.3", false)]
+    [InlineData("patchouli.extensions/4", "1.2.3-rc.1+build.001", true)]
+    [InlineData("patchouli.extensions/4", "1.2.3-01", false)]
+    [InlineData("patchouli.extensions/5", "1.2.3", false)]
+    public void Protocol_revision_controls_version_validation_without_rejecting_v3(string api, string version,
+        bool accepted)
+    {
+        string source = $"""
+                         /// <summary>Protocol compatibility fixture.</summary>
+                         /// <patchouli-extension id="test.parser" kind="translation" version="{version}" host-api="{api}">
+                         /// <name>Compatibility</name>
+                         /// </patchouli-extension>
+                         let extension = 1
+                         """;
+        if (accepted)
+        {
+            ExtensionEntryMetadata metadata = ExtensionEntryMetadata.Parse(Package(source));
+            metadata.HostApi.Should().Be(api);
+            metadata.Version.Should().Be(version);
+        }
+        else
+        {
+            Action parse = () => ExtensionEntryMetadata.Parse(Package(source));
+            parse.Should().Throw<ExtensionMetadataException>();
+        }
     }
 
     [Fact]

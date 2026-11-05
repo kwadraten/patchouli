@@ -137,7 +137,11 @@ type ExtensionCompilationProcess(runtimeDirectory: string) =
         | Some cached -> return cached
         | None ->
             let bundledDirectory = Path.Combine(root, ".bundled", ExtensionArtifact.artifactKey package identity)
-            let compiler = Path.Combine(AppContext.BaseDirectory, "extension-compiler", "Patchouli.Extensions.Compiler.dll")
+            // Published apphosts share the application directory; development builds keep the sidecar bundle.
+            let sharedCompiler = Path.Combine(AppContext.BaseDirectory, "Patchouli.Extensions.Compiler.dll")
+            let compiler =
+                if File.Exists sharedCompiler then sharedCompiler
+                else Path.Combine(AppContext.BaseDirectory, "extension-compiler", "Patchouli.Extensions.Compiler.dll")
             if Directory.Exists bundledDirectory then
                 let issue = ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "EXT0040",
                     "The bundled extension artifact is incomplete or incompatible. Rebuild or repair the application; bundled code will not be silently recompiled at runtime.",

@@ -29,7 +29,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#r "lib/Patchouli.Ocr.Engines.dll"
 
 open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
@@ -68,7 +67,7 @@ let private toOptions (settings: Settings) =
         SupplementWithOcr = settings.OcrUntrusted)
 
 /// <summary>Native PDFium text layer ordered with the gap-tree layout sort — pure text, no rendering or models.</summary>
-/// <patchouli-extension id="pdf-text.native-gaptree" kind="pdf-text-layer" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="pdf-text.native-gaptree" kind="pdf-text-layer" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>Native text layer (GapTree)</name>
 /// </patchouli-extension>
 let extension : IPdfTextLayerExtension =

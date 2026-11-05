@@ -29,7 +29,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#r "lib/Patchouli.Ocr.Engines.dll"
 #load "Support.fsx"
 
 open Patchouli.Extensions.Contracts
@@ -97,7 +96,7 @@ type Settings = {
 }
 
 /// <summary>RapidOCR (ONNX) text recognition extension.</summary>
-/// <patchouli-extension id="ocr.rapidocr" kind="ocr" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="ocr.rapidocr" kind="ocr" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>RapidOCR</name>
 /// </patchouli-extension>
 let extension =

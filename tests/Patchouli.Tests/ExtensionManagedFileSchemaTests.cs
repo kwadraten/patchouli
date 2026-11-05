@@ -193,47 +193,55 @@ public sealed class ExtensionManagedFileSchemaTests
     }
 
     [Fact]
-    public async Task Multimodal_declares_both_layout_models_behind_mode_and_scope_gates()
+    public async Task Multimodal_declares_no_managed_files_and_selects_layout_by_extension_id()
     {
         IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(
             BuiltInOcrExtensions.Packages.Single(p => p.Id == "ocr.multimodal"));
 
-        ConfigFieldDescriptor path = fields.Single(f => f.Key == "model-path");
-        path.Kind.Should().Be(ConfigValueKind.FilePath,
-            "the vision layout path names a concrete file, not a directory");
-        IReadOnlyList<ExtensionManagedFile> files = path.ManagedFiles;
-        files.Should().HaveCount(2);
-
-        files.Should().AllSatisfy(file =>
-        {
-            file.WhenKey.Should().Be("layout-model",
-                "each weight only applies to its selected layout model");
-            file.RequiredWhenKey.Should().Be("use-local-layout");
-            file.RequiredWhenValue.Should().Be("true");
-            file.RequiredScopes.Should().BeEquivalentTo(new[] { "document", "pages" },
-                "every full-page input feeds the detector; only an explicit region bypasses it");
-        });
-        files.Single(file => file.WhenValue == "doclayout-yolo").DownloadUrl
-            .Should().Contain("DocLayout-YOLO");
-        files.Single(file => file.WhenValue == "pp-doclayout-v3").DownloadUrl
-            .Should().Contain("PP-DocLayoutV3");
+        fields.Should().AllSatisfy(field => field.ManagedFiles.Should().BeEmpty(
+            "layout weights live in the dedicated layout-recognition catalog packages, " +
+            "not in the multimodal configuration"));
+        fields.Single(field => field.Key == "layout-model").DefaultValue
+            .Should().Be("layout.pp-doclayout-v3",
+                "the layout choice names a layout-recognition extension id");
+        fields.Should().Contain(field => field.Key == "use-local-layout");
     }
 
     [Fact]
-    public async Task Visual_guided_pdf_declares_model_id_conditioned_layout_files()
+    public async Task Layout_extensions_declare_their_pinned_weights()
+    {
+        foreach ((string id, string marker, string directoryKind) in new[]
+                 {
+                     ("layout.pp-doclayout-v3", "PP-DocLayoutV3", "pp-doclayout-v3-models"),
+                     ("layout.doclayout-yolo", "DocLayout-YOLO", "doclayout-yolo-models")
+                 })
+        {
+            IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(
+                BuiltInLayoutRecognitionExtensions.Packages.Single(p => p.Id == id));
+
+            ConfigFieldDescriptor path = fields.Single(field => field.Key == "model-path");
+            path.Kind.Should().Be(ConfigValueKind.FilePath,
+                "the layout path names a concrete weight file, not a directory");
+            ExtensionManagedFile file = path.ManagedFiles.Should().ContainSingle().Subject;
+            file.DownloadUrl.Should().Contain(marker);
+            file.DirectoryKind.Should().Be(directoryKind);
+            file.Sha256.Should().MatchRegex("^[0-9a-f]{64}$");
+            file.ExpectedBytes.Should().BeGreaterThan(0);
+        }
+    }
+
+    [Fact]
+    public async Task Visual_guided_declares_no_managed_files_and_selects_layout_by_extension_id()
     {
         IReadOnlyList<ConfigFieldDescriptor> fields = await CheckFieldsAsync(
             BuiltInPdfTextLayerExtensions.Packages.Single(p => p.Id == "pdf-text.visual-guided"));
 
-        ConfigFieldDescriptor path = fields.Single(f => f.Key == "model-path");
-        path.Kind.Should().Be(ConfigValueKind.FilePath);
-        IReadOnlyList<ExtensionManagedFile> files = path.ManagedFiles;
-        files.Should().HaveCount(2);
-        files.Should().AllSatisfy(file => file.WhenKey.Should().Be("model-id"));
-        files.Select(file => file.WhenValue).Should()
-            .BeEquivalentTo("pp-doclayout-v3", "doclayout-yolo");
-        files.Should().AllSatisfy(file => file.RequiredScopes.Should().BeNull(
-            "layout detection is the provider's core mechanism — required in every scope"));
+        fields.Should().AllSatisfy(field => field.ManagedFiles.Should().BeEmpty(
+            "the provider consumes layout detection through the layout-recognition catalog, " +
+            "so it declares no weight files of its own"));
+        fields.Single(field => field.Key == "model-id").DefaultValue
+            .Should().Be("layout.doclayout-yolo",
+                "the layout choice names a layout-recognition extension id");
     }
 
     [Fact]

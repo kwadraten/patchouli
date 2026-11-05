@@ -36,6 +36,39 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
 {
     private const string EngineId = "translation.ui-dialog-test";
 
+    [Fact]
+    public async Task Sdk_install_action_tracks_preflight_diagnostics()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            using ExtensionSettingsViewModel editor = new(main);
+            ExtensionConfigurationDialog dialog = new() { DataContext = editor };
+            dialog.Show();
+            try
+            {
+                Pump(dialog);
+                Button install = dialog.FindControl<Button>("InstallSdkButton")!;
+                install.IsVisible.Should().BeFalse();
+                editor.Diagnostics.Add(new ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "EXT0034",
+                    "Install SDK", new ExtensionSourceLocation("Helper.fsx", 1, 0, 1, 1)));
+                Pump(dialog);
+                editor.RequiresSdk.Should().BeTrue();
+                install.IsVisible.Should().BeTrue();
+                editor.Diagnostics.Clear();
+                Pump(dialog);
+                install.IsVisible.Should().BeFalse();
+            }
+            finally
+            {
+                dialog.Close();
+            }
+
+            return 0;
+        }, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData("translation.google-free")]
     [InlineData("metadata.crossref")]
@@ -59,6 +92,12 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
             editor.SourceText.Should().Contain("<patchouli-extension");
             editor.Fields.Should().Contain(field => field.Descriptor.Key == "endpoint");
             editor.IsConfigurationSchemaAvailable.Should().BeTrue();
+            editor.IsSourceReadOnly.Should().BeTrue();
+            editor.CanEditSource.Should().BeFalse();
+            await editor.CheckAndSaveSourceCommand.ExecuteAsync();
+            editor.LastError.Should().Contain("只读");
+            await editor.ActivateCommand.ExecuteAsync();
+            editor.LastError.Should().Contain("只读");
             services.TranslationExtensions.Manager.List().Should().BeEmpty("viewing configuration is not activation");
             return 0;
         }, CancellationToken.None);
@@ -169,6 +208,7 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
                     dialog.IsSourceVisible.Should().BeTrue();
                     dialog.Width.Should().BeGreaterThan(compactWidth);
                     TextEditor source = dialog.FindControl<TextEditor>("SourceEditor")!;
+                    source.IsReadOnly.Should().BeFalse();
                     source.ShowLineNumbers.Should().BeTrue();
                     source.SyntaxHighlighting.Should().NotBeNull();
                     source.Text.Should().Contain("[<Settings>]");

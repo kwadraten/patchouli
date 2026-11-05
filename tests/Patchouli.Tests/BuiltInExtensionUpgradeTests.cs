@@ -90,7 +90,7 @@ public sealed class BuiltInExtensionUpgradeTests
     }
 
     [Fact]
-    public async Task Ensure_preserves_a_user_modified_working_copy()
+    public async Task Ensure_upgrades_and_archives_a_user_modified_old_built_in_working_copy()
     {
         string runtimeDirectory = NewRuntimeDirectory();
         try
@@ -100,17 +100,103 @@ public sealed class BuiltInExtensionUpgradeTests
 
             await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
                 () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot oldSource = await catalog.Manager.ReadSourceAsync(EngineId);
             await catalog.EnsureExtensionAsync(EngineId);
 
             ExtensionGenerationInfo active = catalog.Manager.List().Single(item => item.Id == EngineId);
-            active.Fingerprint.Should().NotBe(Bundled.Fingerprint,
-                "a fingerprint outside the legacy manifest is user work and must be preserved");
+            active.Fingerprint.Should().Be(Bundled.Fingerprint,
+                "the higher SemVer built-in replaces an older same-ID implementation");
             File.ReadAllText(Path.Combine(runtimeDirectory, "extensions", EngineId, "main.fsx"))
+                .Should().Be(Bundled.Sources["main.fsx"]);
+            File.ReadAllText(Path.Combine(runtimeDirectory, "extensions", EngineId, ".generations",
+                    oldSource.Fingerprint, "main.fsx"))
                 .Should().Contain("user customization marker");
         }
         finally
         {
             DeleteRuntimeDirectory(runtimeDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Upgrade_keeps_old_leases_configuration_and_explicit_lkg_recovery()
+    {
+        string root = NewRuntimeDirectory();
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
+                TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot old = LegacyPackage();
+            (await catalog.ActivateAsync(old)).Succeeded.Should().BeTrue();
+            await catalog.Manager.SaveConfigAsync(EngineId, new ExtensionConfigSnapshot(
+                new Dictionary<string, string> { ["retained"] = "user-setting" }, 7), CancellationToken.None);
+            (await catalog.Manager.PromoteLastKnownGoodAsync(EngineId, CancellationToken.None)).Should().BeTrue();
+            await using IExtensionLease oldLease =
+                (await catalog.Manager.AcquireAsync(EngineId, CancellationToken.None))!;
+
+            await catalog.EnsureExtensionAsync(EngineId);
+
+            catalog.Manager.List().Single().Fingerprint.Should().Be(Bundled.Fingerprint);
+            oldLease.Fingerprint.Should().Be(old.Fingerprint);
+            oldLease.Descriptor.HostApi.Should().Be(ExtensionHostApi.Legacy);
+            (await catalog.Manager.ReadConfigAsync(EngineId, CancellationToken.None)).Values["retained"]
+                .Should().Be("user-setting");
+            (await catalog.RollbackAsync(EngineId)).Should().BeTrue();
+            await catalog.EnsureExtensionAsync(EngineId);
+            catalog.Manager.List().Single().Fingerprint.Should().Be(old.Fingerprint,
+                "automatic admission must not immediately undo an explicit recovery choice");
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
+        }
+    }
+
+    [Theory]
+    [InlineData("1.10.0", false)]
+    [InlineData("1.1.0", true)]
+    [InlineData("1.1.0+alternate", true)]
+    public async Task Newer_versions_are_retained_and_equal_precedence_conflicts_are_rejected(string version,
+        bool conflict)
+    {
+        string root = NewRuntimeDirectory();
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
+                TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot installed = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Key == "main.fsx"
+                    ? pair.Value.Replace("version=\"1.1.0\"", $"version=\"{version}\"") + "\n// different content"
+                    : pair.Value));
+            await catalog.Manager.SavePackageAsync(installed, CancellationToken.None);
+            if (conflict)
+            {
+                InvalidOperationException? failure = null;
+                try
+                {
+                    await catalog.EnsureExtensionAsync(EngineId);
+                }
+                catch (InvalidOperationException error)
+                {
+                    failure = error;
+                }
+
+                failure.Should().NotBeNull();
+                failure!.Message.Should().Contain("conflicting");
+                catalog.Manager.List().Should().BeEmpty();
+            }
+            else
+            {
+                await catalog.EnsureExtensionAsync(EngineId);
+                catalog.Manager.List().Single().Fingerprint.Should().Be(installed.Fingerprint);
+            }
+
+            (await catalog.Manager.ReadSourceAsync(EngineId, CancellationToken.None)).Fingerprint
+                .Should().Be(installed.Fingerprint);
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
         }
     }
 

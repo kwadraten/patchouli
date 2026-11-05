@@ -1,4 +1,3 @@
-#r "lib/Patchouli.Ocr.Engines.dll"
 
 open System.Threading
 open System.Threading.Tasks
@@ -90,7 +89,7 @@ let private run (_settings: Settings) (job: IOcrJob) (_resources: IExtensionReso
     } :> Task
 
 /// <summary>Offline OXR OCR through local layout, vision, and language ONNX graphs.</summary>
-/// <patchouli-extension id="ocr.oxr" kind="ocr" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="ocr.oxr" kind="ocr" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>OXR (ONNX)</name>
 /// </patchouli-extension>
 let extension : IOcrExtension =

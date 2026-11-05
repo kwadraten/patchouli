@@ -29,7 +29,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#r "lib/Patchouli.Ocr.Engines.dll"
 
 open Patchouli.Extensions.Contracts
 open Patchouli.Extensions.Sdk
@@ -37,31 +36,8 @@ open Patchouli.Ocr.Engines.PdfText
 
 [<Settings>]
 type Settings = {
-    [<Field("Layout model file", Key = "model-path", Kind = ConfigValueKind.FilePath,
-        Description = "ONNX file of the selected layout model; download in Settings > Local Files.");
-        Default("");
-      // The model-id choice selects which declared file is the weights; this provider always
-      // requires layout detection, so the selected file is required in every scope.
-      ManagedFile("inference.onnx",
-          "https://huggingface.co/PaddlePaddle/PP-DocLayoutV3_onnx/resolve/46bbdf188bb0a772c08aed74882ce7e51a8f1ea6/inference.onnx",
-          ExpectedBytes = 130502049L,
-          Sha256 = "45bf71750b00739a41fc209f132eb104a4d6b5bb29483c9078164d8b87cf28ba",
-          Version = "46bbdf188bb0a772c08aed74882ce7e51a8f1ea6",
-          DirectoryKind = "pp-doclayout-v3-models",
-          WhenKey = "model-id", WhenValue = "pp-doclayout-v3");
-      ManagedFile("doclayout_yolo_docstructbench_imgsz1024.onnx",
-          "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/ee7c3d744e5c47c58e267044ac825f95abe69653/doclayout_yolo_docstructbench_imgsz1024.onnx",
-          ExpectedBytes = 75324598L,
-          Sha256 = "fece9af02f618b603ff7921ccec6861d13e7e1f9830e091dfb7e8ad9311e5b21",
-          Version = "ee7c3d744e5c47c58e267044ac825f95abe69653",
-          DirectoryKind = "doclayout-yolo-models",
-          WhenKey = "model-id", WhenValue = "doclayout-yolo")>]
-    ModelPath: string
-    [<Field("Layout model", Key = "model-id",
-        Description = "Layout detection model used for region guidance.",
-        Kind = ConfigValueKind.Choice,
-        Choices = [| "doclayout-yolo"; "pp-doclayout-v3" |]);
-        Default("doclayout-yolo")>]
+    [<Field("版面识别模型", Key = "model-id", Description = "版面识别模型扩展 ID");
+      Default("layout.doclayout-yolo")>]
     ModelId: string
     [<Field("Layout detection DPI", Key = "layout-dpi",
         Description = "DPI used when the page is rendered once for layout detection.");
@@ -95,7 +71,6 @@ let private toOptions (settings: Settings) =
         WordGapFactor = settings.WordGapFactor,
         DetectMixedDirections = settings.DetectMixedDirections,
         LayoutModelId = settings.ModelId,
-        LayoutModelPath = settings.ModelPath,
         LayoutDpi = settings.LayoutDpi,
         MinNativeCoverage = settings.MinNativeCoverage,
         RecognizeNonTextRegions = settings.RecognizeNonTextRegions,
@@ -103,7 +78,7 @@ let private toOptions (settings: Settings) =
         SupplementWithOcr = true)
 
 /// <summary>Layout-guided PDF text layer: the shared detector steers native-glyph preservation and bounded region OCR.</summary>
-/// <patchouli-extension id="pdf-text.visual-guided" kind="pdf-text-layer" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="pdf-text.visual-guided" kind="pdf-text-layer" version="1.2.0" host-api="patchouli.extensions/4">
 ///   <name>Visual-guided text layer</name>
 /// </patchouli-extension>
 let extension : IPdfTextLayerExtension =

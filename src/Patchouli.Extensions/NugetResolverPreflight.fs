@@ -12,6 +12,7 @@ type internal NugetSdkProbeResult =
     | SdkAvailable of string
     | DotnetMissing
     | RuntimeOnly of string
+    | SdkIncompatible of string
     | ProbeUnavailable
 
 /// A deliberately small F# script NuGet SDK preflight, not a general SDK locator.
@@ -73,7 +74,13 @@ module internal NugetResolverPreflight =
         |> Array.filter File.Exists
 
     let private positiveCacheSync = obj ()
-    let mutable private positiveCache: (string * DateTimeOffset) option = None
+    let mutable private positiveCache: (string * string * DateTimeOffset) option = None
+
+    let supportsSdkVersion (version: string) =
+        let mutable parsed: Version | null = null
+        match Version.TryParse(version.Split('-')[0], &parsed), Option.ofObj parsed with
+        | true, Some sdk -> sdk.Major >= Environment.Version.Major
+        | _ -> false
 
     let private hasSdkListEntry (stream: Stream) (token: CancellationToken) = task {
         let buffer = Array.zeroCreate<byte> 512
@@ -81,11 +88,16 @@ module internal NugetResolverPreflight =
         let mutable lineLength = 0
         let mutable overlong = false
         let mutable foundSdk = false
+        let mutable foundCompatibleSdk = false
         let isSdkEntry () =
-            not overlong
-            && Regex.IsMatch(Encoding.ASCII.GetString(line, 0, lineLength),
-                "^\\s*[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?\\s+\\[[^\\]]+\\]\\s*$",
-                RegexOptions.CultureInvariant)
+            if overlong then false
+            else
+                let entry = Regex.Match(Encoding.ASCII.GetString(line, 0, lineLength),
+                    "^\\s*(?<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\\s+\\[[^\\]]+\\]\\s*$",
+                    RegexOptions.CultureInvariant)
+                if entry.Success && supportsSdkVersion entry.Groups["version"].Value then
+                    foundCompatibleSdk <- true
+                entry.Success
         let mutable reading = true
         while reading do
             let! count = stream.ReadAsync(buffer.AsMemory(), token)
@@ -101,7 +113,7 @@ module internal NugetResolverPreflight =
                         lineLength <- lineLength + 1
                     else overlong <- true
         if isSdkEntry () then foundSdk <- true
-        return foundSdk
+        return foundSdk, foundCompatibleSdk
     }
 
     let private probeHost(path: string, callerToken: CancellationToken) = task {
@@ -122,10 +134,11 @@ module internal NugetResolverPreflight =
                 let stderrDrain = child.StandardError.BaseStream.CopyToAsync(Stream.Null, linked.Token)
                 try
                     do! child.WaitForExitAsync(linked.Token)
-                    let! hasSdk = sdkOutput
+                    let! hasSdk, hasCompatibleSdk = sdkOutput
                     do! stderrDrain
                     if child.ExitCode <> 0 then return ProbeUnavailable
-                    elif hasSdk then return SdkAvailable path
+                    elif hasCompatibleSdk then return SdkAvailable path
+                    elif hasSdk then return SdkIncompatible path
                     else return RuntimeOnly path
                 with :? OperationCanceledException ->
                     if not child.HasExited then
@@ -145,22 +158,43 @@ module internal NugetResolverPreflight =
         | _ -> return ProbeUnavailable
     }
 
+    let selectSdkHostAsync(existing: string array,
+                          probe: Func<string, CancellationToken, Task<NugetSdkProbeResult>>,
+                          token: CancellationToken) = task {
+        let mutable result = ProbeUnavailable
+        let mutable selected = false
+        for host in existing do
+            token.ThrowIfCancellationRequested()
+            if not selected then
+                let! candidate = probe.Invoke(host, token)
+                match candidate with
+                | SdkAvailable _ ->
+                    selected <- true
+                    result <- candidate
+                | _ ->
+                    match result with
+                    | ProbeUnavailable -> result <- candidate
+                    | _ -> ()
+        return result
+    }
+
     let ensureSdkAsync(token: CancellationToken) : Task<NugetSdkProbeResult> = task {
         token.ThrowIfCancellationRequested()
         let now = DateTimeOffset.UtcNow
-        match lock positiveCacheSync (fun () -> positiveCache |> Option.filter (fun (_, expires) -> expires > now)) with
-        | Some(path, _) -> return SdkAvailable path
+        let existing = existingDotnetHosts()
+        let scope = String.Join("|", existing)
+        match lock positiveCacheSync (fun () -> positiveCache |> Option.filter (fun (key, _, expires) -> key = scope && expires > now)) with
+        | Some(_, path, _) -> return SdkAvailable path
         | None ->
-            let existing = existingDotnetHosts()
             if existing.Length = 0 then return DotnetMissing
             else
-                // Match FCS's selected host, not any later SDK installation hidden by PATH.
-                let! result = probeHost(existing[0], token)
+                // Pin FCS to the first usable host, even if an earlier PATH entry is runtime-only.
+                let! result = selectSdkHostAsync(existing, Func<_, _, _>(fun host ct -> probeHost(host, ct)), token)
                 match result with
                 | SdkAvailable path ->
-                    lock positiveCacheSync (fun () -> positiveCache <- Some(path, DateTimeOffset.UtcNow.AddMinutes 5.))
-                    return SdkAvailable path
-                | other -> return other
+                    lock positiveCacheSync (fun () -> positiveCache <- Some(scope, path, DateTimeOffset.UtcNow.AddMinutes 5.))
+                | _ -> ()
+                return result
     }
 
     let private normalizeVersion (version: string) =

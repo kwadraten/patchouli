@@ -40,6 +40,7 @@ ExtensionPackageSnapshot[] packages = BuiltInTranslationExtensions.Packages
     .Concat(BuiltInMetadataExtensions.Packages)
     .Concat(BuiltInOcrExtensions.Packages)
     .Concat(BuiltInPdfTextLayerExtensions.Packages)
+    .Concat(BuiltInLayoutRecognitionExtensions.Packages)
     .OrderBy(static package => package.Id, StringComparer.Ordinal)
     .ToArray();
 List<object> entries = new();

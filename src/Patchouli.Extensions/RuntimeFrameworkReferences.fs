@@ -59,7 +59,7 @@ module internal RuntimeFrameworkReferences =
     let private compilerIdentityGate = obj()
 
     // Bump when checker/compiler output semantics change without a public API or package-version change.
-    let compilerFormatRevision = 5
+    let compilerFormatRevision = 7
 
     let private identityAssemblyName (assembly: Assembly) =
         assembly.GetName().Name |> Option.ofObj |> Option.defaultWith (fun () -> invalidOp "A public API assembly has no name.")
@@ -216,11 +216,15 @@ module internal RuntimeFrameworkReferences =
         let assemblies =
             [| typeof<Patchouli.Extensions.Contracts.ITranslationExtension>.Assembly
                typeof<Patchouli.Core.Ids.DocumentInstanceId>.Assembly
-               Assembly.GetExecutingAssembly() |]
+               Assembly.GetExecutingAssembly()
+               typeof<Patchouli.Ocr.Engines.NativeOcrSession>.Assembly |]
         let material =
             seq {
                 yield "patchouli-extension-compiler-format=" + string compilerFormatRevision
                 yield "host-api=" + hostApi
+                yield "onnx-runtime-package=" + packageVersion "Microsoft.ML.OnnxRuntime"
+                yield "skia-sharp-package=" + packageVersion "SkiaSharp"
+                yield "numerics-tensors-package=" + packageVersion "System.Numerics.Tensors"
                 yield "target=net10.0"
                 yield "fsharp-core-package=" + fsharpCoreVersion
                 yield "fsharp-compiler-service-package=" + fsharpCompilerServiceVersion

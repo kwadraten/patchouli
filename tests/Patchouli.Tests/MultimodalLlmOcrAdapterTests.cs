@@ -682,7 +682,7 @@ public sealed class MultimodalLlmOcrAdapterTests
 
         public Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
             DocumentInstanceId documentInstanceId, PageId pageId, int dpi = 200,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default, int rotationDegrees = 0)
         {
             return Task.FromResult(Result<OcrInputDescriptor>.Success(
                 new OcrInputDescriptor(pageId, documentInstanceId, OcrInputKinds.PageImage, _imagePath, null, null,
@@ -714,7 +714,8 @@ public sealed class MultimodalLlmOcrAdapterTests
         }
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
+            NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default,
+            int rotationDegrees = 0)
         {
             throw new NotSupportedException();
         }

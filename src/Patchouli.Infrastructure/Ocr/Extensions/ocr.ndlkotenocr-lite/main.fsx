@@ -29,7 +29,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#r "lib/Patchouli.Ocr.Engines.dll"
 #load "Support.fsx"
 
 open Patchouli.Extensions.Contracts
@@ -63,7 +62,7 @@ type Settings = {
 }
 
 /// <summary>NDLKotenOCR-Lite (ONNX) classical Japanese text recognition extension.</summary>
-/// <patchouli-extension id="ocr.ndlkotenocr-lite" kind="ocr" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="ocr.ndlkotenocr-lite" kind="ocr" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>NDL古典籍OCR-Lite</name>
 /// </patchouli-extension>
 let extension =

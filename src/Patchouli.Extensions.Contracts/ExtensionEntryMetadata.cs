@@ -138,13 +138,18 @@ public sealed record ExtensionEntryMetadata(
                 "translation" => ExtensionKind.Translation, "metadata" => ExtensionKind.Metadata,
                 "ocr" => ExtensionKind.Ocr, "retrieval" => ExtensionKind.Retrieval,
                 "pdf-text-layer" => ExtensionKind.PdfTextLayer,
-                _ => throw At("kind must be translation, metadata, ocr, retrieval, or pdf-text-layer.",
+                "layout-recognition" => ExtensionKind.LayoutRecognition,
+                _ => throw At(
+                    "kind must be translation, metadata, ocr, retrieval, pdf-text-layer, or layout-recognition.",
                     root.Attribute("kind")!)
             };
             string version = RequiredAttribute("version");
-            if (!System.Text.RegularExpressions.Regex.IsMatch(version,
-                    @"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
-                    System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            string hostApi = RequiredAttribute("host-api");
+            if (hostApi == ExtensionHostApi.Current
+                    ? !ExtensionVersion.TryParse(version, out _)
+                    : !System.Text.RegularExpressions.Regex.IsMatch(version,
+                        @"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+                        System.Text.RegularExpressions.RegexOptions.CultureInvariant))
             {
                 throw At("version must be a semantic version.", root.Attribute("version")!);
             }
@@ -156,8 +161,7 @@ public sealed record ExtensionEntryMetadata(
                 throw At("Exactly one non-empty <summary> documentation element is required.", xmlDocumentation);
             }
 
-            string hostApi = RequiredAttribute("host-api");
-            if (!StringComparer.Ordinal.Equals(hostApi, ExtensionHostApi.Current))
+            if (!ExtensionHostApi.IsSupported(hostApi))
             {
                 throw At("The package targets an unsupported Patchouli extension host API.",
                     root.Attribute("host-api")!);

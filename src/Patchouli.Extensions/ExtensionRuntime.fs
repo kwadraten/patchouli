@@ -251,7 +251,14 @@ type FileExtensionStore(runtimeDirectory: string) =
             Directory.CreateDirectory target |> ignore
             let values = Dictionary<string, string>()
             values["schemaVersion"] <- "1"
-            values["hostApi"] <- ExtensionHostApi.Current
+            let! activePackage =
+                match activeFingerprint with
+                | Some fingerprint -> readPackageAt id fingerprint (generationDirectory id fingerprint)
+                | None -> Task.FromResult(None)
+            values["hostApi"] <-
+                match activePackage with
+                | Some package -> (ExtensionEntryMetadata.Parse package).HostApi
+                | None -> ExtensionHostApi.Current
             activeFingerprint |> Option.iter (fun value -> values["activeFingerprint"] <- value)
             lkgFingerprint |> Option.iter (fun value -> values["lastKnownGoodFingerprint"] <- value)
             let temporary = statePath id + ".tmp"
@@ -353,6 +360,10 @@ type private ExtensionLoadContext(artifactDirectory: string) =
             match Option.ofObj (assembly.GetName().Name) with
             | Some name -> sharedNames.Add(name) |> ignore
             | None -> ()
+        for assembly in SharedLibraries.assemblies() do
+            let name = assembly.GetName().Name |> nonNull
+            sharedNames.Add(name) |> ignore
+            defaultAssemblies[name] <- assembly
         for assembly in AssemblyLoadContext.Default.Assemblies do
             match Option.ofObj (assembly.GetName().Name) with
             | Some name -> defaultAssemblies.TryAdd(name, assembly) |> ignore
@@ -491,6 +502,16 @@ type CompiledExtensionGenerationLoader(runtimeDirectory: string) =
                         member _.SourceDefinition = extension.SourceDefinition
                         member _.LookupAsync(identifier, config, resources, token) =
                             extension.LookupAsync(identifier, config, resources, token)
+                      interface IExtensionSettingsDefinition with
+                        member _.SettingsType =
+                            match extension with
+                            | :? IExtensionSettingsDefinition as settings -> settings.SettingsType
+                            | _ -> typeof<obj> } :> IExtensionDefinition
+                | :? ILayoutRecognitionExtension as extension ->
+                    { new ILayoutRecognitionExtension with
+                        member _.Descriptor = metadata.ToDescriptor()
+                        member _.ConfigFields = fields
+                        member _.RunAsync(job, resources, token) = extension.RunAsync(job, resources, token)
                       interface IExtensionSettingsDefinition with
                         member _.SettingsType =
                             match extension with
@@ -917,6 +938,7 @@ type ExtensionManager(runtimeDirectory: string, capabilities: IExtensionResource
                           && (expectedKind <> ExtensionKind.Metadata || definition :? IMetadataExtension)
                           && (expectedKind <> ExtensionKind.Ocr || definition :? IOcrExtension)
                           && (expectedKind <> ExtensionKind.PdfTextLayer || definition :? IPdfTextLayerExtension)
+                          && (expectedKind <> ExtensionKind.LayoutRecognition || definition :? ILayoutRecognitionExtension)
                           && (expectedKind <> ExtensionKind.Retrieval || definition :? IRetrievalExtension)
                           && (expectedKind <> ExtensionKind.Translation || definition :? ITranslationExtension)
                       if descriptor.Id <> metadata.Id || descriptor.HostApi <> metadata.HostApi

@@ -283,15 +283,13 @@ public sealed class OcrComponentDialogTests(AvaloniaSharedSessionFixture headles
             seeded.Values["layout-model"].Should().Be("doclayout-yolo");
             seeded.Values["concurrency"].Should().Be("7");
             seeded.Values["reasoning-effort"].Should().Be("high");
-            seeded.Values["model-path"].Should().Be(
-                services.OcrStorage.GetLayoutModelPath("doclayout-yolo"));
+            seeded.Values.Should().NotContainKey("model-path",
+                "layout weights resolve through the layout-recognition catalog, not this config");
 
-            ExtensionConfigFieldViewModel modelPath =
-                editor.Fields.Single(field => field.Descriptor.Key == "model-path");
-            modelPath.IsFilePath.Should().BeTrue();
-            modelPath.HasManagedFiles.Should().BeTrue("the FSX declares the layout weights");
-            modelPath.Value.Should().Be(seeded.Values["model-path"],
-                "the explicit seeded path wins over managed defaults");
+            ExtensionConfigFieldViewModel layoutModel =
+                editor.Fields.Single(field => field.Descriptor.Key == "layout-model");
+            layoutModel.Value.Should().Be("doclayout-yolo",
+                "the seeded layout choice names the layout model the legacy settings selected");
 
             // A second load never rewrites the component configuration.
             using ExtensionSettingsViewModel second = main.Settings.CreateExtensionEditor();
@@ -303,7 +301,7 @@ public sealed class OcrComponentDialogTests(AvaloniaSharedSessionFixture headles
     }
 
     [Fact]
-    public async Task Managed_default_injects_when_stored_path_is_empty_and_custom_wins_on_save()
+    public async Task Managed_default_injects_for_layout_extension_and_custom_wins_on_save()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
@@ -315,36 +313,44 @@ public sealed class OcrComponentDialogTests(AvaloniaSharedSessionFixture headles
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
             IExtensionManager manager = services.TranslationExtensions.Manager;
-            await manager.SaveConfigAsync("ocr.multimodal", new ExtensionConfigSnapshot(
+            await manager.SaveConfigAsync("layout.pp-doclayout-v3", new ExtensionConfigSnapshot(
                 new Dictionary<string, string>
                 {
                     ["model-path"] = "",
-                    ["layout-model"] = "doclayout-yolo",
-                    ["use-local-layout"] = "true",
-                    ["unlisted-key"] = "keep-me",
-                    ["parameters-json"] = "{\"hidden\":true}"
+                    ["unlisted-key"] = "keep-me"
                 }, 3));
 
             using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
-            await editor.OpenAsync("ocr.multimodal");
+            await editor.OpenAsync("layout.pp-doclayout-v3");
             await editor.LoadAsync();
 
             ExtensionConfigFieldViewModel modelPath =
                 editor.Fields.Single(field => field.Descriptor.Key == "model-path");
             modelPath.IsFilePath.Should().BeTrue();
-            modelPath.Value.Should().Be(services.OcrStorage.GetLayoutModelPath("doclayout-yolo"),
+            modelPath.Value.Should().Be(services.OcrStorage.GetLayoutModelPath("pp-doclayout-v3"),
                 "an empty stored path displays the managed default (pure path math, no IO)");
             modelPath.HasManagedFiles.Should().BeTrue();
 
+            // The path field renders a real editable picker in the dialog.
+            ExtensionConfigurationDialog pickerDialog = new(editor);
+            pickerDialog.Show();
+            try
+            {
+                pickerDialog.GetVisualDescendants().OfType<PathPickerTextBox>().Should().NotBeEmpty();
+            }
+            finally
+            {
+                editor.CancelPendingLoad();
+                pickerDialog.Close();
+            }
+
             modelPath.Value = Path.Combine(settings.Path, "..", "custom-model.onnx");
             (await editor.SaveDialogAsync()).Should().BeTrue();
-            ExtensionConfigSnapshot saved = await manager.ReadConfigAsync("ocr.multimodal");
+            ExtensionConfigSnapshot saved = await manager.ReadConfigAsync("layout.pp-doclayout-v3");
             saved.Values["model-path"].Should().Be(modelPath.Value,
                 "an explicit custom path is persisted, not the injected default");
             saved.Values["unlisted-key"].Should().Be("keep-me",
                 "unknown saved keys survive a form save");
-            saved.Values["parameters-json"].Should().Be("{\"hidden\":true}",
-                "hidden saved values survive a form save");
             return 0;
         }, CancellationToken.None);
     }
@@ -371,9 +377,8 @@ public sealed class OcrComponentDialogTests(AvaloniaSharedSessionFixture headles
                 dialog.IsSourceVisible.Should().BeTrue(
                     "openSource expands the FSX pane when the window opens");
                 editor.Fields.Should().NotBeEmpty("the trusted schema supplies real fields");
-                editor.Fields.Should().Contain(field => field.IsPath,
-                    "path-kind fields render editable path pickers");
-                dialog.GetVisualDescendants().OfType<PathPickerTextBox>().Should().NotBeEmpty();
+                editor.Fields.Should().Contain(field => field.IsModel,
+                    "the multimodal schema declares the model slot the dialog renders");
                 FSharpSourceEditor sourceEditor =
                     dialog.GetVisualDescendants().OfType<FSharpSourceEditor>().Single();
                 sourceEditor.ContentText.Should().Contain("open Patchouli.Extensions.Sdk",

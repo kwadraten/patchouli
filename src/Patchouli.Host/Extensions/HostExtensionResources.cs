@@ -13,6 +13,22 @@ namespace Patchouli.Host.Extensions;
 /// <summary>Managed extension resources. Every run captures model settings independently of subsequent UI edits.</summary>
 public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
 {
+    private sealed class SharedCapabilities
+    {
+        public ILayoutRecognitionCapability? LayoutRecognition { get; set; }
+    }
+
+    private readonly SharedCapabilities _capabilities;
+
+    public ILayoutRecognitionCapability LayoutRecognition => _capabilities.LayoutRecognition
+                                                             ?? throw new InvalidOperationException(
+                                                                 "Layout recognition is not configured.");
+
+    internal void BindLayoutRecognition(ILayoutRecognitionCapability capability)
+    {
+        _capabilities.LayoutRecognition = capability;
+    }
+
     private readonly Func<LlmAppSettings> _settings;
     private readonly ICredentialStore _credentials;
     private readonly HttpMessageInvoker _http;
@@ -51,8 +67,10 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
         HttpMessageInvoker http,
         ExtensionHttpScheduler scheduler, LlmAppSettings? frozen, ExtensionConfigSnapshot? config = null,
         TranslationExecutionGate? dispatchGate = null, string? domain = null,
-        Func<LlmProviderRuntimeSettings, ILlmChatTransport>? transportFactory = null)
+        Func<LlmProviderRuntimeSettings, ILlmChatTransport>? transportFactory = null,
+        SharedCapabilities? capabilities = null)
     {
+        _capabilities = capabilities ?? new SharedCapabilities();
         _settings = settings;
         _credentials = credentials;
         _http = http;
@@ -76,13 +94,13 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(domain);
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler, _frozen, _config,
-            _dispatchGate, domain, _transportFactory);
+            _dispatchGate, domain, _transportFactory, _capabilities);
     }
 
     public HostExtensionResources WithDispatchGate(TranslationExecutionGate? gate)
     {
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler, _frozen, _config, gate,
-            _domain, _transportFactory);
+            _domain, _transportFactory, _capabilities);
     }
 
     public ILlmCapability Llm => this;
@@ -169,7 +187,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
 
         ExtensionConfigSnapshot frozen = new(new ReadOnlyDictionary<string, string>(values), config.Revision);
         return (new HostExtensionResources(_settings, _credentials, _http, _scheduler, settings,
-            frozen, _dispatchGate, _domain, _transportFactory), frozen);
+            frozen, _dispatchGate, _domain, _transportFactory, _capabilities), frozen);
     }
 
     private sealed class BoundLlm(
@@ -213,7 +231,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
         LlmAppSettings settings = _frozen ?? _settings();
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler,
             settings with { Providers = settings.Providers.ToArray() }, config, _dispatchGate, _domain,
-            _transportFactory);
+            _transportFactory, _capabilities);
     }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)

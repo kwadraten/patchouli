@@ -229,6 +229,9 @@ public sealed record PdfTextLayerContext(
     /// </summary>
     public Func<int, CancellationToken, ValueTask<PdfTextPageImage>>? ReadPageImageAsync { get; init; }
 
+    /// <summary>Shared model registry for independently configured layout extensions.</summary>
+    public ILayoutRecognitionCapability? LayoutRecognition { get; init; }
+
     /// <summary>
     /// Runs the host's shared document layout detector against a provider-rendered page image.
     /// The provider passes the model id and resolved model path from its own configuration, so

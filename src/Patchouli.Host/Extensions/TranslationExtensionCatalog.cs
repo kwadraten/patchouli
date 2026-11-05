@@ -8,6 +8,7 @@ using Patchouli.Llm;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Translation;
 using System.Threading.Channels;
+using Microsoft.FSharp.Core;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
@@ -25,6 +26,8 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _engineGates =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly ConcurrentDictionary<string, bool> _ensuredBuiltIns = new(StringComparer.Ordinal);
+    private readonly FileExtensionStore _fileStore;
     private readonly string _root;
     private readonly Func<LlmAppSettings> _settings;
     private bool _initialized;
@@ -51,6 +54,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             .Concat(BuiltInMetadataExtensions.Packages)
             .Concat(BuiltInOcrExtensions.Packages)
             .Concat(BuiltInPdfTextLayerExtensions.Packages)
+            .Concat(BuiltInLayoutRecognitionExtensions.Packages)
             .ToArray());
 
     public TranslationExtensionCatalog(string runtimeDirectory, Func<LlmAppSettings> settings,
@@ -59,7 +63,13 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         _root = runtimeDirectory;
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         Resources = resources;
-        Manager = new ExtensionManager(runtimeDirectory, resources, new FileExtensionStore(runtimeDirectory),
+        if (resources is HostExtensionResources hostResources)
+        {
+            hostResources.BindLayoutRecognition(new LayoutRecognitionService(this));
+        }
+
+        _fileStore = new FileExtensionStore(runtimeDirectory);
+        Manager = new ExtensionManager(runtimeDirectory, resources, _fileStore,
             new CompiledExtensionGenerationLoader(runtimeDirectory));
         Runner = new TranslationExtensionRunner(Manager, (lease, config, gate) =>
             TranslationExtensionRunner.WrapWithGate(
@@ -151,6 +161,43 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
 
     /// <summary>Bundled package snapshots (read-only); used to list never-activated built-ins.</summary>
     public IReadOnlyList<ExtensionPackageSnapshot> BundledPackageSnapshots => BundledPackages;
+
+    public bool IsBuiltIn(string id)
+    {
+        return BundledPackages.Any(package =>
+            string.Equals(package.Id, id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Creates an independent source draft without checking or executing the template.</summary>
+    public async Task<ExtensionPackageSnapshot> CreateCustomAsync(string templateId, string id,
+        CancellationToken cancellationToken = default)
+    {
+        await _initialization.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            // RewriteId validates the identifier before it can be used as a filesystem path.
+            ExtensionPackageSnapshot template = BundledPackages.FirstOrDefault(package =>
+                                                    string.Equals(package.Id, templateId,
+                                                        StringComparison.OrdinalIgnoreCase))
+                                                ?? await Manager.ReadSourceAsync(templateId, cancellationToken)
+                                                    .ConfigureAwait(false);
+            ExtensionPackageSnapshot copy = ExtensionEntryMetadata.RewriteId(template, id);
+            if (IsBuiltIn(id) || ListWorkingPackages().Any(existing =>
+                    string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)) ||
+                Manager.List().Any(existing => string.Equals(existing.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ArgumentException("扩展 ID 已存在，请使用新的 ID。", nameof(id));
+            }
+
+            await SaveDraftAsync(copy, cancellationToken).ConfigureAwait(false);
+            return copy;
+        }
+        finally
+        {
+            _initialization.Release();
+        }
+    }
 
     /// <summary>Reads metadata and trusted schema without initializing or checking an extension.</summary>
     public async Task<ExtensionConfigurationDescription> GetConfigurationDescriptionAsync(string id,
@@ -586,63 +633,41 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    ///     Activates exactly one bundled package on demand with single-flight protection per engine.
-    ///     Unrelated engines are not activated and their errors do not block this extension.
-    /// </summary>
+    /// <summary>Checks the bundled version once, then preserves explicit runtime recovery choices.</summary>
     public async Task EnsureExtensionAsync(string extensionId, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        await CatalogDiagnostics.SegmentAsync("extension.catalog.baseline", extensionId,
-            () => EnsureBaselineInitializedAsync(cancellationToken)).ConfigureAwait(false);
-
-        if (Manager.List().Any(item =>
-                string.Equals(item.Id, extensionId, StringComparison.Ordinal) && item.IsActive))
+        await EnsureBaselineInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (_ensuredBuiltIns.ContainsKey(extensionId) && Manager.List().Any(item =>
+                item.Id == extensionId && item.IsActive))
         {
             return;
         }
 
         SemaphoreSlim gate = _engineGates.GetOrAdd(extensionId, static _ => new SemaphoreSlim(1, 1));
-        await CatalogDiagnostics.SegmentAsync("extension.catalog.engine.gate", extensionId,
-            () => gate.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            if (Manager.List().Any(item =>
-                    string.Equals(item.Id, extensionId, StringComparison.Ordinal) && item.IsActive))
+            if (_ensuredBuiltIns.ContainsKey(extensionId) && Manager.List().Any(item =>
+                    item.Id == extensionId && item.IsActive))
             {
                 return;
             }
 
-            ExtensionPackageSnapshot? builtin = BundledPackages.FirstOrDefault(package =>
-                string.Equals(package.Id, extensionId, StringComparison.Ordinal));
-            if (builtin is null)
+            ExtensionPackageSnapshot? bundled = BundledPackages.FirstOrDefault(package => package.Id == extensionId);
+            if (bundled is null)
             {
-                await CatalogDiagnostics.SegmentAsync("extension.catalog.restore", extensionId,
-                    () => Manager.RestoreAsync(extensionId, cancellationToken)).ConfigureAwait(false);
+                if (!Manager.List().Any(item => item.Id == extensionId && item.IsActive))
+                {
+                    await Manager.RestoreAsync(extensionId, cancellationToken).ConfigureAwait(false);
+                }
+
                 return;
             }
 
-            await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
-            if (await CatalogDiagnostics.SegmentAsync("extension.catalog.restore", builtin.Id,
-                    () => Manager.RestoreAsync(builtin.Id, cancellationToken)).ConfigureAwait(false))
-            {
-                await UpgradeRestoredLegacyBuiltInAsync(builtin, cancellationToken).ConfigureAwait(false);
-                return;
-            }
-
-            ExtensionCheckResult check = await CatalogDiagnostics.SegmentAsync(
-                "extension.catalog.activate", builtin.Id,
-                () => ActivateBundledAsync(builtin, cancellationToken)).ConfigureAwait(false);
-            if (!check.Succeeded)
-            {
-                string errors = string.Join("; ",
-                    check.Diagnostics.Select(diagnostic =>
-                        $"{diagnostic.Code} {diagnostic.Location.FileName}:{diagnostic.Location.Line}: {diagnostic.Message}"));
-                throw new InvalidOperationException(
-                    $"Extension '{builtin.Id}' failed to activate: {errors}");
-            }
-
+            await EnsureBundledVersionAsync(bundled, cancellationToken).ConfigureAwait(false);
+            _ensuredBuiltIns[extensionId] = true;
             await RefreshMetadataSourcesAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -651,116 +676,122 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
     }
 
-    /// <summary>Activates one bundled package, preserving drafts and never throwing on failure.</summary>
-    private async Task<ExtensionCheckResult> ActivateBundledAsync(ExtensionPackageSnapshot builtin,
-        CancellationToken cancellationToken)
+    private async Task EnsureBundledVersionAsync(ExtensionPackageSnapshot bundled, CancellationToken token)
     {
-        ExtensionPackageSnapshot candidate;
-        bool hadWorkingCopy = true;
+        IPersistentExtensionFileStore persistent = _fileStore;
+        ExtensionPackageSnapshot? working = null;
         try
         {
-            candidate = await Manager.ReadSourceAsync(builtin.Id, cancellationToken).ConfigureAwait(false);
-            if (!candidate.Sources.ContainsKey("main.fsx"))
+            ExtensionPackageSnapshot source = await Manager.ReadSourceAsync(bundled.Id, token).ConfigureAwait(false);
+            if (source.Sources.Count > 0 || source.BinaryFiles.Count > 0)
             {
-                candidate = builtin;
-                hadWorkingCopy = false;
+                working = source;
             }
         }
-        catch (DirectoryNotFoundException)
+        catch (Exception error) when (error is DirectoryNotFoundException or FileNotFoundException)
         {
-            candidate = builtin;
-            hadWorkingCopy = false;
-        }
-        catch (FileNotFoundException)
-        {
-            candidate = builtin;
-            hadWorkingCopy = false;
+            // A configuration-only overlay does not define an installed implementation.
         }
 
-        string draftMarker = Path.Combine(_root, ".drafts", builtin.Id);
-        bool preserveDraft = File.Exists(draftMarker) &&
-                             await File.ReadAllTextAsync(draftMarker, cancellationToken)
-                                 .ConfigureAwait(false) == candidate.Fingerprint;
-        if (preserveDraft)
+        FSharpOption<string>? savedFingerprint =
+            await persistent.ReadActiveFingerprintAsync(bundled.Id, token).ConfigureAwait(false);
+        FSharpOption<ExtensionPackageSnapshot>? saved = savedFingerprint is null
+            ? null
+            : await persistent.ReadSnapshotAsync(bundled.Id, savedFingerprint.Value, token).ConfigureAwait(false);
+        ExtensionPackageSnapshot? installed = saved?.Value ?? working;
+        ExtensionEntryMetadata incoming = ExtensionEntryMetadata.Parse(bundled);
+        ExtensionDescriptor? activeDescriptor;
+        string? activeFingerprint;
+        await using (IExtensionLease? lease = await Manager.AcquireAsync(bundled.Id, token).ConfigureAwait(false))
         {
-            candidate = builtin;
+            activeDescriptor = lease?.Descriptor;
+            activeFingerprint = lease?.Fingerprint;
         }
 
-        if (candidate.Fingerprint != builtin.Fingerprint &&
-            LegacyBuiltInExtensionFingerprints.IsKnownLegacy(builtin.Id, candidate.Fingerprint))
+        ExtensionEntryMetadata? previous = null;
+        if (activeDescriptor is not null)
         {
-            // A working copy byte-identical to a previously shipped built-in package carries no
-            // user edits, so the current bundled package replaces it in place. This also migrates
-            // retired package formats (e.g. extension.yml) that fail activation with EXT0014.
-            candidate = builtin;
-            preserveDraft = false;
-            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
+            previous = new ExtensionEntryMetadata(activeDescriptor.Id, activeDescriptor.Kind,
+                activeDescriptor.Version, activeDescriptor.HostApi, activeDescriptor.Name,
+                activeDescriptor.Description);
+        }
+        else if (installed is not null)
+        {
+            try
+            {
+                previous = ExtensionEntryMetadata.Parse(installed);
+            }
+            catch (ExtensionMetadataException error) when (error.Code == "EXT0014")
+            {
+                // Only a reserved built-in registration can migrate the retired YAML baseline.
+            }
         }
 
-        if (candidate.Fingerprint == builtin.Fingerprint)
+        string? previousFingerprint = activeFingerprint ?? installed?.Fingerprint;
+        bool useBundled = previousFingerprint is null || previousFingerprint == bundled.Fingerprint || previous is null;
+        if (!useBundled && previous is not null)
         {
-            await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
+            if (!ExtensionVersion.TryParse(previous.Version, out ExtensionVersion? previousVersion))
+            {
+                if (previous.HostApi != ExtensionHostApi.Legacy)
+                {
+                    throw new InvalidOperationException("The installed extension has an invalid SemVer version.");
+                }
+
+                useBundled = true;
+            }
+            else
+            {
+                int precedence = ExtensionVersion.Parse(incoming.Version).CompareTo(previousVersion);
+                if (precedence == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Extension '{bundled.Id}' has conflicting package contents at version {incoming.Version}.");
+                }
+
+                useBundled = precedence > 0;
+            }
         }
 
-        // Persist the editable source before checking it so a failing built-in still appears in the
-        // extension editor with its diagnostics instead of disappearing from the list. Binaries must be
-        // persisted too: the package fingerprint covers them, and a sources-only working copy would hash
-        // differently from the bundled package and lose its trusted built-in schema.
-        if (!hadWorkingCopy && !preserveDraft)
+        if (!useBundled)
         {
-            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
-        }
+            if (activeDescriptor is null)
+            {
+                ExtensionCheckResult retained = await Manager.ActivateAsync(bundled.Id,
+                        installed ?? throw new InvalidOperationException("The newer installed package is unavailable."),
+                        token)
+                    .ConfigureAwait(false);
+                ThrowIfActivationFailed(bundled.Id, retained);
+            }
 
-        ExtensionCheckResult result = await Manager.ActivateAsync(candidate.Id, candidate, cancellationToken)
-            .ConfigureAwait(false);
-        if (result.Diagnostics.Any(diagnostic => diagnostic.Code == "EXT0014"))
-        {
-            // An old package format needs an explicit source migration, not a silent switch to
-            // bundled code that could discard the user's extension implementation choices.
-            return result;
-        }
-
-        if (!result.Succeeded && candidate.Fingerprint != builtin.Fingerprint)
-        {
-            await BuiltInExtensionArtifacts.InstallAsync(_root, builtin, cancellationToken).ConfigureAwait(false);
-            result = await Manager.ActivateAsync(builtin.Id, builtin, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (!result.Succeeded)
-        {
-            Trace.WriteLine(
-                $"Built-in extension '{builtin.Id}' failed to activate: {string.Join(" | ", result.Diagnostics.Select(diagnostic => $"{diagnostic.Code} {diagnostic.Location.FileName}:{diagnostic.Location.Line}: {diagnostic.Message}"))}");
-            return result;
-        }
-
-        if (candidate.Fingerprint == builtin.Fingerprint && !preserveDraft)
-        {
-            await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    ///     Replaces a restored generation that is byte-identical to a previously shipped built-in
-    ///     package with the current bundled package. User-edited working copies produce
-    ///     fingerprints outside the legacy manifest and keep running untouched.
-    /// </summary>
-    private async Task UpgradeRestoredLegacyBuiltInAsync(ExtensionPackageSnapshot builtin,
-        CancellationToken cancellationToken)
-    {
-        ExtensionGenerationInfo? restored = Manager.List().FirstOrDefault(item =>
-            string.Equals(item.Id, builtin.Id, StringComparison.Ordinal) && item.IsActive);
-        if (restored is null || restored.Fingerprint == builtin.Fingerprint ||
-            !LegacyBuiltInExtensionFingerprints.IsKnownLegacy(builtin.Id, restored.Fingerprint))
-        {
             return;
         }
 
-        Trace.WriteLine(
-            $"Upgrading built-in extension '{builtin.Id}' from legacy fingerprint {restored.Fingerprint} to bundled {builtin.Fingerprint}.");
-        await Manager.SavePackageAsync(builtin, cancellationToken).ConfigureAwait(false);
-        await Manager.ActivateAsync(builtin.Id, builtin, cancellationToken).ConfigureAwait(false);
+        await BuiltInExtensionArtifacts.InstallAsync(_root, bundled, token).ConfigureAwait(false);
+        // Preserve all previous working files as an immutable, non-active snapshot, never as LKG.
+        if (working is not null && working.Fingerprint != bundled.Fingerprint)
+        {
+            await persistent.PersistSnapshotAsync(working, token).ConfigureAwait(false);
+        }
+
+        if (activeFingerprint != bundled.Fingerprint)
+        {
+            ExtensionCheckResult activated =
+                await Manager.ActivateAsync(bundled.Id, bundled, token).ConfigureAwait(false);
+            ThrowIfActivationFailed(bundled.Id, activated);
+        }
+
+        await Manager.SavePackageAsync(bundled, token).ConfigureAwait(false);
+    }
+
+    private static void ThrowIfActivationFailed(string id, ExtensionCheckResult result)
+    {
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException($"Extension '{id}' failed to activate: " +
+                                                string.Join("; ",
+                                                    result.Diagnostics.Select(item => $"{item.Code}: {item.Message}")));
+        }
     }
 
     private Task InstallMatchingBundledArtifactAsync(ExtensionPackageSnapshot package,
@@ -936,6 +967,11 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
 
                 foreach (string id in pending)
                 {
+                    if (IsBuiltIn(id))
+                    {
+                        continue;
+                    }
+
                     try
                     {
                         ExtensionPackageSnapshot before = await Manager.ReadSourceAsync(id, cancellationToken)

@@ -29,7 +29,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#r "lib/Patchouli.Ocr.Engines.dll"
 
 open System.Threading
 open System.Threading.Tasks
@@ -49,36 +48,12 @@ type Settings = {
         Description = "Model name on the resolved OCR provider; empty uses the provider's configured OCR model.");
       Default("")>]
     ModelId: string
-    [<Field("Layout model file", Key = "model-path", Kind = ConfigValueKind.FilePath,
-        Description = "Local ONNX layout weights; download in Settings > Local Files."); Default("");
-      // The layout-model choice selects which declared file is the weights; both are required
-      // only when local layout detection is enabled and the run actually feeds full-page inputs
-      // (an explicit region crop bypasses detection entirely).
-      ManagedFile("inference.onnx",
-          "https://huggingface.co/PaddlePaddle/PP-DocLayoutV3_onnx/resolve/46bbdf188bb0a772c08aed74882ce7e51a8f1ea6/inference.onnx",
-          ExpectedBytes = 130502049L,
-          Sha256 = "45bf71750b00739a41fc209f132eb104a4d6b5bb29483c9078164d8b87cf28ba",
-          Version = "46bbdf188bb0a772c08aed74882ce7e51a8f1ea6",
-          DirectoryKind = "pp-doclayout-v3-models",
-          WhenKey = "layout-model", WhenValue = "pp-doclayout-v3",
-          RequiredWhenKey = "use-local-layout", RequiredWhenValue = "true",
-          RequiredScopes = "document,pages");
-      ManagedFile("doclayout_yolo_docstructbench_imgsz1024.onnx",
-          "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/ee7c3d744e5c47c58e267044ac825f95abe69653/doclayout_yolo_docstructbench_imgsz1024.onnx",
-          ExpectedBytes = 75324598L,
-          Sha256 = "fece9af02f618b603ff7921ccec6861d13e7e1f9830e091dfb7e8ad9311e5b21",
-          Version = "ee7c3d744e5c47c58e267044ac825f95abe69653",
-          DirectoryKind = "doclayout-yolo-models",
-          WhenKey = "layout-model", WhenValue = "doclayout-yolo",
-          RequiredWhenKey = "use-local-layout", RequiredWhenValue = "true",
-          RequiredScopes = "document,pages")>]
-    ModelPath: string
     [<Field("Local layout detection", Key = "use-local-layout",
         Description = "Detect layout regions locally, then recognize each region with the multimodal model.");
       Default(true)>]
     UseLocalLayout: bool
-    [<Field("Layout model", Key = "layout-model", Kind = ConfigValueKind.Choice,
-        Choices = [| "pp-doclayout-v3"; "doclayout-yolo" |]); Default("pp-doclayout-v3")>]
+    [<Field("Layout model", Key = "layout-model",
+        Description = "版面识别模型扩展 ID"); Default("layout.pp-doclayout-v3")>]
     LayoutModel: string
     [<Field("Region concurrency", Key = "concurrency",
         Description = "Maximum parallel region recognition requests."); Default(4); Range(1, 16)>]
@@ -120,7 +95,7 @@ let private run (_settings: Settings) (job: IOcrJob) (resources: IExtensionResou
     } :> Task
 
 /// <summary>Multimodal hosted-vision OCR extension.</summary>
-/// <patchouli-extension id="ocr.multimodal" kind="ocr" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="ocr.multimodal" kind="ocr" version="1.2.0" host-api="patchouli.extensions/4">
 ///   <name>Multimodal</name>
 /// </patchouli-extension>
 let extension : IOcrExtension =

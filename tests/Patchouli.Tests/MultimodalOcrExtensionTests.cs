@@ -297,9 +297,9 @@ public sealed class MultimodalOcrExtensionTests
     }
 
     [Fact]
-    public async Task Layout_mode_without_weights_fails_instead_of_falling_back_to_direct()
+    public async Task Layout_mode_without_shared_capability_fails_instead_of_falling_back_to_direct()
     {
-        // Real lazy detector (no injected fake): the missing file must fail explicitly.
+        // No shared model capability: report the missing capability rather than invoking direct OCR.
         RecordingLlm llm = new("""{"boxes":[]}""");
         OcrJobInput input = new(new OcrInputId("page-0"), FullPage, "image/png");
         MultimodalOcrSession session = new(
@@ -308,7 +308,7 @@ public sealed class MultimodalOcrExtensionTests
         Func<Task> run = () => session.RecognizeAsync(Page(input), input,
             new OcrInputImage(input.Id, input.ContentType, Png()), new VisionResources(llm),
             CancellationToken.None);
-        await run.Should().ThrowAsync<InvalidOperationException>();
+        await run.Should().ThrowAsync<NotSupportedException>();
         llm.Requests.Should().BeEmpty("a missing layout model never silently switches to direct mode");
     }
 

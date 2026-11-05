@@ -72,7 +72,7 @@ module ExtensionArtifact =
         let metadataValid =
             try
                 let metadata = ExtensionEntryMetadata.Parse(package)
-                metadata.HostApi = ExtensionHostApi.Current
+                ExtensionHostApi.IsSupported(metadata.HostApi)
             with _ -> false
         if not metadataValid then None
         else

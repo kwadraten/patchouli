@@ -100,14 +100,14 @@ public static class ExtensionConfigurationDescriptionService
         BuiltInSchemaIndex? schemaIndex = BuiltInSchemas.Value;
         BuiltInSchemaPackage? bundledSchema = schemaIndex?.Packages.FirstOrDefault(item =>
             item.Id == id && item.Fingerprint == package.Fingerprint && item.SourceHash == package.Fingerprint);
-        if (metadata.HostApi == ExtensionHostApi.Current && schemaIndex is not null &&
+        if (ExtensionHostApi.IsSupported(metadata.HostApi) && schemaIndex is not null &&
             bundledSchema?.Fields is not null && bundledSchema.Diagnostics is not null)
         {
             return new ExtensionConfigurationDescription(id, metadata.Kind, metadata.Name, metadata.Version,
                 metadata.Summary, package.Fingerprint, bundledSchema.Fingerprint, bundledSchema.Fields,
                 bundledSchema.Diagnostics, "built-in schema")
             {
-                SchemaHostApi = ExtensionHostApi.Current,
+                SchemaHostApi = metadata.HostApi,
                 ToolchainIdentity = schemaIndex.ToolchainIdentity
             };
         }

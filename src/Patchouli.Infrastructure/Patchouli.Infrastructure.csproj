@@ -249,4 +249,8 @@
   <Target Name="BuildMacOSFileSystemHelper" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(MacOSFsHelperArchitecture)' != ''">
     <Exec Command="clang -dynamiclib -framework Foundation -arch $(MacOSFsHelperArchitecture) -install_name '@rpath/libpatchouli-macos-fs.dylib' -o '$(MacOSFsHelperDylib)' '$(MacOSFsHelperSource)'" />
   </Target>
+  <ItemGroup>
+    <EmbeddedResource Include="Ocr/Extensions/layout.pp-doclayout-v3/main.fsx" LogicalName="Patchouli.Infrastructure.Ocr.Extensions.layout.pp-doclayout-v3.main.fsx" />
+    <EmbeddedResource Include="Ocr/Extensions/layout.doclayout-yolo/main.fsx" LogicalName="Patchouli.Infrastructure.Ocr.Extensions.layout.doclayout-yolo.main.fsx" />
+  </ItemGroup>
 </Project>

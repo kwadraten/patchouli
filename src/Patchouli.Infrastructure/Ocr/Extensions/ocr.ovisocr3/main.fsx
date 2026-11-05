@@ -1,4 +1,3 @@
-#r "lib/Patchouli.Ocr.Engines.dll"
 
 open System.Threading
 open System.Threading.Tasks
@@ -45,7 +44,7 @@ let private run (_settings: Settings) (job: IOcrJob) (_resources: IExtensionReso
     } :> Task
 
 /// <summary>Offline OvisOCR3 OCR through the local INT4 ONNX model.</summary>
-/// <patchouli-extension id="ocr.ovisocr3" kind="ocr" version="1.0.0" host-api="patchouli.extensions/3">
+/// <patchouli-extension id="ocr.ovisocr3" kind="ocr" version="1.1.0" host-api="patchouli.extensions/4">
 ///   <name>OvisOCR3 (ONNX)</name>
 /// </patchouli-extension>
 let extension : IOcrExtension =

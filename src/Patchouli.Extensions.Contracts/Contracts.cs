@@ -65,7 +65,13 @@ public sealed record ConfigFieldDescriptor(
 
 public static class ExtensionHostApi
 {
-    public const string Current = "patchouli.extensions/3";
+    public const string Current = "patchouli.extensions/4";
+    public const string Legacy = "patchouli.extensions/3";
+
+    public static bool IsSupported(string? hostApi)
+    {
+        return hostApi is Current or Legacy;
+    }
 }
 
 public enum ExtensionKind
@@ -74,7 +80,8 @@ public enum ExtensionKind
     Metadata,
     Ocr,
     Retrieval,
-    PdfTextLayer
+    PdfTextLayer,
+    LayoutRecognition
 }
 
 public sealed record ExtensionDescriptor(
@@ -84,7 +91,8 @@ public sealed record ExtensionDescriptor(
     string Description,
     ExtensionKind Kind = ExtensionKind.Translation)
 {
-    public string HostApi { get; init; } = ExtensionHostApi.Current;
+    // Preserve the default of existing definitions; metadata projection explicitly supplies /4.
+    public string HostApi { get; init; } = ExtensionHostApi.Legacy;
 }
 
 /// <summary>An immutable, content-addressed package view. Source keys are normalized relative paths.</summary>
@@ -596,6 +604,9 @@ public interface ILlmCapability
 
 public interface IExtensionResources
 {
+    ILayoutRecognitionCapability LayoutRecognition =>
+        throw new NotSupportedException("Layout recognition is unavailable.");
+
     ILlmCapability Llm { get; }
     HttpClient Http { get; }
     string ConfigurationFingerprint => string.Empty;

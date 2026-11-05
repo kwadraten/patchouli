@@ -26,9 +26,9 @@ public sealed class OcrPresetDefaultsTests
         initial.ModelId.Should().Be("vision-first");
         initial.EngineId.Should().Be(OcrEngineIds.MultimodalLlm);
         initial.ApplyOnSuccess.Should().BeTrue();
-        // The captured composition resolves the layout model's managed-file default, so the
-        // version pins that concrete path rather than an empty override.
-        initial.ModelPath.Should().EndWith(Path.Combine("pp-doclayout-v3", "inference.onnx"));
+        // Layout weights belong to the independent layout-model catalog; the multimodal preset
+        // pins the vision model and parameters without a local model path.
+        initial.ModelPath.Should().BeNull();
 
         (await orchestrator.EnsurePresetForEngineAsync(OcrEngineIds.MultimodalLlm)).Value.Should().Be(first.Value);
         (await services.OcrPresets.GetCurrentVersionAsync(first.Value)).Value.PresetVersionId

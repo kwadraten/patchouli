@@ -14,6 +14,7 @@
     <Compile Include="..\..\src\Patchouli.Infrastructure\Translation\BuiltInTranslationExtensions.cs" Link="BuiltInTranslationExtensions.cs" />
     <Compile Include="..\..\src\Patchouli.Infrastructure\Bibliography\MetadataLookup\BuiltInMetadataExtensions.cs" Link="BuiltInMetadataExtensions.cs" />
     <Compile Include="..\..\src\Patchouli.Infrastructure\Ocr\BuiltInOcrExtensions.cs" Link="BuiltInOcrExtensions.cs" />
+    <Compile Include="..\..\src\Patchouli.Infrastructure\Ocr\BuiltInLayoutRecognitionExtensions.cs" Link="BuiltInLayoutRecognitionExtensions.cs" />
     <Compile Include="..\..\src\Patchouli.Infrastructure\Ocr\BuiltInPdfTextLayerExtensions.cs" Link="BuiltInPdfTextLayerExtensions.cs" />
   </ItemGroup>
   <ItemGroup>

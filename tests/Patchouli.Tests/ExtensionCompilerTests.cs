@@ -8,6 +8,46 @@ namespace Patchouli.Tests;
 public sealed class ExtensionCompilerTests
 {
     [Fact]
+    public async Task Non_ocr_extension_uses_host_libraries_without_binary_or_nuget_dependencies()
+    {
+        string runtimeDirectory = Path.Combine(Path.GetTempPath(), $"patchouli-shared-libraries-{Guid.NewGuid():N}");
+        ExtensionPackageSnapshot package = Package("""
+                                                   open Patchouli.Extensions
+                                                   open System.Runtime.Loader
+                                                   let verifyHostLibrary (assembly: System.Reflection.Assembly) =
+                                                       if AssemblyLoadContext.GetLoadContext(assembly) <> AssemblyLoadContext.Default then
+                                                           failwith "Shared library loaded outside host context"
+                                                   let checkLibraries =
+                                                       verifyHostLibrary typeof<Onnx.InferenceSession>.Assembly
+                                                       verifyHostLibrary typeof<Skia.Bitmap>.Assembly
+                                                       verifyHostLibrary typeof<Patchouli.Ocr.Engines.NativeOcrSession>.Assembly
+                                                       use options = new Onnx.SessionOptions()
+                                                       use bitmap = Skia.createBitmap 3 2
+                                                       use canvas = new Skia.Canvas(bitmap)
+                                                       canvas.Clear(SkiaSharp.SKColors.Red)
+                                                       if bitmap.GetPixel(0, 0) <> SkiaSharp.SKColors.Red then
+                                                           failwith "Host Skia native library did not render"
+                                                   """);
+        try
+        {
+            await using IExtensionManager manager = new ExtensionManager(runtimeDirectory,
+                TestExtensionResources.Unavailable(), new FileExtensionStore(runtimeDirectory),
+                new CompiledExtensionGenerationLoader(runtimeDirectory));
+            ExtensionCheckResult result = await manager.ActivateAsync(package.Id, package, CancellationToken.None);
+            result.Succeeded.Should().BeTrue(FormatDiagnostics(result));
+            await using IExtensionLease lease = (await manager.AcquireAsync(package.Id, CancellationToken.None))!;
+            lease.Translation.Should().NotBeNull();
+            Directory.EnumerateFiles(Path.Combine(runtimeDirectory, ".compiled"), "*", SearchOption.AllDirectories)
+                .Should().NotContain(path => Path.GetFileName(path) == "onnxruntime.dll" ||
+                                             Path.GetFileName(path) == "libSkiaSharp.dll");
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(runtimeDirectory);
+        }
+    }
+
+    [Fact]
     public async Task Static_check_does_not_execute_a_malicious_initializer()
     {
         string marker = Path.Combine(Path.GetTempPath(), $"patchouli-fsx-check-{Guid.NewGuid():N}.txt");
