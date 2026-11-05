@@ -224,9 +224,9 @@ public static class PageXmlCodec
         XElement element = new("box",
             new XAttribute("id", box.BoxId),
             new XAttribute("type", box.BoxType),
-            new XAttribute("sub_type", box.SubType ?? string.Empty),
+            new XAttribute("sub_type", StorageText.NormalizeInvalidCodePoints(box.SubType) ?? string.Empty),
             new XAttribute("heading_level", box.HeadingLevel?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
-            new XAttribute("code_language", box.CodeLanguage ?? string.Empty),
+            new XAttribute("code_language", StorageText.NormalizeInvalidCodePoints(box.CodeLanguage) ?? string.Empty),
             new XAttribute("suppressed", box.Suppressed ? "true" : "false"),
             new XAttribute("readonly", "false"),
             new XAttribute("translated", hasTranslation ? "true" : "false"));
@@ -247,7 +247,8 @@ public static class PageXmlCodec
 
         if (box.ContinuationState is not null)
         {
-            element.Add(new XAttribute("continuation_state", box.ContinuationState));
+            element.Add(new XAttribute("continuation_state",
+                StorageText.NormalizeInvalidCodePoints(box.ContinuationState)!));
         }
 
         string? format = PayloadFormat(boxPayload);
@@ -260,7 +261,7 @@ public static class PageXmlCodec
             }
             else
             {
-                payloadElement.Add(text ?? string.Empty);
+                payloadElement.Add(StorageText.NormalizeInvalidCodePoints(text) ?? string.Empty);
             }
 
             element.Add(payloadElement);
@@ -273,7 +274,9 @@ public static class PageXmlCodec
 
         foreach (DocumentAnnotation annotation in box.Payload?.Annotations ?? [])
         {
-            element.Add(new XElement("annotation", new XAttribute("type", annotation.Type), annotation.Markdown));
+            element.Add(new XElement("annotation",
+                new XAttribute("type", StorageText.NormalizeInvalidCodePoints(annotation.Type)!),
+                StorageText.NormalizeInvalidCodePoints(annotation.Markdown) ?? string.Empty));
         }
 
         foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))

@@ -10,6 +10,62 @@ namespace Patchouli.Tests;
 public sealed class PageXmlCodecTests
 {
     [Fact]
+    public void Payload_storage_normalizes_invalid_characters_before_json_escaping()
+    {
+        TextBoxPayload source = new("Before\uFFFEafter")
+        {
+            Annotations = [new DocumentAnnotation("note", "Note\uFFFEtext")]
+        };
+
+        string json = DocumentBoxPayloadSerializer.Serialize(source)!;
+        TextBoxPayload restored = Assert.IsType<TextBoxPayload>(
+            DocumentBoxPayloadSerializer.Deserialize(DocumentBoxType.Text, null, json));
+
+        Assert.DoesNotContain("\\uFFFE", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Before\uFFFDafter", restored.Markdown);
+        Assert.Equal("Note\uFFFDtext", Assert.Single(restored.Annotations!).Markdown);
+        Assert.Equal("Before\uFFFEafter", source.Markdown);
+    }
+
+    [Fact]
+    public void Html_table_payload_normalizes_invalid_characters_on_write_and_legacy_read()
+    {
+        TableBoxPayload table = new("", "<table><tr><td>Cell\uFFFEtext</td></tr></table>")
+        {
+            ContentFormat = TableContentFormat.Html,
+            ContentFormatVersion = TableContentFormat.AuthoritativeHtmlVersion
+        };
+
+        string json = DocumentBoxPayloadSerializer.Serialize(table)!;
+        TableBoxPayload restored = Assert.IsType<TableBoxPayload>(
+            DocumentBoxPayloadSerializer.Deserialize(DocumentBoxType.Table, null, json));
+        TableBoxPayload legacy = Assert.IsType<TableBoxPayload>(
+            DocumentBoxPayloadSerializer.Deserialize(DocumentBoxType.Table, null,
+                """{"markdown":"","html":"<table><tr><td>Cell\uFFFEtext</td></tr></table>","contentFormat":"html","contentFormatVersion":1}"""));
+
+        Assert.DoesNotContain("\\uFFFE", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("<table><tr><td>Cell\uFFFDtext</td></tr></table>", restored.Html);
+        Assert.Equal(restored.Html, legacy.Html);
+    }
+
+    [Fact]
+    public void Legacy_payload_and_translation_with_invalid_characters_render_as_valid_xml()
+    {
+        TextBoxPayload legacy = Assert.IsType<TextBoxPayload>(
+            DocumentBoxPayloadSerializer.Deserialize(DocumentBoxType.Text, null,
+                """{"markdown":"Before\uFFFEafter","annotations":[{"type":"note","markdown":"Note\uFFFEtext"}]}"""));
+        Assert.Equal("Before\uFFFDafter", legacy.Markdown);
+        DocumentBox box = Box(DocumentBoxId.New(), null, DocumentBoxType.Text, legacy);
+
+        string xml = PageXmlCodec.EncodePage(DocumentInstanceId.New(), 1, DocumentTreeRevisionId.New(), [box],
+            new Dictionary<DocumentBoxId, string> { [box.BoxId] = "Translated\uFFFEtext" });
+        XElement element = Assert.Single(XDocument.Parse(xml).Descendants("box"));
+
+        Assert.Equal("Translated\uFFFDtext", element.Element("payload")!.Value);
+        Assert.Equal("Note\uFFFDtext", element.Element("annotation")!.Value);
+    }
+
+    [Fact]
     public void Encode_and_decode_preserves_box_identity_and_suppressed_footnote_translation()
     {
         DocumentInstanceId documentId = DocumentInstanceId.New();

@@ -25,6 +25,22 @@ namespace Patchouli.Tests;
 public sealed class ContinuationSourcePageResolutionTests
 {
     [Fact]
+    public async Task Fetch_page_xml_reads_legacy_escaped_invalid_character()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        DocumentBoxId boxId = DocumentBoxId.New();
+        await fixture.CommitLegacyPayloadAsync(fixture.Pages[0], Seed(boxId, 0, "original"),
+            """{"markdown":"Before\uFFFEafter"}""");
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await fixture.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.PageUri(fixture.DocumentId, 1)], null, null));
+
+        fetched.IsSuccess.Should().BeTrue(fetched.Error?.Detail);
+        XElement box = XDocument.Parse(fetched.Envelope!.Entries.Single().Content!).Descendants("box").Single();
+        box.Element("payload")!.Value.Should().Be("Before\uFFFDafter");
+    }
+
+    [Fact]
     public async Task Translation_xml_keeps_local_fallback_and_translated_payloads_with_cross_page_identity()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
@@ -325,6 +341,26 @@ public sealed class ContinuationSourcePageResolutionTests
                     DocumentId = DocumentId.ToString(),
                     PageId = pageId.ToString()
                 });
+        }
+
+        public async Task CommitLegacyPayloadAsync(PageId pageId, DocumentBoxSeed seed, string json)
+        {
+            Result<DocumentTreeRevision> working = await Trees.BeginWorkingRevisionAsync(
+                DocumentId, pageId, [seed], DocumentTreeRevisionSource.Import);
+            working.IsSuccess.Should().BeTrue(working.ErrorMessage);
+            await using SqliteConnection connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "update document_boxes set payload_json = @Json where tree_revision_id = @RevisionId and box_id = @BoxId;",
+                new
+                {
+                    Json = json,
+                    RevisionId = working.Value.TreeRevisionId.ToString(),
+                    BoxId = seed.BoxId!.Value.ToString()
+                });
+            Result<DocumentTreeRevision> committed = await Trees.CommitWorkingRevisionAsync(
+                working.Value.TreeRevisionId);
+            committed.IsSuccess.Should().BeTrue(committed.ErrorMessage);
         }
 
         public async Task TranslateBoxAsync(PageId pageId, int pageIndex, DocumentBoxId boxId, string translation)

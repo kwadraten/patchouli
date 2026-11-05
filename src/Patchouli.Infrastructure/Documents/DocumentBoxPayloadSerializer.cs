@@ -9,7 +9,8 @@ internal static class DocumentBoxPayloadSerializer
 
     public static string? Serialize(DocumentBoxPayload? payload)
     {
-        return StorageText.NormalizeInvalidCodePoints(payload switch
+        DocumentBoxPayload? normalized = Normalize(payload);
+        return normalized switch
         {
             null => null,
             TextBoxPayload value => JsonSerializer.Serialize(value, Options),
@@ -19,8 +20,8 @@ internal static class DocumentBoxPayloadSerializer
             AlgorithmBoxPayload value => JsonSerializer.Serialize(value, Options),
             CodeBoxPayload value => JsonSerializer.Serialize(value, Options),
             MediaBoxPayload value => JsonSerializer.Serialize(value, Options),
-            _ => throw new InvalidOperationException($"Unsupported document box payload: {payload.GetType().Name}")
-        });
+            _ => throw new InvalidOperationException($"Unsupported document box payload: {normalized.GetType().Name}")
+        };
     }
 
     public static DocumentBoxPayload? Deserialize(string boxType, string? subType, string? json)
@@ -30,7 +31,7 @@ internal static class DocumentBoxPayloadSerializer
             return null;
         }
 
-        return boxType switch
+        return Normalize(boxType switch
         {
             DocumentBoxType.Equation => JsonSerializer.Deserialize<EquationBoxPayload>(json, Options),
             DocumentBoxType.List or DocumentBoxType.Index => JsonSerializer.Deserialize<ListBoxPayload>(json, Options),
@@ -43,6 +44,47 @@ internal static class DocumentBoxPayloadSerializer
                 JsonSerializer.Deserialize<MediaBoxPayload>(json, Options),
             _ when DocumentBoxType.IsKnown(boxType) => JsonSerializer.Deserialize<TextBoxPayload>(json, Options),
             _ => throw new InvalidOperationException($"Unsupported document box type: {boxType}")
+        });
+    }
+
+    private static DocumentBoxPayload? Normalize(DocumentBoxPayload? payload)
+    {
+        if (payload is null)
+        {
+            return null;
+        }
+
+        DocumentBoxPayload normalized = payload switch
+        {
+            TextBoxPayload text => text with { Markdown = StorageText.NormalizeInvalidCodePoints(text.Markdown)! },
+            EquationBoxPayload equation => equation with
+            {
+                Latex = StorageText.NormalizeInvalidCodePoints(equation.Latex)!
+            },
+            ListBoxPayload list => list with { Markdown = StorageText.NormalizeInvalidCodePoints(list.Markdown)! },
+            TableBoxPayload table => table with
+            {
+                Markdown = StorageText.NormalizeInvalidCodePoints(table.Markdown)!,
+                Html = StorageText.NormalizeInvalidCodePoints(table.Html),
+                ContentFormat = StorageText.NormalizeInvalidCodePoints(table.ContentFormat)!
+            },
+            AlgorithmBoxPayload algorithm => algorithm with
+            {
+                Markdown = StorageText.NormalizeInvalidCodePoints(algorithm.Markdown)!
+            },
+            CodeBoxPayload code => code with { Code = StorageText.NormalizeInvalidCodePoints(code.Code)! },
+            MediaBoxPayload media => media with
+            {
+                AssetId = StorageText.NormalizeInvalidCodePoints(media.AssetId),
+                Description = StorageText.NormalizeInvalidCodePoints(media.Description)
+            },
+            _ => throw new InvalidOperationException($"Unsupported document box payload: {payload.GetType().Name}")
+        };
+        return normalized with
+        {
+            Annotations = payload.Annotations?.Select(annotation => new DocumentAnnotation(
+                StorageText.NormalizeInvalidCodePoints(annotation.Type)!,
+                StorageText.NormalizeInvalidCodePoints(annotation.Markdown)!)).ToArray()
         };
     }
 }
