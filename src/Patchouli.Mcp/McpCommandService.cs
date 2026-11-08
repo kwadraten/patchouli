@@ -33,7 +33,6 @@ public sealed partial class McpCommandService
     private readonly bool _putEnabled;
     private readonly bool _sendEnabled;
     private readonly bool _addEnabled;
-    private readonly bool _viewEnabled;
     private readonly IFileImportService? _fileImport;
     private readonly IPageImageViewService? _pageView;
     private readonly IMcpOcrCommandApi? _ocrCommands;
@@ -49,7 +48,7 @@ public sealed partial class McpCommandService
         IMcpOcrRunsApi? ocrRuns = null, bool putEnabled = true, bool sendEnabled = true,
         Func<CancellationToken, Task<McpServerSettings>>? permissionSettings = null,
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
-        bool addEnabled = true, bool viewEnabled = true,
+        bool addEnabled = true,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
         IMcpMetadataRunsApi? metadataRuns = null,
         IMcpImplementationCatalogApi? implementationCatalog = null,
@@ -66,7 +65,6 @@ public sealed partial class McpCommandService
         _putEnabled = putEnabled;
         _sendEnabled = sendEnabled;
         _addEnabled = addEnabled;
-        _viewEnabled = viewEnabled;
         _fileImport = fileImport;
         _pageView = pageView;
         _ocrCommands = ocrCommands;
@@ -145,17 +143,6 @@ public sealed partial class McpCommandService
         CancellationToken cancellationToken = default)
     {
         return AddCoreAsync(request, cancellationToken);
-    }
-
-    /// <summary>
-    /// Issue #11: reads one source image for model text-image collation. The returned
-    /// <see cref="McpViewCommandResult"/> carries the PNG bytes alongside the text
-    /// metadata envelope so the transport can emit the native MCP image content block.
-    /// </summary>
-    public Task<McpViewCommandResult> ViewAsync(McpViewRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        return ViewCoreAsync(request, cancellationToken);
     }
 
     private async Task<McpCommandResult<McpAddMeta, McpAddResult>> AddCoreAsync(McpAddRequest request,
@@ -253,223 +240,6 @@ public sealed partial class McpCommandService
             FileImportErrorCodes.RecoveryFailed => McpErrorCode.Internal,
             FileImportErrorCodes.StyleConflict => McpErrorCode.RevisionConflict,
             FileImportErrorCodes.StyleInvalid => McpErrorCode.InvalidContent,
-            _ => McpErrorCode.Internal
-        };
-    }
-
-    private async Task<McpViewCommandResult> ViewCoreAsync(McpViewRequest request,
-        CancellationToken cancellationToken)
-    {
-        McpViewCommandResult Fail(McpErrorCode code, string detail)
-        {
-            return new McpViewCommandResult(
-                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(code, detail), null);
-        }
-
-        if (string.IsNullOrWhiteSpace(request.Uri))
-        {
-            return Fail(McpErrorCode.InvalidArgument, "uri is required.");
-        }
-
-        if (!_viewEnabled)
-        {
-            return Fail(McpErrorCode.PermissionDenied, "view is disabled by the host's MCP tool switches.");
-        }
-
-        Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Uri);
-        if (parsed.IsFailure)
-        {
-            return Fail(McpErrorCode.InvalidArgument, parsed.ErrorMessage ?? "Invalid URI.");
-        }
-
-        McpUriParseResult target = parsed.Value;
-        if (IsPluginKind(target.Kind))
-        {
-            return await ViewPluginAsync(request, target, cancellationToken);
-        }
-
-        if (_pageView is null)
-        {
-            return Fail(McpErrorCode.Unavailable, "The host does not expose source image reading.");
-        }
-
-        bool isTranslation = target.Kind == McpUriKind.TranslationPage;
-        if (target.Kind is McpUriKind.Document or McpUriKind.TranslationDocument)
-        {
-            return Fail(McpErrorCode.InvalidArgument,
-                "view requires a page URI; a document catalog needs a page specification.");
-        }
-
-        if (target.Kind is not (McpUriKind.Page or McpUriKind.Evidence or McpUriKind.TranslationPage) ||
-            target.DocumentId is null || target.PageIndex is null)
-        {
-            return Fail(McpErrorCode.InvalidArgument,
-                "view supports page, box/evidence and translation page/box URIs.");
-        }
-
-        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
-        if (!Allowed(permissions, "view", target.CanonicalUri))
-        {
-            return Fail(McpErrorCode.PermissionDenied, "view is disabled for this domain.");
-        }
-
-        if (isTranslation &&
-            !Allowed(permissions, "view", McpResourceUris.DocumentUri(target.DocumentId.Value)))
-        {
-            // Translation-source images also check the source text domain.
-            return Fail(McpErrorCode.PermissionDenied, "view is disabled for the source text domain.");
-        }
-
-        PageImageViewContext context = request.Context switch
-        {
-            null or "page" => PageImageViewContext.Page,
-            "region" => PageImageViewContext.Region,
-            _ => (PageImageViewContext)(-1)
-        };
-        if ((int)context < 0)
-        {
-            return Fail(McpErrorCode.InvalidArgument, "context must be \"page\" or \"region\".");
-        }
-
-        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
-        Result<PageImageViewResult> viewed = await _pageView.ViewAsync(
-            new PageImageViewRequest(
-                target.DocumentId.Value,
-                target.PageIndex.Value,
-                target.TreeRevisionId,
-                target.BoxId,
-                isTranslation,
-                context,
-                request.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge,
-                request.Boxes),
-            cancellationToken);
-        if (viewed.IsFailure)
-        {
-            return new McpViewCommandResult(
-                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(
-                    MapViewError(viewed.ErrorCode), viewed.ErrorMessage ?? "View failed."),
-                null);
-        }
-
-        PageImageViewResult image = viewed.Value;
-        McpViewImageMetadata metadata = new(
-            image.CanonicalUri,
-            image.ViewType,
-            image.MimeType,
-            image.Width,
-            image.Height,
-            [image.CropRange.X, image.CropRange.Y, image.CropRange.Width, image.CropRange.Height],
-            image.ImageIndex,
-            image.BoxNumbers?.Select(box => new McpViewBoxNumber(box.Index, box.BoxId.ToString()))
-                .ToArray());
-        McpEnvelope<McpViewMeta, McpViewImageMetadata> envelope =
-            McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
-        return new McpViewCommandResult(
-            McpCommandResult<McpViewMeta, McpViewImageMetadata>.Ok(envelope), image.PngBytes);
-    }
-
-    /// <summary>
-    /// Plugin web-view descriptor reads (<c>patchouli://plugin/{id}/views/{view-id}</c>).
-    /// The answer is static manifest data: no plugin process is started, no image is
-    /// rendered (interactive rendering is desktop-only), and the result is the text
-    /// envelope alone with <see cref="McpViewCommandResult.PngBytes"/> null.
-    /// </summary>
-    private async Task<McpViewCommandResult> ViewPluginAsync(McpViewRequest request,
-        McpUriParseResult target, CancellationToken cancellationToken)
-    {
-        McpViewCommandResult Fail(McpErrorCode code, string detail)
-        {
-            return new McpViewCommandResult(
-                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(code, detail), null);
-        }
-
-        if (_pluginApi is null)
-        {
-            return Fail(McpErrorCode.Unavailable, "Plugin mounts are unavailable on this host.");
-        }
-
-        if (target.Kind != McpUriKind.PluginResource ||
-            !IsPluginViewPath(target.PluginPath, out string? viewId))
-        {
-            return Fail(McpErrorCode.InvalidArgument,
-                "view on plugin URIs requires patchouli://plugin/{id}/views/{view-id}.");
-        }
-
-        string pluginId = target.PluginId!;
-        if (_pluginApi.FindMount(pluginId) is null)
-        {
-            return Fail(McpErrorCode.NotFound,
-                $"Plugin '{pluginId}' is not registered or is disabled.");
-        }
-
-        if (!_pluginApi.AllowsVerb(pluginId, "view"))
-        {
-            return Fail(McpErrorCode.PermissionDenied,
-                "view is not in this plugin's allowed_verbs registry grant.");
-        }
-
-        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
-        if (!Allowed(permissions, "view", target.CanonicalUri))
-        {
-            return Fail(McpErrorCode.PermissionDenied, "view is disabled for this domain.");
-        }
-
-        McpPluginViewInfo? view = _pluginApi.FindView(pluginId, viewId!);
-        if (view is null)
-        {
-            return Fail(McpErrorCode.NotFound,
-                $"'{target.PluginPath}' is not a declared view of plugin '{pluginId}'.");
-        }
-
-        if (request.Context is not null || request.MaxEdge is not null || request.Boxes)
-        {
-            return Fail(McpErrorCode.InvalidArgument,
-                "context, max_edge and boxes are not supported for plugin views.");
-        }
-
-        McpViewImageMetadata metadata = new(
-            target.CanonicalUri, "plugin-view", "text/html", 0, 0, [], 0, null,
-            view.ViewId, pluginId, view.Title, view.Placement, view.SourceUri);
-        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
-        McpEnvelope<McpViewMeta, McpViewImageMetadata> envelope =
-            McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
-        return new McpViewCommandResult(
-            McpCommandResult<McpViewMeta, McpViewImageMetadata>.Ok(envelope), null);
-    }
-
-    /// <summary>Whether a plugin-relative path addresses exactly one declared view resource.</summary>
-    private static bool IsPluginViewPath(string? path, out string? viewId)
-    {
-        viewId = null;
-        if (path is null || !path.StartsWith("views/", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        string id = path["views/".Length..];
-        if (id.Length == 0 || id.Contains('/', StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        viewId = id;
-        return true;
-    }
-
-    private static McpErrorCode MapViewError(string? errorCode)
-    {
-        return errorCode switch
-        {
-            AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
-            AppErrorCodes.NotFound => McpErrorCode.NotFound,
-            PageImageViewErrorCodes.TargetNotFound => McpErrorCode.NotFound,
-            PageImageViewErrorCodes.StaleRevision => McpErrorCode.NotFound,
-            PageImageViewErrorCodes.StaleCoordinates => McpErrorCode.InvalidArgument,
-            PageImageViewErrorCodes.SourceMissing => McpErrorCode.Unavailable,
-            PageImageViewErrorCodes.SourceChanged => McpErrorCode.RevisionConflict,
-            PageImageViewErrorCodes.RenderFailed => McpErrorCode.Internal,
-            PageImageViewErrorCodes.ImageTooLarge => McpErrorCode.InvalidArgument,
-            PageImageViewErrorCodes.PageSpecificationRequired => McpErrorCode.InvalidArgument,
             _ => McpErrorCode.Internal
         };
     }
@@ -674,6 +444,22 @@ public sealed partial class McpCommandService
                 "fetch requires at least one URI.");
         }
 
+        // An image read is a single-resource call: one images/ URI, no text batch, no
+        // range slice. Text batching stays as today; multi-image and mixed text/image
+        // mapping are deferred, so they fail explicitly instead of silently degrading.
+        bool hasImageUri = request.Uris.Any(IsImageUri);
+        if (hasImageUri && request.Uris.Count != 1)
+        {
+            return McpCommandResult<McpFetchMeta, McpFetchResult>.Fail(McpErrorCode.InvalidArgument,
+                "fetch with an images/ URI must contain only that single image URI.");
+        }
+
+        if (hasImageUri && request.Range is not null)
+        {
+            return McpCommandResult<McpFetchMeta, McpFetchResult>.Fail(McpErrorCode.InvalidArgument,
+                "range does not apply to image URIs.");
+        }
+
         int limitBytes = request.LimitBytes ?? DefaultLimitBytes;
         if (limitBytes <= 0)
         {
@@ -705,7 +491,7 @@ public sealed partial class McpCommandService
         }
 
         List<string> warnings = [];
-        if (request.LimitBytes is > MaxLimitBytes)
+        if (!hasImageUri && request.LimitBytes is > MaxLimitBytes)
         {
             warnings.Add(
                 $"LIMIT_BYTES_CLAMPED: limit_bytes was clamped to the server hard maximum of {MaxLimitBytes}.");
@@ -1133,6 +919,11 @@ public sealed partial class McpCommandService
             return await FetchXmlPageAsync(parsed.Value, range, limitBytes, state, cancellationToken);
         }
 
+        if (parsed.Value.Kind == McpUriKind.PageImage)
+        {
+            return await FetchImageAsync(parsed.Value, state, cancellationToken);
+        }
+
         if (parsed.Value.Kind is McpUriKind.Plugin or McpUriKind.PluginResource)
         {
             return await FetchPluginAsync(parsed.Value, range, limitBytes, state, cancellationToken);
@@ -1163,6 +954,99 @@ public sealed partial class McpCommandService
                 "Scopes cannot be fetched; use find to browse a scope."), limitBytes)
         };
         return fetched with { Uri = parsed.Value.CanonicalUri, ContentType = parsed.Value.ContentType };
+    }
+
+    /// <summary>
+    /// Reads one images/ page image through the existing PDF rendering service. The
+    /// image is rendered from the original PDF, never re-rendered from OCR text, and
+    /// never truncated: oversized results fail explicitly under the renderer's own
+    /// pixel/encoded-size limits. The entry carries the PNG bytes on a
+    /// <see cref="McpFetchResult.ImageBytes"/> side channel for the transport's native
+    /// image content block; the text envelope only carries the image metadata.
+    /// </summary>
+    private async Task<McpFetchResult> FetchImageAsync(McpUriParseResult target,
+        McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        DocumentInstanceId documentId = target.DocumentId!.Value;
+        int pageIndex = target.PageIndex!.Value;
+        if (_pageView is null)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.Unavailable, "The host does not expose source image reading."),
+                MaxImageBytes);
+        }
+
+        Result<PageImageViewResult> viewed = await _pageView.ViewAsync(
+            new PageImageViewRequest(
+                documentId,
+                pageIndex,
+                target.TreeRevisionId,
+                target.BoxId,
+                IsTranslation: false,
+                target.BoxId is null ? PageImageViewContext.Page : PageImageViewContext.Region,
+                target.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge,
+                target.OverlayBoxes),
+            cancellationToken);
+        if (viewed.IsFailure)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(MapImageError(viewed.ErrorCode), viewed.ErrorMessage ?? "Image read failed."),
+                MaxImageBytes);
+        }
+
+        PageImageViewResult image = viewed.Value;
+        // The canonical URI pins the revision actually used for this render, which may
+        // differ from the requested one when the request left it unspecified.
+        DocumentTreeRevisionId? usedRevision = Guid.TryParse(image.UsedRevision, out Guid revisionGuid)
+            ? new DocumentTreeRevisionId(revisionGuid)
+            : null;
+        string canonical = McpResourceUris.ImageUri(documentId, pageIndex, usedRevision, target.BoxId,
+            target.OverlayBoxes, target.MaxEdge);
+        Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(documentId, cancellationToken);
+        string? itemUri = owner.IsSuccess ? McpResourceUris.ItemUri(owner.Value) : null;
+        McpFetchImageMetadata metadata = new(
+            canonical,
+            image.ViewType,
+            image.MimeType,
+            image.Width,
+            image.Height,
+            [image.CropRange.X, image.CropRange.Y, image.CropRange.Width, image.CropRange.Height],
+            image.ImageIndex,
+            image.BoxNumbers?.Select(box => new McpImageBoxNumber(box.Index, box.BoxId.ToString())).ToArray());
+        return new McpFetchResult(canonical, "page_image", itemUri, null, true, false,
+            image.PngBytes.Length, MaxImageBytes, null, null, null, null, "image/png", Image: metadata,
+            ImageBytes: image.PngBytes);
+    }
+
+    /// <summary>
+    /// The image byte budget reported on image entries. It must match the renderer's
+    /// own encoded-size cap (PageImageViewService.MaxPngBytes, 8 MiB); images are
+    /// never fitted to the text <c>limit_bytes</c> budget.
+    /// </summary>
+    private const int MaxImageBytes = 8 * 1024 * 1024;
+
+    private static bool IsImageUri(string uri)
+    {
+        return McpResourceUris.Parse(uri) is { IsSuccess: true } parsed &&
+               parsed.Value.Kind == McpUriKind.PageImage;
+    }
+
+    private static McpErrorCode MapImageError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.TargetNotFound => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.StaleRevision => McpErrorCode.NotFound,
+            PageImageViewErrorCodes.StaleCoordinates => McpErrorCode.InvalidArgument,
+            PageImageViewErrorCodes.SourceMissing => McpErrorCode.Unavailable,
+            PageImageViewErrorCodes.SourceChanged => McpErrorCode.RevisionConflict,
+            PageImageViewErrorCodes.RenderFailed => McpErrorCode.Internal,
+            PageImageViewErrorCodes.ImageTooLarge => McpErrorCode.InvalidArgument,
+            PageImageViewErrorCodes.PageSpecificationRequired => McpErrorCode.InvalidArgument,
+            _ => McpErrorCode.Internal
+        };
     }
 
     private async Task<McpFetchResult> FetchXmlPageAsync(McpUriParseResult target, string? range,
@@ -1229,6 +1113,15 @@ public sealed partial class McpCommandService
         }
 
         string? itemUri = outline.Value.ItemId is null ? null : McpResourceUris.ItemUri(outline.Value.ItemId.Value);
+        // The image of this exact page revision, directly fetchable: the agent reads
+        // the text first, then the same revision's image for collation. A tree-less
+        // page (empty source revision) renders unpinned.
+        DocumentTreeRevisionId? imageRevision = target.TreeRevisionId ??
+            (Guid.TryParse(xml.Value.SourceRevision, out Guid sourceRevisionGuid)
+                ? new DocumentTreeRevisionId(sourceRevisionGuid)
+                : null);
+        string imageUri = McpResourceUris.ImageUri(target.DocumentId.Value, target.PageIndex!.Value,
+            imageRevision, target.BoxId);
         int selectedEnd = end;
         while (true)
         {
@@ -1264,6 +1157,7 @@ public sealed partial class McpCommandService
                     itemUri, content, limitBytes) with
                 {
                     ContentType = "application/xml", Translation = xml.Value.Translation,
+                    ImageUri = imageUri,
                     Complete = complete,
                     Truncated = selectedEnd < end,
                     Error = selectedEnd < end
@@ -1987,6 +1881,30 @@ public sealed partial class McpCommandService
                 return new FindPage(entries, continuation, page.Value.DomainTotal, page.Value.FilteredTotal);
             }
 
+            case McpUriKind.ImagesScope:
+            {
+                // The images scope mirrors texts: one directory per document, whose
+                // children are that document's page images.
+                Result<McpBrowseDocumentPage> page = await _read.BrowseDocumentsAsync(offset, limit, where,
+                    cancellationToken);
+                if (page.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(page.ErrorCode),
+                        page.ErrorMessage ?? page.ErrorCode ?? "Browse images failed.");
+                }
+
+                List<object> entries = [];
+                foreach (McpBrowseDocumentRow row in page.Value.Rows)
+                {
+                    entries.Add(BuildImagesDocumentEntry(row, longMode));
+                }
+
+                string? continuation = page.Value.HasMore
+                    ? EncodeCursor(scopeUri, null, false, where, offset + entries.Count, null)
+                    : null;
+                return new FindPage(entries, continuation, page.Value.DomainTotal, page.Value.FilteredTotal);
+            }
+
             case McpUriKind.StylesScope:
             {
                 Result<McpBrowseStylePage> page = await _read.BrowseStylesAsync(offset, limit, where,
@@ -2040,6 +1958,41 @@ public sealed partial class McpCommandService
                 }
 
                 object[] all = outline.Value.Pages.Select(BuildTranslationPageEntry).Cast<object>().ToArray();
+                object[] entries = all.Skip(offset).Take(limit).ToArray();
+                string? continuation = offset + entries.Length < all.Length
+                    ? EncodeCursor(scopeUri, null, false, where, offset + entries.Length, null)
+                    : null;
+                return new FindPage(entries, continuation, all.Length, all.Length);
+            }
+
+            case McpUriKind.ImagesDocument:
+            {
+                // Lists this document's page images, one file per page, in page order.
+                // The images are rendered on demand from the original PDF; they are
+                // not stored, so a document with no outline has no listable images.
+                Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(
+                    scope.DocumentId!.Value, cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(outline.ErrorCode),
+                        outline.ErrorMessage ?? outline.ErrorCode ?? "Document outline was not found.");
+                }
+
+                bool keep = await MatchesResourceWhereAsync(outline.Value.ItemId, scope.DocumentId.Value,
+                    outline.Value.ItemId is not null, where, cancellationToken);
+                if (!keep)
+                {
+                    return new FindPage([], null, 0, 0);
+                }
+
+                object[] all = outline.Value.Pages
+                    .Select(pageRef => (object)new McpFindEntry(
+                        McpResourceUris.ImageUri(scope.DocumentId.Value, pageRef.PageIndex + 1),
+                        string.IsNullOrWhiteSpace(pageRef.PageLabel)
+                            ? $"page {pageRef.PageIndex + 1} image"
+                            : pageRef.PageLabel + " image",
+                        "file"))
+                    .ToArray();
                 object[] entries = all.Skip(offset).Take(limit).ToArray();
                 string? continuation = offset + entries.Length < all.Length
                     ? EncodeCursor(scopeUri, null, false, where, offset + entries.Length, null)
@@ -2422,8 +2375,31 @@ public sealed partial class McpCommandService
                 {
                     Uri = McpResourceUris.PageUri(target.DocumentId.Value, target.PageIndex!.Value),
                     Type = "file",
-                    DocumentId = target.DocumentId.Value
+                    DocumentId = target.DocumentId.Value,
+                    ImageUri = McpResourceUris.ImageUri(target.DocumentId.Value, target.PageIndex!.Value)
                 };
+            }
+
+            case McpUriKind.PageImage:
+            {
+                Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(
+                    target.DocumentId!.Value, cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return null;
+                }
+
+                McpDocumentPageRef? page = outline.Value.Pages.FirstOrDefault(candidate =>
+                    candidate.PageIndex + 1 == target.PageIndex!.Value);
+                if (page is null)
+                {
+                    return null;
+                }
+
+                string uri = McpResourceUris.ImageUri(target.DocumentId.Value, target.PageIndex!.Value,
+                    target.TreeRevisionId, target.BoxId, target.OverlayBoxes, target.MaxEdge);
+                return new SingletonResource(uri, $"page {target.PageIndex} image", "file", false,
+                    outline.Value.ItemId, null, target.DocumentId.Value, ImageUri: uri);
             }
 
             case McpUriKind.DocumentMap:
@@ -2498,7 +2474,8 @@ public sealed partial class McpCommandService
                 return new SingletonResource(uri, evidence.Value.SourceTitle ?? uri, "file",
                     citable, owner.IsSuccess ? owner.Value : null, itemUri,
                     documentId, itemStatus, documentStatus, sourceStatus,
-                    OcrIndexStatus: ocrIndexStatus);
+                    OcrIndexStatus: ocrIndexStatus,
+                    ImageUri: McpResourceUris.ImageUri(documentId, pageIndex, target.TreeRevisionId, target.BoxId));
             }
 
             case McpUriKind.TranslationPage:
@@ -2531,7 +2508,8 @@ public sealed partial class McpCommandService
                         ? TranslationStatusName(translation.Value.Status)
                         : McpTranslationStatus.Untranslated,
                     TranslatedBoxCount = translation.IsSuccess ? translation.Value.Status.TranslatedBoxCount : 0,
-                    TotalBoxCount = translation.IsSuccess ? translation.Value.Status.TotalBoxCount : 0
+                    TotalBoxCount = translation.IsSuccess ? translation.Value.Status.TotalBoxCount : 0,
+                    ImageUri = McpResourceUris.ImageUri(documentId, pageIndex)
                 };
             }
 
@@ -2646,14 +2624,16 @@ public sealed partial class McpCommandService
             ? new McpLibraryLongEntry(singleton.Uri, singleton.Title, singleton.Type)
             : singleton.TranslationStatus is not null
                 ? new McpTranslationPageEntry(singleton.Uri, singleton.Title, singleton.Type,
-                    singleton.TranslationStatus, singleton.TranslatedBoxCount, singleton.TotalBoxCount)
+                    singleton.TranslationStatus, singleton.TranslatedBoxCount, singleton.TotalBoxCount,
+                    singleton.ImageUri)
                 : singleton.StyleEnabled is { } styleEnabled
                     ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
                     : singleton.DocumentId is not null
                         ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
                             singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
                             singleton.SourceStatus ?? "unavailable",
-                            PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
+                            PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable,
+                            singleton.ImageUri)
                         : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
                             singleton.ItemStatus ?? "unset",
                             PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
@@ -2688,6 +2668,21 @@ public sealed partial class McpCommandService
     private static object BuildDocumentEntryAsync(McpBrowseDocumentRow row, bool longMode)
     {
         string uri = McpResourceUris.DocumentUri(row.DocumentInstanceId);
+        string title = row.Title ?? row.DocumentInstanceId.ToString();
+        bool citable = row.ItemId is not null;
+        string? itemUri = row.ItemId is null ? null : McpResourceUris.ItemUri(row.ItemId.Value);
+        if (!longMode)
+        {
+            return new McpFindEntry(uri, title, "directory");
+        }
+
+        return new McpTextLongEntry(uri, title, "directory", itemUri, row.ItemStatus, row.DocumentStatus,
+            row.SourceStatus, PrimaryDocumentOcrIndexState.FromValue(row.OcrIndexStatus).Value, row.Citable);
+    }
+
+    private static object BuildImagesDocumentEntry(McpBrowseDocumentRow row, bool longMode)
+    {
+        string uri = McpResourceUris.ImagesDocumentUri(row.DocumentInstanceId);
         string title = row.Title ?? row.DocumentInstanceId.ToString();
         bool citable = row.ItemId is not null;
         string? itemUri = row.ItemId is null ? null : McpResourceUris.ItemUri(row.ItemId.Value);
@@ -2758,7 +2753,8 @@ public sealed partial class McpCommandService
         string? itemUri = projection.ItemId is null ? null : McpResourceUris.ItemUri(projection.ItemId.Value);
         return new McpTextLongEntry(uri, title, "file", itemUri, projection.ItemStatus, projection.DocumentStatus,
             projection.SourceStatus, PrimaryDocumentOcrIndexState.FromValue(projection.OcrIndexStatus).Value,
-            projection.Citable);
+            projection.Citable,
+            McpResourceUris.ImageUri(page.DocumentInstanceId, pageIndex, unit.TreeRevisionId, unit.BoxId));
     }
 
     private async Task<bool> MatchesResourceWhereAsync(ItemId? itemId, DocumentInstanceId? documentId, bool citable,
@@ -3096,6 +3092,7 @@ public sealed partial class McpCommandService
         [
             new("patchouli://items/", "/items", "directory"),
             new("patchouli://texts/", "/texts", "directory"),
+            new("patchouli://images/", "/images", "directory"),
             new("patchouli://translations/", "/translations", "directory"),
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
@@ -3207,6 +3204,12 @@ public sealed partial class McpCommandService
                     "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
                     "citable"
                 },
+            McpUriKind.ImagesScope or McpUriKind.ImagesDocument or McpUriKind.PageImage =>
+                new[]
+                {
+                    "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
+                    "citable"
+                },
             McpUriKind.TranslationsScope or McpUriKind.TranslationDocument or McpUriKind.TranslationPage =>
                 new[]
                 {
@@ -3239,7 +3242,7 @@ public sealed partial class McpCommandService
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
             or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library
             or McpUriKind.RunOcrStatus or McpUriKind.RunTranslationStatus or McpUriKind.RunMetadataStatus
-            or McpUriKind.DocumentMap or McpUriKind.RunEndpoint;
+            or McpUriKind.DocumentMap or McpUriKind.RunEndpoint or McpUriKind.PageImage;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,
@@ -3465,7 +3468,8 @@ public sealed partial class McpCommandService
         bool IsLibrary = false,
         string? TranslationStatus = null,
         int TranslatedBoxCount = 0,
-        int TotalBoxCount = 0);
+        int TotalBoxCount = 0,
+        string? ImageUri = null);
 
     private sealed record FindPage(
         IReadOnlyList<object> Entries,
