@@ -6,6 +6,7 @@
     <ItemGroup>
         <PackageVersion Include="Avalonia" Version="12.1.3" />
         <PackageVersion Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
+        <PackageVersion Include="Avalonia.Controls.WebView" Version="12.1.1" />
         <PackageVersion Include="Avalonia.Headless" Version="12.1.3" />
         <PackageVersion Include="Avalonia.Desktop" Version="12.1.3" />
         <PackageVersion Include="Dapper" Version="2.1.66" />
@@ -25,8 +26,9 @@
         <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
         <PackageVersion Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
-        <PackageVersion Include="LlmTornado" Version="3.8.74" />
+        <PackageVersion Include="FSharp.ModelsDev" Version="0.1.3" />
         <PackageVersion Include="Markdig" Version="1.3.2" />
+        <PackageVersion Include="NSec.Cryptography" Version="26.4.0" />
         <PackageVersion Include="LiveMarkdown.Avalonia" Version="2.4.3" />
         <PackageVersion Include="LiveMarkdown.Avalonia.Mermaid" Version="2.4.3" />
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
@@ -40,6 +42,11 @@
         <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
         <PackageVersion Include="Microsoft.Reactive.Testing" Version="7.0.0" />
         <PackageVersion Include="OpenccNetLib" Version="1.6.2" />
+        <!-- Intended real-parser dependencies for the plugin host (see Patchouli.Host.csproj).
+             Not restorable in the offline environment yet; the conditional references stay
+             inert until restore is permitted. -->
+        <PackageVersion Include="Tomlyn" Version="0.19.0" />
+        <PackageVersion Include="JsonSchema.Net" Version="7.3.4" />
         <PackageVersion Include="xunit" Version="2.9.3" />
         <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
         <PackageVersion Include="YamlDotNet" Version="18.1.0" />

@@ -16,7 +16,7 @@ public sealed class LlmAppSettingsTests
             .Equal(LlmProviderCatalog.ProviderIds);
         settings.OcrSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         settings.ChatSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
+        settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 0);
     }
 
     [Fact]

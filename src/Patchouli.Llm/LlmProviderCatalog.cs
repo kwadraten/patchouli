@@ -1,5 +1,3 @@
-using LlmTornado.Code;
-
 namespace Patchouli.Llm;
 
 /// <summary>
@@ -10,11 +8,10 @@ namespace Patchouli.Llm;
 /// Stable lowercase id persisted in settings JSON and used as the credential provider id.
 /// </param>
 /// <param name="DisplayName">Name shown in the settings form.</param>
-/// <param name="Vendor">The LlmTornado provider enum value used to build the API client.</param>
+/// <param name="Protocol">The ModelsDev protocol used for this connection.</param>
 /// <param name="DefaultBaseUrl">
-/// Default endpoint. Empty means "use the vendor default supplied by LlmTornado". A base URL that only
-/// carries {0} ({api-version}) and {1} ({endpoint}) placeholders is passed to <c>TornadoApi.ApiUrlFormat</c>
-/// verbatim; any other value is treated as a host or root prefix and completed by the adapter.
+/// Default endpoint. Empty requires a user-supplied base URL. Existing {0} (api-version)
+/// and {1} (endpoint) placeholders are resolved by the transport.
 /// </param>
 /// <param name="RequiresSubscription">
 /// True for Azure OpenAI, whose endpoint embeds the resource (subscription) name.
@@ -23,7 +20,7 @@ namespace Patchouli.Llm;
 public sealed record LlmProviderCatalogEntry(
     string ProviderId,
     string DisplayName,
-    LLmProviders Vendor,
+    string Protocol,
     string DefaultBaseUrl,
     bool RequiresSubscription = false,
     bool RequiresDeployment = false)
@@ -40,53 +37,45 @@ public sealed record LlmProviderCatalogEntry(
 }
 
 /// <summary>
-/// The data-driven provider directory (D3). Every LlmTornado vendor has an API entry; supported
-/// subscriptions have separate entries. Vendor lookup prefers the ordinary API connection.
+/// Supported connection types, keyed by the IDs already stored in application settings.
 /// </summary>
 public static class LlmProviderCatalog
 {
     /// <summary>Settings JSON section name and credential provider id prefix.</summary>
     public const string SectionName = "Llm";
 
-    // LlmTornado.Code.LLmProviders.Unknown and .Length are sentinels, not providers, and are
-    // deliberately absent. LlmProviderCatalogTests asserts the mirror image of this list
-    // (the enum minus the sentinels) so a new LlmTornado provider fails the build's test run
-    // loudly instead of being silently unreachable from settings.
     private static readonly LlmProviderCatalogEntry[] Entries =
     [
-        new("openai", "OpenAI", LLmProviders.OpenAi, "https://api.openai.com"),
-        new("openai-subscription", "ChatGPT / Codex 订阅", LLmProviders.OpenAi, "https://chatgpt.com/backend-api/codex"),
-        new("anthropic", "Anthropic", LLmProviders.Anthropic, "https://api.anthropic.com"),
-        new("azure-openai", "Azure OpenAI", LLmProviders.AzureOpenAi,
+        new("openai", "OpenAI", "openai-chat", "https://api.openai.com"),
+        new("openai-subscription", "ChatGPT / Codex 订阅", "codex-responses", "https://chatgpt.com/backend-api/codex"),
+        new("anthropic", "Anthropic", "anthropic-messages", "https://api.anthropic.com"),
+        new("azure-openai", "Azure OpenAI", "openai-chat",
             "https://{resource}.openai.azure.com/openai/deployments/{deployment}", true, true),
-        new("cohere", "Cohere", LLmProviders.Cohere, "https://api.cohere.com"),
-        new("google", "Google Gemini", LLmProviders.Google, "https://generativelanguage.googleapis.com"),
-        new("groq", "Groq", LLmProviders.Groq, "https://api.groq.com"),
-        new("deepseek", "DeepSeek", LLmProviders.DeepSeek, "https://api.deepseek.com"),
-        new("mistral", "Mistral", LLmProviders.Mistral, "https://api.mistral.ai"),
-        new("xai", "xAI", LLmProviders.XAi, "https://api.x.ai"),
-        new("perplexity", "Perplexity", LLmProviders.Perplexity, "https://api.perplexity.ai"),
-        new("voyage", "Voyage", LLmProviders.Voyage, "https://api.voyageai.com"),
-        new("deepinfra", "DeepInfra", LLmProviders.DeepInfra, "https://api.deepinfra.com"),
-        new("openrouter", "OpenRouter", LLmProviders.OpenRouter, "https://openrouter.ai/api"),
-        new("moonshotai", "Moonshot AI", LLmProviders.MoonshotAi, "https://api.moonshot.cn"),
-        new("zai", "Z.ai", LLmProviders.Zai, "https://api.z.ai/api/paas"),
-        new("blablador", "Blablador", LLmProviders.Blablador, "https://api.blablador.org"),
-        new("alibaba", "Alibaba Cloud (Qwen)", LLmProviders.Alibaba,
+        new("cohere", "Cohere", "openai-chat", "https://api.cohere.com"),
+        new("google", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com"),
+        new("groq", "Groq", "openai-chat", "https://api.groq.com"),
+        new("deepseek", "DeepSeek", "openai-chat", "https://api.deepseek.com"),
+        new("mistral", "Mistral", "openai-chat", "https://api.mistral.ai"),
+        new("xai", "xAI", "openai-chat", "https://api.x.ai"),
+        new("perplexity", "Perplexity", "openai-chat", "https://api.perplexity.ai"),
+        new("voyage", "Voyage", "openai-chat", "https://api.voyageai.com"),
+        new("deepinfra", "DeepInfra", "openai-chat", "https://api.deepinfra.com"),
+        new("openrouter", "OpenRouter", "openai-chat", "https://openrouter.ai/api"),
+        new("moonshotai", "Moonshot AI", "openai-chat", "https://api.moonshot.cn"),
+        new("zai", "Z.ai", "openai-chat", "https://api.z.ai/api/paas"),
+        new("blablador", "Blablador", "openai-chat", "https://api.blablador.org"),
+        new("alibaba", "Alibaba Cloud (Qwen)", "openai-chat",
             "https://dashscope.aliyuncs.com/compatible-mode"),
-        new("requesty", "Requesty", LLmProviders.Requesty, "https://router.requesty.ai"),
-        new("upstage", "Upstage", LLmProviders.Upstage, "https://api.upstage.ai"),
-        new("minimax", "MiniMax", LLmProviders.MiniMax, "https://api.minimax.chat"),
-        new("litellm", "LiteLLM (self-hosted)", LLmProviders.LiteLlm, "http://localhost:4000"),
-        new("typesafe", "TypeSafe (self-hosted)", LLmProviders.TypeSafe, "http://localhost:8000"),
-        new("custom", "Custom OpenAI-compatible endpoint", LLmProviders.Custom, "")
+        new("requesty", "Requesty", "openai-chat", "https://router.requesty.ai"),
+        new("upstage", "Upstage", "openai-chat", "https://api.upstage.ai"),
+        new("minimax", "MiniMax", "openai-chat", "https://api.minimax.chat"),
+        new("litellm", "LiteLLM (self-hosted)", "openai-chat", "http://localhost:4000"),
+        new("typesafe", "TypeSafe (self-hosted)", "openai-chat", "http://localhost:8000"),
+        new("custom", "Custom OpenAI-compatible endpoint", "openai-chat", "")
     ];
 
     private static readonly Dictionary<string, LlmProviderCatalogEntry> ByIdMap =
         Entries.ToDictionary(entry => entry.ProviderId, StringComparer.OrdinalIgnoreCase);
-
-    private static readonly Dictionary<LLmProviders, LlmProviderCatalogEntry> ByVendorMap =
-        Entries.GroupBy(entry => entry.Vendor).ToDictionary(group => group.Key, group => group.First());
 
     /// <summary>All available connection types in display order.</summary>
     public static IReadOnlyList<LlmProviderCatalogEntry> All { get; } = Entries;
@@ -105,21 +94,9 @@ public static class LlmProviderCatalog
         return ByIdMap.GetValueOrDefault(providerId.Trim());
     }
 
-    /// <summary>Resolves the catalog entry for a LlmTornado vendor value.</summary>
-    public static LlmProviderCatalogEntry? ByVendor(LLmProviders vendor)
-    {
-        return ByVendorMap.GetValueOrDefault(vendor);
-    }
-
     /// <summary>Resolves a persisted provider id, falling back to <paramref name="fallbackProviderId"/>.</summary>
     public static LlmProviderCatalogEntry Resolve(string? providerId, string fallbackProviderId)
     {
         return Find(providerId) ?? Find(fallbackProviderId) ?? All[0];
     }
-
-    /// <summary>LlmTornado vendor values that are real providers (the enum minus its sentinels).</summary>
-    public static IReadOnlyList<LLmProviders> SelectableVendors { get; } =
-        Enum.GetValues<LLmProviders>()
-            .Where(vendor => vendor is not (LLmProviders.Unknown or LLmProviders.Length))
-            .ToArray();
 }

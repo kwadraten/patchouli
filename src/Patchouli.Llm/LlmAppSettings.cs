@@ -30,8 +30,13 @@ public sealed record LlmProviderAppSettings(
     /// <summary>Retains an explicitly added connection even before its fields and credentials are complete.</summary>
     public bool IsAdded { get; init; }
 
-    /// <summary>Context capacity of the selected model, including input and output tokens.</summary>
-    public int ContextWindowTokens { get; init; } = DefaultContextWindowTokens;
+    /// <summary>Context capacity override. Zero uses the selected model’s catalog limit.</summary>
+    public int ContextWindowTokens { get; init; }
+
+    public static int NormalizeContextWindow(int value)
+    {
+        return value <= 0 ? 0 : Math.Max(4096, value);
+    }
 
     /// <summary>The credential store lookup key for this provider. Exactly one key per provider (D2).</summary>
     [JsonIgnore]
@@ -174,7 +179,7 @@ public sealed record LlmAppSettings(
                 Subscription = row.Subscription.Trim(),
                 Deployment = row.Deployment.Trim(),
                 ApiVersion = row.ApiVersion.Trim(),
-                ContextWindowTokens = Math.Max(4096, row.ContextWindowTokens),
+                ContextWindowTokens = LlmProviderAppSettings.NormalizeContextWindow(row.ContextWindowTokens),
                 AuthenticationMode = LlmSubscriptionCatalog.Find(entry.ProviderId) is not null
                     ? LlmAuthenticationModes.Subscription
                     : LlmAuthenticationModes.ApiKey

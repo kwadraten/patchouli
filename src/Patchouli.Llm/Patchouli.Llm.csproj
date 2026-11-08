@@ -3,7 +3,7 @@
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="LlmTornado" />
+    <PackageReference Include="FSharp.ModelsDev" />
   </ItemGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">

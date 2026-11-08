@@ -1,5 +1,4 @@
 using FluentAssertions;
-using LlmTornado.Code;
 using Patchouli.Llm;
 
 namespace Patchouli.Tests;
@@ -7,27 +6,16 @@ namespace Patchouli.Tests;
 public sealed class LlmProviderCatalogTests
 {
     [Fact]
-    public void Catalog_covers_every_llmtornado_provider()
+    public void Catalog_defines_modelsdev_protocols_for_persisted_provider_ids()
     {
-        LLmProviders[] missing = LlmProviderCatalog.SelectableVendors
-            .Where(vendor => LlmProviderCatalog.ByVendor(vendor) is null)
-            .ToArray();
-
-        missing.Should().BeEmpty(
-            "every provider LlmTornado can talk to must be selectable in settings (D3); add a catalog entry " +
-            "for each new LLmProviders value");
-        LlmProviderCatalog.All.Select(entry => entry.Vendor).Distinct().Should()
-            .HaveCount(LlmProviderCatalog.SelectableVendors.Count);
-        LlmProviderCatalog.ByVendor(LLmProviders.OpenAi)!.ProviderId.Should().Be("openai");
+        LlmProviderCatalog.All.Should().OnlyContain(entry => entry.Protocol == "openai-chat" ||
+                                                             entry.Protocol == "anthropic-messages" ||
+                                                             entry.Protocol == "gemini" ||
+                                                             entry.Protocol == "codex-responses");
+        LlmProviderCatalog.Find("anthropic")!.Protocol.Should().Be("anthropic-messages");
+        LlmProviderCatalog.Find("google")!.Protocol.Should().Be("gemini");
         LlmSubscriptionCatalog.All.Should()
             .OnlyContain(subscription => LlmProviderCatalog.Find(subscription.ProviderId) != null);
-    }
-
-    [Fact]
-    public void Catalog_excludes_enum_sentinels()
-    {
-        LlmProviderCatalog.All.Should().NotContain(entry => entry.Vendor == LLmProviders.Unknown);
-        LlmProviderCatalog.All.Should().NotContain(entry => entry.Vendor == LLmProviders.Length);
     }
 
     [Fact]
@@ -64,7 +52,7 @@ public sealed class LlmProviderCatalogTests
         LlmProviderCatalog.All.Where(entry => entry.RequiresBaseUrl).Select(entry => entry.ProviderId)
             .Should().Equal("custom");
         LlmProviderCatalog.Find("custom")!.DefaultBaseUrl.Should().BeEmpty();
-        LlmProviderCatalog.Find("custom")!.Vendor.Should().Be(LLmProviders.Custom);
+        LlmProviderCatalog.Find("custom")!.Protocol.Should().Be("openai-chat");
     }
 
     [Fact]

@@ -1213,12 +1213,13 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
         LlmProviderSettingsRowViewModel? providerRow =
             Providers.FirstOrDefault(provider => provider.ProviderId == providerId);
-        if (providerRow?.IsSubscription == true)
+        IEnumerable<string> suggestions = providerRow?.IsSubscription == true
+            ? providerRow.SubscriptionModels
+            : LlmModelCatalog.Shared.GetModelIds(providerId);
+        HashSet<string> known = new(options, StringComparer.Ordinal);
+        foreach (string model in suggestions.Where(known.Add))
         {
-            foreach (string model in providerRow.SubscriptionModels.Where(model => !options.Contains(model)))
-            {
-                options.Add(model);
-            }
+            options.Add(model);
         }
 
         if (!string.IsNullOrWhiteSpace(selectedModel) && !options.Contains(selectedModel.Trim()))
@@ -1656,8 +1657,7 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(SelectedSubscriptionModel))]
     public partial string Model { get; set; } = "";
 
-    [ObservableProperty]
-    public partial int ContextWindowTokens { get; set; } = LlmProviderAppSettings.DefaultContextWindowTokens;
+    [ObservableProperty] public partial int ContextWindowTokens { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsSubscription))]
@@ -1756,8 +1756,11 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     internal LlmProviderAppSettings ToSettings()
     {
         return new LlmProviderAppSettings(ProviderId, DisplayName, BaseUrl.Trim(), Model.Trim(),
-                Subscription.Trim(), Deployment.Trim(), ApiVersion.Trim(), AuthenticationMode)
-            { ContextWindowTokens = Math.Max(4096, ContextWindowTokens), IsAdded = IsAdded };
+            Subscription.Trim(), Deployment.Trim(), ApiVersion.Trim(), AuthenticationMode)
+        {
+            ContextWindowTokens = LlmProviderAppSettings.NormalizeContextWindow(ContextWindowTokens),
+            IsAdded = IsAdded
+        };
     }
 
     internal bool IsAdded { get; set; }

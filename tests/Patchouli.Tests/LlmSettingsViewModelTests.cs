@@ -253,7 +253,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             section.AvailableProviderOptions.Single(option => option.ProviderId == "anthropic");
         section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel draft = section.VisibleProviders.Single();
-        draft.ContextWindowTokens.Should().Be(256000);
+        draft.ContextWindowTokens.Should().Be(0);
         draft.Model = "claude-sonnet";
         draft.ApiKeyInput = "cancelled-secret";
         section.IsDirty.Should().BeTrue();
@@ -590,7 +590,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
 
-            await new LlmCodexCredentialStore(store, providerId).SaveAsync(new LlmTornado.Codex.CodexOAuthCredentials
+            await new LlmCodexCredentialStore(store, providerId).SaveAsync(new LlmCodexCredentials
             {
                 AccessToken = "subscription-access", RefreshToken = "subscription-refresh", AccountId = "test-account"
             }, cancellationToken);

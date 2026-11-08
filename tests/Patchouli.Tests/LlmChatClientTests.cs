@@ -426,8 +426,8 @@ public sealed class LlmChatClientTests
         LlmChatHistory history = LlmChatHistory.Create("instructions").Append([LlmChatMessage.User("hi")]);
         await client.CompleteAsync("effort", new LlmChatRequest(history));
         transport.Requests.Single().ReasoningEffort.Should().Be("high");
-        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Single()).ReasoningEffort.Should()
-            .Be(LlmTornado.Code.ChatReasoningEfforts.High);
+        LlmModelsDevTransport.PrepareRequest(transport.Requests.Single() with { Model = "gpt-5" })
+            .ReasoningEffort.Should().Be("high");
         client.ConfigurationKey.Should().NotBe(CreateClient(transport).ConfigurationKey);
         await client.CompleteAsync("ocr-low", new LlmChatRequest(history,
             Options: new LlmChatRequestOptions { ReasoningEffort = "low" }));
@@ -435,10 +435,10 @@ public sealed class LlmChatClientTests
         await client.CompleteAsync("ocr-default", new LlmChatRequest(history,
             Options: new LlmChatRequestOptions { ReasoningEffort = "default" }));
         transport.Requests.Last().ReasoningEffort.Should().BeEmpty();
-        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
+        LlmModelsDevTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
         await CreateClient(transport).CompleteAsync("default", new LlmChatRequest(history));
         transport.Requests.Last().ReasoningEffort.Should().BeNull();
-        LlmTornadoChatTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
+        LlmModelsDevTransport.PrepareRequest(transport.Requests.Last()).ReasoningEffort.Should().BeNull();
     }
 
     private static LlmChatClient CreateClient(ILlmChatTransport transport, string? reasoningEffort = null)

@@ -15,7 +15,13 @@ public sealed record LlmProviderRuntimeSettings(
     string AuthenticationMode = LlmAuthenticationModes.ApiKey,
     Core.Credentials.ICredentialStore? CredentialStore = null)
 {
-    public int ContextWindowTokens { get; init; } = LlmProviderAppSettings.DefaultContextWindowTokens;
+    private readonly int _contextWindowTokens;
+
+    public int ContextWindowTokens
+    {
+        get => LlmModelCatalog.ResolveContextWindow(ProviderId, Model, _contextWindowTokens);
+        init => _contextWindowTokens = value;
+    }
 
     /// <summary>Catalog provider id.</summary>
     public string ProviderId => CatalogEntry.ProviderId;
@@ -102,7 +108,7 @@ public sealed record LlmProviderReadiness(
 /// </summary>
 public static class LlmProviderClientFactory
 {
-    // LlmTornado's default OpenAI-compatible REST api-version segment.
+    // Default OpenAI-compatible REST API version segment.
     private const string DefaultOpenAiApiVersion = "v1";
 
     /// <summary>Azure OpenAI default REST api-version.</summary>
@@ -223,14 +229,13 @@ public static class LlmProviderClientFactory
             new LlmProviderRuntimeSettings(entry, apiKey, resolvedBaseUrl, model, subscription, deployment,
                 providerSettings?.ApiVersion.Trim() ?? "")
             {
-                ContextWindowTokens = providerSettings?.ContextWindowTokens ??
-                                      LlmProviderAppSettings.DefaultContextWindowTokens
+                ContextWindowTokens = providerSettings?.ContextWindowTokens ?? 0
             });
     }
 
     /// <summary>
     /// Computes the endpoint. A base URL carrying <c>{0}</c> (api-version) or <c>{1}</c> (endpoint) is passed
-    /// through verbatim as <c>TornadoApi.ApiUrlFormat</c>; anything else is treated as a host or root prefix
+    /// through verbatim to the transport; anything else is treated as a host or root prefix
     /// and completed with the OpenAI-compatible route.
     /// </summary>
     public static string ResolveBaseUrl(LlmProviderCatalogEntry entry, string? baseUrl, string subscription,
@@ -298,42 +303,12 @@ public static class LlmProviderClientFactory
     }
 }
 
-/// <summary>
-/// Builds the LlmTornado client for resolved provider settings. Kept separate from
-/// <see cref="LlmChatClient"/> so history and cache invariants are testable without a network stack.
-/// </summary>
+/// <summary>Creates the provider transport while keeping callers independent of the SDK.</summary>
 public static class LlmClientFactory
 {
-    /// <summary>Creates a Tornado API configured for exactly one provider.</summary>
-    public static LlmTornado.TornadoApi CreateApi(LlmProviderRuntimeSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(settings);
-        if (settings.AuthenticationMode == LlmAuthenticationModes.Subscription)
-        {
-            throw new ArgumentException("Use the subscription transport for subscription credentials.",
-                nameof(settings));
-        }
-
-        LlmTornado.TornadoApi api = new(
-            new LlmTornado.Code.ProviderAuthentication(settings.CatalogEntry.Vendor, settings.ApiKey))
-        {
-            ApiUrlFormat = settings.BaseUrl,
-            ApiVersion = LlmProviderClientFactory.ResolveApiVersion(settings)
-        };
-        return api;
-    }
-
-    /// <summary>Creates a transport over the provider settings.</summary>
     public static ILlmChatTransport CreateTransport(LlmProviderRuntimeSettings settings)
     {
-        if (settings.AuthenticationMode == LlmAuthenticationModes.Subscription)
-        {
-            return new LlmTornadoSubscriptionTransport(settings.CredentialStore ??
-                                                       throw new ArgumentException(
-                                                           "Subscription transport requires a credential store.",
-                                                           nameof(settings)));
-        }
-
-        return new LlmTornadoChatTransport(CreateApi(settings));
+        ArgumentNullException.ThrowIfNull(settings);
+        return new LlmModelsDevTransport(settings);
     }
 }

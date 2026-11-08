@@ -1,7 +1,5 @@
 using System.Net;
 using FluentAssertions;
-using LlmTornado.Chat;
-using LlmTornado.Code;
 using Patchouli.Llm;
 
 namespace Patchouli.Tests;
@@ -9,20 +7,36 @@ namespace Patchouli.Tests;
 public sealed class LlmContextAccountingTests
 {
     [Theory]
-    [InlineData(LLmProviders.Anthropic, 100)]
-    [InlineData(LLmProviders.OpenAi, 30100)]
-    [InlineData(LLmProviders.Google, 30100)]
-    public void Cached_input_is_included_exactly_once_in_context_usage(LLmProviders provider, int reportedPrompt)
+    [InlineData("anthropic",
+        """{"model":"test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":20000,"cache_creation_input_tokens":10000}}""")]
+    [InlineData("openai",
+        """{"model":"test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30100,"completion_tokens":20,"total_tokens":30120,"prompt_tokens_details":{"cached_tokens":20000}}}""")]
+    [InlineData("google",
+        """{"modelVersion":"test","candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30100,"candidatesTokenCount":20,"totalTokenCount":30120,"cachedContentTokenCount":20000}}""")]
+    public async Task Cached_input_is_included_exactly_once_in_context_usage(string provider, string body)
     {
-        ChatUsage usage = new(provider)
-        {
-            PromptTokens = reportedPrompt, CompletionTokens = 20, TotalTokens = reportedPrompt + 20,
-            CacheReadTokens = 20000, CacheCreationTokens = 10000
-        };
-        LlmUsage normalized = LlmTornadoChatTransport.ToUsage(usage);
+        LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(provider)!;
+        LlmProviderRuntimeSettings settings = new(entry, "key",
+            LlmProviderClientFactory.ResolveBaseUrl(entry, null, "", ""), "test", "", "", "");
+        using HttpClient http = new(new CompletionHandler(body));
+        LlmModelsDevTransport transport = new(settings, http);
+        LlmTransportResult result = await transport.SendAsync(new LlmTransportRequest(settings, "test",
+            [new LlmTransportMessage(LlmChatRole.User, [new LlmMessagePart.LlmTextPart("hello")])],
+            [], null, null, false, null, null));
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        LlmUsage normalized = result.Usage;
         normalized.PromptTokens.Should().Be(30100);
         normalized.TotalTokens.Should().Be(30120);
         normalized.CacheReadTokens.Should().Be(20000);
+    }
+
+    private sealed class CompletionHandler(string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+        }
     }
 
     [Fact]
