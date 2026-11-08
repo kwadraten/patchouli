@@ -98,7 +98,8 @@ public sealed record McpTranslationPageEntry(
     int TranslatedBoxCount,
     [property: JsonPropertyName("total_box_count")]
     int TotalBoxCount,
-    [property: JsonPropertyName("image_uri"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("image_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ImageUri = null);
 
 /// <summary>
@@ -150,8 +151,7 @@ public sealed record McpFetchResult(
     [property: JsonPropertyName("image")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     McpFetchImageMetadata? Image = null,
-    [property: JsonIgnore]
-    byte[]? ImageBytes = null);
+    [property: JsonIgnore] byte[]? ImageBytes = null);
 
 /// <summary>
 /// Image metadata carried in the text content block of a fetch response for an

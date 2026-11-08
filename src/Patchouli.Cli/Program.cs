@@ -294,7 +294,8 @@ static void PrintUsage()
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine(
         "    Filter keys include item_type, item_status, collection_id, tag (exact, case-sensitive), citable.");
-    Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E|boxes:S-E>] [--limit-bytes <n>] [--output <image.png>] [--overwrite]");
+    Console.Error.WriteLine(
+        "  fetch <uri>... [--range <lines:S-E|pages:S-E|boxes:S-E>] [--limit-bytes <n>] [--output <image.png>] [--overwrite]");
     Console.Error.WriteLine("    Library projection: patchouli://library.yml");
     Console.Error.WriteLine(
         "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>]");

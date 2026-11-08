@@ -333,8 +333,10 @@ public sealed class McpAddFetchImageCommandTests
     {
         McpDocumentOutlineResponse outline = new(
             new DocumentInstanceId(Guid.Parse(DocId)), "title", null,
-            [new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 0,
-                "patchouli://texts/" + DocId + "/page-1.xml")]);
+            [
+                new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 0,
+                    "patchouli://texts/" + DocId + "/page-1.xml")
+            ]);
         McpPageXmlResponse pageXml = new(
             "<page><box id=\"" + BoxGuid + "\">hello</box></page>", RevId);
         McpCommandService service = CreateService(outline: outline, pageXml: pageXml);

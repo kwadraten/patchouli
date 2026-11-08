@@ -105,6 +105,6 @@ public sealed class McpImagesUriTests
             new DocumentBoxId(Guid.Parse(BoxId)), true, 1536);
 
         uri.Should().Be("patchouli://images/" + DocId + "/page-2.png?rev=" + RevId + "&box=" + BoxId +
-                         "&overlay=boxes&max_edge=1536");
+                        "&overlay=boxes&max_edge=1536");
     }
 }

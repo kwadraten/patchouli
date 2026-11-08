@@ -982,7 +982,7 @@ public sealed partial class McpCommandService
                 pageIndex,
                 target.TreeRevisionId,
                 target.BoxId,
-                IsTranslation: false,
+                false,
                 target.BoxId is null ? PageImageViewContext.Page : PageImageViewContext.Region,
                 target.MaxEdge ?? PageImageViewRequest.DefaultMaxEdge,
                 target.OverlayBoxes),
@@ -1117,9 +1117,9 @@ public sealed partial class McpCommandService
         // the text first, then the same revision's image for collation. A tree-less
         // page (empty source revision) renders unpinned.
         DocumentTreeRevisionId? imageRevision = target.TreeRevisionId ??
-            (Guid.TryParse(xml.Value.SourceRevision, out Guid sourceRevisionGuid)
-                ? new DocumentTreeRevisionId(sourceRevisionGuid)
-                : null);
+                                                (Guid.TryParse(xml.Value.SourceRevision, out Guid sourceRevisionGuid)
+                                                    ? new DocumentTreeRevisionId(sourceRevisionGuid)
+                                                    : null);
         string imageUri = McpResourceUris.ImageUri(target.DocumentId.Value, target.PageIndex!.Value,
             imageRevision, target.BoxId);
         int selectedEnd = end;

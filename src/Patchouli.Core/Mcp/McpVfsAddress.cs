@@ -55,7 +55,8 @@ public static class McpVfsAddress
         if (!path.Contains('?') && !path.EndsWith('/') &&
             ((parts.Length == 1 &&
               parts[0] is "items" or "texts" or "translations" or "images" or "csl-styles" or "runs") ||
-             (parts.Length == 2 && parts[0] is "texts" or "translations" or "images" && Guid.TryParseExact(parts[1], "D", out _))))
+             (parts.Length == 2 && parts[0] is "texts" or "translations" or "images" &&
+              Guid.TryParseExact(parts[1], "D", out _))))
         {
             path += "/";
         }

@@ -379,10 +379,12 @@ public sealed class McpProtocolHandler
                         "overlay=boxes draws numbered box outlines that match the page XML order, and max_edge caps the " +
                         "longest edge (64 through 8192; default 2048). A page without a box tree still renders as a whole page.",
                         ToolSchemaProperty.String("Resource URI.")),
-                    ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E. Does not apply to image URIs."),
+                    ["range"] = ToolSchemaProperty.String(
+                        "Optional text slice: lines:S-E or pages:S-E. Does not apply to image URIs."),
                     ["limit_bytes"] = ToolSchemaProperty.Integer(
                         "Maximum response bytes per text URI; oversized responses return explicit partial content and RESPONSE_TRUNCATED. Does not apply to image URIs; images keep the renderer's own 8 MiB cap."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the image is always a native image content block.")
+                    ["format"] = ToolSchemaProperty.String(
+                        "Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the image is always a native image content block.")
                 }),
             new ToolDefinition(
                 "patchouli.put",
