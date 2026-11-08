@@ -233,7 +233,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                     JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? [])
                 : []
         };
-        return MigrateAddViewDefaults(settings);
+        return MigrateViewToImagesFetch(settings);
     }
 
     /// <summary>
@@ -244,18 +244,28 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     public static McpServerSettings NormalizeLegacySettings(McpServerSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return MigrateAddViewDefaults(settings);
+        return MigrateViewToImagesFetch(settings);
     }
 
     /// <summary>
     /// New send subdomains require explicit grants. Retired Agent/action permissions never
     /// promote to endpoint permissions; missing children are materialized as disabled.
+    /// The retired patchouli.view tool's grants convert to images.fetch: a user who had
+    /// explicitly enabled view (and had not denied texts view) keeps image access through
+    /// the default-allow policy; everyone else gets an explicit images.fetch denial so
+    /// migration never expands access. The view tool override and view-verb entries are
+    /// removed; images/ has no translations mirror, so only the texts denial matters.
     /// </summary>
-    private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
+    private static McpServerSettings MigrateViewToImagesFetch(McpServerSettings settings)
     {
-        string[] newTools = ["patchouli.add", "patchouli.view"];
+        bool viewAllowed = settings.ToolOverrides.Any(value =>
+                               value.ToolName == "patchouli.view" && value.Enabled) &&
+                           !settings.DomainPermissions.Any(value =>
+                               value.Domain == "texts" && value.Verb == "view" && !value.Enabled);
+        string[] newTools = ["patchouli.add"];
         List<McpToolOverride> overrides = settings.ToolOverrides
-            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal))
+            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal) &&
+                            !string.Equals(value.ToolName, "patchouli.view", StringComparison.Ordinal))
             .ToList();
         bool changed = overrides.Count != settings.ToolOverrides.Count;
         foreach (string tool in newTools)
@@ -275,6 +285,13 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             .ToList();
         if (permissions.Count != settings.DomainPermissions.Count)
         {
+            changed = true;
+        }
+
+        if (!viewAllowed &&
+            permissions.All(value => value.Domain != "images" || value.Verb != "fetch"))
+        {
+            permissions.Add(new McpDomainPermission("images", "fetch", false));
             changed = true;
         }
 

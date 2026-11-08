@@ -9,10 +9,11 @@ public static class McpPermissionPolicy
         Actions.RunEndpointCatalog.Domains.Select(domain => "runs/" + domain).ToArray();
 
     public static IReadOnlyList<string> Domains { get; } =
-        new[] { "/", "items", "texts", "translations", "csl-styles", "runs", "library.yml" }.Concat(RunSendDomains)
+        new[] { "/", "items", "texts", "images", "translations", "csl-styles", "runs", "library.yml" }
+            .Concat(RunSendDomains)
             .ToArray();
 
-    public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send", "add", "view"];
+    public static IReadOnlyList<string> Verbs { get; } = ["find", "fetch", "put", "cite", "send", "add"];
 
     /// <summary>Resource capabilities, independent of the user's authorization choices.</summary>
     public static bool Supports(string domain, string verb)
@@ -27,8 +28,9 @@ public static class McpPermissionPolicy
         {
             "/" => verb == "find",
             "items" => verb is "find" or "fetch" or "put" or "cite" or "add",
-            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add" or "view",
-            "translations" => verb is "find" or "fetch" or "put" or "view",
+            "texts" => verb is "find" or "fetch" or "cite" or "put" or "add",
+            "images" => verb is "find" or "fetch",
+            "translations" => verb is "find" or "fetch" or "put",
             "csl-styles" => verb is "find" or "fetch" or "put" or "add",
             "runs" => verb is "find" or "fetch",
             "library.yml" => verb is "find" or "fetch" or "put",
@@ -113,10 +115,10 @@ public static class McpPermissionPolicy
             return false;
         }
 
-        if (!string.IsNullOrEmpty(uri) && verb is not "find" and not "fetch" and not "view" &&
+        if (!string.IsNullOrEmpty(uri) && verb is not "find" and not "fetch" &&
             McpVfsAddress.TryNormalize(uri, out string normalized) && IsPluginAddress(normalized))
         {
-            // Plugin mounts support find/fetch/send/view only; put/cite/add never apply.
+            // Plugin mounts support find/fetch only; put/cite/add never apply.
             return false;
         }
 
