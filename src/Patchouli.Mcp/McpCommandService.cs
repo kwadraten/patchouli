@@ -40,6 +40,7 @@ public sealed partial class McpCommandService
     private readonly IMcpTranslationRunsApi? _translationRuns;
     private readonly IMcpMetadataRunsApi? _metadataRuns;
     private readonly IMcpImplementationCatalogApi? _implementationCatalog;
+    private readonly IMcpPluginApi? _pluginApi;
     private readonly Func<CancellationToken, Task<McpServerSettings>>? _permissionSettings;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
@@ -51,7 +52,8 @@ public sealed partial class McpCommandService
         bool addEnabled = true, bool viewEnabled = true,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
         IMcpMetadataRunsApi? metadataRuns = null,
-        IMcpImplementationCatalogApi? implementationCatalog = null)
+        IMcpImplementationCatalogApi? implementationCatalog = null,
+        IMcpPluginApi? pluginApi = null)
     {
         _read = read;
         _write = write;
@@ -71,6 +73,7 @@ public sealed partial class McpCommandService
         _translationRuns = translationRuns;
         _metadataRuns = metadataRuns;
         _implementationCatalog = implementationCatalog;
+        _pluginApi = pluginApi;
         _permissionSettings = permissionSettings;
         _actions = CreateActionRegistry();
     }
@@ -273,11 +276,6 @@ public sealed partial class McpCommandService
             return Fail(McpErrorCode.PermissionDenied, "view is disabled by the host's MCP tool switches.");
         }
 
-        if (_pageView is null)
-        {
-            return Fail(McpErrorCode.Unavailable, "The host does not expose source image reading.");
-        }
-
         Result<McpUriParseResult> parsed = McpResourceUris.Parse(request.Uri);
         if (parsed.IsFailure)
         {
@@ -285,6 +283,16 @@ public sealed partial class McpCommandService
         }
 
         McpUriParseResult target = parsed.Value;
+        if (IsPluginKind(target.Kind))
+        {
+            return await ViewPluginAsync(request, target, cancellationToken);
+        }
+
+        if (_pageView is null)
+        {
+            return Fail(McpErrorCode.Unavailable, "The host does not expose source image reading.");
+        }
+
         bool isTranslation = target.Kind == McpUriKind.TranslationPage;
         if (target.Kind is McpUriKind.Document or McpUriKind.TranslationDocument)
         {
@@ -358,6 +366,94 @@ public sealed partial class McpCommandService
             McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
         return new McpViewCommandResult(
             McpCommandResult<McpViewMeta, McpViewImageMetadata>.Ok(envelope), image.PngBytes);
+    }
+
+    /// <summary>
+    /// Plugin web-view descriptor reads (<c>patchouli://plugin/{id}/views/{view-id}</c>).
+    /// The answer is static manifest data: no plugin process is started, no image is
+    /// rendered (interactive rendering is desktop-only), and the result is the text
+    /// envelope alone with <see cref="McpViewCommandResult.PngBytes"/> null.
+    /// </summary>
+    private async Task<McpViewCommandResult> ViewPluginAsync(McpViewRequest request,
+        McpUriParseResult target, CancellationToken cancellationToken)
+    {
+        McpViewCommandResult Fail(McpErrorCode code, string detail)
+        {
+            return new McpViewCommandResult(
+                McpCommandResult<McpViewMeta, McpViewImageMetadata>.Fail(code, detail), null);
+        }
+
+        if (_pluginApi is null)
+        {
+            return Fail(McpErrorCode.Unavailable, "Plugin mounts are unavailable on this host.");
+        }
+
+        if (target.Kind != McpUriKind.PluginResource ||
+            !IsPluginViewPath(target.PluginPath, out string? viewId))
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "view on plugin URIs requires patchouli://plugin/{id}/views/{view-id}.");
+        }
+
+        string pluginId = target.PluginId!;
+        if (_pluginApi.FindMount(pluginId) is null)
+        {
+            return Fail(McpErrorCode.NotFound,
+                $"Plugin '{pluginId}' is not registered or is disabled.");
+        }
+
+        if (!_pluginApi.AllowsVerb(pluginId, "view"))
+        {
+            return Fail(McpErrorCode.PermissionDenied,
+                "view is not in this plugin's allowed_verbs registry grant.");
+        }
+
+        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+        if (!Allowed(permissions, "view", target.CanonicalUri))
+        {
+            return Fail(McpErrorCode.PermissionDenied, "view is disabled for this domain.");
+        }
+
+        McpPluginViewInfo? view = _pluginApi.FindView(pluginId, viewId!);
+        if (view is null)
+        {
+            return Fail(McpErrorCode.NotFound,
+                $"'{target.PluginPath}' is not a declared view of plugin '{pluginId}'.");
+        }
+
+        if (request.Context is not null || request.MaxEdge is not null || request.Boxes)
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "context, max_edge and boxes are not supported for plugin views.");
+        }
+
+        McpViewImageMetadata metadata = new(
+            target.CanonicalUri, "plugin-view", "text/html", 0, 0, [], 0, null,
+            view.ViewId, pluginId, view.Title, view.Placement, view.SourceUri);
+        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
+        McpEnvelope<McpViewMeta, McpViewImageMetadata> envelope =
+            McpEnvelope<McpViewMeta, McpViewImageMetadata>.Create(new McpViewMeta(revision), [metadata]);
+        return new McpViewCommandResult(
+            McpCommandResult<McpViewMeta, McpViewImageMetadata>.Ok(envelope), null);
+    }
+
+    /// <summary>Whether a plugin-relative path addresses exactly one declared view resource.</summary>
+    private static bool IsPluginViewPath(string? path, out string? viewId)
+    {
+        viewId = null;
+        if (path is null || !path.StartsWith("views/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string id = path["views/".Length..];
+        if (id.Length == 0 || id.Contains('/', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        viewId = id;
+        return true;
     }
 
     private static McpErrorCode MapViewError(string? errorCode)
@@ -502,6 +598,13 @@ public sealed partial class McpCommandService
         if (scopeKind == McpUriKind.Root)
         {
             scope = null;
+        }
+
+        if (scope is not null && IsPluginKind(scopeKind))
+        {
+            return await FindPluginScopeAsync(scope, scopeKind, scopeUri!, query, where,
+                Math.Clamp(request.Limit, 1, MaxLimit), cursor, state.Value, permissions,
+                cancellationToken);
         }
 
         string? matrixError = ValidateScopeMatrix(scopeKind, query, where);
@@ -695,7 +798,8 @@ public sealed partial class McpCommandService
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
             or McpUriKind.RunsMetadataScope or McpUriKind.RunMetadataStatus
-            or McpUriKind.RunEndpoint)
+            or McpUriKind.RunEndpoint
+            or McpUriKind.PluginsScope or McpUriKind.Plugin or McpUriKind.PluginResource)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
@@ -1027,6 +1131,11 @@ public sealed partial class McpCommandService
             parsed.Value.Kind is McpUriKind.Page or McpUriKind.Evidence or McpUriKind.TranslationPage)
         {
             return await FetchXmlPageAsync(parsed.Value, range, limitBytes, state, cancellationToken);
+        }
+
+        if (parsed.Value.Kind is McpUriKind.Plugin or McpUriKind.PluginResource)
+        {
+            return await FetchPluginAsync(parsed.Value, range, limitBytes, state, cancellationToken);
         }
 
         McpFetchResult fetched = parsed.Value.Kind switch
@@ -2800,9 +2909,190 @@ public sealed partial class McpCommandService
         return true;
     }
 
+    private static bool IsPluginKind(McpUriKind kind)
+    {
+        return kind is McpUriKind.PluginsScope or McpUriKind.Plugin or McpUriKind.PluginResource;
+    }
+
+    /// <summary>
+    /// Maps the plugin error vocabulary onto the shared numeric codes. Registry/mount denials
+    /// are permission failures; an unavailable or crashed plugin process is UNAVAILABLE.
+    /// </summary>
+    private static McpErrorCode ToPluginError(string? errorCode)
+    {
+        return errorCode switch
+        {
+            AppErrorCodes.InvalidArgument or AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
+            AppErrorCodes.NotFound => McpErrorCode.NotFound,
+            "permission_denied" => McpErrorCode.PermissionDenied,
+            "unavailable" or AppErrorCodes.UnsupportedOperation => McpErrorCode.Unavailable,
+            AppErrorCodes.Conflict or "revision_conflict" => McpErrorCode.RevisionConflict,
+            "cancelled" => McpErrorCode.Cancelled,
+            "deadline_exceeded" => McpErrorCode.DeadlineExceeded,
+            "response_truncated" => McpErrorCode.ResponseTruncated,
+            _ => McpErrorCode.Internal
+        };
+    }
+
+    private async Task<McpCommandResult<McpFindMeta, object>> FindPluginScopeAsync(
+        McpUriParseResult scope, McpUriKind kind, string scopeUri, string? query,
+        IReadOnlyList<McpWhereClause>? where, int limit, McpCursor? cursor,
+        McpLibraryStateResponse state, McpServerSettings? permissions, CancellationToken cancellationToken)
+    {
+        if (_pluginApi is null)
+        {
+            return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.Unavailable,
+                "Plugin mounts are unavailable on this host.");
+        }
+
+        if (where is { Count: > 0 })
+        {
+            return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.InvalidArgument,
+                "Plugin scopes do not accept where filters.");
+        }
+
+        object[] entries;
+        string? continuation;
+        int domainTotal;
+        if (kind == McpUriKind.PluginsScope)
+        {
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.InvalidArgument,
+                    "The plugin namespace is discovery-only and accepts no query.");
+            }
+
+            object[] all = _pluginApi.Mounts
+                .Where(mount => mount.Verbs.Contains("find", StringComparer.Ordinal))
+                .Select(mount => (object)new McpFindEntry(mount.RootUri,
+                    "/plugin/" + mount.PluginId, "directory"))
+                .ToArray();
+            int offset = Math.Clamp(cursor?.Offset ?? 0, 0, all.Length);
+            entries = all.Skip(offset).Take(limit).ToArray();
+            continuation = offset + entries.Length < all.Length
+                ? EncodeCursor(scopeUri, null, false, null, offset + entries.Length, null)
+                : null;
+            domainTotal = all.Length;
+        }
+        else
+        {
+            string pluginId = scope.PluginId!;
+            McpPluginMountInfo? mount = _pluginApi.FindMount(pluginId);
+            if (mount is null)
+            {
+                return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.NotFound,
+                    $"Plugin '{pluginId}' is not registered or is disabled.");
+            }
+
+            if (!_pluginApi.AllowsVerb(pluginId, "find"))
+            {
+                return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.PermissionDenied,
+                    "find is not in this plugin's allowed_verbs registry grant.");
+            }
+
+            string relativeScope = kind == McpUriKind.Plugin ? "" : scope.PluginPath ?? "";
+            Result<McpPluginFindPage> page = await _pluginApi.FindAsync(pluginId, relativeScope,
+                query, limit, cursor?.SearchCursor, cancellationToken);
+            if (page.IsFailure)
+            {
+                return McpCommandResult<McpFindMeta, object>.Fail(ToPluginError(page.ErrorCode),
+                    page.ErrorMessage ?? "Plugin find failed.");
+            }
+
+            entries = page.Value.Entries
+                .Select(entry => (object)new McpFindEntry(entry.Uri, entry.Title, entry.Type))
+                .ToArray();
+            continuation = page.Value.Continuation is not null
+                ? EncodeCursor(scopeUri, query, false, null, 0, page.Value.Continuation)
+                : null;
+            domainTotal = entries.Length;
+        }
+
+        McpFindMeta meta = new(state.LibraryRevision, domainTotal, domainTotal, entries.Length)
+        {
+            Summary = $"Browsed {scopeUri}; returned {entries.Length} entries." +
+                      (continuation is null ? " No further results." : " Continue with continuation.")
+        };
+        return McpCommandResult<McpFindMeta, object>.Ok(
+            McpEnvelope<McpFindMeta, object>.Create(meta, entries, continuation));
+    }
+
+    private async Task<McpFetchResult> FetchPluginAsync(McpUriParseResult target, string? range,
+        int limitBytes, McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        if (range is not null)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.InvalidArgument, "Plugin resources do not accept ranges."),
+                limitBytes);
+        }
+
+        if (_pluginApi is null)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.Unavailable, "Plugin mounts are unavailable on this host."),
+                limitBytes);
+        }
+
+        string pluginId = target.PluginId!;
+        string relativePath = target.PluginPath ?? "";
+        if (_pluginApi.FindMount(pluginId) is null)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.NotFound,
+                    $"Plugin '{pluginId}' is not registered or is disabled."), limitBytes);
+        }
+
+        if (!_pluginApi.AllowsVerb(pluginId, "fetch"))
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.PermissionDenied,
+                    "fetch is not in this plugin's allowed_verbs registry grant."), limitBytes);
+        }
+
+        // Reserved paths (plugin.yml, README.md, mount root, endpoint descriptors) are served
+        // from the validated manifest without starting the plugin process.
+        Result<McpPluginFetchContent?> content = _pluginApi.TryFetchStatic(pluginId, relativePath);
+        if (content.IsFailure)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(ToPluginError(content.ErrorCode),
+                    content.ErrorMessage ?? "Plugin resource fetch failed."), limitBytes);
+        }
+
+        McpPluginFetchContent? payload = content.Value;
+        if (payload is null)
+        {
+            Result<McpPluginFetchContent> live =
+                await _pluginApi.FetchAsync(pluginId, relativePath, cancellationToken);
+            if (live.IsFailure)
+            {
+                return FailedFetch(target.CanonicalUri,
+                    McpToolError.From(ToPluginError(live.ErrorCode),
+                        live.ErrorMessage ?? "Plugin fetch failed."), limitBytes);
+            }
+
+            payload = live.Value;
+        }
+
+        McpFetchResult fetched = CompleteFetch(target.CanonicalUri, "plugin", null, payload.Content,
+                limitBytes) with
+            {
+                ContentType = payload.ContentType
+            };
+        if (SerializedSize(fetched, state.LibraryRevision) > limitBytes)
+        {
+            return FailedFetch(target.CanonicalUri,
+                McpToolError.From(McpErrorCode.ResponseTruncated,
+                    "Plugin resource exceeds limit_bytes; request a larger limit."), limitBytes);
+        }
+
+        return fetched;
+    }
+
     private FindPage BrowseRoot(int limit, int offset, McpServerSettings? permissions)
     {
-        McpFindEntry[] all =
+        List<McpFindEntry> entries =
         [
             new("patchouli://items/", "/items", "directory"),
             new("patchouli://texts/", "/texts", "directory"),
@@ -2811,7 +3101,14 @@ public sealed partial class McpCommandService
             new(McpResourceUris.RunsScopeUri(), "/runs", "directory"),
             new(McpResourceUris.LibraryUri(), "/library.yml", "file")
         ];
-        all = all.Where(entry => Allowed(permissions, "find", entry.Uri)).ToArray();
+        // The plugin namespace appears only when at least one enabled mount is allowed to
+        // answer find; with no approved plugins the root response is unchanged.
+        if (_pluginApi?.Mounts.Any(mount => mount.Verbs.Contains("find", StringComparer.Ordinal)) == true)
+        {
+            entries.Add(new McpFindEntry(McpResourceUris.PluginsScopeUri(), "/plugin", "directory"));
+        }
+
+        McpFindEntry[] all = entries.Where(entry => Allowed(permissions, "find", entry.Uri)).ToArray();
         int from = Math.Clamp(offset, 0, all.Length);
         object[] page = all.Skip(from).Take(limit).Cast<object>().ToArray();
         string? continuation = from + page.Length < all.Length

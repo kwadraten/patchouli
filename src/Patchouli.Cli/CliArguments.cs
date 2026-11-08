@@ -12,7 +12,8 @@ namespace Patchouli.Cli;
 /// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, <c>patchouli.send</c>,
 /// <c>patchouli.add</c> and <c>patchouli.view</c> tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
 /// adapter that the executable reads before sending the same inline <c>content</c>. For <c>view</c>,
-/// <see cref="ViewOutputPath"/> is the client-side PNG destination (required).
+/// <see cref="ViewOutputPath"/> is the client-side PNG destination (required for image views;
+/// plugin web views at plugin/{id}/views/{view-id} print a descriptor and need none).
 /// </summary>
 internal sealed record CliToolCall(
     string Tool,
@@ -331,19 +332,25 @@ internal static class CliArguments
             throw new CliUsageException(usage);
         }
 
-        if (!McpVfsAddress.TryNormalize(args[0], out string endpoint) ||
-            !RunEndpointCatalog.Messages.Any(value => value.Endpoint == endpoint))
+        if (!McpVfsAddress.TryNormalize(args[0], out string endpoint))
         {
             throw new CliUsageException(usage);
         }
 
-        ActionDescriptor? descriptor = RunEndpointCatalog.Find(endpoint, args[1]);
-        if (descriptor is null)
+        // Plugin control endpoints (patchouli://plugin/{id}/{endpoint}) have no local schema
+        // catalog; they accept arguments through --args JSON only and are validated host-side.
+        bool pluginEndpoint = Mcp.McpResourceUris.Parse(endpoint) is { IsSuccess: true } parsed &&
+                              parsed.Value.Kind is Mcp.McpUriKind.PluginResource or
+                                  Mcp.McpUriKind.Plugin;
+        ActionDescriptor? descriptor = pluginEndpoint
+            ? null
+            : RunEndpointCatalog.Find(endpoint, args[1]);
+        if (!pluginEndpoint && descriptor is null)
         {
             throw new CliUsageException("Unsupported endpoint action. " + usage);
         }
 
-        JsonElement properties = descriptor.InputSchema.GetProperty("properties");
+        JsonElement properties = descriptor is null ? default : descriptor.InputSchema.GetProperty("properties");
         Dictionary<string, object?> values = new(StringComparer.Ordinal);
         string? requestId = null;
         bool sawArgs = false;
@@ -399,6 +406,12 @@ internal static class CliArguments
                 continue;
             }
 
+            if (pluginEndpoint)
+            {
+                throw new CliUsageException(
+                    "Plugin endpoint arguments must be provided with --args JSON: " + option);
+            }
+
             string[] names = properties.EnumerateObject().Select(value => value.Name)
                 .Where(name => option == "--" + name.Replace('_', '-')).ToArray();
             if (names.Length != 1)
@@ -429,10 +442,13 @@ internal static class CliArguments
         }
 
         JsonElement parameters = JsonSerializer.SerializeToElement(values);
-        string? error = ActionRegistry.ValidateArgs(descriptor.InputSchema, parameters);
-        if (error is not null)
+        if (descriptor is not null)
         {
-            throw new CliUsageException(error);
+            string? error = ActionRegistry.ValidateArgs(descriptor.InputSchema, parameters);
+            if (error is not null)
+            {
+                throw new CliUsageException(error);
+            }
         }
 
         Dictionary<string, object?> arguments = new(StringComparer.Ordinal)
@@ -508,7 +524,10 @@ internal static class CliArguments
     /// [--max-edge N] [--boxes]</c>. The CLI calls the same MCP tool, decodes the image
     /// content block and saves the PNG; <c>--output</c> is required so no temp images
     /// with unclear lifecycle are produced. Issue #28: <c>--boxes</c> overlays numbered
-    /// box outlines matching the page XML order.
+    /// box outlines matching the page XML order. A plugin web view URI
+    /// (plugin/{plugin-id}/views/{view-id}) answers with a descriptor envelope instead of
+    /// an image, so <c>--output</c> may be omitted for that shape; the host decides whether
+    /// the view is actually declared.
     /// </summary>
     private static CliToolCall BuildView(IReadOnlyList<string> args, bool json)
     {
@@ -560,13 +579,38 @@ internal static class CliArguments
             throw new CliUsageException("view requires a URI argument.");
         }
 
-        if (string.IsNullOrWhiteSpace(output))
+        // Plugin web views answer with a descriptor envelope only; there is no PNG to save.
+        if (string.IsNullOrWhiteSpace(output) && !IsPluginViewUri(uri))
         {
             throw new CliUsageException("view requires --output <path>.");
         }
 
         arguments["uri"] = uri;
         return new CliToolCall(View, WithFormat(arguments, json), ViewOutputPath: output, ViewOverwrite: overwrite);
+    }
+
+    /// <summary>
+    /// Whether the URI has the syntactic shape of a plugin web view
+    /// (<c>plugin/{id}/views/{view-id}</c>, scheme optional). This only decides whether
+    /// <c>--output</c> may be omitted; the host still validates that the view is declared.
+    /// </summary>
+    private static bool IsPluginViewUri(string uri)
+    {
+        if (!McpVfsAddress.TryNormalize(uri, out string normalized) ||
+            Mcp.McpResourceUris.Parse(normalized) is not { IsSuccess: true } parsed ||
+            parsed.Value.Kind != Mcp.McpUriKind.PluginResource)
+        {
+            return false;
+        }
+
+        string path = parsed.Value.PluginPath ?? string.Empty;
+        if (!path.StartsWith("views/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string viewId = path["views/".Length..];
+        return viewId.Length > 0 && !viewId.Contains('/', StringComparison.Ordinal);
     }
 
     private static Dictionary<string, object?> WithFormat(Dictionary<string, object?> arguments, bool json)

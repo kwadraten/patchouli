@@ -96,7 +96,8 @@ internal sealed class HostServicesMcpServerInstanceFactory(HostServices services
             ocrCommands: services.OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(services.TranslationRuns),
             metadataRuns: new McpHostMetadataRunsApi(services.MetadataRuns),
-            implementationCatalog: services.McpImplementationCatalog);
+            implementationCatalog: services.McpImplementationCatalog,
+            pluginApi: services.Plugins);
         return new McpHttpServerInstance(new McpHttpServer(handler, settings, reportException));
     }
 }

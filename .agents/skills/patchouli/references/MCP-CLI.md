@@ -11,7 +11,7 @@
 | `find [QUERY] --in <URI>` | `patchouli.find` | 浏览目录（无查询）或在范围内搜索（有查询） |
 | `fetch <URI>...` | `patchouli.fetch` | 读取已知资源，逐 URI 独立返回结果 |
 | `add <PATH> [--kind pdf\|csl]` | `patchouli.add { path, kind }` | 导入宿主机本地文件 |
-| `view <URI> --output <PNG>` | `patchouli.view { uri, context?, max_edge?, boxes? }` | 读取页面或 box 的源图像；`--boxes` 叠加与页面 XML 顺序一致的带序号边界框 |
+| `view <URI> --output <PNG>` | `patchouli.view { uri, context?, max_edge?, boxes? }` | 读取页面或 box 的源图像；`--boxes` 叠加与页面 XML 顺序一致的带序号边界框；作用于 plugin `views/{view-id}` 时返回视图描述符而非图像 |
 | `put <URI> --from/--stdin` 或 `--boxes-from/--boxes-stdin` | `patchouli.put` | 替换一个可写资源 |
 | `cite <REF>...` | `patchouli.cite` | 渲染引用 |
 | `send <ENDPOINT> <ACTION> <TARGET> [选项]` | `patchouli.send` | 向领域端点发送类型化消息 |
@@ -29,6 +29,9 @@ patchouli://translations/{document-id}/page-{N}.xml   页面译文
 patchouli://csl-styles/{style-id}.csl
 patchouli://runs/{ocr|translation|metadata}/control   领域端点
 patchouli://runs/{ocr|translation|metadata}/{id}/status   易失任务状态
+patchouli://plugin/{plugin-id}/plugin.yml        插件清单投影（含 views 数组）
+patchouli://plugin/{plugin-id}/views/{view-id}   宿主合成的视图描述符
+patchouli://plugin/{plugin-id}/{declared-path}   声明的插件资源
 ```
 
 URI 可以写成完整 `patchouli://…`、相对根的路径或前导 `/`。宿主拒绝本机路径、其他 scheme、`..` 和反斜杠。响应中的链接总是完整的 canonical URI，直接复用即可。

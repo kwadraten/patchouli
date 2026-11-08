@@ -301,7 +301,9 @@ public sealed record McpViewMeta(
 /// <summary>
 /// Issue #11: image metadata carried in the text content block of a view response.
 /// The base64 PNG itself travels in the native MCP image content block, never inside
-/// this text envelope.
+/// this text envelope. For a declared plugin web view (<c>view_type</c> "plugin-view")
+/// there is no image block; the trailing plugin fields carry the view descriptor
+/// (null, and absent from the JSON, for ordinary image views).
 /// </summary>
 public sealed record McpViewImageMetadata(
     [property: JsonPropertyName("uri")] string Uri,
@@ -316,7 +318,22 @@ public sealed record McpViewImageMetadata(
     int ImageIndex,
     [property: JsonPropertyName("boxes")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<McpViewBoxNumber>? Boxes = null);
+    IReadOnlyList<McpViewBoxNumber>? Boxes = null,
+    [property: JsonPropertyName("view_id")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ViewId = null,
+    [property: JsonPropertyName("plugin_id")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PluginId = null,
+    [property: JsonPropertyName("title")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Title = null,
+    [property: JsonPropertyName("placement")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Placement = null,
+    [property: JsonPropertyName("source_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SourceUri = null);
 
 /// <summary>
 /// Issue #28: one numbered box overlay entry of a view response. <see cref="Index"/> is
@@ -330,7 +347,8 @@ public sealed record McpViewBoxNumber(
 /// <summary>
 /// Issue #11: the full outcome of a view command. The envelope carries the text
 /// metadata; <see cref="PngBytes"/> carries the image bytes for the native image
-/// content block (null when the command failed).
+/// content block (null when the command failed and for plugin views, which return
+/// a text-only descriptor envelope).
 /// </summary>
 public sealed record McpViewCommandResult(
     McpCommandResult<McpViewMeta, McpViewImageMetadata> Result,

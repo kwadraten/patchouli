@@ -36,7 +36,8 @@ public sealed class McpProtocolHandler
         IFileImportService? fileImport = null, IPageImageViewService? pageView = null,
         IMcpOcrCommandApi? ocrCommands = null, IMcpTranslationRunsApi? translationRuns = null,
         IMcpMetadataRunsApi? metadataRuns = null,
-        IMcpImplementationCatalogApi? implementationCatalog = null)
+        IMcpImplementationCatalogApi? implementationCatalog = null,
+        IMcpPluginApi? pluginApi = null)
     {
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
@@ -58,7 +59,8 @@ public sealed class McpProtocolHandler
             ocrCommands,
             translationRuns,
             metadataRuns,
-            implementationCatalog);
+            implementationCatalog,
+            pluginApi);
         _ = db;
         _settings = effectiveSettings with
         {
@@ -432,7 +434,9 @@ public sealed class McpProtocolHandler
                 "revision or box source image, then put with the original source_revision; if the version " +
                 "changed in the meantime the put reports a normal revision conflict instead of overwriting. " +
                 "A page without a box tree can still be viewed as a whole page; pass boxes=true to overlay " +
-                "numbered box outlines that match the page XML order.",
+                "numbered box outlines that match the page XML order. A declared plugin web view " +
+                "(plugin/<plugin-id>/views/<view-id>) returns a text-only descriptor envelope with no " +
+                "image block.",
                 ["uri"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {

@@ -27,7 +27,10 @@ public enum McpUriKind
     RunTranslationStatus,
     RunsMetadataScope,
     RunMetadataStatus,
-    RunEndpoint
+    RunEndpoint,
+    PluginsScope,
+    Plugin,
+    PluginResource
 }
 
 public sealed record McpUriParseResult(
@@ -42,7 +45,9 @@ public sealed record McpUriParseResult(
     string CanonicalUri = "",
     bool IsLegacy = false,
     string? ContentType = null,
-    string? EndpointDomain = null);
+    string? EndpointDomain = null,
+    string? PluginId = null,
+    string? PluginPath = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
@@ -167,6 +172,214 @@ public static class McpResourceUris
         return $"{Prefix}runs/metadata/";
     }
 
+    /// <summary>The plugin mount namespace root: each enabled plugin owns patchouli://plugin/{id}/.</summary>
+    public static string PluginsScopeUri()
+    {
+        return $"{Prefix}plugin/";
+    }
+
+    public static string PluginRootUri(string pluginId)
+    {
+        return $"{Prefix}plugin/{RequirePluginId(pluginId)}/";
+    }
+
+    public static string PluginUri(string pluginId, string relativePath)
+    {
+        return PluginRootUri(pluginId) + RequirePluginRelativePath(relativePath);
+    }
+
+    /// <summary>Plugin ids are dotted path tokens such as kwadraten.kuzushi-classifier.</summary>
+    public static bool IsValidPluginId(string? pluginId)
+    {
+        if (string.IsNullOrEmpty(pluginId) || pluginId.Length > 128)
+        {
+            return false;
+        }
+
+        foreach (string part in pluginId.Split('.'))
+        {
+            if (part.Length == 0 ||
+                !part.All(character => char.IsLetterOrDigit(character) || character is '-' or '_'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Plugin-relative VFS paths ("" for the mount root). Traversal, percent escapes,
+    /// backslashes, queries and fragments are rejected; placeholders only appear in
+    /// manifests, never in request URIs.
+    /// </summary>
+    public static bool IsValidPluginRelativePath(string? path)
+    {
+        if (path is null)
+        {
+            return false;
+        }
+
+        if (path.Length == 0)
+        {
+            return true; // "" addresses the mount root.
+        }
+
+        if (path.Length > 512 || path.EndsWith("//", StringComparison.Ordinal) ||
+            path.Contains('\\') || path.Contains('%') || path.Contains('?') || path.Contains('#') ||
+            path.Contains("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // Directory paths carry a single trailing slash; "" is the mount root.
+        string body = path.EndsWith("/", StringComparison.Ordinal) ? path[..^1] : path;
+        return body.Split('/').All(IsValidPluginSegment);
+    }
+
+    private static bool IsValidPluginSegment(string segment)
+    {
+        return segment.Length is > 0 and <= 128 && segment is not "." and not ".." &&
+               segment.All(character =>
+                   char.IsLetterOrDigit(character) || character is '-' or '_' or '.');
+    }
+
+    /// <summary>
+    /// Plugin manifest template paths allow one {placeholder} per path segment (files only),
+    /// either as the whole segment or embedded between literal affixes such as
+    /// results/{result_id}.json; request URIs never contain placeholders.
+    /// </summary>
+    public static bool IsValidPluginTemplatePath(string? path)
+    {
+        if (path is null || path.Length == 0 || path.Length > 512 || path.EndsWith("/", StringComparison.Ordinal) ||
+            path.Contains('\\') || path.Contains('%') || path.Contains('?') || path.Contains('#') ||
+            path.Contains("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (string segment in path.Split('/'))
+        {
+            if (segment.Contains('{') || segment.Contains('}'))
+            {
+                if (!IsValidPluginTemplateSegment(segment))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!IsValidPluginSegment(segment))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// One template segment: exactly one {name} placeholder with a valid identifier and only
+    /// path-safe literal characters around it. Empty captures are never allowed.
+    /// </summary>
+    private static bool IsValidPluginTemplateSegment(string segment)
+    {
+        int open = segment.IndexOf('{');
+        int close = segment.IndexOf('}');
+        if (open < 0 || close <= open || segment.IndexOf('{', open + 1) >= 0 ||
+            segment.IndexOf('}', close + 1) >= 0)
+        {
+            return false;
+        }
+
+        if (!IsValidPluginPlaceholder(segment[(open + 1)..close]))
+        {
+            return false;
+        }
+
+        // Literal affixes may only use the plain path-safe character set.
+        return segment[..open].Concat(segment[(close + 1)..])
+            .All(character => char.IsLetterOrDigit(character) || character is '-' or '_' or '.');
+    }
+
+    private static bool IsValidPluginPlaceholder(string name)
+    {
+        return name.Length is > 0 and <= 64 &&
+               (char.IsLetter(name[0]) || name[0] == '_') &&
+               name.All(character => char.IsLetterOrDigit(character) || character == '_');
+    }
+
+    /// <summary>Matches a concrete plugin-relative path against a manifest template path.</summary>
+    public static bool MatchesPluginTemplatePath(string templatePath, string relativePath)
+    {
+        string[] template = templatePath.Split('/');
+        string[] actual = relativePath.Split('/');
+        if (template.Length != actual.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < template.Length; index++)
+        {
+            if (template[index].Contains('{') || template[index].Contains('}'))
+            {
+                int open = template[index].IndexOf('{');
+                int close = template[index].IndexOf('}');
+                if (open < 0 || close <= open)
+                {
+                    return false; // Malformed template segment; IsValidPluginTemplatePath rejects these.
+                }
+
+                string prefix = template[index][..open];
+                string suffix = template[index][(close + 1)..];
+                string candidate = actual[index];
+                if (!candidate.StartsWith(prefix, StringComparison.Ordinal) ||
+                    !candidate.EndsWith(suffix, StringComparison.Ordinal) ||
+                    candidate.Length < prefix.Length + suffix.Length + 1)
+                {
+                    return false;
+                }
+
+                // The captured placeholder must be a non-empty valid path segment body.
+                string capture = candidate[prefix.Length..^suffix.Length];
+                if (!IsValidPluginSegment(capture))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!string.Equals(template[index], actual[index], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string RequirePluginId(string pluginId)
+    {
+        if (!IsValidPluginId(pluginId))
+        {
+            throw new ArgumentException("The plugin id must be a dotted path token.", nameof(pluginId));
+        }
+
+        return pluginId;
+    }
+
+    private static string RequirePluginRelativePath(string relativePath)
+    {
+        if (!IsValidPluginRelativePath(relativePath))
+        {
+            throw new ArgumentException("The plugin-relative path is not valid.", nameof(relativePath));
+        }
+
+        return relativePath;
+    }
+
     /// <summary>The canonical status URI a metadata enrich_batch start returns and cancel/retry address.</summary>
     public static string MetadataRunStatusUri(string taskId)
     {
@@ -286,6 +499,9 @@ public static class McpResourceUris
             McpUriKind.RunTranslationStatus => TranslationRunStatusUri(target.RunTaskId!),
             McpUriKind.RunsMetadataScope => RunsMetadataScopeUri(),
             McpUriKind.RunMetadataStatus => MetadataRunStatusUri(target.RunTaskId!),
+            McpUriKind.PluginsScope => PluginsScopeUri(),
+            McpUriKind.Plugin => PluginRootUri(target.PluginId!),
+            McpUriKind.PluginResource => PluginUri(target.PluginId!, target.PluginPath ?? ""),
             _ => throw new InvalidOperationException("Unknown VFS resource kind.")
         };
     }
@@ -335,10 +551,47 @@ public static class McpResourceUris
             "translations" => ParseTranslationsUri(uri, segments, query),
             "csl-styles" => ParseCslStylesUri(uri, segments, query),
             "runs" => ParseRunsUri(uri, segments, query),
+            "plugin" => ParsePluginUri(uri, segments, query),
             "documents" or "styles" or "evidence" => Invalid(uri,
                 $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
+    }
+
+    private static Result<McpUriParseResult> ParsePluginUri(string uri, string[] segments, string? query)
+    {
+        // patchouli://plugin/ (scope), patchouli://plugin/{id}/ (mount root) or
+        // patchouli://plugin/{id}/{relative-path} (declared node or endpoint).
+        if (query is not null)
+        {
+            return Invalid(uri, "Plugin URIs do not accept query parameters.");
+        }
+
+        if (segments.Length == 1 || (segments.Length == 2 && segments[1].Length == 0))
+        {
+            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.PluginsScope));
+        }
+
+        string pluginId = segments[1];
+        if (!IsValidPluginId(pluginId))
+        {
+            return Invalid(uri, "Plugin ids must be dotted path tokens of letters, digits, '-' and '_'.");
+        }
+
+        string relativePath = string.Join('/', segments.Skip(2));
+        if (relativePath.Length == 0)
+        {
+            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Plugin,
+                PluginId: pluginId, PluginPath: ""));
+        }
+
+        if (!IsValidPluginRelativePath(relativePath))
+        {
+            return Invalid(uri, "Invalid plugin-relative resource path.");
+        }
+
+        return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.PluginResource,
+            PluginId: pluginId, PluginPath: relativePath));
     }
 
     private static Result<McpUriParseResult> ParseRunsUri(string uri, string[] segments, string? query)

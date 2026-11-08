@@ -91,6 +91,9 @@ public sealed class HostServices
     private readonly Dictionary<string, long> _appliedSettingsCommitSequences =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly bool _ownsPluginApi;
+    private readonly bool _ownsPluginStore;
+
     private long _metadataLookupApplyGeneration;
     private Task _metadataLookupApplyTask = Task.CompletedTask;
     private Task? _shutdownTask;
@@ -108,6 +111,8 @@ public sealed class HostServices
     private readonly HttpClient _layoutModelHttpClient;
     private readonly HttpClient _updateApiHttpClient;
     private readonly HttpClient _updateDownloadHttpClient;
+    private readonly HttpClient _pluginCatalogHttpClient;
+    private readonly HttpClient _pluginDownloadHttpClient;
     private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -124,6 +129,8 @@ public sealed class HostServices
         _layoutModelHttpClient = httpClients.CreateClient(HostHttpPurpose.LayoutModel);
         _updateApiHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateApi);
         _updateDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateDownload);
+        _pluginCatalogHttpClient = httpClients.CreateClient(HostHttpPurpose.PluginCatalog);
+        _pluginDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.PluginDownload);
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -319,6 +326,17 @@ public sealed class HostServices
             LibraryRevisions);
         ChapterScanner = new ChapterScanService(Pages, DocumentTrees, DocumentMarkdown, Markdown);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
+        Plugins = infrastructure?.PluginApi ?? new Plugins.HostPluginApi(
+            Host.Plugins.PluginRegistry.RegistryPath(storagePaths.DataDirectory),
+            reportException: (exception, operation) =>
+                _reportUnexpectedException(exception, "plugins", operation));
+        _ownsPluginApi = infrastructure?.PluginApi is null;
+        PluginStore = infrastructure?.PluginStore ?? new Plugins.PluginStore(_pluginCatalogHttpClient,
+            _pluginDownloadHttpClient, new Plugins.PluginStoreOptions
+            {
+                DataDirectory = storagePaths.DataDirectory
+            });
+        _ownsPluginStore = infrastructure?.PluginStore is null;
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache, PageTranslations, DocumentPageMaps);
@@ -348,7 +366,8 @@ public sealed class HostServices
             ocrCommands: OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(TranslationRuns),
             metadataRuns: new McpHostMetadataRunsApi(MetadataRuns),
-            implementationCatalog: McpImplementationCatalog);
+            implementationCatalog: McpImplementationCatalog,
+            pluginApi: Plugins);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -531,6 +550,15 @@ public sealed class HostServices
     public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
     public McpCommandService McpCommands { get; }
+
+    /// <summary>
+    /// The device plugin mount surface behind the shared MCP find/fetch/send/view commands.
+    /// Empty when no enabled registry records exist; plugin processes start lazily.
+    /// </summary>
+    public IMcpPluginApi Plugins { get; }
+
+    public Plugins.IPluginStore PluginStore { get; }
+
     public ICliPathService CliPath { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
@@ -1028,6 +1056,16 @@ public sealed class HostServices
         }
 
         await metadataSettings.ConfigureAwait(false);
+        if (_ownsPluginApi && Plugins is IAsyncDisposable pluginApi)
+        {
+            await pluginApi.DisposeAsync(); // Stops supervised plugin child processes.
+        }
+
+        if (_ownsPluginStore && PluginStore is IDisposable pluginStore)
+        {
+            pluginStore.Dispose();
+        }
+
         ExtensionFiles.Dispose(); // Close admission and cancel desktop prompts/direct downloads.
         IOcrQueueScheduler ocrQueue = ((QueuedOcrRunCoordinator)Ocr).Queue;
         if (ocrQueue is IAsyncDisposable ownedOcrQueue)
@@ -1064,6 +1102,8 @@ public sealed class HostServices
         _layoutModelHttpClient.Dispose();
         _updateApiHttpClient.Dispose();
         _updateDownloadHttpClient.Dispose();
+        _pluginCatalogHttpClient.Dispose();
+        _pluginDownloadHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 

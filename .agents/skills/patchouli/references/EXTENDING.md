@@ -6,9 +6,20 @@
 |---|---|---|
 | Core | 身份、校验、事务、历史、并发、证据与快照规则 | 由宿主维护，不能替换 |
 | Extension | 可替换的核心业务动作实现，例如翻译引擎、元数据来源 | 正在实现：可信编译 FSX 包；尚未完成验收 |
-| Plugin | 独立应用，可以拥有自己的数据，通过 MCP 使用书库 | 规划中，尚不可用 |
+| Plugin | 独立应用，可以拥有自己的数据，通过 MCP 使用书库 | 已支持静态声明的 stdio MCP 与社区商店；当前开放 find/fetch/send、声明视图的宿主合成描述符与桌面 WebView 容器，尚无插件书库授权 |
 
-扩展的业务契约是返回候选结果，由宿主校验并提交；但扩展是宿主内运行的可信代码，不是安全边界或沙箱。不得把“不能访问数据库/文件/网络”当作安全保证。
+扩展的业务契约是返回候选结果，由宿主校验并提交；但扩展是宿主内运行的可信代码，不是安全边界或沙箱。
+
+## Plugin 与社区商店
+
+- 包根目录的 `patchouli-plugin.toml` 声明 `patchouli.plugin/1`、`patchouli.plugins/1`、SemVer、stdio 启动命令、README、VFS 节点和同步动作 Schema。宿主只挂载声明的 `find`/`fetch`/`send`，并校验运行时输入和结果。
+- 清单还可用 `[[ui.views]]` 声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。`views` 是宿主保留挂载路径（与 `plugin.yml`、`README.md`、`files` 同级，插件不能自行声明）；`patchouli://plugin/{id}/views/{view-id}` 由宿主合成，`find` 列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`），`fetch`/`view` 返回 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，读取它们不启动插件进程。声明 views 后 `view` 计入清单 `DeclaredVerbs`，并加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合；plugin 地址上的 `put`/`add`/`cite` 仍被拒绝。
+- 桌面容器按 placement 打开视图：`tab` 为保留的工作区标签页（按 plugin/view 去重），`window` 为非模态弹窗（已有窗口则重新激活），`pdf-sidebar` 出现在 PDF 工作台右侧栏的页签选择器中（沿用既有侧栏显隐与 200–800 px 分隔条，box 编辑模式下隐藏；无活动 PDF 工作台时 URI 激活退回标签页容器）。打开入口是应用内/URI 激活 view URI 与 PDF 侧栏页签菜单中列出的已授权 pdf-sidebar 视图。视图 HTML 由宿主经 `patchouli.plugin.fetch` 读取声明的 source 节点，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。
+- 宿主向视图注入上下文：webview 创建及每次变化时设置 `window.patchouli.theme = {dark, colors{全部调色板变量}}`，在 `:root` 上写入 `--patchouli-color-*` CSS 变量与 `color-scheme`，并派发 `patchouli:theme` DOM 事件；pdf-sidebar 视图另收 `window.patchouli.page = {uri}`（当前页的 canonical `patchouli://texts/{doc}/page-N.xml?rev=…` 链接），随页面/修订/文档变化推送并派发 `patchouli:page` 事件。页面内 JS 可调用 `invokeCSharpAction('{"type":"patchouli:request-context"}')` 请求重推。不暴露宿主 token、对象或桥接；外部 http(s) 链接交给系统浏览器，仅 `about:`/`data:` 允许原地导航。WebView 为 `Avalonia.Controls.WebView`（Windows WebView2、macOS WKWebView、Linux WebKitGTK），不构成 OS 沙箱。
+- 桌面「设置 → 插件 → 插件商店」读取 GitHub Pages 的 `index/v1/index.json` 及 minisign 签名。客户端内置社区公钥；在线索引和离线缓存都必须验签，发行包按平台选择并复核大小与 SHA-256。
+- 社区包安装到设备数据目录 `plugins/{id}/{version}/`，先解包校验并完成 MCP 握手，再更新 `plugins/dev-plugins.json`。旧版本保留用于回滚；更新或回滚不会撤销已提交数据。本地开发包与社区包来源分别记录，商店不会接管手工 dev 注册。
+- 安装确认会列出请求的宿主动词、源码仓库和固定修订。当前不支持插件书库 grants、托管 `files/`、后台动作或 URI resolve。独立进程不是 OS 沙箱，索引签名与哈希也不是代码安全保证。
+- 社区索引仓库为 `https://github.com/kwadraten/patchouli-community`；作者仓库固定源码修订和发行产物摘要由索引 CI 复核。不得把“不能访问数据库/文件/网络”当作安全保证。
 
 ## 扩展包与生命周期
 

@@ -46,6 +46,9 @@
     <DataTemplate DataType="{x:Type local:ChangelogViewModel}">
       <views:ChangelogPage />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type local:PluginViewViewModel}">
+      <views:PluginViewPage />
+    </DataTemplate>
   </Window.DataTemplates>
 
   <Window.Resources>

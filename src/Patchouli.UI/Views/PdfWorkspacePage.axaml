@@ -5,6 +5,7 @@
              xmlns:reading="using:Patchouli.Reading"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:views="using:Patchouli.UI.Views"
+             xmlns:controls="using:Patchouli.UI.Controls"
              x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
     <ControlTheme x:Key="ChapterExpanderTheme" TargetType="ToggleButton">
@@ -619,6 +620,21 @@
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
                           <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <MenuItem Header="插件视图" ItemsSource="{Binding PluginSidebarMenuEntries}"
+                                    IsVisible="{Binding !HasNoPluginSidebarViews}" x:CompileBindings="False">
+                            <MenuItem.ItemTemplate>
+                              <DataTemplate x:DataType="vm:PluginViewMenuEntry">
+                                <TextBlock Text="{Binding Title}" />
+                              </DataTemplate>
+                            </MenuItem.ItemTemplate>
+                            <MenuItem.Styles>
+                              <Style Selector="MenuItem MenuItem">
+                                <Setter Property="Command" Value="{Binding ActivateCommand}" />
+                              </Style>
+                            </MenuItem.Styles>
+                          </MenuItem>
+                          <MenuItem Header="插件视图（无可用）" IsEnabled="False"
+                                    IsVisible="{Binding HasNoPluginSidebarViews}" />
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
@@ -905,6 +921,23 @@
                                    IsVisible="{Binding HasNoBookSearchResults}" />
                   </Grid>
                 </Grid>
+
+                <!-- Tab: plugin web view (placement pdf-sidebar) -->
+                <Grid IsVisible="{Binding IsPluginTabActive}">
+                  <controls:PluginWebViewHost Session="{Binding ActivePluginSession}" />
+                  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"
+                              IsVisible="{Binding ActivePluginSession.ErrorText, Converter={x:Static ObjectConverters.IsNotNull}, FallbackValue={x:Null}}">
+                    <lucide:Lucide Icon="Puzzle" Width="28" Height="28" HorizontalAlignment="Center"
+                                   StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.4" />
+                    <TextBlock Text="{Binding ActivePluginSession.ErrorText, FallbackValue={x:Null}}"
+                               FontSize="13" TextWrapping="Wrap"
+                               MaxWidth="280" TextAlignment="Center"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                  <ProgressBar IsIndeterminate="True" Width="140" HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               IsVisible="{Binding ActivePluginSession.IsLoading, FallbackValue=False}" />
+                </Grid>
               </Grid>
             </Grid>
 
@@ -924,6 +957,21 @@
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
                           <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <MenuItem Header="插件视图" ItemsSource="{Binding PluginSidebarMenuEntries}"
+                                    IsVisible="{Binding !HasNoPluginSidebarViews}" x:CompileBindings="False">
+                            <MenuItem.ItemTemplate>
+                              <DataTemplate x:DataType="vm:PluginViewMenuEntry">
+                                <TextBlock Text="{Binding Title}" />
+                              </DataTemplate>
+                            </MenuItem.ItemTemplate>
+                            <MenuItem.Styles>
+                              <Style Selector="MenuItem MenuItem">
+                                <Setter Property="Command" Value="{Binding ActivateCommand}" />
+                              </Style>
+                            </MenuItem.Styles>
+                          </MenuItem>
+                          <MenuItem Header="插件视图（无可用）" IsEnabled="False"
+                                    IsVisible="{Binding HasNoPluginSidebarViews}" />
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>

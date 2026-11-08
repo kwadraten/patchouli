@@ -14,6 +14,14 @@ public static class ThemePaletteApplier
     private static Application? _watchedApp;
     private static EventHandler? _variantChangedHandler;
 
+    /// <summary>
+    /// Raised at the end of every <see cref="Apply"/> once the palette/mode statics above have
+    /// been recomputed — including the headless no-Application path, so consumers that read the
+    /// statics directly (e.g. plugin-view context pushed into embedded web views) see a coherent
+    /// snapshot. Listener failures are reported and swallowed so they can never break an Apply.
+    /// </summary>
+    public static event Action? Applied;
+
     public static string CurrentPaletteId { get; private set; } = UiColorPalettes.DefaultPaletteId;
     public static string CurrentThemeMode { get; private set; } = UiPreferences.ThemeModeSystem;
     public static bool CurrentEffectiveIsDark { get; private set; }
@@ -33,6 +41,10 @@ public static class ThemePaletteApplier
 
         if (Application.Current is not { } app)
         {
+            // Keep the effective-scheme static coherent even without a running Application and
+            // still notify: this path is the headless/settings-only shape of an applied theme.
+            CurrentEffectiveIsDark = ResolveEffectiveIsDark(null, normalizedMode);
+            NotifyApplied();
             return;
         }
 
@@ -85,6 +97,20 @@ public static class ThemePaletteApplier
             {
                 app.Resources[brushKey] = new SolidColorBrush(color);
             }
+        }
+
+        NotifyApplied();
+    }
+
+    private static void NotifyApplied()
+    {
+        try
+        {
+            Applied?.Invoke();
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "theme-palette", "applied-listeners");
         }
     }
 

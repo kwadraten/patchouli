@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Patchouli.Cli;
+using Patchouli.Core.Mcp;
 
 if (args.Contains("--help", StringComparer.Ordinal))
 {
@@ -110,6 +111,8 @@ catch (OperationCanceledException)
 /// overwritten without --overwrite. Any image write failure exits non-zero.
 /// stdout prints the host's TOON/JSON metadata plus the CLI-generated absolute
 /// output_path (a client-side path, not a host cache path).
+/// Plugin web views answer with a text-only descriptor envelope: there is no image
+/// block to decode and no PNG to write, so the envelope is printed as-is.
 /// </summary>
 static async Task<int> HandleViewResponseAsync(CliToolCall call, CliToolResponse response)
 {
@@ -118,6 +121,13 @@ static async Task<int> HandleViewResponseAsync(CliToolCall call, CliToolResponse
         PrintText(response.Text);
         if (!response.IsError)
         {
+            if (call.Arguments.TryGetValue("uri", out object? uriValue) && uriValue is string viewUri &&
+                McpVfsAddress.TryNormalize(viewUri, out string normalized) &&
+                McpPermissionPolicy.IsPluginAddress(normalized))
+            {
+                return response.ExitCode;
+            }
+
             Console.Error.WriteLine("patchouli-cli: the host returned no image for view.");
             return CliExitCode.Internal;
         }
@@ -310,9 +320,12 @@ static void PrintUsage()
     Console.Error.WriteLine("  add <path> [--kind pdf|csl]");
     Console.Error.WriteLine(
         "    Imports a host-local file (relative paths are resolved to absolute); URLs are rejected.");
-    Console.Error.WriteLine("  view <uri> --output <image.png> [--overwrite] [--context page|region] [--max-edge <n>]");
+    Console.Error.WriteLine(
+        "  view <uri> [--output <image.png>] [--overwrite] [--context page|region] [--max-edge <n>]");
     Console.Error.WriteLine(
         "    Saves the source image PNG and prints the host metadata plus the client-side output_path.");
+    Console.Error.WriteLine(
+        "    Plugin web views (plugin/<plugin-id>/views/<view-id>) print the view descriptor; --output is not needed.");
     Console.Error.WriteLine(
         "  send <endpoint> <action> <target> [domain options] [--args <json-object>] [--request-id <id>]");
     Console.Error.WriteLine(

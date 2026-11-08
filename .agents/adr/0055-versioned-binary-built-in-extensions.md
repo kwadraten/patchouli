@@ -16,7 +16,8 @@ templates removes that responsibility while preserving local examples and the ex
 
 Issue #8 retains Core commit authority, trusted in-process extensions, generation leases and
 explicit LKG. Its historical editable-built-in and source-preservation decisions are replaced
-below; Plugin VFS, WebView, full retrieval backends and a community store remain future work.
+below; this ADR does not define Plugin VFS, WebView containers (see
+[ADR 0056](0056-plugin-webview-containers.md)), full retrieval backends or the separately implemented community store.
 This ADR partially supersedes ADRs 0052 and 0053 on distribution and upgrade, without changing
 task execution interfaces or the host's domain validation/transaction authority.
 

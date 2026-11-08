@@ -30,6 +30,6 @@ Patchouli 是个人文献管理器。每个书库只有一个运行中的 .NET �
 - 生成引用、管理 CSL 样式、修改题录 YAML、维护章节与印刷页码，或在线补全元数据时，读 [CITATIONS](references/CITATIONS.md)。
 - 编写或修改 FSX 扩展（翻译引擎、元数据来源等），或需要区分 Core、Extension、Plugin 时，读 [EXTENDING](references/EXTENDING.md)。
 
-## 尚未交付
+## Plugin 范围
 
-Plugin 的 VFS 命名空间 `patchouli://plugin/{plugin-id}/`、Plugin 自描述文档及其 Action 投影仍是规划中的目标契约，当前宿主不提供，不要调用。可用的领域端点只有 `find patchouli://runs/` 实际列出的那些。
+已安装并启用的 Plugin 挂载于 `patchouli://plugin/{plugin-id}/`。先用 `find` 和 `fetch plugin.yml` 阅读静态声明，再按声明调用 `find`/`fetch`/`send`。声明了 UI 视图的插件还会列出 `views/`：`fetch` 或 `view` 作用于 `views/{view-id}` 返回宿主合成的视图描述符（不启动插件进程，`view` 对它不返回图像），桌面按声明的 placement 在工作区标签页、非模态弹窗或 PDF 侧栏打开对应的 WebView 容器。仍不要把 `put`/`add`/`cite`、托管 `files/` 或插件书库授权当成现有能力。桌面「设置 → 插件 → 插件商店」使用验签的社区索引安装独立 stdio MCP 插件；安装记录按设备保存，不进入书库快照。

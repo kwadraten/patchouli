@@ -1,0 +1,26 @@
+<Window x:Class="Patchouli.UI.Views.PluginViewWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        xmlns:vm="using:Patchouli.UI.ViewModels"
+        xmlns:controls="using:Patchouli.UI.Controls"
+        x:DataType="vm:PluginViewSession"
+        Width="920" Height="680" MinWidth="480" MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        Icon="/Assets/AppIcon.ico" Background="{DynamicResource SurfaceBrush}">
+  <Grid Background="{DynamicResource SurfaceContainerLowestBrush}">
+    <controls:PluginWebViewHost x:Name="WebHost" Session="{Binding}" />
+
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"
+                IsVisible="{Binding ErrorText, Converter={x:Static ObjectConverters.IsNotNull}}">
+      <lucide:Lucide Icon="Puzzle" Width="28" Height="28" HorizontalAlignment="Center"
+                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.4" />
+      <TextBlock Text="{Binding ErrorText}" FontSize="13" TextWrapping="Wrap" MaxWidth="360"
+                 TextAlignment="Center" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </StackPanel>
+
+    <ProgressBar IsIndeterminate="True" Width="160" HorizontalAlignment="Center"
+                 VerticalAlignment="Center"
+                 IsVisible="{Binding IsLoading}" />
+  </Grid>
+</Window>

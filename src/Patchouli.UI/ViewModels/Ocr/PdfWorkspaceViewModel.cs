@@ -105,6 +105,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
         UpdateChapterSelection();
+        PushPluginViewPageUri();
     }
 
     [ObservableProperty]
@@ -486,6 +487,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             SidebarTab.Translation => "翻译",
             SidebarTab.Chapters => "章节",
             SidebarTab.Search => "全书搜索",
+            SidebarTab.Plugin => ActivePluginView?.Title ?? "插件",
             _ => "页面内容"
         };
 
@@ -2276,8 +2278,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _loadedDocumentInstanceId = TryGetDocumentInstanceId(out DocumentInstanceId openedId)
             ? openedId
             : null;
+        PushPluginViewPageUri();
         await RenderCurrentPageAsync();
         await EnsureChapterMapLoadedAsync();
+        await RefreshPluginSidebarViewsAsync();
     }
 
     public void Clear()
@@ -2334,6 +2338,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _chapterMapSubscription = null;
         _chapterMapRevisions = null;
         _loadedDocumentInstanceId = null;
+        DeactivatePluginView();
+        PushPluginViewPageUri();
         Status = "选择题录后可预览 PDF。";
     }
 
@@ -2648,6 +2654,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                     _currentRevisionId = rev.Value.TreeRevisionId;
                     _liveCurrentRevisionId = rev.Value.TreeRevisionId;
                     IsViewingHistoricalRevision = false;
+                    PushPluginViewPageUri();
                     await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false, generation);
                 }
             }
@@ -4440,6 +4447,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SelectedBox = null;
         IsViewingHistoricalRevision = true;
         _currentRevisionId = revision.RevisionId;
+        PushPluginViewPageUri();
         await LoadBoxesIntoViewAsync(revision.RevisionId, false);
         Status = $"正在查看历史版本 {revision.RevisionId}（来源：{revision.Source}）。重新加载页面可返回当前版本。";
     }
