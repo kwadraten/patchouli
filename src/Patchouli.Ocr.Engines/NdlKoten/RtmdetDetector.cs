@@ -2,7 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlKoten;
+namespace Patchouli.Ocr.Engines.NdlKoten;
 
 public sealed class RtmdetDetector : IDisposable
 {

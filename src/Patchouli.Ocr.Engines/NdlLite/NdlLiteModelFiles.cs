@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>
 /// Official model and configuration manifest for the native .NET port of

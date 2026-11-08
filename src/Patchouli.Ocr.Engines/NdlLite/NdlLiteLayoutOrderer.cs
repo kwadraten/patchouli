@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>
 /// Native port of the NDLOCR-Lite layout grouping and line ordering that

@@ -1,6 +1,7 @@
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
+using Patchouli.Ocr.Engines.NdlKoten;
 using SkiaSharp;
 
 namespace Patchouli.Infrastructure.Ocr.NdlKoten;

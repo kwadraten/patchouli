@@ -1,7 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>
 /// Managed port of upstream <c>ch_ppocr_cls</c>. Crops are classified in batches of six

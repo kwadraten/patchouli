@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>
 /// RapidOCR preset parameters. Defaults mirror the official v3.9.2 <c>config.yaml</c> so a

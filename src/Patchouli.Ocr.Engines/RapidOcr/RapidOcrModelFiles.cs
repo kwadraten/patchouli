@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>
 /// Pinned RapidOCR v3.9.2 model set: the default ONNX detector, recognizer and classifier

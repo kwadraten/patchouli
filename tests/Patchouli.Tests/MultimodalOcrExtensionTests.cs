@@ -418,7 +418,7 @@ public sealed class MultimodalOcrExtensionTests
             ExtensionPackageSnapshot package = new("ocr.multimodal", new Dictionary<string, string>
             {
                 ["main.fsx"] = source
-            }, NativeOcrSupportFiles.CollectBinaries());
+            });
             ExtensionCheckResult activated = await manager.ActivateAsync(package.Id, package,
                 CancellationToken.None);
             activated.Succeeded.Should().BeTrue(string.Join(Environment.NewLine,
@@ -497,7 +497,7 @@ public sealed class MultimodalOcrExtensionTests
             ExtensionPackageSnapshot package = new("ocr.multimodal", new Dictionary<string, string>
             {
                 ["main.fsx"] = source
-            }, NativeOcrSupportFiles.CollectBinaries());
+            });
             (await manager.ActivateAsync(package.Id, package, CancellationToken.None))
                 .Succeeded.Should().BeTrue();
             // Local layout on, no weights: engine readiness stays branch-neutral and an explicit
@@ -556,7 +556,7 @@ public sealed class MultimodalOcrExtensionTests
             ExtensionPackageSnapshot package = new("ocr.multimodal", new Dictionary<string, string>
             {
                 ["main.fsx"] = source
-            }, NativeOcrSupportFiles.CollectBinaries());
+            });
             (await manager.ActivateAsync(package.Id, package, CancellationToken.None))
                 .Succeeded.Should().BeTrue();
             ExtensionConfigSnapshot config = Config(("use-local-layout", "true"),

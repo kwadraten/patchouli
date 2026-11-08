@@ -4,9 +4,9 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
-using Patchouli.Infrastructure.Ocr.NdlKoten;
-using Patchouli.Infrastructure.Ocr.NdlLite;
-using Patchouli.Infrastructure.Ocr.RapidOcr;
+using Patchouli.Ocr.Engines.NdlKoten;
+using Patchouli.Ocr.Engines.NdlLite;
+using Patchouli.Ocr.Engines.RapidOcr;
 using SkiaSharp;
 
 namespace Patchouli.Ocr.Engines;

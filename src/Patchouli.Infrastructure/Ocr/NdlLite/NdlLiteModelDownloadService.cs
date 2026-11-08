@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
+using Patchouli.Ocr.Engines.NdlLite;
 
 namespace Patchouli.Infrastructure.Ocr.NdlLite;
 

@@ -1,6 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 internal sealed record RapidOcrPipelineLine(string Text, double Score, RapidOcrPoint[] Points);
 

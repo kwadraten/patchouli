@@ -1,101 +1,128 @@
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlKoten;
 
-/// <summary>
-/// Native port of the official <c>reading_order/xy_cut/block_xy_cut.py</c>
-/// recursive XY-cut reading-order solver used by ndl-lab/ndlocr-lite.
-/// </summary>
-/// <remarks>
-/// The algorithm is shared with the NDL Koten pipeline, but this port keeps the
-/// upstream one-versus-many IoU formula (which adds one pixel to every span) and
-/// the upstream coarse-grain rounding, so ranks match the NDLOCR-Lite release the
-/// rest of this engine is pinned to.
-/// </remarks>
-public static class NdlLiteReadingOrderSolver
+public static class ReadingOrderSolver
 {
-    public static int[] Solve(IReadOnlyList<NdlLiteBox> boxes, double scale = 1.0, double tolerance = 0.25)
+    private sealed class BlockNode
     {
-        if (boxes.Count == 0)
+        public BlockNode(int x0, int y0, int x1, int y1, BlockNode? parent)
         {
-            return [];
+            X0 = x0;
+            Y0 = y0;
+            X1 = x1;
+            Y1 = y1;
+            Parent = parent;
         }
 
-        NdlLiteBox[] normalized = Normalize(boxes, scale, tolerance);
+        public int X0 { get; }
+        public int Y0 { get; }
+        public int X1 { get; }
+        public int Y1 { get; }
+        public BlockNode? Parent { get; }
+        public List<BlockNode> Children { get; } = new();
+        public List<int> LineIdx { get; } = new();
+        public int NumLines { get; set; }
+        public int NumVerticalLines { get; set; }
+
+        public bool IsXSplit()
+        {
+            foreach (BlockNode child in Children)
+            {
+                if (child.Y0 != Y0 || child.Y1 != Y1)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public bool IsVertical()
+        {
+            return NumLines < NumVerticalLines * 2;
+        }
+    }
+
+    public static int[] Solve(Box[] boxes, double scale = 1.0, double tolerance = 0.25)
+    {
+        if (boxes.Length == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        Box[] normalized = Normalize(boxes, scale, tolerance);
         int[,] table = MakeMeshTable(normalized);
         BlockNode root = new(0, 0, table.GetLength(1), table.GetLength(0), null);
         BlockXyCut(table, root);
         AssignBboxToNode(root, normalized);
         SortNodes(root, normalized);
-
-        int[] ranks = new int[boxes.Count];
+        int[] ranks = new int[boxes.Length];
         Array.Fill(ranks, -1);
         int rank = 0;
         GetRanking(root, ranks, ref rank);
         return ranks;
     }
 
-    internal static NdlLiteBox[] Normalize(IReadOnlyList<NdlLiteBox> boxes, double scale, double tolerance)
+    private static Box[] Normalize(Box[] boxes, double scale, double tolerance)
     {
-        NdlLiteBox[] result = new NdlLiteBox[boxes.Count];
-        for (int i = 0; i < boxes.Count; i++)
+        Box[] result = new Box[boxes.Length];
+        for (int i = 0; i < boxes.Length; i++)
         {
-            NdlLiteBox box = boxes[i];
-            int x1 = box.X0 < box.X1 ? box.X1 : box.X0;
-            int y1 = box.Y0 < box.Y1 ? box.Y1 : box.Y0;
-            result[i] = new NdlLiteBox(box.X0, box.Y0, x1, y1);
+            Box box = boxes[i];
+            int x0 = Math.Min(box.X0, box.X1);
+            int x1 = Math.Max(box.X0, box.X1);
+            int y0 = Math.Min(box.Y0, box.Y1);
+            int y1 = Math.Max(box.Y0, box.Y1);
+            result[i] = new Box(x0, y0, x1, y1);
         }
 
         if (scale != 1.0)
         {
-            int[] widths = new int[result.Length];
-            int[] heights = new int[result.Length];
-            int[] minimums = new int[result.Length];
-            for (int i = 0; i < result.Length; i++)
-            {
-                widths[i] = result[i].Width;
-                heights[i] = result[i].Height;
-                minimums[i] = Math.Min(widths[i], heights[i]);
-            }
-
-            double median = Median(minimums);
+            int[] widths = result.Select(static b => b.X1 - b.X0).ToArray();
+            int[] heights = result.Select(static b => b.Y1 - b.Y0).ToArray();
+            int[] mins = result.Select(static b => Math.Min(b.X1 - b.X0, b.Y1 - b.Y0)).ToArray();
+            double median = Median(mins);
             double lower = median * (1.0 - tolerance);
             double upper = median * (1.0 + tolerance);
             for (int i = 0; i < result.Length; i++)
             {
                 int w = widths[i];
                 int h = heights[i];
+                int x0 = result[i].X0;
+                int y0 = result[i].Y0;
+                int x1 = result[i].X1;
+                int y1 = result[i].Y1;
                 if (w < h && lower <= w && w < upper)
                 {
-                    int delta = (int)Math.Floor((scale - 1.0) * w / 2.0);
-                    result[i] = new NdlLiteBox(result[i].X0 - delta, result[i].Y0, result[i].X1 + delta,
-                        result[i].Y1);
+                    int delta = (int)((scale - 1.0) * w / 2.0);
+                    result[i] = new Box(x0 - delta, y0, x1 + delta, y1);
                 }
                 else if (h < w && lower <= h && h < upper)
                 {
-                    int delta = (int)Math.Floor((scale - 1.0) * h / 2.0);
-                    result[i] = new NdlLiteBox(result[i].X0, result[i].Y0 - delta, result[i].X1,
-                        result[i].Y1 + delta);
+                    int delta = (int)((scale - 1.0) * h / 2.0);
+                    result[i] = new Box(x0, y0 - delta, x1, y1 + delta);
                 }
             }
         }
 
-        int xMin = result.Min(static box => box.X0);
-        int yMin = result.Min(static box => box.Y0);
-        int xMax = result.Max(static box => box.X1);
-        int yMax = result.Max(static box => box.Y1);
-        double wPage = Math.Max(1, xMax - xMin);
-        double hPage = Math.Max(1, yMax - yMin);
-        double grid = 100.0 * Math.Sqrt(result.Length);
-        double xGrid = wPage < hPage ? grid : grid * (wPage / hPage);
-        double yGrid = hPage < wPage ? grid : grid * (hPage / wPage);
+        int xMin = result.Min(static b => b.X0);
+        int yMin = result.Min(static b => b.Y0);
+        int xMax = result.Max(static b => b.X1);
+        int yMax = result.Max(static b => b.Y1);
+        int wPage = Math.Max(1, xMax - xMin);
+        int hPage = Math.Max(1, yMax - yMin);
+        int num = result.Length;
+        double grid = 100.0 * Math.Sqrt(num);
+        double xGrid = wPage < hPage ? grid : grid * ((double)wPage / hPage);
+        double yGrid = hPage < wPage ? grid : grid * ((double)hPage / wPage);
 
         for (int i = 0; i < result.Length; i++)
         {
-            NdlLiteBox box = result[i];
-            int nx0 = (int)((box.X0 - xMin) * xGrid / wPage);
-            int ny0 = (int)((box.Y0 - yMin) * yGrid / hPage);
-            int nx1 = (int)((box.X1 - xMin) * xGrid / wPage);
-            int ny1 = (int)((box.Y1 - yMin) * yGrid / hPage);
-            result[i] = new NdlLiteBox(
+            Box b = result[i];
+            int nx0 = (int)((b.X0 - xMin) * xGrid / wPage);
+            int ny0 = (int)((b.Y0 - yMin) * yGrid / hPage);
+            int nx1 = (int)((b.X1 - xMin) * xGrid / wPage);
+            int ny1 = (int)((b.Y1 - yMin) * yGrid / hPage);
+            result[i] = new Box(
                 Math.Max(0, nx0),
                 Math.Max(0, ny0),
                 Math.Max(0, nx1),
@@ -115,15 +142,17 @@ public static class NdlLiteReadingOrderSolver
         int[] sorted = (int[])values.Clone();
         Array.Sort(sorted);
         int mid = sorted.Length / 2;
-        return sorted.Length % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
+        return sorted.Length % 2 == 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 
-    internal static int[,] MakeMeshTable(IReadOnlyList<NdlLiteBox> normalized)
+    private static int[,] MakeMeshTable(Box[] boxes)
     {
-        int xGrid = normalized.Max(static box => box.X1) + 1;
-        int yGrid = normalized.Max(static box => box.Y1) + 1;
+        int xGrid = boxes.Max(static b => b.X1) + 1;
+        int yGrid = boxes.Max(static b => b.Y1) + 1;
         int[,] table = new int[yGrid, xGrid];
-        foreach (NdlLiteBox box in normalized)
+        foreach (Box box in boxes)
         {
             for (int y = box.Y0; y < box.Y1 && y < yGrid; y++)
             {
@@ -179,7 +208,7 @@ public static class NdlLiteReadingOrderSolver
         }
     }
 
-    private static (int[] XHist, int[] YHist) CalcHist(int[,] table, int x0, int y0, int x1, int y1)
+    private static (int[] xHist, int[] yHist) CalcHist(int[,] table, int x0, int y0, int x1, int y1)
     {
         int width = x1 - x0;
         int height = y1 - y0;
@@ -203,7 +232,7 @@ public static class NdlLiteReadingOrderSolver
         return (xHist, yHist);
     }
 
-    internal static (int Start, int End, double Score) CalcMinSpan(ReadOnlySpan<int> hist)
+    private static (int start, int end, double score) CalcMinSpan(ReadOnlySpan<int> hist)
     {
         if (hist.Length == 1)
         {
@@ -293,7 +322,7 @@ public static class NdlLiteReadingOrderSolver
         Split(parent, table, y0: y1);
     }
 
-    private static void AssignBboxToNode(BlockNode root, IReadOnlyList<NdlLiteBox> boxes)
+    private static void AssignBboxToNode(BlockNode root, Box[] boxes)
     {
         List<BlockNode> leaves = new();
         CollectLeaves(root, leaves);
@@ -302,20 +331,15 @@ public static class NdlLiteReadingOrderSolver
             return;
         }
 
-        for (int i = 0; i < boxes.Count; i++)
+        Box[] leafBoxes = leaves.Select(static l => new Box(l.X0, l.Y0, l.X1, l.Y1)).ToArray();
+        for (int i = 0; i < boxes.Length; i++)
         {
-            NdlLiteBox box = boxes[i];
-            double bestIou = double.NegativeInfinity;
+            Box box = boxes[i];
+            double bestIou = double.MinValue;
             int bestLeaf = 0;
-            for (int j = 0; j < leaves.Count; j++)
+            for (int j = 0; j < leafBoxes.Length; j++)
             {
-                BlockNode leaf = leaves[j];
-                double iou = CalcIou(box, new NdlLiteBox(leaf.X0, leaf.Y0, leaf.X1, leaf.Y1));
-                if (double.IsNaN(iou))
-                {
-                    iou = 0.0;
-                }
-
+                double iou = CalcIou(box, leafBoxes[j]);
                 if (iou > bestIou)
                 {
                     bestIou = iou;
@@ -323,7 +347,7 @@ public static class NdlLiteReadingOrderSolver
                 }
             }
 
-            leaves[bestLeaf].LineIndexes.Add(i);
+            leaves[bestLeaf].LineIdx.Add(i);
         }
     }
 
@@ -341,33 +365,31 @@ public static class NdlLiteReadingOrderSolver
         }
     }
 
-    /// <summary>
-    /// Upstream one-versus-many IoU. Spans are inclusive (<c>+1</c>) and the
-    /// denominator is asymmetric, exactly as written in <c>block_xy_cut.py</c>.
-    /// </summary>
-    internal static double CalcIou(NdlLiteBox box, NdlLiteBox target)
+    private static double CalcIou(Box a, Box b)
     {
-        int overlapX0 = Math.Max(box.X0, target.X0);
-        int overlapY0 = Math.Max(box.Y0, target.Y0);
-        int overlapX1 = Math.Min(box.X1, target.X1);
-        int overlapY1 = Math.Min(box.Y1, target.Y1);
-        double intersection = Math.Max(0, overlapX1 - overlapX0 + 1) * (double)Math.Max(0, overlapY1 - overlapY0 + 1);
-        double boxArea = (box.X1 - target.X0 + 1) * (double)(box.Y1 - target.Y0 + 1);
-        double targetArea = (target.X1 - box.X0 + 1) * (double)(target.Y1 - box.Y0 + 1);
-        double union = boxArea + targetArea - intersection;
-        return union == 0.0 ? double.NaN : intersection / union;
+        int x0 = Math.Max(a.X0, b.X0);
+        int y0 = Math.Max(a.Y0, b.Y0);
+        int x1 = Math.Min(a.X1, b.X1);
+        int y1 = Math.Min(a.Y1, b.Y1);
+        int interWidth = Math.Max(0, x1 - x0);
+        int interHeight = Math.Max(0, y1 - y0);
+        double interArea = interWidth * interHeight;
+        double areaA = (a.X1 - a.X0) * (a.Y1 - a.Y0);
+        double areaB = (b.X1 - b.X0) * (b.Y1 - b.Y0);
+        double unionArea = areaA + areaB - interArea;
+        return unionArea <= 0 ? 0.0 : interArea / unionArea;
     }
 
-    private static (int NumLines, int NumVertical) SortNodes(BlockNode node, IReadOnlyList<NdlLiteBox> boxes)
+    private static (int numLines, int numVertical) SortNodes(BlockNode node, Box[] boxes)
     {
-        if (node.LineIndexes.Count > 0)
+        if (node.LineIdx.Count > 0)
         {
-            int count = node.LineIndexes.Count;
+            int count = node.LineIdx.Count;
             int vertical = 0;
-            foreach (int index in node.LineIndexes)
+            foreach (int idx in node.LineIdx)
             {
-                NdlLiteBox box = boxes[index];
-                if (box.Width < box.Height)
+                Box b = boxes[idx];
+                if (b.X1 - b.X0 < b.Y1 - b.Y0)
                 {
                     vertical++;
                 }
@@ -376,17 +398,40 @@ public static class NdlLiteReadingOrderSolver
             node.NumLines = count;
             node.NumVerticalLines = vertical;
             bool isVertical = node.IsVertical();
-            List<int> sorted = isVertical
-                ? node.LineIndexes
-                    .OrderByDescending(index => boxes[index].X0)
-                    .ThenBy(index => boxes[index].Y0)
-                    .ToList()
-                : node.LineIndexes
-                    .OrderBy(index => boxes[index].Y0)
-                    .ThenBy(index => boxes[index].X0)
-                    .ToList();
-            node.LineIndexes.Clear();
-            node.LineIndexes.AddRange(sorted);
+            List<int> sorted = new(node.LineIdx);
+            if (isVertical)
+            {
+                sorted.Sort((a, b) =>
+                {
+                    Box ba = boxes[a];
+                    Box bb = boxes[b];
+                    int cmp = bb.X0.CompareTo(ba.X0); // descending x
+                    if (cmp != 0)
+                    {
+                        return cmp;
+                    }
+
+                    return ba.Y0.CompareTo(bb.Y0); // ascending y
+                });
+            }
+            else
+            {
+                sorted.Sort((a, b) =>
+                {
+                    Box ba = boxes[a];
+                    Box bb = boxes[b];
+                    int cmp = ba.Y0.CompareTo(bb.Y0); // ascending y
+                    if (cmp != 0)
+                    {
+                        return cmp;
+                    }
+
+                    return ba.X0.CompareTo(bb.X0); // ascending x
+                });
+            }
+
+            node.LineIdx.Clear();
+            node.LineIdx.AddRange(sorted);
             return (count, vertical);
         }
 
@@ -411,9 +456,9 @@ public static class NdlLiteReadingOrderSolver
 
     private static void GetRanking(BlockNode node, int[] ranks, ref int rank)
     {
-        foreach (int index in node.LineIndexes)
+        foreach (int idx in node.LineIdx)
         {
-            ranks[index] = rank++;
+            ranks[idx] = rank++;
         }
 
         foreach (BlockNode child in node.Children)
@@ -421,44 +466,6 @@ public static class NdlLiteReadingOrderSolver
             GetRanking(child, ranks, ref rank);
         }
     }
-
-    private sealed class BlockNode
-    {
-        public BlockNode(int x0, int y0, int x1, int y1, BlockNode? parent)
-        {
-            X0 = x0;
-            Y0 = y0;
-            X1 = x1;
-            Y1 = y1;
-            Parent = parent;
-        }
-
-        public int X0 { get; }
-        public int Y0 { get; }
-        public int X1 { get; }
-        public int Y1 { get; }
-        public BlockNode? Parent { get; }
-        public List<BlockNode> Children { get; } = new();
-        public List<int> LineIndexes { get; } = new();
-        public int NumLines { get; set; }
-        public int NumVerticalLines { get; set; }
-
-        public bool IsXSplit()
-        {
-            foreach (BlockNode child in Children)
-            {
-                if (child.Y0 != Y0 || child.Y1 != Y1)
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        public bool IsVertical()
-        {
-            return NumLines < NumVerticalLines * 2;
-        }
-    }
 }
+
+public readonly record struct Box(int X0, int Y0, int X1, int Y1);

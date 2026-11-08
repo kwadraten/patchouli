@@ -1,7 +1,7 @@
 using System.Runtime.ExceptionServices;
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>One line crop to recognize together with the detector's predicted character count.</summary>
 public sealed record NdlLiteRecognitionInput(SKBitmap Image, float PredictedCharCount, int Index);

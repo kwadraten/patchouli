@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>2D point in the pixel space of a <see cref="RapidOcrImage" />.</summary>
 internal readonly record struct RapidOcrPoint(double X, double Y);

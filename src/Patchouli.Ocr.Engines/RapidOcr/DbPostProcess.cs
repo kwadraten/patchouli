@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>One detected quadrilateral and its probability-map score.</summary>
 internal sealed record RapidOcrDetBox(RapidOcrPoint[] Points, double Score)

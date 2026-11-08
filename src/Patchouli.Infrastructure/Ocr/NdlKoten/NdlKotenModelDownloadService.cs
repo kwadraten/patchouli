@@ -1,5 +1,6 @@
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
+using Patchouli.Ocr.Engines.NdlKoten;
 
 namespace Patchouli.Infrastructure.Ocr.NdlKoten;
 

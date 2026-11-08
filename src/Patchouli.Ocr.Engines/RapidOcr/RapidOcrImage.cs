@@ -1,6 +1,6 @@
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.RapidOcr;
+namespace Patchouli.Ocr.Engines.RapidOcr;
 
 /// <summary>
 /// Row-major 8-bit BGR image. Upstream RapidOCR works in OpenCV BGR order, so the

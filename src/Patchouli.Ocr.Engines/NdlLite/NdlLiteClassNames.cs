@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>
 /// Reads the detector label list from the official <c>config/ndl.yaml</c>.

@@ -1,4 +1,4 @@
-namespace Patchouli.Infrastructure.Ocr.NdlKoten;
+namespace Patchouli.Ocr.Engines.NdlKoten;
 
 public static class NdlKotenClassNames
 {

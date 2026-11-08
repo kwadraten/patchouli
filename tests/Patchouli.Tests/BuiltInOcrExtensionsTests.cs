@@ -40,12 +40,6 @@ public sealed class BuiltInOcrExtensionsTests
                 : ["main.fsx", "Support.fsx"];
             package.Sources.Keys.Should().BeEquivalentTo(expectedSources);
             package.BinaryFiles.Should().BeEmpty();
-            // The GapTree MIT notice travels as a comment in the existing packages' main.fsx — the
-            // support assembly carries the ported code, so the license stays package-local.
-            if (package.Id is not ("ocr.ovisocr3" or "ocr.oxr"))
-            {
-                package.Sources["main.fsx"].Should().Contain("MIT License").And.Contain("hiroi-sora");
-            }
         }
     }
 

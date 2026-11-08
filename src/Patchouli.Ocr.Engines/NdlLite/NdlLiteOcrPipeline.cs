@@ -1,6 +1,6 @@
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>One recognized NDLOCR-Lite text line.</summary>
 public sealed record NdlLiteLine(

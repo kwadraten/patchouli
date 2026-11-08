@@ -2,6 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
+using Patchouli.Ocr.Engines.NdlLite;
 using SkiaSharp;
 
 namespace Patchouli.Infrastructure.Ocr.NdlLite;

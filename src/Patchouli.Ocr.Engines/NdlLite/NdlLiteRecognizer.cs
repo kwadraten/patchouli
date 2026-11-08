@@ -3,7 +3,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>
 /// Native ONNX port of the official <c>parseq.py</c> line recognizer used by

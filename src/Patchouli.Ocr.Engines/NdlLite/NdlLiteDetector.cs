@@ -2,7 +2,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlLite;
+namespace Patchouli.Ocr.Engines.NdlLite;
 
 /// <summary>Axis-aligned integer pixel box, origin at the top-left of the page image.</summary>
 public readonly record struct NdlLiteBox(int X0, int Y0, int X1, int Y1)

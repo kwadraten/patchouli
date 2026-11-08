@@ -1,7 +1,7 @@
 using System.Runtime.ExceptionServices;
 using SkiaSharp;
 
-namespace Patchouli.Infrastructure.Ocr.NdlKoten;
+namespace Patchouli.Ocr.Engines.NdlKoten;
 
 public sealed class NdlKotenOcrPipeline : IDisposable
 {
