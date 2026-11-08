@@ -343,5 +343,9 @@ public sealed class McpServerSettingsTests
 
         migrated.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.view");
         migrated.DomainPermissions.Should().NotContain(value => value.Verb == "view");
+        // A user who never had view allowed must not gain image access through the
+        // default-allow policy: the migration records an explicit denial.
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", false));
+        McpPermissionPolicy.Allows(migrated, "fetch", "patchouli://images/").Should().BeFalse();
     }
 }
