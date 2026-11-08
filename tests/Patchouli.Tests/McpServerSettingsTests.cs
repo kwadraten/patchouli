@@ -281,8 +281,33 @@ public sealed class McpServerSettingsTests
         McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
 
         migrated.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.view");
-        migrated.DomainPermissions.Should().NotContain(value => value.Domain == "images" && value.Verb == "fetch");
+        // The converted grant is explicit: default-allow would evaporate into a denial
+        // on the next save+reload, once the removed view override is gone.
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", true));
         McpPermissionPolicy.Allows(migrated, "fetch", "patchouli://images/").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Migration_grant_for_explicitly_enabled_view_survives_save_and_reload()
+    {
+        using TemporaryAppSettingsFile file = new();
+        await File.WriteAllTextAsync(file.Path,
+            """{"Mcp":{"Port":4540,"BindAddress":"127.0.0.1","CorsEnabled":false,"AllowedOrigins":[],"AuthRequired":false,"Token":"","ToolOverrides":[{"ToolName":"patchouli.view","Enabled":true}],"DomainPermissions":[],"ShellCommandTimeoutSeconds":15,"ExposeLibraryTags":true,"ExposeLibraryCollections":true,"UpdatedAt":"2026-11-01T00:00:00Z","Revision":0}}""");
+        McpServerSettingsService service = new(file.Path, new FixedClock(DateTimeOffset.UtcNow));
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+        loaded.IsSuccess.Should().BeTrue(loaded.ErrorMessage);
+        loaded.Value.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", true));
+        McpPermissionPolicy.Allows(loaded.Value, "fetch", "patchouli://images/").Should().BeTrue();
+
+        // The settings UI persists the migrated settings through the draft path.
+        Result<McpServerSettings> saved =
+            await service.SaveDraftSettingsAsync(loaded.Value, loaded.Value.Revision);
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+
+        Result<McpServerSettings> reloaded = await service.GetSettingsAsync();
+        reloaded.IsSuccess.Should().BeTrue(reloaded.ErrorMessage);
+        reloaded.Value.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", true));
+        McpPermissionPolicy.Allows(reloaded.Value, "fetch", "patchouli://images/").Should().BeTrue();
     }
 
     [Fact]

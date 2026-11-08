@@ -250,11 +250,14 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     /// <summary>
     /// New send subdomains require explicit grants. Retired Agent/action permissions never
     /// promote to endpoint permissions; missing children are materialized as disabled.
-    /// The retired patchouli.view tool's grants convert to images.fetch: a user who had
-    /// explicitly enabled view (and had not denied texts view) keeps image access through
-    /// the default-allow policy; everyone else gets an explicit images.fetch denial so
-    /// migration never expands access. The view tool override and view-verb entries are
-    /// removed; images/ has no translations mirror, so only the texts denial matters.
+    /// The retired patchouli.view tool's grants convert to an explicit images.fetch entry:
+    /// a user who had explicitly enabled view (and had not denied texts view) keeps image
+    /// access through a durable explicit grant, not the implicit default-allow policy —
+    /// a default-allow grant would evaporate on the next save+reload, when the removed
+    /// view override makes the migration recompute the user as never-allowed and add a
+    /// denial. Everyone else gets an explicit images.fetch denial so migration never
+    /// expands access. The view tool override and view-verb entries are removed;
+    /// images/ has no translations mirror, so only the texts denial matters.
     /// </summary>
     private static McpServerSettings MigrateViewToImagesFetch(McpServerSettings settings)
     {
@@ -288,10 +291,13 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             changed = true;
         }
 
-        if (!viewAllowed &&
-            permissions.All(value => value.Domain != "images" || value.Verb != "fetch"))
+        if (permissions.All(value => value.Domain != "images" || value.Verb != "fetch"))
         {
-            permissions.Add(new McpDomainPermission("images", "fetch", false));
+            // The converted grant must be explicit, not left to default-allow: once the
+            // view override is removed, a later migration recomputes viewAllowed from the
+            // absent override, so a default-allow grant would evaporate into an
+            // images.fetch denial on the next save+reload.
+            permissions.Add(new McpDomainPermission("images", "fetch", viewAllowed));
             changed = true;
         }
 
