@@ -62,13 +62,13 @@ public sealed class PluginGatewayTests
         McpCommandResult<McpFindMeta, object> bare =
             await CreateCommands().FindAsync(new McpFindRequest(null, null, null));
         bare.IsSuccess.Should().BeTrue();
-        bare.Envelope!.Entries.Should().HaveCount(6);
+        bare.Envelope!.Entries.Should().HaveCount(7);
 
         FakePluginApi plugins = new(PluginId, ["find", "fetch", "send"]);
         McpCommandResult<McpFindMeta, object> mounted =
             await CreateCommands(plugins).FindAsync(new McpFindRequest(null, null, null));
         mounted.IsSuccess.Should().BeTrue();
-        mounted.Envelope!.Entries.Should().HaveCount(7);
+        mounted.Envelope!.Entries.Should().HaveCount(8);
         mounted.Envelope.Entries.Cast<McpFindEntry>().Should()
             .Contain(entry => entry.Uri == "patchouli://plugin/" && entry.Type == "directory");
 
