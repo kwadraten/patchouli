@@ -30,7 +30,7 @@ public sealed class FileLocalityClassifierTests
     [Fact]
     public void Assess_local_temp_file_is_local_ready()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"local-ready-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"local-ready-\u6587\u732e-{Guid.NewGuid():N}.pdf");
         try
         {
             File.WriteAllBytes(path, [0x25, 0x50, 0x44, 0x46]); // %PDF

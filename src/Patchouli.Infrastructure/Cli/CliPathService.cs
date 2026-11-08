@@ -7,7 +7,7 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Infrastructure.Cli;
 
-public sealed class CliPathService : ICliPathService
+public sealed partial class CliPathService : ICliPathService
 {
     private static readonly string CliFileName = OperatingSystem.IsWindows() ? "patchouli-cli.exe" : "patchouli-cli";
     private const string MacOsBinLink = "/usr/local/bin/patchouli-cli";
@@ -187,16 +187,16 @@ public sealed class CliPathService : ICliPathService
     [SupportedOSPlatform("windows")]
     private static void NotifyEnvironmentChanged()
     {
-        _ = SendMessageTimeout(new IntPtr(0xFFFF), WmSettingChange, IntPtr.Zero, "Environment", SmtoAbortIfHung, 1000,
+        _ = SendMessageTimeoutW(new IntPtr(0xFFFF), WmSettingChange, UIntPtr.Zero, "Environment", SmtoAbortIfHung, 1000,
             out _);
     }
 
     private const uint WmSettingChange = 0x001A;
     private const uint SmtoAbortIfHung = 0x0002;
 
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, string lParam, uint fuFlags,
-        uint uTimeout, out IntPtr result);
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial IntPtr SendMessageTimeoutW(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam,
+        uint fuFlags, uint uTimeout, out UIntPtr result);
 
     private Result AddMacOsSymlink()
     {

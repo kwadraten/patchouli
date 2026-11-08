@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -12,7 +13,7 @@ internal interface IMacOSFileSystemInterop
 
 internal sealed record MacOSNativeCallResult(int Code, string? Path, string Error);
 
-internal sealed class PInvokeMacOSFileSystemInterop : IMacOSFileSystemInterop
+internal sealed partial class PInvokeMacOSFileSystemInterop : IMacOSFileSystemInterop
 {
     private const string DllName = "libpatchouli-macos-fs";
     private const int PathBufferSize = 4096;
@@ -76,17 +77,19 @@ internal sealed class PInvokeMacOSFileSystemInterop : IMacOSFileSystemInterop
         return Encoding.UTF8.GetString(bytes);
     }
 
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int patchouli_resolve_path(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+    [LibraryImport(DllName, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial int patchouli_resolve_path(
+        string path,
         IntPtr outBuffer,
         nuint outLen,
         IntPtr errBuffer,
         nuint errLen);
 
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int patchouli_materialize_file(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+    [LibraryImport(DllName, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial int patchouli_materialize_file(
+        string path,
         IntPtr outBuffer,
         nuint outLen,
         IntPtr errBuffer,
