@@ -18,17 +18,20 @@ using Patchouli.McpServer;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Issue #28 independent tests: the <c>boxes</c> argument of patchouli.view across
-/// the three isomorphic surfaces — the MCP command service (McpViewRequest →
-/// PageImageViewRequest.NumberedBoxes and the result metadata), the JSON-RPC
-/// protocol handler (argument whitelist, boolean parsing, tool schema), and the
-/// CLI flag mapping. Also pins the regression contract: without boxes, view
-/// metadata carries no "boxes" field at all.
+/// Issue #28 independent tests: the <c>?overlay=boxes</c> query of the images/
+/// domain across the three isomorphic surfaces — the MCP command service
+/// (fetch of an images/ URI → PageImageViewRequest.NumberedBoxes and the result
+/// image metadata), the JSON-RPC protocol handler (fetch schema, the native image
+/// content block, unknown-argument rejection), and the CLI flag mapping
+/// (fetch --output). Also pins the regression contract: without overlay, image
+/// metadata carries no "boxes" field at all, and the retired patchouli.view tool
+/// no longer appears in tools/list.
 /// </summary>
-public sealed class Issue28McpViewProtocolTests
+public sealed class Issue28McpFetchImageProtocolTests
 {
     private const string DocId = "11111111-1111-1111-1111-111111111111";
-    private const string PageUri = "patchouli://texts/" + DocId + "/page-1.xml";
+    private const string RevId = "22222222-2222-2222-2222-222222222222";
+    private const string ImageUri = "patchouli://images/" + DocId + "/page-1.png";
     private static readonly DocumentBoxId BoxOne = DocumentBoxId.New();
     private static readonly DocumentBoxId BoxTwo = DocumentBoxId.New();
     private static readonly byte[] FakePng = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -36,16 +39,20 @@ public sealed class Issue28McpViewProtocolTests
     // ---------- command service ----------
 
     [Fact]
-    public async Task View_boxes_true_reaches_the_service_and_maps_metadata()
+    public async Task Fetch_overlay_boxes_reaches_the_service_and_maps_metadata()
     {
         (Stub<IPageImageViewService> pageView, List<PageImageViewRequest> seen) = PageViewStub();
         McpCommandService service = CreateService(pageView.Proxy);
 
-        McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(PageUri, Boxes: true));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await service.FetchAsync(
+            new McpFetchRequest([ImageUri + "?overlay=boxes"], null, null));
 
-        result.Result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue();
         seen.Should().ContainSingle().Which.NumberedBoxes.Should().BeTrue();
-        McpViewImageMetadata metadata = result.Result.Envelope!.Entries.Should().ContainSingle().Subject;
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ImageBytes.Should().BeEquivalentTo(FakePng);
+        entry.Uri.Should().Be(ImageUri + "?rev=" + RevId);
+        McpFetchImageMetadata metadata = entry.Image!;
         metadata.Boxes.Should().NotBeNull();
         metadata.Boxes!.Select(box => (box.Index, box.BoxId))
             .Should().Equal((1, BoxOne.ToString()), (2, BoxTwo.ToString()));
@@ -54,16 +61,18 @@ public sealed class Issue28McpViewProtocolTests
     }
 
     [Fact]
-    public async Task View_without_boxes_keeps_metadata_free_of_the_boxes_field()
+    public async Task Fetch_without_overlay_keeps_metadata_free_of_the_boxes_field()
     {
         (Stub<IPageImageViewService> pageView, List<PageImageViewRequest> seen) = PageViewStub();
         McpCommandService service = CreateService(pageView.Proxy);
 
-        McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(PageUri));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await service.FetchAsync(
+            new McpFetchRequest([ImageUri], null, null));
 
-        result.Result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue();
         seen.Should().ContainSingle().Which.NumberedBoxes.Should().BeFalse();
-        McpViewImageMetadata metadata = result.Result.Envelope!.Entries.Should().ContainSingle().Subject;
+        McpFetchImageMetadata metadata =
+            result.Envelope!.Entries.Should().ContainSingle().Subject.Image!;
         metadata.Boxes.Should().BeNull();
         JsonSerializer.Serialize(metadata).Should().NotContain("boxes");
     }
@@ -71,63 +80,72 @@ public sealed class Issue28McpViewProtocolTests
     // ---------- protocol handler ----------
 
     [Fact]
-    public async Task Protocol_view_boxes_true_is_forwarded_and_answered_with_the_mapping()
+    public async Task Protocol_fetch_overlay_boxes_is_forwarded_and_answered_with_the_mapping()
     {
         Harness harness = new();
-        string response = await harness.Tool("patchouli.view",
-            new { uri = PageUri, boxes = true, format = "json" });
+        string response = await harness.Tool("patchouli.fetch",
+            new { uris = new[] { ImageUri + "?overlay=boxes" }, format = "json" });
 
         IsError(response).Should().BeFalse(response);
         harness.Seen.Should().ContainSingle().Which.NumberedBoxes.Should().BeTrue();
         using JsonDocument envelope = Envelope(response);
-        JsonElement metadata = envelope.RootElement.GetProperty("entries")[0];
+        JsonElement metadata = envelope.RootElement.GetProperty("entries")[0].GetProperty("image");
         List<(int, string)> boxes = metadata.GetProperty("boxes").EnumerateArray()
             .Select(element => (element.GetProperty("index").GetInt32(),
                 element.GetProperty("box_id").GetString()!)).ToList();
         boxes.Should().Equal((1, BoxOne.ToString()), (2, BoxTwo.ToString()));
+        // The image itself is a native image content block, not text.
+        using JsonDocument json = JsonDocument.Parse(response);
+        JsonElement content = json.RootElement.GetProperty("result").GetProperty("content");
+        content.GetArrayLength().Should().Be(2);
+        content[1].GetProperty("type").GetString().Should().Be("image");
+        content[1].GetProperty("mimeType").GetString().Should().Be("image/png");
+        content[1].GetProperty("data").GetString().Should().NotBeNullOrWhiteSpace();
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Protocol_view_boxes_absent_or_false_means_no_overlay(bool explicitFalse)
+    [Fact]
+    public async Task Protocol_fetch_without_overlay_means_no_overlay_but_still_returns_the_image()
     {
         Harness harness = new();
-        object arguments = explicitFalse
-            ? new { uri = PageUri, boxes = false, format = "json" }
-            : new { uri = PageUri, format = "json" };
-        string response = await harness.Tool("patchouli.view", arguments);
+        string response = await harness.Tool("patchouli.fetch",
+            new { uris = new[] { ImageUri }, format = "json" });
 
         IsError(response).Should().BeFalse(response);
         harness.Seen.Should().ContainSingle().Which.NumberedBoxes.Should().BeFalse();
         using JsonDocument envelope = Envelope(response);
-        envelope.RootElement.GetProperty("entries")[0].TryGetProperty("boxes", out _).Should().BeFalse();
+        envelope.RootElement.GetProperty("entries")[0].GetProperty("image")
+            .TryGetProperty("boxes", out _).Should().BeFalse();
+        using JsonDocument json = JsonDocument.Parse(response);
+        JsonElement content = json.RootElement.GetProperty("result").GetProperty("content");
+        content.GetArrayLength().Should().Be(2);
+        content[1].GetProperty("type").GetString().Should().Be("image");
     }
 
     [Fact]
-    public async Task Protocol_view_rejects_a_non_boolean_boxes_argument()
+    public async Task Protocol_fetch_rejects_boxes_as_a_tool_argument()
     {
+        // Overlay is a URI query parameter now, not a tool argument.
         Harness harness = new();
-        string response = await harness.Tool("patchouli.view",
-            new { uri = PageUri, boxes = "yes", format = "json" });
+        string response = await harness.Tool("patchouli.fetch",
+            new { uris = new[] { ImageUri }, boxes = true, format = "json" });
 
         IsError(response).Should().BeTrue(response);
         harness.Seen.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Protocol_view_rejects_unknown_arguments()
+    public async Task Protocol_fetch_rejects_unknown_arguments()
     {
         Harness harness = new();
-        string response = await harness.Tool("patchouli.view",
-            new { uri = PageUri, boxez = true, format = "json" });
+        string response = await harness.Tool("patchouli.fetch",
+            new { uris = new[] { ImageUri }, boxez = true, format = "json" });
 
         IsError(response).Should().BeTrue(response);
         harness.Seen.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Protocol_tools_list_advertises_the_boxes_argument()
+    public async Task Protocol_tools_list_has_no_view_tool_and_fetch_mentions_images()
     {
         Harness harness = new();
         string response = await harness.Handler.HandleAsync(JsonSerializer.Serialize(new
@@ -137,33 +155,52 @@ public sealed class Issue28McpViewProtocolTests
 
         using JsonDocument json = JsonDocument.Parse(response);
         json.RootElement.TryGetProperty("error", out _).Should().BeFalse(response);
-        JsonElement view = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray()
-            .Single(tool => tool.GetProperty("name").GetString() == "patchouli.view");
-        JsonElement properties = view.GetProperty("inputSchema").GetProperty("properties");
-        properties.TryGetProperty("boxes", out JsonElement boxes).Should().BeTrue();
-        boxes.GetProperty("type").GetString().Should().Be("boolean");
+        JsonElement[] tools = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
+        tools.Select(tool => tool.GetProperty("name").GetString()).Should().NotContain("patchouli.view");
+        JsonElement fetch = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.fetch");
+        JsonElement uris = fetch.GetProperty("inputSchema").GetProperty("properties").GetProperty("uris");
+        uris.GetProperty("description").GetString().Should().Contain("images/");
     }
 
     // ---------- CLI isomorphism ----------
 
     [Fact]
-    public void Cli_view_boxes_flag_maps_to_the_tool_argument()
+    public void Cli_fetch_images_uri_with_output_maps_to_the_tool_call()
     {
-        CliToolCall call = CliArguments.BuildToolCall("view",
-            [PageUri, "--output", "out.png", "--boxes"], false);
+        CliToolCall call = CliArguments.BuildToolCall("fetch",
+            [ImageUri, "--output", "out.png"], false);
 
-        call.Tool.Should().Be(CliArguments.View);
-        call.Arguments["boxes"].Should().Be(true);
+        call.Tool.Should().Be(CliArguments.Fetch);
+        call.FetchOutputPath.Should().Be("out.png");
+        ((string[])call.Arguments["uris"]!).Should().Equal(ImageUri);
     }
 
     [Fact]
-    public void Cli_view_without_boxes_flag_omits_the_argument()
+    public void Cli_fetch_images_uri_without_output_is_a_usage_error()
     {
-        CliToolCall call = CliArguments.BuildToolCall("view",
-            [PageUri, "--output", "out.png", "--max-edge", "512"], false);
+        Action act = () => CliArguments.BuildToolCall("fetch", [ImageUri], false);
 
-        call.Arguments.Should().NotContainKey("boxes");
-        call.Arguments["max_edge"].Should().Be(512);
+        act.Should().Throw<CliUsageException>()
+            .WithMessage("*--output*");
+    }
+
+    [Fact]
+    public void Cli_fetch_text_uri_needs_no_output()
+    {
+        CliToolCall call = CliArguments.BuildToolCall("fetch",
+            ["patchouli://library.yml"], false);
+
+        call.Tool.Should().Be(CliArguments.Fetch);
+        call.FetchOutputPath.Should().BeNull();
+    }
+
+    [Fact]
+    public void Cli_view_command_points_at_fetch()
+    {
+        Action act = () => CliArguments.BuildToolCall("view", [ImageUri], false);
+
+        act.Should().Throw<CliUsageException>()
+            .WithMessage("*fetch patchouli://images/*");
     }
 
     // ---------- harness ----------
@@ -177,8 +214,8 @@ public sealed class Issue28McpViewProtocolTests
             PageImageViewRequest request = (PageImageViewRequest)args[0]!;
             seen.Add(request);
             PageImageViewResult image = new(
-                PageUri + "?rev=rev-1", PageImageViewTypes.Page, "image/png", 800, 600,
-                new NormalizedBBox(0, 0, 1, 1), 0, "rev-1", FakePng,
+                ImageUri + "?rev=" + RevId, PageImageViewTypes.Page, "image/png", 800, 600,
+                new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng,
                 request.NumberedBoxes
                     ? [new PageImageBoxNumber(1, BoxOne), new PageImageBoxNumber(2, BoxTwo)]
                     : null);
@@ -193,6 +230,8 @@ public sealed class Issue28McpViewProtocolTests
         read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
             Task.FromResult(Result<McpLibraryStateResponse>.Success(
                 new McpLibraryStateResponse("lib", "lib:99"))));
+        read.Handle(nameof(IMcpReadApi.GetItemIdForDocumentAsync), _ =>
+            Task.FromResult(Result<ItemId>.Failure("fake", "x")));
         (_, Stub<IMcpWriteApi> write) = Stub<IMcpWriteApi>.Create();
         (_, Stub<IBiblatexImportService> biblatex) = Stub<IBiblatexImportService>.Create();
         (_, Stub<IItemService> items) = Stub<IItemService>.Create();
@@ -224,11 +263,13 @@ public sealed class Issue28McpViewProtocolTests
             read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
                 Task.FromResult(Result<McpLibraryStateResponse>.Success(
                     new McpLibraryStateResponse("test", "lib:1"))));
+            read.Handle(nameof(IMcpReadApi.GetItemIdForDocumentAsync), _ =>
+                Task.FromResult(Result<ItemId>.Failure("fake", "x")));
             (_, Stub<IMcpWriteApi> write) = Stub<IMcpWriteApi>.Create();
             (_, Stub<IBiblatexImportService> biblatex) = Stub<IBiblatexImportService>.Create();
             (_, Stub<IItemService> items) = Stub<IItemService>.Create();
             (_, Stub<IVersionedEvidenceReader> evidence) = Stub<IVersionedEvidenceReader>.Create();
-            string[] tools = ["find", "fetch", "put", "cite", "send", "add", "view"];
+            string[] tools = ["find", "fetch", "put", "cite", "send", "add"];
             McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
             {
                 ToolOverrides = tools.Select(tool => new McpToolOverride("patchouli." + tool, true)).ToArray()
@@ -236,7 +277,7 @@ public sealed class Issue28McpViewProtocolTests
             Handler = new McpProtocolHandler(read.Proxy, write.Proxy, biblatex.Proxy, items.Proxy,
                 evidence.Proxy,
                 new SqliteConnectionFactory(
-                    Path.Combine(Path.GetTempPath(), $"issue28-view-{Guid.NewGuid():N}.sqlite")),
+                    Path.Combine(Path.GetTempPath(), $"issue28-fetch-images-{Guid.NewGuid():N}.sqlite")),
                 settings, pageView: pageView.Proxy);
         }
 

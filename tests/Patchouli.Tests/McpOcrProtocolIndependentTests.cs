@@ -316,7 +316,7 @@ public sealed class McpOcrProtocolIndependentTests
                     TaskId, TaskUri + "status", "queued", "rapidocr", "preset-fixture",
                     "33333333-3333-3333-3333-333333333333")));
             };
-            string[] tools = ["find", "fetch", "put", "cite", "send", "add", "view"];
+            string[] tools = ["find", "fetch", "put", "cite", "send", "add"];
             McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
             {
                 ToolOverrides =

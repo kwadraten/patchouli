@@ -3,6 +3,7 @@ using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Mcp;
@@ -13,13 +14,13 @@ using Patchouli.Mcp;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Issue #11: MCP add/view command surface — schema validation, tool switches,
-/// domain permissions, error-code mapping and the view image envelope.
+/// Issue #11: MCP add/fetch-images command surface — schema validation, tool switches,
+/// domain permissions, error-code mapping and the fetch image envelope.
 /// Uses DispatchProxy stubs for the wide read/write/item/biblatex/evidence
 /// surfaces that add/view never touch; IFileImportService and IPageImageViewService
 /// are configured fakes.
 /// </summary>
-public sealed class McpAddViewCommandTests
+public sealed class McpAddFetchImageCommandTests
 {
     private static readonly byte[] FakePng = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     private const string DocId = "11111111-1111-1111-1111-111111111111";
@@ -167,85 +168,99 @@ public sealed class McpAddViewCommandTests
         result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
     }
 
-    // ---------- view ----------
+    // ---------- fetch images ----------
 
     [Fact]
-    public async Task View_rejects_empty_uri()
+    public async Task Fetch_rejects_empty_uri_list()
     {
         McpCommandService service = CreateService();
 
-        McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(""));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest([], null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-        result.PngBytes.Should().BeNull();
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task View_disabled_tool_switch_denies()
+    public async Task Fetch_rejects_image_uri_mixed_with_text_uri()
     {
-        McpCommandService service = CreateService(viewEnabled: false);
+        McpCommandService service = CreateService();
 
-        McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png", "patchouli://library.yml"], null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task View_document_uri_requires_page_specification()
+    public async Task Fetch_rejects_range_with_image_uri()
     {
-        (_, Stub<IPageImageViewService> docPageView) = Stub<IPageImageViewService>.Create();
-        McpCommandService service = CreateService(pageView: docPageView.Proxy);
+        McpCommandService service = CreateService();
 
-        McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png"], "boxes:1-2", null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task View_rejects_unknown_context()
+    public async Task Fetch_rejects_invalid_image_query()
     {
-        (_, Stub<IPageImageViewService> ctxPageView) = Stub<IPageImageViewService>.Create();
-        McpCommandService service = CreateService(pageView: ctxPageView.Proxy);
+        McpCommandService service = CreateService();
 
-        McpViewCommandResult result = await service.ViewAsync(
-            new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml", "thumbnail"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png?overlay=circles"], null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task View_denies_without_texts_view_permission()
+    public async Task Fetch_rejects_images_scope_uri()
+    {
+        McpCommandService service = CreateService();
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(["patchouli://images/"], null, null));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task Fetch_denies_without_images_fetch_permission()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         McpServerSettings permissions = new(0, "127.0.0.1", false, [], false, null, [],
             DateTimeOffset.UtcNow)
         {
-            DomainPermissions = [new McpDomainPermission("texts", "view", false)]
+            DomainPermissions = [new McpDomainPermission("images", "fetch", false)]
         };
         McpCommandService service = CreateService(pageView: pageView.Proxy,
             permissions: _ => Task.FromResult(permissions));
 
-        McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png"], null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
     }
 
     [Fact]
-    public async Task View_success_returns_metadata_envelope_and_native_png_bytes()
+    public async Task Fetch_image_success_returns_metadata_envelope_and_native_png_bytes()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         PageImageViewResult image = new(
-            "patchouli://texts/" + DocId + "/page-2.xml?rev=rev-7",
+            "patchouli://images/" + DocId + "/page-2.png?rev=" + RevId,
             PageImageViewTypes.Page, "image/png", 1200, 1600,
-            new NormalizedBBox(0, 0, 1, 1), 0, "rev-7", FakePng);
+            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -254,34 +269,45 @@ public sealed class McpAddViewCommandTests
         });
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
-        McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-2.xml"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-2.png"], null, null));
 
-        result.Result.IsSuccess.Should().BeTrue();
-        result.PngBytes.Should().BeEquivalentTo(FakePng);
-        McpViewImageMetadata metadata =
-            result.Result.Envelope!.Entries.Should().ContainSingle().Subject;
-        metadata.Uri.Should().Be("patchouli://texts/" + DocId + "/page-2.xml?rev=rev-7");
+        result.IsSuccess.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ResourceType.Should().Be("page_image");
+        entry.Content.Should().BeNull();
+        entry.ContentType.Should().Be("image/png");
+        entry.Complete.Should().BeTrue();
+        entry.Truncated.Should().BeFalse();
+        entry.ReturnedBytes.Should().Be(FakePng.Length);
+        entry.LimitBytes.Should().Be(8 * 1024 * 1024);
+        entry.ImageBytes.Should().BeEquivalentTo(FakePng);
+        entry.Uri.Should().Be("patchouli://images/" + DocId + "/page-2.png?rev=" + RevId);
+        McpFetchImageMetadata metadata = entry.Image!;
+        metadata.Uri.Should().Be("patchouli://images/" + DocId + "/page-2.png?rev=" + RevId);
         metadata.ViewType.Should().Be("page");
         metadata.MimeType.Should().Be("image/png");
         metadata.Width.Should().Be(1200);
         metadata.Height.Should().Be(1600);
         metadata.Crop.Should().BeEquivalentTo([0.0, 0.0, 1.0, 1.0]);
         metadata.ImageIndex.Should().Be(0);
+        metadata.Boxes.Should().BeNull();
         // The page index in the request is the one-based physical PDF page index.
         seen!.PageIndex1Based.Should().Be(2);
         seen.Context.Should().Be(PageImageViewContext.Page);
         seen.MaxEdge.Should().Be(PageImageViewRequest.DefaultMaxEdge);
+        seen.IsTranslation.Should().BeFalse();
     }
 
     [Fact]
-    public async Task View_box_uri_with_region_context_requests_region_crop()
+    public async Task Fetch_image_box_uri_requests_region_crop()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         PageImageViewResult image = new(
-            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "",
+            "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&box=" + BoxGuid,
             PageImageViewTypes.Box, "image/png", 400, 300,
-            new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, "rev-1", FakePng);
+            new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -290,23 +316,72 @@ public sealed class McpAddViewCommandTests
         });
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
-        McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(
-            "patchouli://texts/" + DocId + "/page-1.xml?rev=" + RevId + "&box=" + BoxGuid + "", "region"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&box=" + BoxGuid], null, null));
 
-        result.Result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue();
         seen!.Context.Should().Be(PageImageViewContext.Region);
         seen.BoxId.Should().NotBeNull();
-        result.Result.Envelope!.Entries.Single().ViewType.Should().Be("box");
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.Image!.ViewType.Should().Be("box");
+        entry.Uri.Should().Be("patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&box=" + BoxGuid);
     }
 
     [Fact]
-    public async Task View_translation_page_resolves_to_source_image_request()
+    public async Task Fetch_text_page_exposes_directly_fetchable_image_uri()
+    {
+        McpDocumentOutlineResponse outline = new(
+            new DocumentInstanceId(Guid.Parse(DocId)), "title", null,
+            [new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 0,
+                "patchouli://texts/" + DocId + "/page-1.xml")]);
+        McpPageXmlResponse pageXml = new(
+            "<page><box id=\"" + BoxGuid + "\">hello</box></page>", RevId);
+        McpCommandService service = CreateService(outline: outline, pageXml: pageXml);
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://texts/" + DocId + "/page-1.xml"], null, null));
+
+        result.IsSuccess.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ResourceType.Should().Be("text_page");
+        entry.Content.Should().Contain("hello");
+        entry.ImageUri.Should().Be("patchouli://images/" + DocId + "/page-1.png?rev=" + RevId);
+    }
+
+    [Fact]
+    public async Task Fetch_image_reports_owning_item_uri_when_known()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         PageImageViewResult image = new(
-            "patchouli://translations/" + DocId + "/page-1.xml?rev=rev-1",
-            PageImageViewTypes.TranslationPage, "image/png", 1200, 1600,
-            new NormalizedBBox(0, 0, 1, 1), 0, "rev-1", FakePng);
+            "patchouli://images/" + DocId + "/page-1.png",
+            PageImageViewTypes.Page, "image/png", 100, 100,
+            new NormalizedBBox(0, 0, 1, 1), 0, string.Empty, FakePng);
+        pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
+            Task.FromResult(Result<PageImageViewResult>.Success(image)));
+        McpCommandService service = CreateService(pageView: pageView.Proxy,
+            itemIdForDocument: new ItemId(Guid.Parse("44444444-4444-4444-4444-444444444444")));
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png"], null, null));
+
+        result.IsSuccess.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ItemUri.Should().Be("patchouli://items/44444444-4444-4444-4444-444444444444.yml");
+        // A tree-less page renders unpinned: no revision in the canonical URI.
+        entry.Uri.Should().Be("patchouli://images/" + DocId + "/page-1.png");
+    }
+
+    [Fact]
+    public async Task Fetch_image_forwards_revision_and_max_edge_to_the_renderer()
+    {
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
+        PageImageViewResult image = new(
+            "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId,
+            PageImageViewTypes.Page, "image/png", 800, 600,
+            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -315,16 +390,45 @@ public sealed class McpAddViewCommandTests
         });
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
-        McpViewCommandResult result = await service.ViewAsync(
-            new McpViewRequest("patchouli://translations/" + DocId + "/page-1.xml"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&max_edge=512"], null, null));
 
-        result.Result.IsSuccess.Should().BeTrue();
-        seen!.IsTranslation.Should().BeTrue();
-        result.Result.Envelope!.Entries.Single().ViewType.Should().Be("translation_page");
+        result.IsSuccess.Should().BeTrue();
+        seen!.RevisionId.Should().Be(new DocumentTreeRevisionId(Guid.Parse(RevId)));
+        seen.MaxEdge.Should().Be(512);
+        seen.NumberedBoxes.Should().BeFalse();
     }
 
     [Fact]
-    public async Task View_maps_stale_revision_to_not_found_not_silent_latest()
+    public async Task Fetch_image_overlay_forwards_numbered_boxes_to_the_renderer()
+    {
+        (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
+        PageImageViewResult image = new(
+            "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId,
+            PageImageViewTypes.Page, "image/png", 800, 600,
+            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng,
+            [new PageImageBoxNumber(1, new DocumentBoxId(Guid.Parse(BoxGuid)))]);
+        PageImageViewRequest? seen = null;
+        pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
+        {
+            seen = (PageImageViewRequest)args[0]!;
+            return Task.FromResult(Result<PageImageViewResult>.Success(image));
+        });
+        McpCommandService service = CreateService(pageView: pageView.Proxy);
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&overlay=boxes"], null, null));
+
+        result.IsSuccess.Should().BeTrue();
+        seen!.NumberedBoxes.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.Image!.Boxes.Should().ContainSingle(box => box.Index == 1 && box.BoxId == BoxGuid);
+    }
+
+    [Fact]
+    public async Task Fetch_image_maps_stale_revision_to_not_found_not_silent_latest()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
@@ -332,16 +436,18 @@ public sealed class McpAddViewCommandTests
                 PageImageViewErrorCodes.StaleRevision, "no such revision")));
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
-        McpViewCommandResult result = await service.ViewAsync(new McpViewRequest(
-            "patchouli://texts/" + DocId + "/page-1.xml?rev=44444444-4444-4444-4444-444444444444"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png?rev=44444444-4444-4444-4444-444444444444"],
+                null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
-        result.PngBytes.Should().BeNull();
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        result.Envelope!.Entries.Should().ContainSingle().Subject.ImageBytes.Should().BeNull();
     }
 
     [Fact]
-    public async Task View_maps_source_changed_to_revision_conflict()
+    public async Task Fetch_image_maps_source_changed_to_revision_conflict()
     {
         (_, Stub<IPageImageViewService> pageView) = Stub<IPageImageViewService>.Create();
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
@@ -349,12 +455,13 @@ public sealed class McpAddViewCommandTests
                 PageImageViewErrorCodes.SourceChanged, "fingerprint changed")));
         McpCommandService service = CreateService(pageView: pageView.Proxy);
 
-        McpViewCommandResult result =
-            await service.ViewAsync(new McpViewRequest("patchouli://texts/" + DocId + "/page-1.xml"));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result =
+            await service.FetchAsync(new McpFetchRequest(
+                ["patchouli://images/" + DocId + "/page-1.png"], null, null));
 
-        result.Result.IsSuccess.Should().BeFalse();
-        result.Result.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);
-        result.PngBytes.Should().BeNull();
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);
+        result.Envelope!.Entries.Should().ContainSingle().Subject.ImageBytes.Should().BeNull();
     }
 
     // ---------- harness ----------
@@ -383,21 +490,39 @@ public sealed class McpAddViewCommandTests
         IFileImportService? fileImport = null,
         IPageImageViewService? pageView = null,
         bool addEnabled = true,
-        bool viewEnabled = true,
         Func<CancellationToken, Task<McpServerSettings>>? permissions = null,
-        Func<string>? revision = null)
+        Func<string>? revision = null,
+        ItemId? itemIdForDocument = null,
+        McpDocumentOutlineResponse? outline = null,
+        McpPageXmlResponse? pageXml = null)
     {
         (_, Stub<IMcpReadApi> read) = Stub<IMcpReadApi>.Create();
         read.Handle(nameof(IMcpReadApi.GetCurrentLibraryStateAsync), _ =>
             Task.FromResult(Result<McpLibraryStateResponse>.Success(
                 new McpLibraryStateResponse("lib", revision?.Invoke() ?? "lib:99"))));
+        read.Handle(nameof(IMcpReadApi.GetItemIdForDocumentAsync), _ =>
+            Task.FromResult(itemIdForDocument is { } itemId
+                ? Result<ItemId>.Success(itemId)
+                : Result<ItemId>.Failure("fake", "x")));
+        if (outline is not null)
+        {
+            read.Handle(nameof(IMcpReadApi.GetDocumentOutlineAsync), _ =>
+                Task.FromResult(Result<McpDocumentOutlineResponse>.Success(outline)));
+        }
+
+        if (pageXml is not null)
+        {
+            read.Handle(nameof(IMcpReadApi.GetPageXmlAsync), _ =>
+                Task.FromResult(Result<McpPageXmlResponse>.Success(pageXml)));
+        }
+
         (_, Stub<IMcpWriteApi> write) = Stub<IMcpWriteApi>.Create();
         (_, Stub<IBiblatexImportService> biblatex) = Stub<IBiblatexImportService>.Create();
         (_, Stub<IItemService> items) = Stub<IItemService>.Create();
         (_, Stub<IVersionedEvidenceReader> evidence) = Stub<IVersionedEvidenceReader>.Create();
         return new McpCommandService(read.Proxy, write.Proxy, biblatex.Proxy, items.Proxy,
             evidence.Proxy, permissionSettings: permissions, fileImport: fileImport,
-            pageView: pageView, addEnabled: addEnabled, viewEnabled: viewEnabled);
+            pageView: pageView, addEnabled: addEnabled);
     }
 
     /// <summary>

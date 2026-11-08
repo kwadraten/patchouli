@@ -158,7 +158,7 @@ public sealed class McpServerTransportTests
         JsonElement[] tools = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
         tools.Select(tool => tool.GetProperty("name").GetString()).Should().BeEquivalentTo(
             "patchouli.find", "patchouli.fetch", "patchouli.put", "patchouli.add",
-            "patchouli.view", "patchouli.cite", "patchouli.send");
+            "patchouli.cite", "patchouli.send");
 
         JsonElement find = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.find");
         JsonElement findProps = find.GetProperty("inputSchema").GetProperty("properties");

@@ -63,11 +63,11 @@ public sealed class McpServerSettingsTests
         loaded.Value.ToolOverrides.Should().BeEquivalentTo(new[]
         {
             new McpToolOverride("search_library", false, "disabled for tests"),
-            new McpToolOverride("patchouli.add", false, "Added by migration: explicitly enable to use this tool."),
-            new McpToolOverride("patchouli.view", false, "Added by migration: explicitly enable to use this tool.")
+            new McpToolOverride("patchouli.add", false, "Added by migration: explicitly enable to use this tool.")
         });
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
         loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false),
+            new McpDomainPermission("images", "fetch", false),
             new McpDomainPermission("runs/ocr", "send", false),
             new McpDomainPermission("runs/translation", "send", false),
             new McpDomainPermission("runs/metadata", "send", false));
@@ -256,5 +256,67 @@ public sealed class McpServerSettingsTests
 
         loaded.Value.Port.Should().Be(4542);
         loaded.Value.Revision.Should().Be(saved.Value.Revision);
+    }
+
+    [Fact]
+    public void Migration_denies_images_fetch_when_view_was_never_allowed()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
+
+        McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
+
+        migrated.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.view");
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", false));
+        McpPermissionPolicy.Allows(migrated, "fetch", "patchouli://images/").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Migration_keeps_images_fetch_allowed_when_view_was_explicitly_enabled()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.view", true)]
+        };
+
+        McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
+
+        migrated.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.view");
+        migrated.DomainPermissions.Should().NotContain(value => value.Domain == "images" && value.Verb == "fetch");
+        McpPermissionPolicy.Allows(migrated, "fetch", "patchouli://images/").Should().BeTrue();
+    }
+
+    [Fact]
+    public void Migration_denies_images_fetch_when_texts_view_was_denied()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.view", true)],
+            DomainPermissions = [new McpDomainPermission("texts", "view", false)]
+        };
+
+        McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
+
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", false));
+        migrated.DomainPermissions.Should().NotContain(value => value.Verb == "view");
+        McpPermissionPolicy.Allows(migrated, "fetch", "patchouli://images/").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Migration_drops_view_verb_entries_and_the_view_tool_override()
+    {
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        {
+            ToolOverrides = [new McpToolOverride("patchouli.view", false, "old deny")],
+            DomainPermissions =
+            [
+                new McpDomainPermission("texts", "view", true),
+                new McpDomainPermission("translations", "view", false)
+            ]
+        };
+
+        McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
+
+        migrated.ToolOverrides.Should().NotContain(value => value.ToolName == "patchouli.view");
+        migrated.DomainPermissions.Should().NotContain(value => value.Verb == "view");
     }
 }
