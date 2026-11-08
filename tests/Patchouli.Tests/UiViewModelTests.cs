@@ -440,7 +440,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
             "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录",
-            "同步与快照", "更新设置");
+            "同步与快照", "插件", "更新设置");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
             .Where(content => content is AboutViewModel)
@@ -458,7 +458,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
+            .Where(entry =>
+                entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions" or "plugin_store"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);

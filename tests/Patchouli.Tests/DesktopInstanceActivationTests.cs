@@ -363,6 +363,16 @@ public sealed class DesktopInstanceActivationTests(AvaloniaSharedSessionFixture 
             return Task.FromResult(true);
         }
 
+        public Task<bool> NotifyPrimaryUriAsync(string uri, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(true);
+        }
+
+        public IDisposable SubscribeUris(Action<string> callback)
+        {
+            return new Subscription(() => { });
+        }
+
         public IDisposable Subscribe(Action callback)
         {
             _subscriber = callback;

@@ -102,6 +102,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private readonly string? _settingsPath;
     private readonly HostOcrCompositionOptions? _ocrComposition;
     private readonly IAppPaths? _hostAppPaths;
+    private readonly HostInfrastructureOptions? _hostInfrastructure;
     private int _libraryGeneration;
     private bool _queryRewriteEnabledPersisted = true;
     private bool _synchronizingToolbarSearch;
@@ -796,7 +797,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
         IHostActivityTracker? activityTracker = null,
-        HostOcrCompositionOptions? ocrComposition = null, IAppPaths? appPaths = null)
+        HostOcrCompositionOptions? ocrComposition = null, IAppPaths? appPaths = null,
+        HostInfrastructureOptions? infrastructure = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
@@ -809,6 +811,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settingsPath = settingsPath;
         _ocrComposition = ocrComposition;
         _hostAppPaths = appPaths;
+        _hostInfrastructure = infrastructure;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
         _settingsStore = settingsStore ?? new AppSettingsStore(settingsPath, _settings);
@@ -2225,6 +2228,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private async Task ShutdownLibraryCoreAsync()
     {
         Interlocked.Exchange(ref _librarySwitchInProgress, 1);
+        CloseAllPluginViewWindows();
         await Shell.CancelAndDrainItemPurgeAsync();
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())
@@ -2511,7 +2515,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             startupProgress: CreateStartupStageProgress(),
             activityTracker: _activityTracker,
             runtimeHostLease: _runtimeHostLease,
-            ocrComposition: _ocrComposition, appPaths: _hostAppPaths);
+            ocrComposition: _ocrComposition, appPaths: _hostAppPaths, infrastructure: _hostInfrastructure);
     }
 
     private async Task StopHostServicesAsync()
@@ -3276,17 +3280,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task RunToolbarSearchAsync()
     {
-        PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(ToolbarSearchQuery);
-        if (navigation.HasProtocolPrefix)
+        if (_settings.Ui.ParseVirtualLinksInSearchBar)
         {
-            if (navigation.Target is null)
+            PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(ToolbarSearchQuery);
+            if (navigation.HasProtocolPrefix)
             {
-                ReportError(navigation.ErrorMessage ?? "无法解析 Patchouli URI。");
+                if (navigation.Target is null)
+                {
+                    ReportError(navigation.ErrorMessage ?? "无法解析 Patchouli URI。");
+                    return;
+                }
+
+                await NavigateToPatchouliUriAsync(navigation.Target);
                 return;
             }
-
-            await NavigateToPatchouliUriAsync(navigation.Target);
-            return;
         }
 
         if (ToolbarSearchMode.Mode == SearchMode.DocumentFullText)

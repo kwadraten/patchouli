@@ -903,10 +903,10 @@
                                    PlaceholderText="{Binding ApiKeyPlaceholder}" />
                         </Grid>
                         <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                          <TextBlock Text="上下文总长度（tokens）" ToolTip.Tip="达到上下文容量的 80% 时压缩历史，原始记录仍可读取。"
+                          <TextBlock Text="上下文总长度（tokens）" ToolTip.Tip="0 使用模型目录的上下文长度。达到容量的 80% 时压缩历史。"
                                      VerticalAlignment="Center" />
                           <NumericUpDown Grid.Column="1" Value="{Binding ContextWindowTokens}"
-                                         Minimum="4096" Maximum="10000000" Increment="1024"
+                                         Minimum="0" Maximum="10000000" Increment="1024"
                                          FormatString="0" HorizontalAlignment="Stretch" />
                         </Grid>
                         <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
@@ -1524,6 +1524,25 @@
               </Border>
             </StackPanel>
           </DataTemplate>
+          <DataTemplate DataType="settings:VirtualLinkSettingsViewModel">
+            <StackPanel Classes="SettingsContent" AutomationProperties.Name="文献虚拟链接解析">
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Content="在系统中注册 patchouli:// 协议"
+                                IsChecked="{Binding RegisterProtocol, Mode=TwoWay}"
+                                IsEnabled="{Binding CanChangeRegistration}"
+                                ToolTip.Tip="从其他应用打开文献虚拟链接，唤起 Patchouli 并定位资源。" />
+                  <TextBlock Text="{Binding RegistrationStatus}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+              <Border Classes="Card">
+                <ToggleSwitch Content="搜索栏解析文献虚拟链接"
+                              IsChecked="{Binding ParseLinksInSearchBar, Mode=TwoWay}"
+                              ToolTip.Tip="在搜索栏输入 patchouli:// 链接时直接定位资源；关闭后按普通文本搜索。" />
+              </Border>
+            </StackPanel>
+          </DataTemplate>
           <DataTemplate DataType="settings:SearchPageAwarenessSettingsViewModel">
             <StackPanel Classes="SettingsContent" AutomationProperties.Name="搜索框页面感知">
               <Border Classes="Card">
@@ -1557,6 +1576,68 @@
                   </ItemsControl>
                 </StackPanel>
               </Border>
+            </StackPanel>
+          </DataTemplate>
+
+          <DataTemplate DataType="settings:PluginStoreSettingsViewModel">
+            <StackPanel Classes="SettingsContent" AutomationProperties.Name="插件商店">
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="社区插件" Classes="CardTitle" />
+                      <TextBlock Text="{Binding CatalogStatus}" FontSize="11" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    </StackPanel>
+                    <Button Grid.Column="1" Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}"
+                            ToolTip.Tip="刷新签名索引" AutomationProperties.Name="刷新签名索引"
+                            VerticalAlignment="Center">
+                      <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                    </Button>
+                  </Grid>
+                  <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsBusy}" />
+                  <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <TextBlock Text="当前索引没有可展示的插件。" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding IsEmpty}" />
+                </StackPanel>
+              </Border>
+
+              <ItemsControl ItemsSource="{Binding Plugins}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="settings:PluginStoreRowViewModel">
+                    <Border Classes="CardTile" Margin="0,0,0,12" Padding="16">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                        <StackPanel Spacing="5" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Id}" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Description}" FontSize="12" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding VersionText}" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <TextBlock Text="{Binding SourceText}" FontSize="11" TextWrapping="Wrap"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <TextBlock Text="{Binding PermissionsText}" FontSize="11" TextWrapping="Wrap"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <TextBlock Text="{Binding StatusText}" FontSize="12" TextWrapping="Wrap"
+                                     Foreground="{DynamicResource PrimaryBrush}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
+                          <Button Content="{Binding InstallText}" Command="{Binding InstallCommand}"
+                                  IsVisible="{Binding ShowInstall}" IsEnabled="{Binding !IsBusy}"
+                                  Classes="Primary" MinWidth="88" />
+                          <Button Content="{Binding ToggleText}" Command="{Binding ToggleCommand}"
+                                  IsVisible="{Binding ShowToggle}" IsEnabled="{Binding !IsBusy}" MinWidth="88" />
+                          <Button Content="{Binding RollbackText}" Command="{Binding RollbackCommand}"
+                                  IsVisible="{Binding ShowRollback}" IsEnabled="{Binding !IsBusy}" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </StackPanel>
           </DataTemplate>
 

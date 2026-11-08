@@ -13,8 +13,10 @@ namespace Patchouli.UI;
 public sealed partial class App : Application
 {
     private IDisposable? _activationSubscription;
+    private IDisposable? _uriSubscription;
 
     internal IDesktopInstanceCoordinator? Coordinator { get; set; }
+    internal string? StartupUri { get; set; }
 
     public override void Initialize()
     {
@@ -39,6 +41,12 @@ public sealed partial class App : Application
                 desktop.MainWindow = mainWindow;
                 SubscribeToActivation(mainWindow);
                 mainWindow.StartStartupAfterFirstFrame();
+                if (StartupUri is { } uri)
+                {
+                    StartupUri = null;
+                    Dispatcher.UIThread.Post(() => mainWindow.OpenProtocolUri(uri));
+                }
+
                 desktop.Exit += OnDesktopExit;
             }
         }
@@ -65,6 +73,9 @@ public sealed partial class App : Application
         }
 
         _activationSubscription?.Dispose();
+        _uriSubscription?.Dispose();
+        _uriSubscription = targetCoordinator.SubscribeUris(uri =>
+            Dispatcher.UIThread.Post(() => mainWindow.OpenProtocolUri(uri)));
         _activationSubscription = targetCoordinator.Subscribe(() =>
         {
             Dispatcher.UIThread.Post(() => { ActivateWindow(mainWindow); });
@@ -74,6 +85,8 @@ public sealed partial class App : Application
         {
             _activationSubscription?.Dispose();
             _activationSubscription = null;
+            _uriSubscription?.Dispose();
+            _uriSubscription = null;
         };
     }
 

@@ -4,6 +4,7 @@ using System.IO.Pipes;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI;
 
@@ -12,7 +13,9 @@ internal interface IDesktopInstanceCoordinator : IAsyncDisposable, IDisposable
     bool IsPrimary { get; }
     void StartListener();
     Task<bool> NotifyPrimaryAsync(CancellationToken cancellationToken = default);
+    Task<bool> NotifyPrimaryUriAsync(string uri, CancellationToken cancellationToken = default);
     IDisposable Subscribe(Action callback);
+    IDisposable SubscribeUris(Action<string> callback);
     bool TryConsumePendingActivation();
 }
 
@@ -38,6 +41,7 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
     public const int MaxPayloadBytes = 1024;
     public const int ProtocolVersion = 1;
     public const string CommandActivateUi = "activate_ui";
+    public const string CommandOpenUri = "open_uri";
 
     private static readonly TimeSpan ServerStreamRecreateDelay = TimeSpan.FromMilliseconds(100);
 
@@ -48,6 +52,8 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
     private CancellationTokenSource? _listenerCts;
     private Task? _listenerTask;
     private Action? _activationCallback;
+    private Action<string>? _uriCallback;
+    private readonly Queue<string> _pendingUris = new();
     private int _pendingActivation;
     private bool _disposed;
     private bool _listenerStarted;
@@ -130,7 +136,19 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     }
 
-    public async Task<bool> NotifyPrimaryAsync(CancellationToken cancellationToken = default)
+    public Task<bool> NotifyPrimaryAsync(CancellationToken cancellationToken = default)
+    {
+        return SendRequestAsync(null, cancellationToken);
+    }
+
+    public Task<bool> NotifyPrimaryUriAsync(string uri, CancellationToken cancellationToken = default)
+    {
+        return DesktopUriActivation.IsValid(uri)
+            ? SendRequestAsync(uri, cancellationToken)
+            : Task.FromResult(false);
+    }
+
+    private async Task<bool> SendRequestAsync(string? uri, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -197,8 +215,9 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
                     ControlRequest request = new()
                     {
                         Version = ProtocolVersion,
-                        Command = CommandActivateUi,
-                        RequestId = requestId
+                        Command = uri is null ? CommandActivateUi : CommandOpenUri,
+                        RequestId = requestId,
+                        Uri = uri
                     };
 
                     byte[] requestBytes = JsonSerializer.SerializeToUtf8Bytes(request,
@@ -315,6 +334,31 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
     public bool TryConsumePendingActivation()
     {
         return Interlocked.Exchange(ref _pendingActivation, 0) == 1;
+    }
+
+    public IDisposable SubscribeUris(Action<string> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        lock (_lock)
+        {
+            _uriCallback = callback;
+            while (_pendingUris.TryDequeue(out string? uri))
+            {
+                callback(uri);
+            }
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_lock)
+            {
+                if (_uriCallback == callback)
+                {
+                    _uriCallback = null;
+                }
+            }
+        });
     }
 
     private async Task RunListenerLoopAsync(NamedPipeServerStream initialServerStream,
@@ -475,7 +519,11 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
             return;
         }
 
-        if (!string.Equals(request.Command, CommandActivateUi, StringComparison.Ordinal))
+        bool opensUri = string.Equals(request.Command, CommandOpenUri, StringComparison.Ordinal);
+        if (opensUri
+                ? !DesktopUriActivation.IsValid(request.Uri)
+                : !string.Equals(request.Command, CommandActivateUi, StringComparison.Ordinal) ||
+                  request.Uri is not null)
         {
             LogSanitizedDiagnostic("Control message rejected unrecognized command", null);
             return;
@@ -486,6 +534,26 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
         {
             LogSanitizedDiagnostic("Control message rejected invalid request_id", null);
             return;
+        }
+
+        if (opensUri)
+        {
+            lock (_lock)
+            {
+                if (_uriCallback is { } callback)
+                {
+                    callback(request.Uri!);
+                }
+                else if (_pendingUris.Count < 32)
+                {
+                    _pendingUris.Enqueue(request.Uri!);
+                }
+                else
+                {
+                    LogSanitizedDiagnostic("Control URI queue is full", null);
+                    return;
+                }
+            }
         }
 
         TriggerActivation();
@@ -590,6 +658,8 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
         lock (_lock)
         {
             _activationCallback = null;
+            _uriCallback = null;
+            _pendingUris.Clear();
         }
     }
 
@@ -622,6 +692,10 @@ internal sealed class ControlRequest
     [JsonPropertyName("command")] public string? Command { get; set; }
 
     [JsonPropertyName("request_id")] public string? RequestId { get; set; }
+
+    [JsonPropertyName("uri")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Uri { get; set; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

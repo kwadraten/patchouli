@@ -65,6 +65,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         AppearanceSettings = new AppearanceSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
+        VirtualLinkSettings = new VirtualLinkSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         LayoutModelCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.LayoutRecognition);
         OcrEngineCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.Ocr);
@@ -72,6 +73,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.PdfTextLayer);
         LlmSettings = new LlmSettingsViewModel(main);
         ExtensionSettings = new ExtensionSettingsViewModel(main);
+        PluginStore = new PluginStoreSettingsViewModel(main);
         AgentIntegrationSettings = new AgentIntegrationSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
@@ -90,12 +92,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         ISettingsSection[] sections =
         [
-            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
+            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, VirtualLinkSettings, OcrProviderSettings,
             OcrEngineCatalog, OcrTextLayerCatalog, LayoutModelCatalog,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
             CaywSettings,
-            UpdateSettings, ExtensionSettings
+            UpdateSettings, ExtensionSettings, PluginStore
         ];
 
         _sections = sections;
@@ -133,8 +135,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("csl_cayw", "Cite As You Write", CaywSettings),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
+            new SettingsSectionEntryViewModel("virtual_links", "文献虚拟链接解析", VirtualLinkSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
-            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
+            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings),
+            new SettingsSectionEntryViewModel("plugin_store", "插件商店", PluginStore)
         ];
         foreach (SettingsSectionEntryViewModel entry in SectionEntries)
         {
@@ -163,7 +167,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
                 OcrTextLayerCatalog),
             new SettingsSectionEntryViewModel("translation", "文献翻译",
                 new TranslationDefaultsViewModel(LlmSettings)));
-        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
+        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"), Entry("virtual_links"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"), Entry("csl_cayw"));
         SettingsSectionGroupViewModel search = new(Entry("search_rewrite"),
@@ -178,6 +182,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("搜索", "Filter", search),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
             new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
+            new NavCategoryViewModel("插件", "Puzzle", PluginStore),
             new NavCategoryViewModel("更新设置", "Download", UpdateSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
@@ -223,12 +228,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public AppearanceSettingsViewModel AppearanceSettings { get; }
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
+    public VirtualLinkSettingsViewModel VirtualLinkSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public OcrComponentCatalogSettingsViewModel LayoutModelCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrEngineCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrTextLayerCatalog { get; }
     public LlmSettingsViewModel LlmSettings { get; }
     public ExtensionSettingsViewModel ExtensionSettings { get; }
+    public PluginStoreSettingsViewModel PluginStore { get; }
 
     public ExtensionSettingsViewModel CreateExtensionEditor()
     {

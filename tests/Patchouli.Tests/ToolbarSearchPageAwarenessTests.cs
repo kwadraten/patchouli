@@ -3,6 +3,7 @@ using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Results;
 using Patchouli.Core.Search;
 using Patchouli.Host.Composition;
@@ -410,6 +411,41 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
             {
                 await main.ShutdownAsync();
             }
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Virtual_link_search_setting_controls_search_but_keeps_protocol_navigation(bool parseLinks)
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path);
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            PdfImportResult imported = await services.PdfImport.ImportPdfAsync(
+                new PdfImportRequest(TestFixtures.RealThreePagePdf, "Virtual link test", null, 3));
+            imported.Success.Should().BeTrue(imported.ErrorMessage);
+            await main.Shell.RefreshItemsAsync();
+            main.Settings.VirtualLinkSettings.ParseLinksInSearchBar = parseLinks;
+            main.ToolbarSearchMode = SearchPageAwareness.ModeOptions[0];
+            string uri = $"patchouli://items/{imported.CreatedItemId}.yml";
+            main.ToolbarSearchQuery = uri;
+            await main.RunToolbarSearchCommand.ExecuteAsync();
+            main.ActiveTab!.Kind.Should().Be(parseLinks ? WorkspaceTabKind.ItemEditor : WorkspaceTabKind.SearchResults);
+            if (!parseLinks)
+            {
+                main.SearchEvidence.Query.Should().Be(uri);
+            }
+
+            await main.OpenProtocolUriAsync(uri);
+            main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
+            await main.OpenProtocolUriAsync($"patchouli://texts/{imported.CreatedDocumentInstanceId}/page-2.xml");
+            main.ActiveTab!.Content.Should().BeOfType<PdfWorkspaceViewModel>()
+                .Which.PageNumberText.Should().Be("2");
+            return true;
         }, CancellationToken.None);
     }
 

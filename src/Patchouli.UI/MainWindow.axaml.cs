@@ -6,6 +6,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Patchouli.UI.Controls;
 using Patchouli.Host.Composition;
+using Patchouli.Llm;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
@@ -21,6 +22,7 @@ public sealed partial class MainWindow : Window
     private bool _exitRequested;
     private Func<Task<bool>>? _beforeConfirmedExit;
     private bool _startupScheduled;
+    private Task _protocolNavigation = Task.CompletedTask;
     private CatStatusIndicator? _catIndicator;
     private DispatcherTimer? _geometryClampDebounce;
 
@@ -80,6 +82,27 @@ public sealed partial class MainWindow : Window
     public async Task ShowFirstRunIfNeededAsync(bool startMcpServer = true)
     {
         await _viewModel.RunStartupAsync(startMcpServer);
+    }
+
+    internal void OpenProtocolUri(string uri)
+    {
+        App.ActivateWindow(this);
+        _protocolNavigation = OpenProtocolUriAfterAsync(_protocolNavigation, uri);
+        _protocolNavigation.Observe("protocol-activation", "open-uri");
+    }
+
+    private async Task OpenProtocolUriAfterAsync(Task previous, string uri)
+    {
+        try
+        {
+            await previous;
+            await _viewModel.OpenProtocolUriAsync(uri);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "protocol-activation", "navigate-uri");
+            _viewModel.ReportError($"无法打开文献虚拟链接：{exception.Message}");
+        }
     }
 
     public void StartStartupAfterFirstFrame()
@@ -241,6 +264,8 @@ public sealed partial class MainWindow : Window
             Core.Results.Result skillMaintenance =
                 await _viewModel.AgentSkills.UpdateUserInstallationsAsync();
             await _viewModel.RunStartupAsync(false);
+            LlmModelCatalog.Shared.RefreshInBackgroundAsync(new PlatformAppPaths().Resolve().CacheDirectory)
+                .Observe("models-dev", "refresh");
             _viewModel.StartMcpServerInBackground();
             if (skillMaintenance.IsFailure)
             {

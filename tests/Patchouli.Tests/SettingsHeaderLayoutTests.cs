@@ -32,6 +32,28 @@ namespace Patchouli.Tests;
 public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headless)
 {
     [Fact]
+    public async Task Virtual_links_subpage_renders_two_independent_switches()
+    {
+        await RunAsync(async (main, window, _) =>
+        {
+            await main.Settings.SelectSectionAsync("virtual_links");
+            await main.Settings.WaitForActiveSectionLoadAsync();
+            Pump(window);
+            ToggleSwitch[] switches = window.GetVisualDescendants().OfType<ToggleSwitch>()
+                .Where(control => control.IsEffectivelyVisible).ToArray();
+            switches.Should().HaveCount(2);
+            ToggleSwitch search = switches.Single(control => Equals(control.Content, "搜索栏解析文献虚拟链接"));
+            search.IsChecked.Should().BeTrue();
+            search.IsChecked = false;
+            Pump(window);
+            main.AppOptions.Ui.ParseVirtualLinksInSearchBar.Should().BeFalse();
+            switches.Single(control => Equals(control.Content, "在系统中注册 patchouli:// 协议"))
+                .IsChecked.Should().Be(main.Settings.VirtualLinkSettings.RegisterProtocol);
+            SavePreview(window, "settings-virtual-links.png");
+        });
+    }
+
+    [Fact]
     public async Task Ai_tabs_fill_the_header_and_stay_fixed_while_retaining_subpage_content()
     {
         await RunAsync(async (main, window, page) =>
