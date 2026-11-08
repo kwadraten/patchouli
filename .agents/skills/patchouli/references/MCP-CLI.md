@@ -9,9 +9,9 @@
 | CLI | MCP | 用途 |
 |---|---|---|
 | `find [QUERY] --in <URI>` | `patchouli.find` | 浏览目录（无查询）或在范围内搜索（有查询） |
-| `fetch <URI>...` | `patchouli.fetch` | 读取已知资源，逐 URI 独立返回结果 |
+| `fetch <URI>...` | `patchouli.fetch` | 读取已知资源，逐 URI 独立返回结果；作用于 plugin `views/{view-id}` 时返回视图描述符而非图像 |
 | `add <PATH> [--kind pdf\|csl]` | `patchouli.add { path, kind }` | 导入宿主机本地文件 |
-| `view <URI> --output <PNG>` | `patchouli.view { uri, context?, max_edge?, boxes? }` | 读取页面或 box 的源图像；`--boxes` 叠加与页面 XML 顺序一致的带序号边界框；作用于 plugin `views/{view-id}` 时返回视图描述符而非图像 |
+| `fetch patchouli://images/<document-id>/page-<N>.png --output <PNG>` | `patchouli.fetch` | 读取源页面图像（原生 image 内容块，不进文本字段）；`?rev=` 读历史修订、`?box=` 裁剪到该框、`?overlay=boxes` 叠加与页面 XML 顺序一致的带序号边界框、`?max_edge=` 限最长边；单次调用只能含一个 images/ URI，不可用 `--range`/`--limit-bytes`；`--output` 必填 |
 | `put <URI> --from/--stdin` 或 `--boxes-from/--boxes-stdin` | `patchouli.put` | 替换一个可写资源 |
 | `cite <REF>...` | `patchouli.cite` | 渲染引用 |
 | `send <ENDPOINT> <ACTION> <TARGET> [选项]` | `patchouli.send` | 向领域端点发送类型化消息 |
@@ -25,6 +25,8 @@ patchouli://texts/{document-id}/                      文献大纲与页面链�
 patchouli://texts/{document-id}/page-{N}.xml          当前页面 XML
 patchouli://texts/{document-id}/page-{N}.xml?rev={revision}&box={box}   证据
 patchouli://texts/{document-id}/map.yml               章节与印刷页码映射
+patchouli://images/{document-id}/                      文档的图片目录（逐页 PNG）
+patchouli://images/{document-id}/page-{N}.png[?rev={revision}&box={box}&overlay=boxes&max_edge={pixels}]   源页面图像（按需从原始 PDF 渲染，不落盘）
 patchouli://translations/{document-id}/page-{N}.xml   页面译文
 patchouli://csl-styles/{style-id}.csl
 patchouli://runs/{ocr|translation|metadata}/control   领域端点
@@ -51,11 +53,11 @@ URI 可以写成完整 `patchouli://…`、相对根的路径或前导 `/`。宿
 - `--where KEY=VALUE` 可以重复使用，与其他条件按 AND 组合，只接受当前范围支持的键（例如 `item_type`、`citable`、`tag`、`collection_id`、`ocr_index_status`）。要筛出可全文检索的文本，用 `ocr_index_status=indexed`。
 - 默认结果只有 `uri`、`title`、`type`；`--long`（MCP `detail=long`）才附带状态与关系字段。
 - cursor 是无状态的实时续读令牌，翻页之间结果可能变化；需要稳定结果时，在没有并发修改的时段内一次读完。
-- `fetch --range pages:A-B|lines:A-B` 限定范围，`--limit-bytes` 设定大小上限。超限时返回显式的部分结果（`complete:false`，带 `next_range` 或 `continuation`）。页面 XML 只会按完整 box 切分，不会截断半个 box。部分结果不能当作完整内容提交。
+- `fetch --range pages:A-B|lines:A-B` 限定范围，`--limit-bytes` 设定大小上限。超限时返回显式的部分结果（`complete:false`，带 `next_range` 或 `continuation`）。页面 XML 只会按完整 box 切分，不会截断半个 box。部分结果不能当作完整内容提交。images/ URI 不可用 `--range`/`--limit-bytes`，单次 fetch 只能含一个 images/ URI；图像以原生 image 内容块返回，永不截断，文本包络只带图片元数据。取文本页时条目带可直接取用的 `image_uri`。
 
 ## 权限
 
-权限由用户在桌面设置“MCP 服务与权限”中配置，形式是“VFS 域 × 动词”矩阵。另有 `put`、`send`、`add`、`view` 四个独立的工具开关，关闭后对应工具返回 `PERMISSION_DENIED`，其余工具不受影响。
+权限由用户在桌面设置“MCP 服务与权限”中配置，形式是“VFS 域 × 动词”矩阵。另有 `put`、`send`、`add` 三个独立的工具开关，关闭后对应工具返回 `PERMISSION_DENIED`，其余工具不受影响。图像读取受 `images × fetch` 域权限约束，不是独立工具开关；旧配置迁移时，已显式开启 view 授权的转为 images.fetch，未开启的一律拒绝（迁移不扩大授权）。
 
 - `send` 需要同时具备两项：`send` 工具开关，以及 `runs/ocr`、`runs/translation` 或 `runs/metadata` 子域的 send 授权。新子域默认关闭。
 - 没有授权的端点在 `find` 中不可见，直接 `fetch` 也会被拒绝。

@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.4.0（开发中，未发布）
+
+- MCP 删除独立的 `patchouli.view` 工具，改为通过 `patchouli.fetch` 读取新增的只读 `patchouli://images/` 虚拟域：`patchouli://images/{document-id}/page-{n}.png` 按需从原始 PDF 渲染，不落盘；`?rev=` 读历史修订、`?box=` 按框裁剪、`?overlay=boxes` 叠加与页面 XML 顺序一致的编号框、`?max_edge=` 限制最长边。单次 fetch 含 images/ URI 时只能含该一个 URI，不可混批文本、不可用 range；图片永不按文本 `limit_bytes` 截断，沿用渲染器的 8 MiB 上限。图片以原生 image 内容块返回，文本包络只带图片元数据。
+- `fetch` 文本页（page/evidence/translation）与 `find --long` 投影现在直接给出可取用的 `image_uri`；`find patchouli://images/` 列出各文档的图片目录，`find patchouli://images/{document-id}/` 列出该文档的逐页图片。
+- 权限以 `images × fetch` 取代 `view`：动词表与 texts/translations 的 view 支持删除，迁移把已显式开启的 view 授权转为 images.fetch，未显式开启者一律得到 `images.fetch` 拒绝，迁移不扩大授权。插件注册的 `view` 动作与插件 UI View 加载机制不变。
+- CLI 删除 `view` 命令（改用 `fetch patchouli://images/.../page-<n>.png --output <image.png>`），`fetch` 新增 `--output/--overwrite`；images/ 取图缺 `--output` 时直接报用法错误。
+
 ## 0.3.16
 
 发布：2026-11-06 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.16) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.15...0.3.16)

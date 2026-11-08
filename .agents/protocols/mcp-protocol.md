@@ -110,7 +110,7 @@ and honor the `texts.put` permission. Historical revision addresses remain read-
 
 本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品基线见 [CONTEXT](../CONTEXT.md)，任务进度通过 [GitHub Issues](../issue-tracker.md) 维护。选择理由见 [ADR 0024](../adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](../adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](../adr/0028-versioned-uri-evidence.md) 为准。外部 Agent 终端集成与内置 Agent/工作流移除见 [ADR 0047](../adr/0047-external-agent-cli-terminal-integration.md)，直接批量翻译、翻译端点 start/cancel 与 `runs/translation/` 投影见 [ADR 0046](../adr/0046-direct-batched-translation-pipeline.md)，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 [ADR 0045](../adr/0045-mcp-add-view-boundaries.md)。
 
-实现状态（2026-10-19）：七动词（`find`/`fetch`/`add`/`view`/`put`/`cite`/`send`）、`runs/ocr` 与 `runs/translation` 两个易失运行时资源根、CLI HTTP 客户端、TOON/JSON、有限写入、本地文件导入、源图像读取、显式 OCR 任务队列入口与直接批量翻译入口，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（外部 Agent 与资源树变更见 ADR `0047`，直接翻译与翻译 Action 见 ADR `0046`，`add`/`view` 的资源创建、路径输入、图像输出与裁剪几何边界见 ADR `0045`，`send` 的 OCR Action 显式队列启动、取消、重试与原子幂等见 Issue #16）。回归义务继续约束后续改动。
+实现状态（2026-11-09）：六动词（`find`/`fetch`/`add`/`put`/`cite`/`send`）、`runs/ocr` 与 `runs/translation` 两个易失运行时资源根、CLI HTTP 客户端、TOON/JSON、有限写入、本地文件导入、源图像读取、显式 OCR 任务队列入口与直接批量翻译入口，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（外部 Agent 与资源树变更见 ADR `0047`，直接翻译与翻译 Action 见 ADR `0046`，`add` 的资源创建与路径输入、图像输出与裁剪几何边界见 ADR `0045`（`view` 已退役，图像读取改由 `fetch` + `images/` 承担，见 ADR `0057`），`send` 的 OCR Action 显式队列启动、取消、重试与原子幂等见 Issue #16）。回归义务继续约束后续改动。
 
 **定位**：`patchouli-cli` — access an academic literature library powered by Patchouli.NET
 
@@ -119,7 +119,7 @@ and honor the `texts.put` permission. Historical revision addresses remain read-
 ### 按域授权
 
 MCP 设置使用 VFS 域 × 动词的权限矩阵，覆盖 `/`、`items`、`texts`、`translations`、
-`csl-styles`、`runs`、`actions`、`library.yml`、`plugin` 与 `plugin/{plugin-id}`，覆盖七个工具动词、三个 OCR Action 能力与两个翻译 Action 能力。禁止的组合返回
+`csl-styles`、`runs`、`actions`、`library.yml`、`plugin` 与 `plugin/{plugin-id}`，覆盖六个工具动词、三个 OCR Action 能力与两个翻译 Action 能力。禁止的组合返回
 `PERMISSION_DENIED`；授权不扩大资源本身支持的操作。`find` 按恢复后的游标作用域检查，
 根目录不列出禁止 `find` 的域；`fetch` 的混合批次包含任何禁止域时整批拒绝；`cite`
 同时检查引用域、题录域和样式域。`plugin`/`plugin/{plugin-id}` 域支持 find/fetch/send/view，实际授予由设备注册 `allowed_verbs` 决定；plugin 地址上的 put/add/cite 始终拒绝。OCR/翻译/元数据端点同时检查 send 工具开关及 runs/ocr、runs/translation、runs/metadata 子域 send 显式授权；旧权限迁移不自动授予子域。父级三态及默认关闭见第 7 节。`cite` 专用入口仍按原引用权限检查，不要求 send 授权。
@@ -135,7 +135,6 @@ COMMANDS
   find      Discover or search resources
   fetch     Retrieve known resources
   add       Import local PDF or CSL files without starting OCR
-  view      Read a source page or region image
   put       Replace one writable resource
   cite      Render citations from citation-capable item/document/page/evidence refs
   send      Invoke a typed Action on a VFS resource
@@ -211,7 +210,7 @@ RESOURCE TREE
 
 Plugin 的 `plugin.yml`、README 和动作端点描述由宿主根据已验证静态清单生成，读取它们不启动插件进程。声明的插件自有目录与文件通过固定 stdio MCP 工具执行 find/fetch/send；运行时不能扩大声明范围，结果仍校验对应 Schema 和 URI 归属。
 
-`views` 与 `plugin.yml`、`README.md`、`files` 同为宿主保留挂载路径，插件不能自行声明。清单的 `[[ui.views]]` 段声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。存在 views 声明时，`find` 在挂载内列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`）条目，`plugin.yml` 包含 views 数组；`fetch`/`view` 作用于 `views/{view-id}` 返回宿主合成的 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，同样不启动插件进程。`view` 动词由此加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合，并在存在 views 时计入清单 `DeclaredVerbs`；桌面宿主按 placement 在保留工作区标签页、非模态弹窗或 PDF 侧栏的 WebView 容器中打开视图（容器与上下文注入契约见 ADR `0056`）。视图 HTML 由宿主经 `patchouli.plugin.fetch` 向声明的 source 节点读取，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。当前不支持 Plugin put/add/cite、托管 `files/`、后台动作或插件主体书库 grants。社区商店安装记录、来源和启停状态按设备保存，不进入书库快照。
+`views` 与 `plugin.yml`、`README.md`、`files` 同为宿主保留挂载路径，插件不能自行声明。清单的 `[[ui.views]]` 段声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。存在 views 声明时，`find` 在挂载内列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`）条目，`plugin.yml` 包含 views 数组；`fetch` 作用于 `views/{view-id}` 返回宿主合成的 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，同样不启动插件进程。`view` 动词由此加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合，并在存在 views 时计入清单 `DeclaredVerbs`；桌面宿主按 placement 在保留工作区标签页、非模态弹窗或 PDF 侧栏的 WebView 容器中打开视图（容器与上下文注入契约见 ADR `0056`）。视图 HTML 由宿主经 `patchouli.plugin.fetch` 向声明的 source 节点读取，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。当前不支持 Plugin put/add/cite、托管 `files/`、后台动作或插件主体书库 grants。社区商店安装记录、来源和启停状态按设备保存，不进入书库快照。
 
 `patchouli://library.yml` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该资源内容使用 YAML，外层 MCP envelope 仍使用 TOON（或请求的 JSON）。MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.yml` 支持原子 put 来替换集合与标签目录，受 library.yml.put 和工具 put 权限控制。省略一个类别会保留它，[] 明确清空该类别。新集合省略 collection_id，现有集合保留其 ID；同 ID 改名保留成员。删除集合只解散关系，不删除题录。标签按名称识别，改名视为删除旧标签并新建，旧标签关系移除。题录归属通过题录 YAML 修改。library_id 与 display_name 不可编辑，item_count 是派生输出。legacy library.toon 仍只读。
 
@@ -576,27 +575,27 @@ UI 在权限矩阵的 runs 行旁用三角按钮展开/收起子行，不另建�
 - 授权与配置检查在触碰/移动文件之前完成。PDF 检查 `items.add` + `texts.add`，CSL 检查 `csl-styles.add`；MCP 调用方不能按请求覆盖文件处理行为。
 - PDF 导入复用宿主导入核心：默认保留在原位置，计算 BLAKE3 后登记 FileAsset；也可按"文件处理行为"设置移动到第一个文件搜索根（先移动、后计算 BLAKE3 并登记；无搜索根、首根不可写/不可用则显式失败，绝不悄悄换用其他目录或回退为原地）。成功返回 `patchouli://items/{item-id}.yml` 与 `patchouli://texts/{document-instance-id}/`，以及新建/复用结果、页数、导入问题、当前正文/索引状态。导入成功 ≠ OCR/索引完成；v1 不隐式启动 OCR。
 - CSL 安装：解析本地 XML 的 style ID、标题、依赖；新 ID 安装、同 ID 同内容复用、同 ID 不同内容冲突（后续经 `put` 更新）；不改变默认引用样式；缺失父样式时报告依赖与可渲染状态，不悄悄下载父样式。
-- `add` 与 `view` 有各自独立的工具开关与域权限；已有 `put` 授权不会自动扩展为 `add`/`view`。
+- `add` 有独立的工具开关与域权限；已有 `put` 授权不会自动扩展为 `add`。图像读取是 `images` 域的 `fetch` 权限（迁移不扩大授权，见 ADR `0057`），不是独立工具开关。
 
 CLI：`patchouli-cli add <PATH> [--kind pdf|csl]` 解析相对路径为绝对路径后调用同一 MCP 工具；没有第二套导入逻辑。
 
-## 9 `view`（源图像读取）
+## 9 `fetch` 图像读取（`patchouli://images/`）
 
-`view` 给定文库页面或 box URI，返回用于模型图文对照的源图像。请求：`{"uri": "patchouli://texts/{document-id}/page-12.xml?rev={revision-id}&box={box-id}", "context": "region", "max_edge": 2048, "boxes": true}`（`max_edge` 默认 2048；`boxes` 默认 false）。
+`fetch` 给定 `patchouli://images/{document-id}/page-{n}.png[?rev={revision-id}][&box={box-id}][&overlay=boxes][&max_edge={pixels}]`，返回用于模型图文对照的源图像。`box=` 的默认含义是裁剪到该框（不是独立的 `context=region` 参数）；`overlay=boxes` 叠加编号框；`max_edge` 默认 2048。`rev`、`box`、`overlay`、`max_edge` 均参与 URI 归一化：不同参数就是不同 canonical URI。单次 fetch 含 images/ URI 时只能含该一个 URI，不可混批文本、不可用 range；`limit_bytes` 不适用于图像，图像永不按文本规则截断。
 
-- 目标：一页 URI 返回整页源图像；box/证据 URI 返回带小边距的 bbox 裁剪；翻译页/box 返回对应源文档图像；目录 URI 必须指定页面。一次调用一个目标、一张图；v1 不接受任意坐标输入。
-- **Plugin view URI**：`view` 作用于 `patchouli://plugin/{plugin-id}/views/{view-id}` 时不返回图像，而是返回与 `fetch` 相同的宿主合成 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，内容为纯文本信封（无 ImageContent 块）；描述符不启动插件进程。`view` 作用于任何其他 plugin 路径均被拒绝；书库页面/box 的图像读取语义不变，`context`、`max_edge`、`boxes` 图像参数不适用于 view 描述符。桌面容器按描述符的 placement 打开视图（见 ADR `0056`）。
+- 目标：一页 URI 返回整页源图像；`?box=` 返回带小边距的 bbox 裁剪；`?rev=` 读历史修订的图像；目录 URI（`patchouli://images/`、`patchouli://images/{document-id}/`）不可 fetch，用 `find` 浏览。一次调用一张图；v1 不接受任意坐标输入，没有 `translations/` 的图像镜像——译文页的图像就是源文档页的图像，取文本页时 `image_uri` 直接给出。
+- **Plugin view URI**：`fetch` 作用于 `patchouli://plugin/{plugin-id}/views/{view-id}` 时不返回图像，而是返回宿主合成的 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，内容为纯文本信封（无 ImageContent 块）；描述符不启动插件进程。`fetch` 作用于任何其他 plugin 路径按插件声明的动词处理；images/ 域不适用于 plugin 路径。桌面容器按描述符的 placement 打开视图（见 ADR `0056`）。
 - 无框树页面：页面尚无已提交 revision 时，整页 URI 仍返回整页源图像（与 PDF 工作台直接显示页面图的人机对等），canonical URI 不带 `rev` 锁定；box 目标此时明确以目标不存在失败。显式指定不存在的 revision 仍是过期 revision 失败，绝不替换。
-- `boxes: true` 时，页面全部 box 以序号描边叠加在返回图像上；序号按页面 XML 文档顺序（先序、兄弟链顺序）编号，即第 n 号就是 fetch 到的页面 XML 中第 n 个 `<box>` 元素，文本元数据的 `boxes` 字段给出序号→box id 对照。裁剪视图只绘制与裁剪范围相交的 box，序号保持全页稳定编号；无框树页面该字段为空数组。
+- `overlay=boxes` 时，页面全部 box 以序号描边叠加在返回图像上；序号按页面 XML 文档顺序（先序、兄弟链顺序）编号，即第 n 号就是 fetch 到的页面 XML 中第 n 个 `<box>` 元素，文本元数据的 `boxes` 字段给出序号→box id 对照。裁剪视图只绘制与裁剪范围相交的 box，序号保持全页稳定编号；无框树页面该字段为空数组。
 - 图像来自原始 PDF，不从 OCR 文本重渲染，不做桌面导航，不触发 OCR，不修改正文。
 - 未指定 revision 时锁定为本次调用实际使用的 revision；历史 box 使用其自身 revision 的 bbox；源缺失/变化、目标缺失、坐标过期一律显式失败，绝不悄悄替换为最新 revision、其他页面或未校验来源。
-- **几何例外**：裁剪范围使用页面归一化坐标（可复现）；这是 `view` 对"不暴露几何"旧约束的显式例外（见 ADR `0045`）。
-- 成功返回混合 content：content[0] 为文本（现有 TOON/JSON 信封 + 图像元数据：锁定实际 revision 的 canonical URI、`view` 类型、MIME、实际宽高、实际裁剪范围、`image_index` 固定 0），content[1] 为 MCP 原生 ImageContent（`{"type":"image","data":"<raw base64>","mimeType":"image/png"}`；base64 不在 TOON/JSON 文本字段内、无 data-URL 前缀；`format=json` 只影响文本块）。v1 PNG，像素/编码字节/总响应大小设上限，超限显式失败，不返回截断图像。
+- **几何例外**：裁剪范围使用页面归一化坐标（可复现）；这是图像读取对"不暴露几何"旧约束的显式例外（原见 ADR `0045`，现归属 ADR `0057`）。
+- 成功返回混合 content：content[0] 为文本（现有 TOON/JSON 信封 + 图像元数据：锁定实际 revision 的 canonical URI、`view_type`、MIME、实际宽高、实际裁剪范围、`image_index` 固定 0，`boxes` 对照仅在 `overlay=boxes` 时出现），content[1] 为 MCP 原生 ImageContent（`{"type":"image","data":"<raw base64>","mimeType":"image/png"}`；base64 不在 TOON/JSON 文本字段内、无 data-URL 前缀；`format=json` 只影响文本块）。v1 PNG，像素/编码字节设上限（8 MiB），超限显式失败，不返回截断图像。
 - 失败用统一错误信封 + `isError` 语义，绝不伪造成功的图像条目。
-- `view` 检查目标域权限；翻译源图像同时检查源文本域；plugin view URI 检查 `plugin`/`plugin/{plugin-id}` 域的 view 授权与设备注册 `allowed_verbs`。
-- 外部 Agent 与 MCP 客户端的推荐对照流程：`fetch`（文本+版本）→ `view`（同 revision/box 源图像）→ `put`（带原 `source_revision`）；版本变化走正常 revision 冲突。图像以 MCP 原生 ImageContent 返回，由客户端自行提供给它自己的模型；Patchouli 不保存会话媒体区，也不伪造无视觉能力客户端的对照结果。
+- `fetch` 图像检查 `images` 域的 `fetch` 权限；plugin view 描述符检查 `plugin`/`plugin/{plugin-id}` 域的 fetch 授权与设备注册 `allowed_verbs`。
+- 外部 Agent 与 MCP 客户端的推荐对照流程：`fetch`（文本+版本，条目带 `image_uri`）→ `fetch`（`image_uri`，同 revision/box 源图像）→ `put`（带原 `source_revision`）；版本变化走正常 revision 冲突。图像以 MCP 原生 ImageContent 返回，由客户端自行提供给它自己的模型；Patchouli 不保存会话媒体区，也不伪造无视觉能力客户端的对照结果。
 
-CLI：`patchouli-cli view <URI> --output image.png`（`--json` 变体同；`--boxes` 对应 `boxes: true`）调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
+CLI：`patchouli-cli fetch patchouli://images/<document-id>/page-<n>.png --output image.png [--overwrite]` 调用同一 MCP 工具，完整接收并校验后经目标目录临时文件 + 最终移动写入 PNG；`--output` 是 images/ 取图的必填项（缺失直接报用法错误）；默认不覆盖已有文件（显式覆盖旗标见 CLI 契约）；stdout 打印 TOON/JSON 元数据与客户端侧绝对 `output_path`；写失败非零退出。
 
 ## 10 OCR Actions（通过 send 调用）
 
@@ -741,7 +740,7 @@ CLI                                             MCP
 patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
 patchouli-cli add <PATH> [--kind pdf|csl]       patchouli.add { path, kind }
-patchouli-cli view <URI> --output <PNG>         patchouli.view { uri, context?, max_edge?, boxes? }
+patchouli-cli fetch <images-URI> --output <PNG>   patchouli.fetch { uris: [images/...png] }
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
 patchouli-cli put <URI> --boxes-from <PATH>|--boxes-stdin
                                                 patchouli.put { uri, source_revision, translation_version?, boxes }
@@ -787,7 +786,7 @@ Response<TMeta, TEntry> = {
 
 | Tool | `meta` 与 `entries` schema | 成功与逐项失败规则 |
 |---|---|---|
-| `find` | `meta` 为 `{ library_revision: LibraryRevision, domain_total: NonNegativeInt, filtered_total: NonNegativeInt, shown_total: NonNegativeInt }`；`entries` 为 `FindEntry[]` | 默认 `FindEntry` **严格只有** `{ "uri": Uri, "title": String, "type": "file" \| "directory" \| "view" }`；`"view"` 仅用于 plugin `views/{view-id}` 条目（`views/` 本身为 `directory`）。`detail=long` 使用按资源种类判别的精确投影：`ItemLongEntry = { uri, title, type: "file", item_status, primary_document_ocr_index_status, citable }`；`TextLongEntry = { uri, title, type: "file"\|"directory", item_uri, item_status, document_status, source_status, ocr_index_status, citable }`；`StyleLongEntry = { uri, title, type: "file", style_enabled }`。除 `item_status` 可为 `"unset"` 外，三个 `*_status` 均为对应实体的原始持久化值；没有关联 FileAsset 的 text 资源使用 `source_status: "unavailable"`。字段只在其适用 variant 中出现，严禁用 null 填充其他 variant，也不得重复 URI 已表达的 document/page/evidence locator。`meta.shown_total` 必须等于 entries 长度。 |
+| `find` | `meta` 为 `{ library_revision: LibraryRevision, domain_total: NonNegativeInt, filtered_total: NonNegativeInt, shown_total: NonNegativeInt }`；`entries` 为 `FindEntry[]` | 默认 `FindEntry` **严格只有** `{ "uri": Uri, "title": String, "type": "file" \| "directory" \| "view" }`；`"view"` 仅用于 plugin `views/{view-id}` 条目（`views/` 本身为 `directory`）。`detail=long` 使用按资源种类判别的精确投影：`ItemLongEntry = { uri, title, type: "file", item_status, primary_document_ocr_index_status, citable }`；`TextLongEntry = { uri, title, type: "file"\|"directory", item_uri, item_status, document_status, source_status, ocr_index_status, citable, image_uri? }`；`TranslationPageEntry = { uri, title, type: "file", translation_status, translated_box_count, total_box_count, image_uri? }`；`StyleLongEntry = { uri, title, type: "file", style_enabled }`。除 `item_status` 可为 `"unset"` 外，三个 `*_status` 均为对应实体的原始持久化值；没有关联 FileAsset 的 text 资源使用 `source_status: "unavailable"`。字段只在其适用 variant 中出现，严禁用 null 填充其他 variant，也不得重复 URI 已表达的 document/page/evidence locator。`meta.shown_total` 必须等于 entries 长度。 |
 | `fetch` | `meta` 为 `{ library_revision: LibraryRevision }`；`entries` 为 `FetchResult[]` | 每个输入 URI 产生一个同序 `FetchResult`，不得因其他 URI 失败而丢失。见下方 discriminated variant。 |
 | `put` | `meta` 为 `{ library_revision: LibraryRevision }`；成功时 `entries` 为单元素 `PutResult[]`，批次内容校验失败可保留 `committed: false` 与 `box_errors` 诊断；其他失败、取消或超限写入时为 `[]` | `PutResult = { uri: Uri, resource_type: "item_yaml" \| "item_bib" \| "csl_style" \| "text_page" \| "translation_page", committed: Boolean, content_bytes: NonNegativeInt, source_revision?: String, translation_version?: NonNegativeInt, modified_box_ids?: String[], box_errors?: { box_id: String, message: String, structure_diff?: { block_index: NonNegativeInt, expected: String, actual: String }[] }[] }`。`item_bib` 表示显式 legacy `.bib` 请求；失败详情由 `message.error` 表达。`content_bytes` 是本次提交 content 或完整 box XML 片段的实际 UTF-8 字节数。 |
 | `cite` | `meta` 为 `{ library_revision: LibraryRevision, effective_style_uri: Uri, effective_locale: String, render_format: "text" \| "html", bibliography: String\|null }`；`entries` 为 `CitationResult[]` | 每个输入 REF 产生一个同序 result；可渲染 result 与不可解析/不可引用 result 可以共存。`bibliography` 仅在请求时为 String，否则为 null；其去重不影响 entries 长度与顺序。 |
@@ -858,7 +857,7 @@ Exit / error codes：
 
 推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs` 与 `/library.yml` → 先 fetch `patchouli://library.yml` 获取库身份、可选标签与集合目录 → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回或契约明确提供的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.yml`/`.xml`/`.csl` 执行 `put`；legacy `.bib` 仅用于显式兼容请求，并返回 obsoleted warning。全文搜索返回的 `?rev=&box=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。发送领域消息前先 find 对应 runs 子域并 fetch control 端点的授权契约；OCR 或翻译受理后通过返回的 run_uri 查询。
 
-**数据边界**：`runs/` 与 `send` 的所有响应都遵守 text-only 边界——不返回图像、本地路径、file URL、密钥或原始 secret；诊断 detail 由宿主白名单模板生成并脱敏。`view` 是图像输出的显式例外（MCP 原生 ImageContent，见第 9 节），`add` 是本地路径输入的显式例外（见第 8 节）；两者输出仍不暴露宿主源路径、缓存路径或未脱敏异常。`put` 与 `send` 可被用户工具开关关闭；`add`/`view` 另有各自独立的工具开关，关闭后对应工具返回 `PERMISSION_DENIED`。已有 `put` 授权不会自动扩展为 `add`/`view`。
+**数据边界**：`runs/` 与 `send` 的所有响应都遵守 text-only 边界——不返回图像、本地路径、file URL、密钥或原始 secret；诊断 detail 由宿主白名单模板生成并脱敏。`fetch` 的 images/ 图像是图像输出的显式例外（MCP 原生 ImageContent，见第 9 节），`add` 是本地路径输入的显式例外（见第 8 节）；两者输出仍不暴露宿主源路径、缓存路径或未脱敏异常。`put` 与 `send` 可被用户工具开关关闭；`add` 另有独立的工具开关，关闭后对应工具返回 `PERMISSION_DENIED`。已有 `put` 授权不会自动扩展为 `add`；图像读取另受 `images × fetch` 域权限约束。
 
 ## 13 Agent 可用性与关系解析
 
@@ -898,7 +897,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC10 | 裸 `find` 返回 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs` 五个既有 VFS 根 directory、存在已启用挂载时的 `/plugin` directory，以及 `/library.yml` 根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、evidence 根、`/workflows` 和 shell 入口，均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
 | V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`（`patchouli://translations/` 与其 document 目录例外，见 ADR `0034`：它们必须携带翻译进度/状态）；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，每次响应显式返回 `meta.outcome` 与 `meta.summary`；无诊断时可省略 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
-| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据（翻译目录条目例外，见 ADR `0034`）；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
+| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据（翻译目录条目例外，见 ADR `0034`）；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable`。`image_uri` 是例外：它命名另一个资源（该页修订的源图像），并锁定文本实际来源的 revision，不是定位符的重复 |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
 | V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行五个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
 | V3-AC16 | MCP `format=json` 与 CLI `--json` 为批量机器处理返回等价 JSON；无需解析 TOON，且三种编码均使用相同的 `meta`、`continuation`、可选 `message`、`entries` schema。格式切换不改变默认/详细投影、字段、分页、warning 或 error 语义 |
@@ -915,7 +914,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC29 | 元数据端点 `runs/metadata/control` 提供 lookup/apply/enrich/enrich_batch/cancel/retry：lookup 返回只读候选 proposal 且零写入；apply 由 Core 校验结构与乐观版本后原子提交；enrich 为 Core 组合的 lookup+apply；enrich_batch 后台受理并投影 `runs/metadata/{task-id}/status` 逐项结果，取消保留已提交项；request_id 原子去重与冲突语义与其他端点一致；权限需 runs/metadata 子域 send 显式授权，默认关闭 |
 | V3-AC30 | Plugin 只暴露静态声明的 find/fetch/send，以及声明 `[[ui.views]]` 时宿主合成的 `views/` 列表与 view 描述符；读取自描述、端点说明与 view 描述符不启动进程，运行时 URI、输入与结果不能越出声明。商店在线/缓存索引均需 minisign 验签，包需匹配平台、大小与 SHA-256，握手成功后才切换注册；安装与回滚不撤销书库数据，也不把进程隔离或 WebView 描述为沙箱 |
 | V3-AC27 | 翻译端点 start 针对 Document 启动、cancel 针对 `runs/translation/{run-id}/status` 取消，均返回通用 send envelope；状态投影给出 `state`、页计数与逐页 `{page_index, state, committed_box_count, error_code?, error_message?}`；启动立即返回 `running`，取消保留已提交页，运行只存在于宿主内存且不构成持久任务账本 |
-| V3-AC28 | `runs/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1）。`view` 是图像输出的显式例外、`add` 是本地路径输入的显式例外（见第 8、9 节），两者输出仍不暴露宿主路径；`add`/`view` 有独立工具开关，已有 `put` 授权不自动扩展 |
+| V3-AC28 | `runs/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1）。`fetch` 的 images/ 图像是图像输出的显式例外、`add` 是本地路径输入的显式例外（见第 8、9 节），两者输出仍不暴露宿主路径；`add` 有独立工具开关，已有 `put` 授权不自动扩展；图像读取另受 `images × fetch` 域权限约束 |
 
 ## Historical Agent/workflow resources (removed in 0.3.13)
 
@@ -957,8 +956,8 @@ whole boxes, `truncated: true`, an error, and a next range when possible.
 
 Receipts describe completed facts: add reports committed/reused resources and their URIs;
 put reports the saved resource and box count when known; find reports the effective scope,
-counts and continuation; fetch reports completed reads; cite reports rendered references
-and requested bibliography; view reports the returned image. Send distinguishes accepted
+counts and continuation; fetch reports completed reads (including a returned image for images/ URIs); cite reports rendered references
+and requested bibliography. Send distinguishes accepted
 or replayed background work, read-only lookup, committed metadata, and processed cancellation.
 A cancellation receipt never promises worker termination; poll the task state. Reading a
 failed or partially completed run may itself succeed. Add and synchronous metadata writes
@@ -1020,14 +1019,14 @@ saved Item and supplied collection-membership count. Both use explicit success/e
 `source`), making `views` a host-reserved mount path alongside `plugin.yml`, `README.md`
 and `files`. `patchouli://plugin/{plugin-id}/views/{view-id}` is a host-synthesized view
 resource: `find` lists `views/` as `directory` and `views/{view-id}` as `view`, `plugin.yml`
-carries the declared views array, and `fetch`/`view` on a view URI return the JSON
+carries the declared views array, and `fetch` on a view URI returns the JSON
 descriptor `{uri, plugin_id, view_id, title, placement, source_uri}` — never starting
 the plugin process. `view` joins the device `allowed_verbs` and community
 `requested_verbs` sets and the manifest `DeclaredVerbs` when views exist;
 `plugin`/`plugin/{plugin-id}` domains accept `view`, while `put`/`add`/`cite` remain
-rejected on plugin addresses. The `view` image-read semantics for library page/box URIs
-are unchanged; a plugin view URI returns the descriptor as a text-only envelope with no
-image block, and `view` on any other plugin path is rejected. Desktop containers
+rejected on plugin addresses. Library page images are read through `fetch` on
+`patchouli://images/` (see §9); a plugin view URI returns the descriptor as a text-only
+envelope with no image block, and the images/ domain never applies to plugin paths. Desktop containers
 (retained `tab` workspace tab, non-modal `window` popup, `pdf-sidebar` sidebar tab) and
 the host→view theme/page context injection contract are specified in ADR `0056`. Plugin
 `put`/`add`/`cite`, managed `files/`, URI resolve, plugin library grants and background
