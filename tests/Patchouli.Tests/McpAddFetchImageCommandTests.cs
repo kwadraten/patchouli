@@ -466,6 +466,38 @@ public sealed class McpAddFetchImageCommandTests
         result.Envelope!.Entries.Should().ContainSingle().Subject.ImageBytes.Should().BeNull();
     }
 
+    // ---------- find images/ ----------
+
+    [Fact]
+    public async Task Find_lists_one_image_entry_per_page_in_page_order()
+    {
+        McpDocumentOutlineResponse outline = new(
+            new DocumentInstanceId(Guid.Parse(DocId)), "title", null,
+            [
+                new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 0,
+                    "patchouli://texts/" + DocId + "/page-1.xml"),
+                new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 1,
+                    "patchouli://texts/" + DocId + "/page-2.xml"),
+                new McpDocumentPageRef(new PageId(Guid.NewGuid()), null, 2,
+                    "patchouli://texts/" + DocId + "/page-3.xml")
+            ]);
+        McpCommandService service = CreateService(outline: outline);
+
+        McpCommandResult<McpFindMeta, object> result = await service.FindAsync(
+            new McpFindRequest(null, "patchouli://images/" + DocId + "/", null));
+
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        McpFindEntry[] entries = result.Envelope!.Entries.Cast<McpFindEntry>().ToArray();
+        entries.Should().HaveCount(3);
+        entries.Select(entry => entry.Uri).Should().Equal(
+            "patchouli://images/" + DocId + "/page-1.png",
+            "patchouli://images/" + DocId + "/page-2.png",
+            "patchouli://images/" + DocId + "/page-3.png");
+        entries.Select(entry => entry.Title).Should().Equal(
+            "page 1 image", "page 2 image", "page 3 image");
+        entries.Should().OnlyContain(entry => entry.Type == "file");
+    }
+
     // ---------- harness ----------
 
     [Fact]
