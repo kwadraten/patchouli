@@ -17,6 +17,9 @@ public enum McpUriKind
     DocumentMap,
     TranslationDocument,
     TranslationPage,
+    ImagesScope,
+    ImagesDocument,
+    PageImage,
     Style,
     Evidence,
     Library,
@@ -47,12 +50,17 @@ public sealed record McpUriParseResult(
     string? ContentType = null,
     string? EndpointDomain = null,
     string? PluginId = null,
-    string? PluginPath = null);
+    string? PluginPath = null,
+    bool OverlayBoxes = false,
+    int? MaxEdge = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
-/// items/, texts/, csl-styles/, and translations/. Evidence is only consumed through a
-/// text page URI's ?rev= and &amp;box= query parameters. Legacy documents/, styles/, and
+/// items/, texts/, images/, csl-styles/, and translations/. Evidence is only consumed through a
+/// text page URI's ?rev= and &amp;box= query parameters. The images/ tree is the read-only
+/// rendering of original PDF pages (one PNG per page, rendered on demand, never stored):
+/// page-{N}.png accepts ?rev= (historical revision), ?box= (crop to that box), ?overlay=boxes
+/// (numbered box overlay) and ?max_edge= (longest-edge pixel cap). Legacy documents/, styles/, and
 /// evidence/ roots are rejected, and legacy ?evref= queries are rejected with a clear error.
 /// The translations/ root mirrors texts/ but addresses the derived per-box translations of a
 /// page: page-{N}.xml is the whole-page translated markdown and is readable and writable.
@@ -120,6 +128,59 @@ public static class McpResourceUris
     public static string TranslationsScopeUri()
     {
         return $"{Prefix}translations/";
+    }
+
+    /// <summary>The read-only page-image scope: every document's rendered pages live under it.</summary>
+    public static string ImagesScopeUri()
+    {
+        return $"{Prefix}images/";
+    }
+
+    /// <summary>The read-only page-image directory of one document.</summary>
+    public static string ImagesDocumentUri(DocumentInstanceId documentId)
+    {
+        return $"{Prefix}images/{documentId}/";
+    }
+
+    /// <summary>
+    /// Builds the canonical page-image URI using the one-based physical PDF page index.
+    /// The query parameters are the read itself: <paramref name="treeRevisionId"/> pins a
+    /// historical revision, <paramref name="boxId"/> crops to that box, <paramref name="overlayBoxes"/>
+    /// draws the numbered box overlay, and <paramref name="maxEdge"/> caps the longest edge
+    /// in pixels. All four participate in normalization: different parameters address
+    /// different images. A null revision renders the current HEAD revision.
+    /// </summary>
+    public static string ImageUri(
+        DocumentInstanceId documentId,
+        int pageIndex,
+        DocumentTreeRevisionId? treeRevisionId = null,
+        DocumentBoxId? boxId = null,
+        bool overlayBoxes = false,
+        int? maxEdge = null)
+    {
+        string uri = $"{Prefix}images/{documentId}/page-{pageIndex}.png";
+        List<string> query = [];
+        if (treeRevisionId is not null)
+        {
+            query.Add($"rev={treeRevisionId}");
+        }
+
+        if (boxId is not null)
+        {
+            query.Add($"box={boxId}");
+        }
+
+        if (overlayBoxes)
+        {
+            query.Add("overlay=boxes");
+        }
+
+        if (maxEdge is not null)
+        {
+            query.Add($"max_edge={maxEdge.Value}");
+        }
+
+        return query.Count == 0 ? uri : uri + "?" + string.Join("&", query);
     }
 
     public static string StyleUri(string styleId)
@@ -462,9 +523,11 @@ public static class McpResourceUris
         contentType ??= result.Value.ContentType;
         contentType ??= path.EndsWith(".yml", StringComparison.Ordinal)
             ? "application/yaml"
-            : path.EndsWith(".xml", StringComparison.Ordinal) || path.EndsWith(".csl", StringComparison.Ordinal)
-                ? "application/xml"
-                : null;
+            : path.EndsWith(".png", StringComparison.Ordinal)
+                ? "image/png"
+                : path.EndsWith(".xml", StringComparison.Ordinal) || path.EndsWith(".csl", StringComparison.Ordinal)
+                    ? "application/xml"
+                    : null;
         return Result<McpUriParseResult>.Success(result.Value with
         {
             CanonicalUri = CanonicalResourceUri(result.Value), IsLegacy = legacy, ContentType = contentType
@@ -490,6 +553,10 @@ public static class McpResourceUris
             McpUriKind.TranslationDocument => TranslationDocumentUri(target.DocumentId!.Value),
             McpUriKind.TranslationPage => TranslationPageUri(target.DocumentId!.Value, target.PageIndex!.Value) +
                                           (target.BoxId is null ? "" : $"?box={target.BoxId}"),
+            McpUriKind.ImagesScope => ImagesScopeUri(),
+            McpUriKind.ImagesDocument => ImagesDocumentUri(target.DocumentId!.Value),
+            McpUriKind.PageImage => ImageUri(target.DocumentId!.Value, target.PageIndex!.Value,
+                target.TreeRevisionId, target.BoxId, target.OverlayBoxes, target.MaxEdge),
             McpUriKind.Style => StyleUri(target.StyleId!),
             McpUriKind.Library => LibraryUri(),
             McpUriKind.RunsScope => RunsScopeUri(),
@@ -548,12 +615,13 @@ public static class McpResourceUris
             "actions" => Invalid(uri, "Action resources were removed; discover runs/<domain>/control instead."),
             "items" => query is null ? ParseItemUri(uri, segments) : Invalid(uri, "Item URIs do not accept queries."),
             "texts" => ParseTextsUri(uri, segments, query),
+            "images" => ParseImagesUri(uri, segments, query),
             "translations" => ParseTranslationsUri(uri, segments, query),
             "csl-styles" => ParseCslStylesUri(uri, segments, query),
             "runs" => ParseRunsUri(uri, segments, query),
             "plugin" => ParsePluginUri(uri, segments, query),
             "documents" or "styles" or "evidence" => Invalid(uri,
-                $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
+                $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, images, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
     }
@@ -825,6 +893,66 @@ public static class McpResourceUris
                             "patchouli://texts/{document-id}/map.yml.");
     }
 
+    private static Result<McpUriParseResult> ParseImagesUri(string uri, string[] segments, string? query)
+    {
+        // patchouli://images/ or patchouli://images/{id}/ or
+        // patchouli://images/{id}/page-{page-index}.png[?rev=<id>[&box=<id>][&overlay=boxes][&max_edge=<n>]]
+        // Images are the read-only rendering of original PDF pages: no translations/ mirror,
+        // no stored files. Query parameters are part of the identity; the canonical form
+        // always orders them rev, box, overlay, max_edge.
+        if (segments.Length == 2 && segments[0] == "images" && segments[1].Length == 0)
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.ImagesScope))
+                : Invalid(uri, "The images scope does not accept query parameters.");
+        }
+
+        // Document URI: exactly images/{id}/ (trailing slash -> final empty segment).
+        if (segments.Length == 3 && segments[2].Length == 0 && TryParseGuid(segments[1], out Guid documentId))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.ImagesDocument, DocumentId: new DocumentInstanceId(documentId)))
+                : Invalid(uri, "Image document URIs do not accept query parameters.");
+        }
+
+        // Page-image URI: images/{id}/page-{index}.png with an optional read query.
+        if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
+            TryParsePageImageIndex(segments[2], out int pageIndex))
+        {
+            if (query is null)
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.PageImage,
+                    DocumentId: new DocumentInstanceId(documentIdForPage),
+                    PageIndex: pageIndex,
+                    ContentType: "image/png"));
+            }
+
+            if (TryParseImageQuery(query, out DocumentTreeRevisionId? treeRevisionId, out DocumentBoxId? boxId,
+                    out bool overlayBoxes, out int? maxEdge))
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.PageImage,
+                    DocumentId: new DocumentInstanceId(documentIdForPage),
+                    PageIndex: pageIndex,
+                    TreeRevisionId: treeRevisionId,
+                    BoxId: boxId,
+                    ContentType: "image/png",
+                    OverlayBoxes: overlayBoxes,
+                    MaxEdge: maxEdge));
+            }
+
+            return Invalid(uri,
+                "Page-image URI queries must use the form " +
+                "?rev={tree-revision-id}[&box={box-id}][&overlay=boxes][&max_edge=<64..8192>].");
+        }
+
+        return Invalid(uri, "Image URIs must be patchouli://images/, " +
+                            "patchouli://images/{document-id}/, or " +
+                            "patchouli://images/{document-id}/page-{page-index}.png.");
+    }
+
     private static Result<McpUriParseResult> ParseTranslationsUri(string uri, string[] segments, string? query)
     {
         // patchouli://translations/ or patchouli://translations/{id}/ or
@@ -917,6 +1045,105 @@ public static class McpResourceUris
 
         string indexText = segment[prefixText.Length..^4];
         return indexText.Length > 0 && int.TryParse(indexText, out pageIndex) && pageIndex >= 1;
+    }
+
+    private static bool TryParsePageImageIndex(string segment, out int pageIndex)
+    {
+        pageIndex = 0;
+        const string prefixText = "page-";
+        if (!segment.StartsWith(prefixText, StringComparison.Ordinal) ||
+            !segment.EndsWith(".png", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string indexText = segment[prefixText.Length..^4];
+        return indexText.Length > 0 && int.TryParse(indexText, out pageIndex) && pageIndex >= 1;
+    }
+
+    /// <summary>
+    /// Parses an image read query: rev and box are the same versioned selectors as the
+    /// text page evidence query; overlay accepts only the literal "boxes"; max_edge is
+    /// the longest-edge pixel cap (64..8192). Duplicate or unknown keys are rejected.
+    /// </summary>
+    private static bool TryParseImageQuery(
+        string query,
+        out DocumentTreeRevisionId? treeRevisionId,
+        out DocumentBoxId? boxId,
+        out bool overlayBoxes,
+        out int? maxEdge)
+    {
+        treeRevisionId = null;
+        boxId = null;
+        overlayBoxes = false;
+        maxEdge = null;
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return false;
+        }
+
+        HashSet<string> keys = new(StringComparer.Ordinal);
+        foreach (string part in query.Split('&'))
+        {
+            int separator = part.IndexOf('=');
+            if (separator <= 0 || separator == part.Length - 1)
+            {
+                return false;
+            }
+
+            string key = part[..separator];
+            if (!keys.Add(key))
+            {
+                return false;
+            }
+
+            string value = part[(separator + 1)..];
+
+            switch (key)
+            {
+                case "rev":
+                    if (!TryParseGuid(value, out Guid revGuid))
+                    {
+                        return false;
+                    }
+
+                    treeRevisionId = new DocumentTreeRevisionId(revGuid);
+                    break;
+
+                case "box":
+                    if (!TryParseGuid(value, out Guid boxGuid))
+                    {
+                        return false;
+                    }
+
+                    boxId = new DocumentBoxId(boxGuid);
+                    break;
+
+                case "overlay":
+                    if (!string.Equals(value, "boxes", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    overlayBoxes = true;
+                    break;
+
+                case "max_edge":
+                    if (!int.TryParse(value, out int edge) || edge is < 64 or > 8192)
+                    {
+                        return false;
+                    }
+
+                    maxEdge = edge;
+                    break;
+
+                default:
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryParseVersionedQuery(
