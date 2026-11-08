@@ -51,7 +51,7 @@ public sealed class Issue28McpFetchImageProtocolTests
         seen.Should().ContainSingle().Which.NumberedBoxes.Should().BeTrue();
         McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
         entry.ImageBytes.Should().BeEquivalentTo(FakePng);
-        entry.Uri.Should().Be(ImageUri + "?rev=" + RevId);
+        entry.Uri.Should().Be(ImageUri + "?rev=" + RevId + "&overlay=boxes");
         McpFetchImageMetadata metadata = entry.Image!;
         metadata.Boxes.Should().NotBeNull();
         metadata.Boxes!.Select(box => (box.Index, box.BoxId))

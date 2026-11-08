@@ -93,19 +93,20 @@ public sealed class McpRunsAndSendTests
         result.Envelope!.Continuation.Should().BeNull();
         result.Envelope.Message.Should().BeNull();
         List<McpFindEntry> entries = result.Envelope.Entries.Cast<McpFindEntry>().ToList();
-        entries.Should().HaveCount(6);
-        entries.Count(entry => entry.Type == "directory").Should().Be(5);
+        entries.Should().HaveCount(7);
+        entries.Count(entry => entry.Type == "directory").Should().Be(6);
         entries.Count(entry => entry.Type == "file").Should().Be(1);
         entries.Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
             "patchouli://texts/",
+            "patchouli://images/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
             "patchouli://library.yml");
-        result.Envelope.Meta.DomainTotal.Should().Be(6);
-        result.Envelope.Meta.FilteredTotal.Should().Be(6);
-        result.Envelope.Meta.ShownTotal.Should().Be(6);
+        result.Envelope.Meta.DomainTotal.Should().Be(7);
+        result.Envelope.Meta.FilteredTotal.Should().Be(7);
+        result.Envelope.Meta.ShownTotal.Should().Be(7);
     }
 
     [Fact]
@@ -535,7 +536,7 @@ public sealed class McpRunsAndSendTests
 
         McpCommandResult<McpFindMeta, object> find = await commands.FindAsync(new McpFindRequest(null, null, null));
         find.IsSuccess.Should().BeTrue();
-        find.Envelope!.Entries.Should().HaveCount(6);
+        find.Envelope!.Entries.Should().HaveCount(7);
 
         McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await commands.FetchAsync(
             new McpFetchRequest([McpResourceUris.OcrRunStatusUri("task-1")], null, null));

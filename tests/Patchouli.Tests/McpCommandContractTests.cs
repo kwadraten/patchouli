@@ -75,13 +75,14 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(6);
-        envelope.Meta.DomainTotal.Should().Be(6);
-        envelope.Meta.FilteredTotal.Should().Be(6);
+        envelope.Meta.ShownTotal.Should().Be(7);
+        envelope.Meta.DomainTotal.Should().Be(7);
+        envelope.Meta.FilteredTotal.Should().Be(7);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
             "patchouli://texts/",
+            "patchouli://images/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
@@ -220,7 +221,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         JsonNode node = JsonSerializer.SerializeToNode(entry)!;
         node.AsObject().Select(pair => pair.Key).Should().Equal(
             "uri", "title", "type", "item_uri", "item_status", "document_status", "source_status",
-            "ocr_index_status", "citable");
+            "ocr_index_status", "citable", "image_uri");
+        entry.ImageUri.Should().StartWith("patchouli://images/").And.Contain("/page-");
     }
 
     [Fact]
