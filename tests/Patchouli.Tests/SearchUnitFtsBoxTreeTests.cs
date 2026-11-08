@@ -127,10 +127,7 @@ public sealed class SearchUnitFtsBoxTreeTests
                     join fts_row_map fm on fm.fts_row_id = search_units_fts.rowid
                     join search_units su on su.unit_id = fm.unit_id
                     where search_units_fts match @Match
-                      and search_units_fts.rowid in (
-                          select fts_row_id from fts_row_map
-                          where document_instance_id = @DocumentInstanceId
-                      )
+                      and fm.document_instance_id = @DocumentInstanceId
                       and su.document_instance_id = @DocumentInstanceId
                       and su.status = @Status;
                     """,
@@ -143,8 +140,7 @@ public sealed class SearchUnitFtsBoxTreeTests
                 .Select(row => row.Detail)
                 .ToArray();
             plan.Should().Contain(detail => detail.Contains("VIRTUAL TABLE INDEX", StringComparison.Ordinal));
-            plan.Should().Contain(detail =>
-                detail.Contains("idx_fts_row_map_document_instance_id", StringComparison.Ordinal));
+            plan.Should().NotContain(detail => detail.Contains("=M", StringComparison.Ordinal));
         }
 
         SearchResultPage byTitle = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken")

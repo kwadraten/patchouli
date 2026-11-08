@@ -108,8 +108,7 @@ public sealed class SqliteSearchService : ISearchService
                 : "from search_units su";
             string candidatePredicate = useFtsCandidates ? "search_units_fts match @Match" : "1 = 1";
             string ftsDocumentScopePredicate = useFtsCandidates && request.DocumentInstanceId is not null
-                ? "and search_units_fts.rowid in " +
-                  "(select fts_row_id from fts_row_map where document_instance_id = @DocumentInstanceId)"
+                ? "and fm.document_instance_id = @DocumentInstanceId"
                 : string.Empty;
             string documentScopePredicate = request.DocumentInstanceId is null
                 ? string.Empty
