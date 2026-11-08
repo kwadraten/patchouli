@@ -42,7 +42,7 @@ public sealed class McpProtocolHandler
         McpServerSettings effectiveSettings =
             settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
         _readApi = api;
-        // The user tool switches gate put/send/add/view exactly like every other write capability (D1): a
+        // The user tool switches gate put/send/add exactly like every other write capability (D1): a
         // disabled switch surfaces as PERMISSION_DENIED from the command service, while find/fetch/
         // cite stay untouched. The transport additionally hides a fully disabled tool from tools/list.
         _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
@@ -55,7 +55,6 @@ public sealed class McpProtocolHandler
             fileImport,
             pageView,
             !IsSwitchOff(effectiveSettings, "patchouli.add"),
-            !IsSwitchOff(effectiveSettings, "patchouli.view"),
             ocrCommands,
             translationRuns,
             metadataRuns,
@@ -362,19 +361,28 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.fetch",
-                "Fetch one or more existing text-only resources by their patchouli:// URIs.",
+                "Fetch one or more existing resources by their patchouli:// URIs. Text resources return text; " +
+                "an images/ URI returns the source image of a library page as a native image content block " +
+                "alongside its text metadata. An images/ call must contain exactly that one image URI, no " +
+                "text URIs and no range. Recommended collation flow: fetch the page text, then fetch the " +
+                "image_uri the text entry exposes, then put with the original source_revision; if the version " +
+                "changed in the meantime the put reports a normal revision conflict instead of overwriting.",
                 ["uris"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uris"] = ToolSchemaProperty.Array(
                         "Resource URIs: library.yml, items/<id>.yml, texts/<document-id>/, texts/<document-id>/page-<index>.xml, " +
                         "texts/<document-id>/page-<index>.xml?rev=<tree-revision-id>[&box=<box-id>], texts/<document-id>/map.yml, " +
-                        "translations/<document-id>/, translations/<document-id>/page-<index>.xml or csl-styles/<id>.csl.",
+                        "translations/<document-id>/, translations/<document-id>/page-<index>.xml, csl-styles/<id>.csl, or " +
+                        "images/<document-id>/page-<index>.png[?rev=<tree-revision-id>][&box=<box-id>][&overlay=boxes][&max_edge=<pixels>]. " +
+                        "Images come from the original PDF, never re-rendered from OCR text; box= crops to that box, " +
+                        "overlay=boxes draws numbered box outlines that match the page XML order, and max_edge caps the " +
+                        "longest edge (64 through 8192; default 2048). A page without a box tree still renders as a whole page.",
                         ToolSchemaProperty.String("Resource URI.")),
-                    ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
+                    ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E. Does not apply to image URIs."),
                     ["limit_bytes"] = ToolSchemaProperty.Integer(
-                        "Maximum response bytes per URI; oversized responses return explicit partial content and RESPONSE_TRUNCATED."),
-                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
+                        "Maximum response bytes per text URI; oversized responses return explicit partial content and RESPONSE_TRUNCATED. Does not apply to image URIs; images keep the renderer's own 8 MiB cap."),
+                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the image is always a native image content block.")
                 }),
             new ToolDefinition(
                 "patchouli.put",
@@ -426,39 +434,6 @@ public sealed class McpProtocolHandler
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 },
                 false),
-            new ToolDefinition(
-                "patchouli.view",
-                "Return the source image of a library page or box for model text-image collation. Images come " +
-                "from the original PDF, never re-rendered from OCR text. One target, one image per call. " +
-                "Recommended collation flow: fetch (text plus version) to read the text, then view the same " +
-                "revision or box source image, then put with the original source_revision; if the version " +
-                "changed in the meantime the put reports a normal revision conflict instead of overwriting. " +
-                "A page without a box tree can still be viewed as a whole page; pass boxes=true to overlay " +
-                "numbered box outlines that match the page XML order. A declared plugin web view " +
-                "(plugin/<plugin-id>/views/<view-id>) returns a text-only descriptor envelope with no " +
-                "image block.",
-                ["uri"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["uri"] = ToolSchemaProperty.String(
-                        "Page, box/evidence or translation page/box URI: texts/<document-id>/page-<index>.xml" +
-                        "[?rev=<tree-revision-id>[&box=<box-id>]], or the translations/ mirror for the " +
-                        "corresponding source-document image."),
-                    ["context"] = ToolSchemaProperty.String(
-                        "\"page\" (default) returns the whole page containing the box; \"region\" returns the " +
-                        "bbox crop with a small margin."),
-                    ["max_edge"] = ToolSchemaProperty.Integer(
-                        "Longest-edge pixel cap, from 64 through 8192; default 2048."),
-                    ["boxes"] = ToolSchemaProperty.Boolean(
-                        "When true, every box of the page is drawn onto the image with its sequence " +
-                        "number. Numbers follow the page XML document order (the n-th number is the " +
-                        "n-th <box> element of the fetched page XML), and the text metadata lists " +
-                        "the number-to-box-id mapping. Pages without a box tree simply have no " +
-                        "numbered boxes."),
-                    ["format"] = ToolSchemaProperty.String(
-                        "Response encoding: \"toon\" (default) or \"json\". Only affects the text block; the " +
-                        "image is always a native image content block.")
-                }),
             new ToolDefinition(
                 "patchouli.cite",
                 "Render a bibliography for existing item, document, page, or evidence resource URIs using a CSL style.",
@@ -548,7 +523,6 @@ public sealed class McpProtocolHandler
                 "patchouli.put" => await PutAsync(a, ct),
                 "patchouli.send" => await SendAsync(a, ct),
                 "patchouli.add" => await AddAsync(a, ct),
-                "patchouli.view" => await ViewAsync(a, ct),
                 _ => throw new McpArgumentException("Unknown tool.")
             };
         }
@@ -597,7 +571,26 @@ public sealed class McpProtocolHandler
 
         McpCommandResult<McpFetchMeta, McpFetchResult> result = await _commands.FetchAsync(
             new McpFetchRequest(uris, range, limitBytes), ct);
-        return await ToToolResponseAsync("fetch", result, format, ct);
+        McpFetchResult? imageEntry = result.Envelope?.Entries.SingleOrDefault(entry =>
+            entry.ImageBytes is not null && entry.Error is null);
+        if (imageEntry is null)
+        {
+            return await ToToolResponseAsync("fetch", result, format, ct);
+        }
+
+        // MCP 2025-06-18 native ImageContent: content[0] is the existing TOON/JSON text
+        // envelope with image metadata, content[1] is the raw base64 PNG (no data-URL
+        // prefix, never duplicated inside the text fields).
+        string text = RenderText(result.Envelope!, format);
+        return new
+        {
+            content = new object[]
+            {
+                new { type = "text", text },
+                new { type = "image", data = Convert.ToBase64String(imageEntry.ImageBytes!), mimeType = "image/png" }
+            },
+            isError = false
+        };
     }
 
     private async Task<object> PutAsync(JsonElement arguments, CancellationToken ct)
@@ -683,49 +676,6 @@ public sealed class McpProtocolHandler
         return await ToToolResponseAsync("add", result, format, ct);
     }
 
-    private async Task<object> ViewAsync(JsonElement arguments, CancellationToken ct)
-    {
-        if (ValidateToolArguments("patchouli.view", arguments) is { } validationError)
-        {
-            throw new McpArgumentException(validationError);
-        }
-
-        RejectUnknownArguments(arguments, ViewArgumentKeys);
-        string uri = RequiredString(arguments, "uri");
-        string? context = OptionalString(arguments, "context");
-        int? maxEdge = arguments.TryGetProperty("max_edge", out JsonElement maxEdgeValue) &&
-                       maxEdgeValue.ValueKind != JsonValueKind.Null
-            ? ParseInteger(maxEdgeValue, "max_edge")
-            : null;
-        bool boxes = OptionalBoolean(arguments, "boxes");
-        string format = ResponseFormat(arguments);
-
-        McpViewCommandResult result = await _commands.ViewAsync(new McpViewRequest(uri, context, maxEdge, boxes), ct);
-        bool isError = result.Result.Error is not null;
-        object envelope = result.Result.Envelope ??
-                          McpErrorEnvelope.Build("view", result.Result.Error!, await CurrentLibraryRevisionAsync(ct));
-        string text = RenderText(envelope, format);
-        if (isError || result.PngBytes is null)
-        {
-            // Tool failures use the unified error envelope + isError semantics; never a
-            // fake successful image entry.
-            return ToolData(text, isError);
-        }
-
-        // MCP 2025-06-18 native ImageContent: content[0] is the existing TOON/JSON text
-        // envelope with image metadata, content[1] is the raw base64 PNG (no data-URL
-        // prefix, never duplicated inside the text fields).
-        return new
-        {
-            content = new object[]
-            {
-                new { type = "text", text },
-                new { type = "image", data = Convert.ToBase64String(result.PngBytes), mimeType = "image/png" }
-            },
-            isError
-        };
-    }
-
     private static readonly string[] SendArgumentKeys =
         ["endpoint", "target", "action", "args", "request_id", "format"];
 
@@ -778,8 +728,6 @@ public sealed class McpProtocolHandler
     private static readonly string[] CiteArgumentKeys = ["refs", "style", "locale", "bibliography", "html", "format"];
 
     private static readonly string[] AddArgumentKeys = ["path", "kind", "format"];
-
-    private static readonly string[] ViewArgumentKeys = ["uri", "context", "max_edge", "boxes", "format"];
 
     private static void RejectUnknownArguments(JsonElement arguments, IReadOnlyCollection<string> allowed)
     {
