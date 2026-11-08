@@ -10,7 +10,7 @@ namespace Patchouli.Cli;
 /// the request used <c>format=json</c>), plus the stable exit/error code the process should
 /// report. Clean successes carry <see cref="CliExitCode.Ok"/>; failures carry the matching
 /// PRD error code read from the unified envelope. <see cref="ImageBase64"/> carries the
-/// raw base64 PNG of a <c>view</c> image content block when the host returned one.
+/// raw base64 PNG of a <c>fetch</c> image content block when the host returned one.
 /// </summary>
 internal sealed record CliToolResponse(string Text, bool IsError, int ExitCode, string? ImageBase64 = null);
 

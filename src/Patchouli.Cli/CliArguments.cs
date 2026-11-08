@@ -9,11 +9,11 @@ namespace Patchouli.Cli;
 /// A single MCP tool invocation produced by parsing patchouli-cli arguments. The CLI is a
 /// thin local MCP HTTP client: it never opens a SQLite connection or calls a domain service
 /// directly. Command-line flags map one-to-one onto the <c>patchouli.find</c>,
-/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, <c>patchouli.send</c>,
-/// <c>patchouli.add</c> and <c>patchouli.view</c> tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
-/// adapter that the executable reads before sending the same inline <c>content</c>. For <c>view</c>,
-/// <see cref="ViewOutputPath"/> is the client-side PNG destination (required for image views;
-/// plugin web views at plugin/{id}/views/{view-id} print a descriptor and need none).
+/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, <c>patchouli.send</c>
+/// and <c>patchouli.add</c> tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
+/// adapter that the executable reads before sending the same inline <c>content</c>. For <c>fetch</c>
+/// of an images/ URI, <see cref="FetchOutputPath"/> is the client-side PNG destination
+/// (required so no temp images with unclear lifecycle are produced).
 /// </summary>
 internal sealed record CliToolCall(
     string Tool,
@@ -22,8 +22,8 @@ internal sealed record CliToolCall(
     bool PutStdin = false,
     string? PutBoxesSourcePath = null,
     bool PutBoxesStdin = false,
-    string? ViewOutputPath = null,
-    bool ViewOverwrite = false);
+    string? FetchOutputPath = null,
+    bool FetchOverwrite = false);
 
 /// <summary>
 /// Pure argument-to-request mapping used by the patchouli-cli executable. Kept free of I/O
@@ -39,7 +39,6 @@ internal static class CliArguments
     public const string Cite = "patchouli.cite";
     public const string Send = "patchouli.send";
     public const string Add = "patchouli.add";
-    public const string View = "patchouli.view";
 
     public static CliToolCall BuildToolCall(string command, IReadOnlyList<string> args, bool json)
     {
@@ -51,7 +50,8 @@ internal static class CliArguments
             "cite" => BuildCite(args, json),
             "send" => BuildSend(args, json),
             "add" => BuildAdd(args, json),
-            "view" => BuildView(args, json),
+            "view" => throw new CliUsageException(
+                "the 'view' command has been removed; use 'fetch patchouli://images/<document-id>/page-<n>.png --output <image.png>' instead."),
             "ocr" => throw new CliUsageException(
                 "the top-level 'ocr' command has been removed; use 'send runs/ocr/control <action> <target> [domain options]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
@@ -68,7 +68,8 @@ internal static class CliArguments
             "cite" => Cite,
             "send" => Send,
             "add" => Add,
-            "view" => View,
+            "view" => throw new CliUsageException(
+                "the 'view' command has been removed; use 'fetch patchouli://images/<document-id>/page-<n>.png --output <image.png>' instead."),
             "ocr" => throw new CliUsageException(
                 "the top-level 'ocr' command has been removed; use 'send runs/ocr/control <action> <target> [domain options]' instead."),
             _ => throw new CliUsageException($"unknown command '{command}'.")
@@ -196,10 +197,18 @@ internal static class CliArguments
         return new CliToolCall(Find, WithFormat(arguments, json));
     }
 
+    /// <summary>
+    /// <c>fetch &lt;URI&gt;... [--range ...] [--limit-bytes N] [--output image.png] [--overwrite]</c>.
+    /// The CLI calls the same MCP tool; when a fetched URI is an images/ URI the image
+    /// content block is decoded and saved as a PNG, so <c>--output</c> is required for
+    /// image fetches and no temp images with unclear lifecycle are produced.
+    /// </summary>
     private static CliToolCall BuildFetch(IReadOnlyList<string> args, bool json)
     {
         Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
         List<string> uris = [];
+        string? output = null;
+        bool overwrite = false;
         for (int index = 0; index < args.Count; index++)
         {
             switch (args[index])
@@ -210,6 +219,12 @@ internal static class CliArguments
                 case "--limit-bytes":
                     arguments["limit_bytes"] = ParseInt(TakeValue(args, ref index, "--limit-bytes"),
                         "--limit-bytes");
+                    break;
+                case "--output":
+                    output = TakeValue(args, ref index, "--output");
+                    break;
+                case "--overwrite":
+                    overwrite = true;
                     break;
                 case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
                     throw new CliUsageException($"unknown option '{args[index]}' for fetch.");
@@ -224,8 +239,23 @@ internal static class CliArguments
             throw new CliUsageException("fetch requires at least one URI argument.");
         }
 
+        // An images/ fetch without a destination would leave the PNG with nowhere to go;
+        // fail here instead of printing base64. Unparseable URIs are left for the host.
+        if (string.IsNullOrWhiteSpace(output) && uris.Any(IsImageUri))
+        {
+            throw new CliUsageException("fetch of an images/ URI requires --output <path>.");
+        }
+
         arguments["uris"] = uris.ToArray();
-        return new CliToolCall(Fetch, WithFormat(arguments, json));
+        return new CliToolCall(Fetch, WithFormat(arguments, json), FetchOutputPath: output,
+            FetchOverwrite: overwrite);
+    }
+
+    private static bool IsImageUri(string uri)
+    {
+        return McpVfsAddress.TryNormalize(uri, out string normalized) &&
+               Mcp.McpResourceUris.Parse(normalized) is { IsSuccess: true } parsed &&
+               parsed.Value.Kind == Mcp.McpUriKind.PageImage;
     }
 
     private static CliToolCall BuildPut(IReadOnlyList<string> args, bool json)
@@ -517,100 +547,6 @@ internal static class CliArguments
 
         arguments["path"] = absolute;
         return new CliToolCall(Add, WithFormat(arguments, json));
-    }
-
-    /// <summary>
-    /// Issue #11: <c>view &lt;URI&gt; --output image.png [--overwrite] [--context page|region]
-    /// [--max-edge N] [--boxes]</c>. The CLI calls the same MCP tool, decodes the image
-    /// content block and saves the PNG; <c>--output</c> is required so no temp images
-    /// with unclear lifecycle are produced. Issue #28: <c>--boxes</c> overlays numbered
-    /// box outlines matching the page XML order. A plugin web view URI
-    /// (plugin/{plugin-id}/views/{view-id}) answers with a descriptor envelope instead of
-    /// an image, so <c>--output</c> may be omitted for that shape; the host decides whether
-    /// the view is actually declared.
-    /// </summary>
-    private static CliToolCall BuildView(IReadOnlyList<string> args, bool json)
-    {
-        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
-        string? uri = null;
-        string? output = null;
-        bool overwrite = false;
-        for (int index = 0; index < args.Count; index++)
-        {
-            switch (args[index])
-            {
-                case "--output":
-                    output = TakeValue(args, ref index, "--output");
-                    break;
-                case "--overwrite":
-                    overwrite = true;
-                    break;
-                case "--context":
-                    string context = TakeValue(args, ref index, "--context");
-                    if (!string.Equals(context, "page", StringComparison.Ordinal) &&
-                        !string.Equals(context, "region", StringComparison.Ordinal))
-                    {
-                        throw new CliUsageException("the --context option must be \"page\" or \"region\".");
-                    }
-
-                    arguments["context"] = context;
-                    break;
-                case "--max-edge":
-                    arguments["max_edge"] = ParseInt(TakeValue(args, ref index, "--max-edge"), "--max-edge");
-                    break;
-                case "--boxes":
-                    arguments["boxes"] = true;
-                    break;
-                case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
-                    throw new CliUsageException($"unknown option '{args[index]}' for view.");
-                default:
-                    if (uri is not null)
-                    {
-                        throw new CliUsageException("view accepts a single URI argument.");
-                    }
-
-                    uri = args[index];
-                    break;
-            }
-        }
-
-        if (uri is null)
-        {
-            throw new CliUsageException("view requires a URI argument.");
-        }
-
-        // Plugin web views answer with a descriptor envelope only; there is no PNG to save.
-        if (string.IsNullOrWhiteSpace(output) && !IsPluginViewUri(uri))
-        {
-            throw new CliUsageException("view requires --output <path>.");
-        }
-
-        arguments["uri"] = uri;
-        return new CliToolCall(View, WithFormat(arguments, json), ViewOutputPath: output, ViewOverwrite: overwrite);
-    }
-
-    /// <summary>
-    /// Whether the URI has the syntactic shape of a plugin web view
-    /// (<c>plugin/{id}/views/{view-id}</c>, scheme optional). This only decides whether
-    /// <c>--output</c> may be omitted; the host still validates that the view is declared.
-    /// </summary>
-    private static bool IsPluginViewUri(string uri)
-    {
-        if (!McpVfsAddress.TryNormalize(uri, out string normalized) ||
-            Mcp.McpResourceUris.Parse(normalized) is not { IsSuccess: true } parsed ||
-            parsed.Value.Kind != Mcp.McpUriKind.PluginResource)
-        {
-            return false;
-        }
-
-        string path = parsed.Value.PluginPath ?? string.Empty;
-        if (!path.StartsWith("views/", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        string viewId = path["views/".Length..];
-        return viewId.Length > 0 && !viewId.Contains('/', StringComparison.Ordinal);
     }
 
     private static Dictionary<string, object?> WithFormat(Dictionary<string, object?> arguments, bool json)
