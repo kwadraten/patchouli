@@ -118,7 +118,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Openalex metadata extension.</summary>
-/// <patchouli-extension id="metadata.openalex" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
+/// <patchouli-extension id="metadata.openalex" kind="metadata" version="1.1.1" host-api="patchouli.extensions/4">
 ///   <name>Openalex</name>
 /// </patchouli-extension>
 let extension =

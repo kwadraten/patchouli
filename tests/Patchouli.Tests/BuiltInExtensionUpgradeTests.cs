@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Extensions;
+using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Translation;
 using Patchouli.Llm;
 
@@ -18,6 +19,8 @@ public sealed class BuiltInExtensionUpgradeTests
 {
     private const string EngineId = "translation.tencent-free";
 
+    private const string MetadataEngineId = "metadata.semantic-scholar";
+
     private const string LegacyFingerprint =
         "9cb4bc5d19c6664462e859b2662d86c48f7be994bd750bf52351cab9daec26a8";
 
@@ -26,6 +29,71 @@ public sealed class BuiltInExtensionUpgradeTests
 
     private static ExtensionPackageSnapshot Bundled =>
         BuiltInTranslationExtensions.Packages.Single(package => package.Id == EngineId);
+
+    private static ExtensionPackageSnapshot MetadataBundled =>
+        BuiltInMetadataExtensions.Packages.Single(package => package.Id == MetadataEngineId);
+
+    /// <summary>
+    ///     The semantic-scholar package as shipped with release 0.3.16: version 1.1.0 with the
+    ///     pre-fix Support.fsx (no "journalarticle" arm). Built from the current bundled sources
+    ///     by reversing the two changes, so the fixture stays in sync with the bundled package
+    ///     shape instead of freezing a copy of the old sources.
+    /// </summary>
+    private static ExtensionPackageSnapshot LegacyMetadataPackage()
+    {
+        ExtensionPackageSnapshot bundled = MetadataBundled;
+        string main = bundled.Sources["main.fsx"].Replace("version=\"1.1.1\"", "version=\"1.1.0\"");
+        string support = bundled.Sources["Support.fsx"]
+            .Replace("| \"journal-article\" | \"article\" | \"article-journal\" | \"journalarticle\"",
+                "| \"journal-article\" | \"article\" | \"article-journal\"");
+        return new ExtensionPackageSnapshot(MetadataEngineId, new Dictionary<string, string>
+        {
+            ["main.fsx"] = main,
+            ["Support.fsx"] = support
+        });
+    }
+
+    [Fact]
+    public async Task Ensure_upgrades_a_0_3_16_metadata_package_to_the_bundled_1_1_1_package()
+    {
+        string runtimeDirectory = NewRuntimeDirectory();
+        try
+        {
+            ExtensionPackageSnapshot legacy = LegacyMetadataPackage();
+            legacy.Fingerprint.Should().NotBe(MetadataBundled.Fingerprint,
+                "the 1.1.0 package must differ from the bundled 1.1.1 package in content");
+            legacy.Sources["Support.fsx"].Should().NotContain("journalarticle",
+                "the fixture must carry the pre-fix Support.fsx");
+
+            await using (TranslationExtensionCatalog previous = new(runtimeDirectory,
+                             () => LlmAppSettings.Default(), TestExtensionResources.Unavailable()))
+            {
+                ExtensionCheckResult seeded = await previous.ActivateAsync(legacy, CancellationToken.None);
+                seeded.Succeeded.Should().BeTrue(string.Join("; ",
+                    seeded.Diagnostics.Select(d => $"{d.Code}: {d.Message}")));
+                previous.Manager.List().Should().Contain(item =>
+                    item.Id == MetadataEngineId && item.Fingerprint == legacy.Fingerprint);
+            }
+
+            await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
+                () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            await catalog.EnsureExtensionAsync(MetadataEngineId);
+
+            catalog.Manager.List().Should().Contain(item =>
+                    item.Id == MetadataEngineId && item.Fingerprint == MetadataBundled.Fingerprint,
+                "a 1.1.0 installation upgrades to the bundled 1.1.1 package instead of " +
+                "throwing a same-version content conflict or keeping the old snapshot");
+            File.ReadAllText(Path.Combine(runtimeDirectory, "extensions", MetadataEngineId, "main.fsx"))
+                .Should().Be(MetadataBundled.Sources["main.fsx"]);
+            File.ReadAllText(Path.Combine(runtimeDirectory, "extensions", MetadataEngineId, "Support.fsx"))
+                .Should().Contain("journalarticle",
+                    "the upgraded working copy carries the mapType fix");
+        }
+        finally
+        {
+            DeleteRuntimeDirectory(runtimeDirectory);
+        }
+    }
 
     [Fact]
     public async Task Ensure_replaces_a_pristine_legacy_working_copy_with_the_current_bundled_package()

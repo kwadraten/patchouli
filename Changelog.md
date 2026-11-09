@@ -6,6 +6,8 @@
 - `fetch` 文本页（page/evidence/translation）与 `find --long` 投影现在直接给出可取用的 `image_uri`；`find patchouli://images/` 列出各文档的图片目录，`find patchouli://images/{document-id}/` 列出该文档的逐页图片。
 - 权限以 `images × fetch` 取代 `view`：动词表与 texts/translations 的 view 支持删除，迁移把已显式开启的 view 授权转为 images.fetch，未显式开启者一律得到 `images.fetch` 拒绝，迁移不扩大授权。插件注册的 `view` 动作与插件 UI View 加载机制不变。
 - CLI 删除 `view` 命令（改用 `fetch patchouli://images/.../page-<n>.png --output <image.png>`），`fetch` 新增 `--output/--overwrite`；images/ 取图缺 `--output` 时直接报用法错误。
+- 修复元数据 `mapType` 未识别 `JournalArticle`：Semantic Scholar 返回的 `JournalArticle` 经小写化为 `journalarticle` 后此前无匹配分支，`SuggestedItemType` 为空；共享 `Support.fsx` 新增 `"journalarticle"` 分支，映射为 `article-journal`（DOI 10.1038/nature12373 回归测试覆盖）。
+- 受影响的 15 个内置元数据扩展（除 Crossref 外均包含共享 `Support.fsx`）版本由 `1.1.0` 升至 `1.1.1`，遵循 ADR 0055：同 SemVer 下不得修改包内容；已安装 1.1.0 扩展的升级路径由回归测试覆盖，升级时自动替换为新包且不触发版本冲突。
 
 ## 0.3.16
 

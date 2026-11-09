@@ -240,7 +240,7 @@ module Support =
             | Some text -> text.ToLowerInvariant()
             | None -> String.Empty
         match normalized with
-        | "journal-article" | "article" | "article-journal" -> Some "article-journal"
+        | "journal-article" | "article" | "article-journal" | "journalarticle" -> Some "article-journal"
         | "book" | "monograph" -> Some "book"
         | "book-chapter" -> Some "chapter"
         | "proceedings-article" | "conference" | "conference-paper" -> Some "paper-conference"

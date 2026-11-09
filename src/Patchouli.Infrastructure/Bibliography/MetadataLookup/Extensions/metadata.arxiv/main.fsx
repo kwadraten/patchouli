@@ -64,7 +64,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Arxiv metadata extension.</summary>
-/// <patchouli-extension id="metadata.arxiv" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
+/// <patchouli-extension id="metadata.arxiv" kind="metadata" version="1.1.1" host-api="patchouli.extensions/4">
 ///   <name>Arxiv</name>
 /// </patchouli-extension>
 let extension =
