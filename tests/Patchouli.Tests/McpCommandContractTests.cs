@@ -423,6 +423,47 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Fetch_item_yaml_embeds_document_directory_links()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        JsonObject yaml = (JsonObject)McpYamlCodec.Decode(result.Envelope!.Entries.Single().Content!);
+        JsonArray documents = (JsonArray)yaml["extensions"]!["patchouli"]!["documents"]!;
+        JsonObject entry = (JsonObject)documents.Should().ContainSingle().Subject!;
+        entry["uri"]!.GetValue<string>().Should().Be(McpResourceUris.DocumentUri(_library.DocumentA));
+        entry["title"]!.GetValue<string>().Should().Be("Distributed Systems Notes");
+        entry["primary"]!.GetValue<bool>().Should().BeTrue();
+        entry["images_uri"]!.GetValue<string>().Should()
+            .Be(McpResourceUris.ImagesDocumentUri(_library.DocumentA));
+        entry["translations_uri"]!.GetValue<string>().Should()
+            .Be(McpResourceUris.TranslationDocumentUri(_library.DocumentA));
+    }
+
+    [Fact]
+    public async Task Put_item_yaml_ignores_the_read_only_documents_block()
+    {
+        string uri = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpFetchMeta, McpFetchResult> before = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject root = (JsonObject)McpYamlCodec.Decode(before.Envelope!.Entries.Single().Content!);
+        root["csl"]!["title"] = "Links stay read-only";
+
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
+            new McpPutRequest(uri, McpYamlCodec.Encode(root)));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+
+        Result<McpItemMetadataResponse> item = await _library.Api.GetItemMetadataAsync(_library.BookA);
+        item.Value.Title.Should().Be("Links stay read-only");
+        McpCommandResult<McpFetchMeta, McpFetchResult> after = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject saved = (JsonObject)McpYamlCodec.Decode(after.Envelope!.Entries.Single().Content!);
+        ((JsonArray)saved["extensions"]!["patchouli"]!["documents"]!).Should().ContainSingle(entry =>
+            entry!["uri"]!.GetValue<string>() == McpResourceUris.DocumentUri(_library.DocumentA));
+    }
+
+    [Fact]
     public async Task Fetch_legacy_item_biblatex_keeps_its_format_and_warns_with_canonical_uri()
     {
         string legacyUri = LegacyItemUri(_library.BookA);

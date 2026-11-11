@@ -1001,6 +1001,36 @@ public sealed class McpReadApi : IMcpReadApi
         }
     }
 
+    public async Task<Result<IReadOnlyList<McpItemDocumentLink>>> GetItemDocumentLinksAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            IReadOnlyList<ItemDocumentLinkRow> rows = (await connection.QueryAsync<ItemDocumentLinkRow>(
+                """
+                select document_instance_id as DocumentInstanceId, title as Title, is_primary as IsPrimary
+                from document_instances
+                where item_id = @ItemId
+                order by is_primary desc, created_at, document_instance_id;
+                """,
+                new { ItemId = itemId.ToString() })).ToArray();
+            return Result<IReadOnlyList<McpItemDocumentLink>>.Success(rows.Select(row =>
+                new McpItemDocumentLink(DocumentInstanceId.Parse(row.DocumentInstanceId), row.Title,
+                    row.IsPrimary)).ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<IReadOnlyList<McpItemDocumentLink>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
     public async Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,
         IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default)
     {
@@ -2142,6 +2172,13 @@ public sealed class McpReadApi : IMcpReadApi
     {
         public string? Title { get; set; }
         public string? ItemId { get; set; }
+    }
+
+    private sealed class ItemDocumentLinkRow
+    {
+        public string DocumentInstanceId { get; set; } = "";
+        public string? Title { get; set; }
+        public bool IsPrimary { get; set; }
     }
 
     private sealed class PageRow

@@ -1011,6 +1011,7 @@ public sealed partial class McpCommandService
             image.Width,
             image.Height,
             [image.CropRange.X, image.CropRange.Y, image.CropRange.Width, image.CropRange.Height],
+            image.Rotation,
             image.ImageIndex,
             image.BoxNumbers?.Select(box => new McpImageBoxNumber(box.Index, box.BoxId.ToString())).ToArray());
         return new McpFetchResult(canonical, "page_image", itemUri, null, true, false,
@@ -1355,22 +1356,11 @@ public sealed partial class McpCommandService
                     exported.ErrorMessage ?? exported.ErrorCode ?? "BibLaTeX export failed."), limitBytes);
         }
 
-        if (!target.IsLegacy && _exposeLibraryCollections)
+        if (!target.IsLegacy)
         {
-            Result<IReadOnlyList<CollectionId>> membership =
-                await _read.GetItemCollectionIdsAsync(target.ItemId.Value, cancellationToken);
-            if (membership.IsFailure)
-            {
-                return FailedFetch(uri,
-                    McpToolError.From(McpErrorMappings.ToReadError(membership.ErrorCode), membership.ErrorMessage),
-                    limitBytes);
-            }
-
             JsonObject root = (JsonObject)McpYamlCodec.Decode(exported.Value);
             JsonObject extensions = root["extensions"] as JsonObject ?? new JsonObject();
             JsonObject patchouli = extensions["patchouli"] as JsonObject ?? new JsonObject();
-            patchouli["collections"] =
-                new JsonArray(membership.Value.Select(id => (JsonNode?)JsonValue.Create(id.ToString())).ToArray());
             if (extensions["patchouli"] is null)
             {
                 extensions["patchouli"] = patchouli;
@@ -1379,6 +1369,46 @@ public sealed partial class McpCommandService
             if (root["extensions"] is null)
             {
                 root["extensions"] = extensions;
+            }
+
+            if (_exposeLibraryCollections)
+            {
+                Result<IReadOnlyList<CollectionId>> membership =
+                    await _read.GetItemCollectionIdsAsync(target.ItemId.Value, cancellationToken);
+                if (membership.IsFailure)
+                {
+                    return FailedFetch(uri,
+                        McpToolError.From(McpErrorMappings.ToReadError(membership.ErrorCode),
+                            membership.ErrorMessage), limitBytes);
+                }
+
+                patchouli["collections"] = new JsonArray(
+                    membership.Value.Select(id => (JsonNode?)JsonValue.Create(id.ToString())).ToArray());
+            }
+
+            // Document links are a read-only discovery projection: they save the agent a
+            // filtered browse to learn the item's texts/, images/, and translations/
+            // directories. Entries whose every link is denied by the VFS permission
+            // matrix are omitted; a failed or unimplemented link query skips the block.
+            IReadOnlyList<McpItemDocumentLink>? links = null;
+            try
+            {
+                Result<IReadOnlyList<McpItemDocumentLink>> queried =
+                    await _read.GetItemDocumentLinksAsync(target.ItemId.Value, cancellationToken);
+                if (queried.IsSuccess)
+                {
+                    links = queried.Value;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                links = null;
+            }
+
+            if (links is not null)
+            {
+                McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+                patchouli["documents"] = BuildDocumentLinkEntries(links, permissions);
             }
 
             exported = Result<string>.Success(McpYamlCodec.Encode(root));
@@ -2663,6 +2693,56 @@ public sealed partial class McpCommandService
 
         return new McpItemLongEntry(uri, row.Title, "file", row.Status ?? "unset",
             PrimaryDocumentOcrIndexState.FromValue(row.PrimaryDocumentOcrIndexStatus).Value, citable);
+    }
+
+    /// <summary>
+    /// Projects one entry per document instance into the item YAML's read-only
+    /// <c>extensions.patchouli.documents</c> block. Each link field is emitted only when the
+    /// caller's VFS permission matrix allows fetching that domain; an instance whose links
+    /// are all denied is dropped from the array.
+    /// </summary>
+    private static JsonArray BuildDocumentLinkEntries(IReadOnlyList<McpItemDocumentLink> links,
+        McpServerSettings? permissions)
+    {
+        JsonArray documents = new();
+        foreach (McpItemDocumentLink link in links)
+        {
+            JsonObject entry = new();
+            bool anyLink = false;
+            string textUri = McpResourceUris.DocumentUri(link.DocumentInstanceId);
+            if (Allowed(permissions, "fetch", textUri))
+            {
+                entry["uri"] = textUri;
+                anyLink = true;
+            }
+
+            entry["primary"] = link.IsPrimary;
+            if (!string.IsNullOrWhiteSpace(link.Title))
+            {
+                entry["title"] = link.Title;
+            }
+
+            string imagesUri = McpResourceUris.ImagesDocumentUri(link.DocumentInstanceId);
+            if (Allowed(permissions, "fetch", imagesUri))
+            {
+                entry["images_uri"] = imagesUri;
+                anyLink = true;
+            }
+
+            string translationsUri = McpResourceUris.TranslationDocumentUri(link.DocumentInstanceId);
+            if (Allowed(permissions, "fetch", translationsUri))
+            {
+                entry["translations_uri"] = translationsUri;
+                anyLink = true;
+            }
+
+            if (anyLink)
+            {
+                documents.Add(entry);
+            }
+        }
+
+        return documents;
     }
 
     private static object BuildDocumentEntryAsync(McpBrowseDocumentRow row, bool longMode)

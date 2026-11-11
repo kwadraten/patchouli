@@ -169,6 +169,12 @@ public sealed record McpFetchImageMetadata(
     [property: JsonPropertyName("width")] int Width,
     [property: JsonPropertyName("height")] int Height,
     [property: JsonPropertyName("crop")] IReadOnlyList<double> Crop,
+    /// <summary>
+    /// Clockwise quarter-turn (0/90/180/270) of the persisted user rotation applied to the
+    /// pixels; <see cref="Crop"/> and the drawn boxes live in that rotated display basis.
+    /// </summary>
+    [property: JsonPropertyName("rotation")]
+    int Rotation,
     [property: JsonPropertyName("image_index")]
     int ImageIndex,
     [property: JsonPropertyName("boxes")]

@@ -260,7 +260,7 @@ public sealed class McpAddFetchImageCommandTests
         PageImageViewResult image = new(
             "patchouli://images/" + DocId + "/page-2.png?rev=" + RevId,
             PageImageViewTypes.Page, "image/png", 1200, 1600,
-            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng);
+            new NormalizedBBox(0, 0, 1, 1), 0, 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -307,7 +307,7 @@ public sealed class McpAddFetchImageCommandTests
         PageImageViewResult image = new(
             "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId + "&box=" + BoxGuid,
             PageImageViewTypes.Box, "image/png", 400, 300,
-            new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, RevId, FakePng);
+            new NormalizedBBox(0.1, 0.2, 0.3, 0.4), 0, 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -359,7 +359,7 @@ public sealed class McpAddFetchImageCommandTests
         PageImageViewResult image = new(
             "patchouli://images/" + DocId + "/page-1.png",
             PageImageViewTypes.Page, "image/png", 100, 100,
-            new NormalizedBBox(0, 0, 1, 1), 0, string.Empty, FakePng);
+            new NormalizedBBox(0, 0, 1, 1), 0, 0, string.Empty, FakePng);
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), _ =>
             Task.FromResult(Result<PageImageViewResult>.Success(image)));
         McpCommandService service = CreateService(pageView: pageView.Proxy,
@@ -383,7 +383,7 @@ public sealed class McpAddFetchImageCommandTests
         PageImageViewResult image = new(
             "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId,
             PageImageViewTypes.Page, "image/png", 800, 600,
-            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng);
+            new NormalizedBBox(0, 0, 1, 1), 0, 0, RevId, FakePng);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>
         {
@@ -409,7 +409,7 @@ public sealed class McpAddFetchImageCommandTests
         PageImageViewResult image = new(
             "patchouli://images/" + DocId + "/page-1.png?rev=" + RevId,
             PageImageViewTypes.Page, "image/png", 800, 600,
-            new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng,
+            new NormalizedBBox(0, 0, 1, 1), 0, 0, RevId, FakePng,
             [new PageImageBoxNumber(1, new DocumentBoxId(Guid.Parse(BoxGuid)))]);
         PageImageViewRequest? seen = null;
         pageView.Handle(nameof(IPageImageViewService.ViewAsync), args =>

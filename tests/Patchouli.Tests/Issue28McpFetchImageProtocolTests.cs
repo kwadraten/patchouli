@@ -215,7 +215,7 @@ public sealed class Issue28McpFetchImageProtocolTests
             seen.Add(request);
             PageImageViewResult image = new(
                 ImageUri + "?rev=" + RevId, PageImageViewTypes.Page, "image/png", 800, 600,
-                new NormalizedBBox(0, 0, 1, 1), 0, RevId, FakePng,
+                new NormalizedBBox(0, 0, 1, 1), 0, 0, RevId, FakePng,
                 request.NumberedBoxes
                     ? [new PageImageBoxNumber(1, BoxOne), new PageImageBoxNumber(2, BoxTwo)]
                     : null);

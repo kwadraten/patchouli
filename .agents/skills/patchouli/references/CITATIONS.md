@@ -20,6 +20,7 @@ patchouli-cli cite <REF>... [--style <csl-style-uri>] [--locale <locale>] [--bib
 ## 修改题录
 
 - `fetch patchouli://items/{item-id}.yml` 得到 YAML（profile `patchouli-item-1`）：原生 CSL 字段位于 `csl`，应用数据位于 `extensions.patchouli`。
+- `extensions.patchouli.documents` 是宿主生成的只读链接块：按文献实例列出 `{uri, title, primary, images_uri, translations_uri}`，分别指向 `texts/{id}/`、`images/{id}/`、`translations/{id}/` 虚拟目录。用它直接定位正文、原图与译文，不必再 `find --where item_id=...`；`put` 时该块被忽略，由宿主在下次 `fetch` 重新生成。域读取未授权时对应链接不会出现。
 - `put` 以完整 YAML 替换。URI 决定身份：Item 身份和 citation key 不能通过替换修改；集合关系只读；用户设置不暴露标签时，传入的标签会被忽略。
 - YAML 只能有一个文档，键不能重复，不支持自定义 tag 或锚点。日期使用 CSL 嵌套的 `date-parts` 数组，可以表示区间；纯文本日期可以不写 `date-parts`。
 - 把 CSL `type` 改成受支持的其他类型属于显式类型修正，宿主会按新类型保存。
