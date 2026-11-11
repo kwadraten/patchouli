@@ -327,7 +327,7 @@ public sealed class MetadataTaskQueueTests : IDisposable
             OcrQueueViewModel queue = main.OcrQueue;
 
             // 1. TaskTypes verification
-            queue.TaskTypes.Should().Equal(["全部任务", "OCR", "翻译", "元数据"]);
+            queue.TaskTypes.Should().Equal(["全部任务", "OCR", "翻译", "元数据", "下载"]);
 
             // 2. Add OCR task, translation task, and metadata task
             OcrQueueTask ocrTask = new(

@@ -973,20 +973,20 @@ public sealed class OcrTaskRunBindingTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages, CancellationToken c = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             return Task.FromResult(Result<OcrRun>.Success(Run));
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p,
-            PageId page, NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
+            PageId page, NormalizedBBox bbox, CancellationToken c = default, int? rotationDegrees = null)
         {
             return Task.FromResult(Result<OcrRun>.Success(Run));
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d,
             OcrPresetId p, PageId page, NormalizedBBox bbox, CancellationToken c = default,
-            int rotationDegrees = 0)
+            int? rotationDegrees = null)
         {
             return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "x"));
         }

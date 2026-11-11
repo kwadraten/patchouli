@@ -111,7 +111,7 @@ public sealed record OcrQueueTask(
     bool CommitOnCompletion = true,
     OcrPresetVersionId? PresetVersionId = null,
     string Source = OcrQueueSource.Unknown,
-    int RotationDegrees = 0);
+    int? RotationDegrees = null);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -127,8 +127,11 @@ public sealed record OcrQueueTaskRequest(
     bool CommitOnCompletion = true,
     OcrPresetVersionId? PresetVersionId = null,
     string Source = OcrQueueSource.Unknown,
-    /// <summary>Frozen clockwise onscreen quarter turn (0/90/180/270) for rotated interactive OCR.</summary>
-    int RotationDegrees = 0);
+    /// <summary>
+    /// Frozen clockwise onscreen quarter turn (0/90/180/270) for rotated interactive OCR.
+    /// Null means no uniform rotation: every page executes with its own persisted user rotation.
+    /// </summary>
+    int? RotationDegrees = null);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,

@@ -96,6 +96,42 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
     }
 
     [Fact]
+    public async Task Page_rotation_persists_on_each_page_and_restores_when_navigating_back()
+    {
+        await DispatchAndShutdownAsync(headless.Session, async () =>
+        {
+            MainWindowViewModel main = CreateMainWindow(new AutoCloseDialogService());
+            PdfWorkspaceViewModel workspace = await OpenEditingWorkspaceAsync(main);
+            HostServices services = await main.ServicesAsync();
+            DocumentInstanceId documentId = DocumentInstanceId.Parse(workspace.Item.DocumentInstanceId!);
+            IReadOnlyList<Page> pages = (await services.Pages.ListPagesAsync(documentId)).Value;
+            pages.Should().HaveCount(3, "the fixture imports a three-page PDF");
+
+            // Rotating page 1 persists the angle on that page only; the native /Rotate
+            // metadata stays untouched.
+            await workspace.RotatePageCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+            workspace.ViewportRotationAngle.Should().Be(90);
+            Page page0 = (await services.Pages.GetPageAsync(pages[0].PageId)).Value;
+            page0.UserRotation.Should().Be(90);
+            page0.Rotation.Should().Be(0, "user rotation never rewrites the source /Rotate metadata");
+
+            // Page 2 starts from its own persisted angle (0), not the document-level leftover.
+            await workspace.NextPageCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+            workspace.PageIndex.Should().Be(1);
+            workspace.ViewportRotationAngle.Should().Be(0);
+            await workspace.RotatePageCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+            workspace.ViewportRotationAngle.Should().Be(90);
+            (await services.Pages.GetPageAsync(pages[1].PageId)).Value.UserRotation.Should().Be(90);
+            (await services.Pages.GetPageAsync(pages[2].PageId)).Value.UserRotation.Should().Be(0);
+
+            // Back on page 1 the persisted 90 is restored.
+            await workspace.PreviousPageCommand.ExecuteAsync().WaitAsync(OperationTimeout);
+            workspace.PageIndex.Should().Be(0);
+            workspace.ViewportRotationAngle.Should().Be(90);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Region_prefill_executes_synchronous_adapter_off_the_ui_thread_and_stays_pumpable()
     {
         HeadlessUnitTestSession session = headless.Session;

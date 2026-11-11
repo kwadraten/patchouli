@@ -819,19 +819,19 @@ public sealed class OcrQueueSchedulerTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages, CancellationToken c = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             return Fail("mock", c);
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
+            NormalizedBBox bbox, CancellationToken c = default, int? rotationDegrees = null)
         {
             return Fail("region", c);
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
-            PageId page, NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
+            PageId page, NormalizedBBox bbox, CancellationToken c = default, int? rotationDegrees = null)
         {
             Calls.Add("region_candidate");
             Token = c;
@@ -923,19 +923,19 @@ public sealed class OcrQueueSchedulerTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
             IReadOnlyList<PageId> pages, CancellationToken c = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             return Task.FromResult(Run());
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
-            NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
+            NormalizedBBox bbox, CancellationToken c = default, int? rotationDegrees = null)
         {
             return Task.FromResult(Run());
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
-            PageId page, NormalizedBBox bbox, CancellationToken c = default, int rotationDegrees = 0)
+            PageId page, NormalizedBBox bbox, CancellationToken c = default, int? rotationDegrees = null)
         {
             return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "test"));
         }

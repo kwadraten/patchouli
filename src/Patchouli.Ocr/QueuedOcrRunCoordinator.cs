@@ -115,7 +115,7 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         IReadOnlyList<PageId> pageIds,
         CancellationToken cancellationToken = default,
         IProgress<OcrTaskStageProgress>? progress = null,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -140,7 +140,7 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         PageId pageId,
         NormalizedBBox regionBBox,
         CancellationToken cancellationToken = default,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -162,7 +162,7 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
 
     public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
         DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
-        CancellationToken cancellationToken = default, int rotationDegrees = 0)
+        CancellationToken cancellationToken = default, int? rotationDegrees = null)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -192,7 +192,7 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         PageId pageId,
         NormalizedBBox regionBBox,
         CancellationToken cancellationToken = default,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         // Region candidates are ephemeral: the engine persists no run for them, so there is no
         // status to track and queueing is not required for status correctness. The facade still
