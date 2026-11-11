@@ -240,7 +240,8 @@ public sealed partial class CitationPickerViewModel : ViewModelBase
             if (text.Length == 0)
             {
                 Result<LibraryItemPage> page =
-                    await Task.Run(() => _query.ListRowsAsync(PageSize, cursor, null, cancellationToken),
+                    await Task.Run(() => _query.ListRowsAsync(PageSize, cursor, null,
+                            cancellationToken: cancellationToken),
                         cancellationToken);
                 if (generation != _searchGeneration || cancellationToken.IsCancellationRequested)
                 {

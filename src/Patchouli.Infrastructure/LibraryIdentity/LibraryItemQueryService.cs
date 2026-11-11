@@ -48,6 +48,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         int limit,
         LibraryItemCursor? after,
         IReadOnlyList<string>? requiredTags = null,
+        CollectionId? requiredCollection = null,
+        bool untaggedOnly = false,
         CancellationToken cancellationToken = default)
     {
         if (limit <= 0)
@@ -57,7 +59,9 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         }
 
         (Result<IReadOnlyList<LibraryItemRow>> result, bool hasMore) =
-            await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken, requiredTags: requiredTags);
+            await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken,
+                requiredTags: requiredTags, requiredCollection: requiredCollection,
+                untaggedOnly: untaggedOnly);
         if (result.IsFailure)
         {
             return Result<LibraryItemPage>.Failure(result.ErrorCode!, result.ErrorMessage!);
@@ -480,9 +484,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 from items i
                 where i.deleted_at is null
                   and i.merged_into_item_id is null
-                  and (i.tags_json is null
-                       or not json_valid(i.tags_json)
-                       or json_array_length(i.tags_json) = 0);
+                  and not exists (select 1 from item_tag_memberships utm where utm.item_id = i.item_id);
                 """);
             return Result<int>.Success(count);
         }
@@ -612,6 +614,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         CancellationToken cancellationToken,
         IReadOnlyCollection<ItemId>? itemIds = null,
         IReadOnlyList<string>? requiredTags = null,
+        CollectionId? requiredCollection = null,
+        bool untaggedOnly = false,
         string extraFilter = "",
         Dictionary<string, object?>? extraParameters = null)
     {
@@ -629,6 +633,22 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 ? "and i.deleted_at is not null and i.merged_into_item_id is null"
                 : "and i.deleted_at is null and i.merged_into_item_id is null";
             string tagFilter = BuildTagFilter(requiredTags);
+            string collectionFilter = requiredCollection is null
+                ? ""
+                : """
+                  and i.item_id in (
+                      select ic.item_id
+                      from item_collections ic
+                      where ic.collection_id = @RequiredCollectionId
+                  )
+                  """;
+            string untaggedFilter = untaggedOnly
+                ? """
+                  and not exists (
+                      select 1 from item_tag_memberships utm where utm.item_id = i.item_id
+                  )
+                  """
+                : "";
             string keysetClause = after is null
                 ? ""
                 : "and (i.created_at, i.item_id) < (@AfterCreatedAt, @AfterItemId) ";
@@ -643,6 +663,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             parameters.Add("ItemIds", itemIds?.Select(static id => id.ToString()).ToArray());
             parameters.Add("RequiredTags", requiredTags?.ToArray());
             parameters.Add("RequiredTagCount", requiredTags?.Count ?? 0);
+            parameters.Add("RequiredCollectionId", requiredCollection?.ToString());
             if (extraParameters is not null)
             {
                 foreach (KeyValuePair<string, object?> pair in extraParameters)
@@ -653,7 +674,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
             IEnumerable<CoreRow> rows = await connection.QueryAsync<CoreRow>(
                 string.Format(CultureInfo.InvariantCulture, CoreRowSqlTemplate, itemIdFilter, lifecycleClause,
-                    tagFilter, extraFilter, keysetClause),
+                    tagFilter, extraFilter, keysetClause, collectionFilter, untaggedFilter),
                 parameters);
 
             CoreRow[] coreRows = rows.ToArray();
@@ -804,6 +825,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
           {4}
           {0}
           {2}
+          {5}
+          {6}
           {3}
         order by i.created_at desc, i.item_id desc
         limit @Limit;
@@ -852,27 +875,37 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
     private const string CurrentLayoutSql =
         """
-        select document_instance_id
-        from document_tree_revisions
-        where document_instance_id in @DocIds and status = 'committed' and is_current = 1;
+        select di.document_instance_id
+        from document_instances di
+        where di.document_instance_id in @DocIds
+          and exists (
+              select 1 from document_tree_revisions r
+              where r.document_instance_id = di.document_instance_id
+                and r.status = 'committed' and r.is_current = 1
+          );
         """;
 
     private const string OcrTextDocumentSql =
         """
-        select distinct r.document_instance_id
-        from document_tree_revisions r
-        join document_boxes b on b.tree_revision_id = r.tree_revision_id
-        where r.document_instance_id in @DocIds
-          and r.status = 'committed'
-          and r.is_current = 1
-          and b.suppressed = 0
-          and b.payload_json is not null
-          and json_valid(b.payload_json) = 1
-          and (
-              length(trim(coalesce(json_extract(b.payload_json, '$.markdown'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.latex'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.code'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.description'), ''))) > 0
+        select di.document_instance_id
+        from document_instances di
+        where di.document_instance_id in @DocIds
+          and exists (
+              select 1
+              from document_tree_revisions r
+              join document_boxes b on b.tree_revision_id = r.tree_revision_id
+              where r.document_instance_id = di.document_instance_id
+                and r.status = 'committed'
+                and r.is_current = 1
+                and b.suppressed = 0
+                and b.payload_json is not null
+                and json_valid(b.payload_json) = 1
+                and (
+                    length(trim(coalesce(json_extract(b.payload_json, '$.markdown'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.latex'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.code'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.description'), ''))) > 0
+                )
           );
         """;
 
