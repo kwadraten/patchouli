@@ -936,6 +936,121 @@ public sealed class DocumentTreeServiceTests
         boxCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task Working_edits_write_only_changed_boxes_and_preserve_untouched_rows()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox first = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("First")))).Value;
+        DocumentBox second = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.3, 0.8, 0.1), new TextBoxPayload("Second")))).Value;
+        DocumentBox third = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, second.BoxId, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.5, 0.8, 0.1), new TextBoxPayload("Third")))).Value;
+
+        await using SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            $"""
+             create table box_write_audit(operation text not null, box_id text not null);
+             create trigger box_write_insert after insert on document_boxes
+             when new.tree_revision_id = '{edit.DraftRevisionId}'
+             begin insert into box_write_audit values ('insert', new.box_id); end;
+             create trigger box_write_update after update on document_boxes
+             when new.tree_revision_id = '{edit.DraftRevisionId}'
+             begin insert into box_write_audit values ('update', new.box_id); end;
+             create trigger box_write_delete after delete on document_boxes
+             when old.tree_revision_id = '{edit.DraftRevisionId}'
+             begin insert into box_write_audit values ('delete', old.box_id); end;
+             """);
+
+        (await context.Editor.UpdateLeafAsync(edit.SessionId,
+                new UpdateLeafCommand(second.BoxId, DocumentBoxType.Text, new TextBoxPayload("Second edited"))))
+            .IsSuccess.Should().BeTrue();
+        (await connection.QueryAsync<string>(
+                "select operation || ':' || box_id from box_write_audit;"))
+            .Should().Equal("update:" + second.BoxId);
+
+        await connection.ExecuteAsync("delete from box_write_audit;");
+        (await context.Editor.UpdateBBoxAsync(edit.SessionId, second.BoxId, second.BBox))
+            .IsSuccess.Should().BeTrue();
+        (await connection.ExecuteScalarAsync<int>("select count(*) from box_write_audit;")).Should().Be(0);
+
+        (await context.Editor.MoveBoxAsync(edit.SessionId, new MoveBoxCommand(third.BoxId, null, null)))
+            .IsSuccess.Should().BeTrue();
+        (await connection.ExecuteScalarAsync<int>(
+                "select count(*) from box_write_audit where operation in ('insert', 'delete');"))
+            .Should().Be(0);
+        (await connection.ExecuteScalarAsync<int>(
+            "select count(*) from box_write_audit where box_id = @BoxId;",
+            new { BoxId = first.BoxId.ToString() })).Should().Be(0);
+
+        await connection.ExecuteAsync("delete from box_write_audit;");
+        DocumentBox inserted = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.2, 0.8, 0.1), new TextBoxPayload("Inserted")))).Value;
+        (await connection.QueryAsync<string>(
+                "select operation || ':' || box_id from box_write_audit where operation in ('insert', 'delete');"))
+            .Should().Equal("insert:" + inserted.BoxId);
+        (await connection.ExecuteScalarAsync<int>(
+            "select count(*) from box_write_audit where box_id = @BoxId;",
+            new { BoxId = third.BoxId.ToString() })).Should().Be(0);
+
+        await connection.ExecuteAsync("delete from box_write_audit;");
+        (await context.Editor.DeleteBoxAsync(edit.SessionId, inserted.BoxId)).IsSuccess.Should().BeTrue();
+        (await connection.QueryAsync<string>(
+                "select operation || ':' || box_id from box_write_audit where operation in ('insert', 'delete');"))
+            .Should().Equal("delete:" + inserted.BoxId);
+
+        await connection.ExecuteAsync("delete from box_write_audit;");
+        (await context.Editor.SetContinuationAsync(edit.SessionId, second.BoxId, first.BoxId))
+            .IsSuccess.Should().BeTrue();
+        (await connection.QueryAsync<string>(
+                "select operation || ':' || box_id from box_write_audit;"))
+            .Should().Equal("update:" + second.BoxId);
+
+        (await context.Trees.CommitPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Select(box => box.BoxId)
+            .Should().BeEquivalentTo([first.BoxId, second.BoxId, third.BoxId]);
+    }
+
+    [Fact]
+    public async Task Failed_working_delta_write_rolls_back_predecessor_changes()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox first = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("First")))).Value;
+        DocumentBox second = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.3, 0.8, 0.1), new TextBoxPayload("Second")))).Value;
+        DocumentBox third = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, second.BoxId, DocumentBoxType.Text, null,
+                new NormalizedBBox(0.1, 0.5, 0.8, 0.1), new TextBoxPayload("Third")))).Value;
+        string[] before = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value
+            .Select(box => $"{box.BoxId}:{box.NextSiblingBoxId}").ToArray();
+
+        await using SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync(
+            $"""
+             create trigger reject_working_move before update on document_boxes
+             when old.tree_revision_id = '{edit.DraftRevisionId}' and old.box_id = '{third.BoxId}'
+             begin select raise(abort, 'injected failure'); end;
+             """);
+
+        (await context.Editor.MoveBoxAsync(edit.SessionId, new MoveBoxCommand(third.BoxId, null, null)))
+            .IsFailure.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value
+            .Select(box => $"{box.BoxId}:{box.NextSiblingBoxId}").Should().Equal(before);
+        (await connection.ExecuteScalarAsync<int>("select count(*) from pragma_foreign_key_check;"))
+            .Should().Be(0);
+    }
+
     private sealed class Context : IAsyncDisposable
     {
         private readonly TemporarySqliteDatabase _database;

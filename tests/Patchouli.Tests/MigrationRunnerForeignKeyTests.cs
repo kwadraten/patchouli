@@ -183,6 +183,7 @@ public sealed class MigrationRunnerForeignKeyTests
         applied.Should().Contain(m => m.Id == "035");
         applied.Should().Contain(m => m.Id == "036");
         applied.Should().Contain(m => m.Id == "037");
+        applied.Should().Contain(m => m.Id == "060");
 
         await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
         {
@@ -195,9 +196,11 @@ public sealed class MigrationRunnerForeignKeyTests
             int revisionsAfter =
                 await connection.ExecuteScalarAsync<int>("select count(1) from document_tree_revisions;");
 
-            boxesAfter.Should().Be(boxesBefore);
-            unitsAfter.Should().Be(unitsBefore);
-            revisionsAfter.Should().Be(revisionsBefore);
+            boxesAfter.Should().Be(boxesBefore - 1);
+            unitsAfter.Should().Be(unitsBefore - 1);
+            revisionsAfter.Should().Be(revisionsBefore - 1);
+            (await connection.ExecuteScalarAsync<int>("select count(*) from pragma_foreign_key_check;"))
+                .Should().Be(0);
         }
 
         stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
