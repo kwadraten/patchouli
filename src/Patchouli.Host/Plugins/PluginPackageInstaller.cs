@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Host.Plugins;
@@ -12,11 +13,12 @@ internal static class PluginPackageInstaller
 
     public static async Task<Result<PluginDefinition>> PrepareAsync(HttpClient client,
         PluginCatalogEntry catalogEntry, PluginCatalogArtifact artifact, string packageDirectory,
-        string archivePath, CancellationToken cancellationToken)
+        string archivePath, CancellationToken cancellationToken, IProgress<double>? progress = null)
     {
         try
         {
-            Result downloaded = await DownloadAsync(client, artifact, archivePath, cancellationToken);
+            Result downloaded = await DownloadAsync(client, artifact, archivePath, cancellationToken,
+                progress);
             if (downloaded.IsFailure)
             {
                 return Result<PluginDefinition>.Failure(downloaded.ErrorCode!, downloaded.ErrorMessage!);
@@ -59,7 +61,7 @@ internal static class PluginPackageInstaller
     }
 
     private static async Task<Result> DownloadAsync(HttpClient client, PluginCatalogArtifact artifact,
-        string archivePath, CancellationToken cancellationToken)
+        string archivePath, CancellationToken cancellationToken, IProgress<double>? progress = null)
     {
         if (artifact.Size > MaxPackageBytes)
         {
@@ -67,6 +69,24 @@ internal static class PluginPackageInstaller
                 $"The plugin package exceeds the {MaxPackageBytes}-byte limit.");
         }
 
+        IDownloadProgress? rich = progress as IDownloadProgress;
+        string relative = Uri.TryCreate(artifact.Url, UriKind.Absolute, out Uri? artifactUri)
+            ? Path.GetFileName(artifactUri.AbsolutePath)
+            : "package.zip";
+        if (relative.Length == 0)
+        {
+            relative = "package.zip";
+        }
+
+        DownloadFileProgress current = new(relative, "running", 0, artifact.Size);
+
+        void ReportFile(DownloadFileProgress value)
+        {
+            current = value;
+            rich?.ReportFile(value);
+        }
+
+        ReportFile(current);
         try
         {
             using HttpResponseMessage response = await client.GetAsync(artifact.Url,
@@ -79,8 +99,10 @@ internal static class PluginPackageInstaller
 
             if (response.Content.Headers.ContentLength is long declared && declared != artifact.Size)
             {
-                return Result.Failure(AppErrorCodes.ValidationFailed,
+                Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                     "The plugin download Content-Length differs from the signed index.");
+                rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                return failure;
             }
 
             await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -100,35 +122,51 @@ internal static class PluginPackageInstaller
                 total += read;
                 if (total > artifact.Size)
                 {
-                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                    Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                         "The plugin download is larger than the signed index declares.");
+                    rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                    return failure;
                 }
 
                 hash.AppendData(buffer, 0, read);
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                ReportFile(new DownloadFileProgress(relative, "running", total, artifact.Size));
             }
 
             if (total != artifact.Size)
             {
-                return Result.Failure(AppErrorCodes.ValidationFailed,
+                Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                     $"The plugin download size {total} does not match the signed size {artifact.Size}.");
+                rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                return failure;
             }
 
+            ReportFile(new DownloadFileProgress(relative, "verifying", total, artifact.Size));
             string actualHash = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             if (!CryptographicOperations.FixedTimeEquals(
                     System.Text.Encoding.ASCII.GetBytes(actualHash),
                     System.Text.Encoding.ASCII.GetBytes(artifact.Sha256)))
             {
-                return Result.Failure(AppErrorCodes.ValidationFailed,
+                Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                     "The plugin download SHA-256 does not match the signed index.");
+                rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                return failure;
             }
 
             await destination.FlushAsync(cancellationToken);
+            rich?.ReportFile(current with { State = "succeeded" });
             return Result.Success();
         }
         catch (HttpRequestException exception)
         {
-            return Result.Failure("unavailable", $"The plugin download failed: {exception.Message}");
+            Result failure = Result.Failure("unavailable", $"The plugin download failed: {exception.Message}");
+            rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+            return failure;
+        }
+        catch (OperationCanceledException)
+        {
+            rich?.ReportFile(current with { State = "cancelled" });
+            throw;
         }
     }
 

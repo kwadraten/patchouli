@@ -6,9 +6,11 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using System.Diagnostics;
 using Patchouli.UI;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Core.Update;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Downloads;
 using Patchouli.Infrastructure.Update;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
@@ -184,34 +186,71 @@ public sealed class UpdateFlowService
         await _main.Dialogs.ShowDialogAsync<bool>(dialog);
     }
 
-    private async Task DownloadAndConfirmInstallAsync(ReleaseInfo release, ReleaseAssetInfo asset)
+    internal async Task DownloadAndConfirmInstallAsync(ReleaseInfo release, ReleaseAssetInfo asset)
     {
         HostServices services = await _main.ServicesAsync();
         UpdateCoordinator coordinator = services.UpdateCoordinator;
 
         Result<VerifiedDownload> downloadResult;
+        int generation = _main.LibraryGeneration;
         try
         {
-            downloadResult = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions(
-                    $"下载更新 {release.Version}",
-                    $"正在下载 {asset.Name}…",
-                    true),
-                async context =>
+            VerifiedDownload? verified2 = null;
+            string? failureMessage = null;
+            string? failureCode = null;
+            DownloadTaskHandle handle = services.DownloadTasks.Start(
+                $"下载更新 {release.Version}", async (progress, token) =>
                 {
-                    Progress<UpdateDownloadProgress> progress = new(value =>
+                    IDownloadProgress? rich = progress as IDownloadProgress;
+                    DownloadFileProgress current = new(asset.Name, "running", 0, null);
+
+                    void ReportFile(DownloadFileProgress value)
                     {
-                        int currentBytes = (int)Math.Min(value.BytesReceived, int.MaxValue);
-                        int? totalBytes = value.TotalBytes.HasValue
-                            ? (int)Math.Min(value.TotalBytes.Value, int.MaxValue)
-                            : null;
-                        string label = totalBytes.HasValue
-                            ? $"正在下载 {asset.Name}（{FormatBytes(value.BytesReceived)} / {FormatBytes(totalBytes.Value)}）"
-                            : $"正在下载 {asset.Name}（{FormatBytes(value.BytesReceived)}）";
-                        context.Report(currentBytes, totalBytes, label);
-                    });
-                    return await coordinator.DownloadAsync(asset, progress, context.CancellationToken);
-                });
+                        current = value;
+                        rich?.ReportFile(value);
+                    }
+
+                    ReportFile(current);
+                    Result<VerifiedDownload> inner;
+                    try
+                    {
+                        inner = await coordinator.DownloadAsync(asset,
+                            new SynchronousProgress<UpdateDownloadProgress>(value =>
+                            {
+                                ReportFile(new DownloadFileProgress(asset.Name, "running",
+                                    value.BytesReceived, value.TotalBytes));
+                            }), token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        rich?.ReportFile(current with { State = "cancelled" });
+                        throw;
+                    }
+
+                    if (inner.IsSuccess)
+                    {
+                        verified2 = inner.Value;
+                        rich?.ReportFile(current with { State = "succeeded" });
+                        return Result.Success();
+                    }
+
+                    failureCode = inner.ErrorCode;
+                    failureMessage = inner.ErrorMessage;
+                    rich?.ReportFile(current with { State = "failed", ErrorMessage = inner.ErrorMessage });
+                    return Result.Failure(inner.ErrorCode!, inner.ErrorMessage!);
+                }, canRetry: false);
+            Result outcome = await new DownloadOperationRunner(_main.Dialogs)
+                .RunAsync($"下载更新 {release.Version}", services.DownloadTasks, handle);
+            if (outcome.ErrorCode == DownloadTaskService.CancelledErrorCode)
+            {
+                _main.Report("下载已取消。");
+                return;
+            }
+
+            downloadResult = outcome.IsSuccess && verified2 is not null
+                ? Result<VerifiedDownload>.Success(verified2)
+                : Result<VerifiedDownload>.Failure(failureCode ?? outcome.ErrorCode ?? "download_failed",
+                    failureMessage ?? outcome.ErrorMessage ?? "下载更新失败。");
         }
         catch (OperationCanceledException)
         {
@@ -237,6 +276,13 @@ public sealed class UpdateFlowService
         }
 
         VerifiedDownload verified = downloadResult.Value;
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            UpdateDownloader.DeleteDownload(verified.FilePath);
+            _main.Report("书库已切换，已取消更新安装提示。");
+            return;
+        }
+
         string verifyText = verified.Sha256Verified
             ? "安装包 SHA256 校验通过。"
             : "该版本未提供 SHA256 校验文件；安装包大小与发布页一致，下载经 HTTPS 完成。";
