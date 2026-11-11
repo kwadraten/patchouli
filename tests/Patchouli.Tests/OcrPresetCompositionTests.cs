@@ -18,10 +18,18 @@ namespace Patchouli.Tests;
 /// </summary>
 public sealed class OcrPresetCompositionTests
 {
+    [Fact]
+    public async Task Host_resources_use_the_composed_layout_recognition_service()
+    {
+        await using Context context = await Context.CreateAsync();
+        context.Services.ExtensionResources.LayoutRecognition.Should().BeSameAs(
+            context.Services.LayoutRecognition);
+    }
+
     private static OcrPresetCompositionService Composition(HostServices services,
         MinerUAppSettings? minerU = null)
     {
-        return new OcrPresetCompositionService(services, minerU);
+        return services.CreateOcrPresetCompositionService(minerU);
     }
 
     [Fact]

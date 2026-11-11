@@ -9,7 +9,6 @@ namespace Patchouli.Infrastructure.Search;
 internal static class SearchFtsCacheWriter
 {
     private const int BatchSize = 500;
-    internal const int CurrentCacheVersion = 2;
 
     /// <returns>True only when this call rebuilt the cache; false for an already-ready cache.</returns>
     internal static async Task<bool> EnsureReadyAsync(
@@ -31,7 +30,7 @@ internal static class SearchFtsCacheWriter
             "select cache_version from fts_cache_state where state_id = 1;",
             transaction: transaction,
             cancellationToken: cancellationToken));
-        if (cacheVersion == CurrentCacheVersion)
+        if (cacheVersion == SearchTextAnalyzer.CurrentCacheVersion)
         {
             bool hasMappedRows = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
                 "select exists (select 1 from fts_row_map limit 1);",
@@ -120,7 +119,7 @@ internal static class SearchFtsCacheWriter
             values (1, @CacheVersion)
             on conflict(state_id) do update set cache_version = excluded.cache_version;
             """,
-            new { CacheVersion = CurrentCacheVersion },
+            new { CacheVersion = SearchTextAnalyzer.CurrentCacheVersion },
             transaction,
             cancellationToken: cancellationToken));
     }
@@ -246,7 +245,7 @@ internal static class SearchFtsCacheWriter
             ftsParameters[prefix + "UnitId"] = unit.UnitId;
             ftsParameters[prefix + "DocId"] = unit.DocumentInstanceId;
             ftsParameters[prefix + "PageId"] = unit.PageId;
-            ftsParameters[prefix + "Text"] = SearchIndexRebuilder.BuildIndexText(unit.ResolvedText);
+            ftsParameters[prefix + "Text"] = SearchTextAnalyzer.BuildIndexText(unit.ResolvedText);
         }
 
         await connection.ExecuteAsync(new CommandDefinition(

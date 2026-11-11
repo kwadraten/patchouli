@@ -1,7 +1,7 @@
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 
-namespace Patchouli.Infrastructure.Mcp;
+namespace Patchouli.Infrastructure.Caching;
 
 /// <summary>
 /// Immutable snapshot of the observable counters of a <see cref="SharedReadCache{TKey,TValue}"/>.

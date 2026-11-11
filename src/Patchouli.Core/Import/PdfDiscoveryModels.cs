@@ -1,24 +1,16 @@
-namespace Patchouli.Core.Import;
+using Patchouli.Core.Files;
 
-public sealed record PdfCandidate(
-    string Path,
-    string FileName,
-    long SizeBytes,
-    DateTimeOffset? ModifiedAt,
-    int? PageCount,
-    string Status,
-    string Readiness = Files.FileLocalityReadiness.LocalReady,
-    bool IsCloudPath = false);
+namespace Patchouli.Core.Import;
 
 public sealed record PdfScanResult(
     IReadOnlyList<PdfCandidate> Candidates,
     int TotalCount,
     string ScanRoot,
-    IReadOnlyList<Files.FileSearchRootIssue>? SkippedDirectories = null,
-    IReadOnlyList<Files.FileSearchRootIssue>? SkippedFiles = null,
-    IReadOnlyList<Files.FileSearchRootExcludedEntry>? ExcludedEntries = null,
-    string RootStatus = Files.FileSearchRootStatuses.Available,
-    string ScanStatus = Files.FileSearchRootScanStatuses.Complete);
+    IReadOnlyList<FileSearchRootIssue>? SkippedDirectories = null,
+    IReadOnlyList<FileSearchRootIssue>? SkippedFiles = null,
+    IReadOnlyList<FileSearchRootExcludedEntry>? ExcludedEntries = null,
+    string RootStatus = FileSearchRootStatuses.Available,
+    string ScanStatus = FileSearchRootScanStatuses.Complete);
 
 public sealed record PdfImportRequest(
     string PdfPath,

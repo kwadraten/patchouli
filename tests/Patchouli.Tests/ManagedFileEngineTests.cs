@@ -5,6 +5,7 @@ using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Extensions;
 using Patchouli.Host.ManagedFiles;
+using Patchouli.Host.Composition;
 using Patchouli.Host.Plugins;
 using Patchouli.Testing;
 using Patchouli.UI;

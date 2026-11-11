@@ -50,7 +50,8 @@ public sealed class AgentExternalSkillAccessTests
                 .IsSuccess.Should().BeTrue();
 
             ConcurrentQueue<Exception> failures = new();
-            await using McpServerHost host = new(services, (exception, _, _) => failures.Enqueue(exception));
+            await using McpServerHost host = new(services.CreateMcpServerHostDependencies(),
+                (exception, _, _) => failures.Enqueue(exception));
             McpServerSettings mcp = new(RuntimeHostCoordinator.ReserveEphemeralLoopbackPort(),
                 "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
             await host.StartAsync(mcp);

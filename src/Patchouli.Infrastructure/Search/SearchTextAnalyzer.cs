@@ -5,6 +5,8 @@ namespace Patchouli.Infrastructure.Search;
 
 internal static class SearchTextAnalyzer
 {
+    internal const int CurrentCacheVersion = 2;
+
     public static string BuildIndexText(string text)
     {
         return string.Join(' ', Analyze(text, true));
@@ -17,7 +19,7 @@ internal static class SearchTextAnalyzer
 
     public static IReadOnlyList<string> BuildQueryTokens(string query, int cacheVersion)
     {
-        bool includeSymbols = cacheVersion >= SearchFtsCacheWriter.CurrentCacheVersion;
+        bool includeSymbols = cacheVersion >= CurrentCacheVersion;
         if (!includeSymbols && query.Any(char.IsSurrogate))
         {
             return Array.Empty<string>();

@@ -5,7 +5,7 @@ using Patchouli.Core.Results;
 using Patchouli.Mcp;
 using YamlDotNet.Core;
 
-namespace Patchouli.Infrastructure.Mcp;
+namespace Patchouli.Infrastructure.Documents;
 
 /// <summary>
 /// Encodes and decodes the <c>patchouli-page-map-1</c> YAML profile used by the

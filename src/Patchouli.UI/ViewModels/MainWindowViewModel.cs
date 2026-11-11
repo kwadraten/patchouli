@@ -1516,7 +1516,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         OcrManagedFileDialogs.EnsureAttached(this, services);
         PluginManagedFileDialogs.EnsureAttached(this, services);
         services.ObserveSettingsStore(_settingsStore);
-        McpServerHost mcpHost = new(services, ReportUnexpectedException);
+        McpServerHost mcpHost = new(services.CreateMcpServerHostDependencies(), ReportUnexpectedException);
         _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
         mcpSubs.Add(Observable.FromEventPattern<McpServerHostStatusChangedEventArgs>(

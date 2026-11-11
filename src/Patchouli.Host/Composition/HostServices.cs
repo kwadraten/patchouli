@@ -269,9 +269,11 @@ public sealed class HostServices
             RecognizeBuiltInOcrRegionAsync, ExtensionFiles);
         OcrEngineRuntime = ocrEngineRuntime;
         // Preset pickers and execution share the runtime registration maps.
+        OcrPresetCompositionService presetComposition = new(ocrEngineRuntime, TranslationExtensions,
+            ExtensionFiles, () => LlmSettings, OcrStorage, settings.MinerU);
         OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings,
-            ocrEngineRuntime, (engineId, token) => new OcrPresetCompositionService(this, StartupSettings.MinerU)
-                .CaptureVersionAsync(engineId, null, cancellationToken: token));
+            ocrEngineRuntime, (engineId, token) =>
+                presetComposition.CaptureVersionAsync(engineId, null, cancellationToken: token));
         OcrEngineLeaseRegistry ocrEngineLeases = new(ocrEngineRuntime, OcrPresets.GetPresetVersionAsync);
         IOcrEngine pageOcrEngine = ocrComposition?.PageOcrEngine ?? new UnavailableOcrEngine();
         _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
@@ -339,8 +341,8 @@ public sealed class HostServices
                 _reportUnexpectedException(exception, "plugins", operation),
             managedFiles: PluginFiles);
         _ownsPluginApi = infrastructure?.PluginApi is null;
-        ManagedFileInventory = new ManagedFiles.ManagedFileInventoryService(TranslationExtensions,
-            ExtensionFiles, OcrStorage, Plugins, PluginFiles);
+        ManagedFileInventory = new ManagedFileInventoryService(TranslationExtensions,
+            ExtensionFiles, OcrStorage, Plugins as Plugins.IPluginManagedDefinitionSource, PluginFiles);
         PluginStore = infrastructure?.PluginStore ?? new Plugins.PluginStore(_pluginCatalogHttpClient,
             _pluginDownloadHttpClient, new Plugins.PluginStoreOptions
             {
@@ -456,6 +458,18 @@ public sealed class HostServices
 
     /// <summary>Live LLM settings shared by OCR and translation without rebuilding the Library host.</summary>
     public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
+
+    public McpServerHostDependencies CreateMcpServerHostDependencies()
+    {
+        return new McpServerHostDependencies(McpSettings, BlockingOperations,
+            new HostServicesMcpServerInstanceFactory(this));
+    }
+
+    public OcrPresetCompositionService CreateOcrPresetCompositionService(MinerUAppSettings? minerUSettings = null)
+    {
+        return new OcrPresetCompositionService(OcrEngineRuntime, TranslationExtensions, ExtensionFiles,
+            () => LlmSettings, OcrStorage, minerUSettings);
+    }
 
     public void UpdateLlmSettings(LlmAppSettings settings)
     {
@@ -589,7 +603,7 @@ public sealed class HostServices
     /// Unified managed-file inventory: merges FSX extension declaration groups and plugin
     /// <c>[[files]]</c> declaration groups by canonical directory for Local Files management.
     /// </summary>
-    public ManagedFiles.ManagedFileInventoryService ManagedFileInventory { get; }
+    public ManagedFileInventoryService ManagedFileInventory { get; }
 
     public Plugins.IPluginStore PluginStore { get; }
 

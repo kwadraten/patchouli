@@ -1,8 +1,9 @@
 using System.Globalization;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
-using Patchouli.Host.Composition;
 using Patchouli.Host.Extensions;
+using Patchouli.Host.Ocr;
+using Patchouli.Llm;
 using Patchouli.Ocr;
 using Patchouli.UI;
 
@@ -27,15 +28,25 @@ public sealed class OcrPresetCompositionService
     private static readonly IReadOnlyDictionary<string, string> EmptyValues =
         new Dictionary<string, string>(0, StringComparer.Ordinal);
 
-    private readonly HostServices _services;
+    private readonly OcrExtensionEngineRuntime _engineRuntime;
+    private readonly TranslationExtensionCatalog _extensions;
+    private readonly ExtensionManagedFileService _extensionFiles;
+    private readonly Func<LlmAppSettings> _llmSettings;
+    private readonly OcrStorageLocations _storage;
 
     /// <summary>App-level MinerU options captured on the UI thread; never carries the token.</summary>
     private readonly MinerUAppSettings? _minerUSettings;
 
-    public OcrPresetCompositionService(HostServices services, MinerUAppSettings? minerUSettings = null)
+    public OcrPresetCompositionService(OcrExtensionEngineRuntime engineRuntime,
+        TranslationExtensionCatalog extensions, ExtensionManagedFileService extensionFiles,
+        Func<LlmAppSettings> llmSettings, OcrStorageLocations storage,
+        MinerUAppSettings? minerUSettings = null)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        _services = services;
+        _engineRuntime = engineRuntime;
+        _extensions = extensions;
+        _extensionFiles = extensionFiles;
+        _llmSettings = llmSettings;
+        _storage = storage;
         _minerUSettings = minerUSettings;
     }
 
@@ -77,7 +88,7 @@ public sealed class OcrPresetCompositionService
         }
 
         Result<OcrEngineDefinition> definition =
-            await _services.OcrEngineRuntime.GetDefinitionAsync(engineId.Trim(), cancellationToken)
+            await _engineRuntime.GetDefinitionAsync(engineId.Trim(), cancellationToken)
                 .ConfigureAwait(false);
         if (definition.IsFailure)
         {
@@ -85,7 +96,7 @@ public sealed class OcrPresetCompositionService
                 definition.ErrorMessage ?? $"OCR engine '{engineId}' is not registered on this host.");
         }
 
-        string? engineExtensionId = _services.OcrEngineRuntime.GetExtensionId(definition.Value.EngineId);
+        string? engineExtensionId = _engineRuntime.GetExtensionId(definition.Value.EngineId);
         Result<ResolvedComponent> engineComponent = await ResolveComponentValuesAsync(
             engineExtensionId, definition.Value, cancellationToken).ConfigureAwait(false);
         if (engineComponent.IsFailure)
@@ -100,7 +111,7 @@ public sealed class OcrPresetCompositionService
         if (providerId is not null &&
             !string.Equals(providerId, PdfTextLayerProviderIds.Disabled, StringComparison.Ordinal))
         {
-            PdfTextLayerDefinition? providerDefinition = _services.OcrEngineRuntime
+            PdfTextLayerDefinition? providerDefinition = _engineRuntime
                 .ListTextLayerDefinitions().FirstOrDefault(provider =>
                     string.Equals(provider.ProviderId, providerId, StringComparison.Ordinal));
             if (providerDefinition is null)
@@ -112,7 +123,7 @@ public sealed class OcrPresetCompositionService
 
             providerConfigurationVersion = Math.Max(1, providerDefinition.ConfigurationVersion);
             string? providerExtensionId =
-                _services.OcrEngineRuntime.GetTextLayerExtensionId(providerId);
+                _engineRuntime.GetTextLayerExtensionId(providerId);
             Result<ResolvedComponent> resolvedProvider =
                 await ResolveComponentValuesAsync(providerExtensionId, null, cancellationToken)
                     .ConfigureAwait(false);
@@ -201,7 +212,7 @@ public sealed class OcrPresetCompositionService
         bool providerAvailable = providerId is null ||
                                  string.Equals(providerId, PdfTextLayerProviderIds.Disabled,
                                      StringComparison.Ordinal) ||
-                                 _services.OcrEngineRuntime.ListTextLayerDefinitions().Any(provider =>
+                                 _engineRuntime.ListTextLayerDefinitions().Any(provider =>
                                      string.Equals(provider.ProviderId, providerId,
                                          StringComparison.Ordinal));
         return Task.FromResult(Result<OcrPresetComposition>.Success(new OcrPresetComposition(
@@ -215,7 +226,7 @@ public sealed class OcrPresetCompositionService
 
     private bool IsEngineRegistered(string engineId)
     {
-        return _services.OcrEngineRuntime.ListDefinitions().Any(definition =>
+        return _engineRuntime.ListDefinitions().Any(definition =>
             string.Equals(definition.EngineId, engineId, StringComparison.Ordinal));
     }
 
@@ -250,7 +261,7 @@ public sealed class OcrPresetCompositionService
         ExtensionConfigurationDescription description;
         try
         {
-            description = await _services.TranslationExtensions
+            description = await _extensions
                 .GetConfigurationDescriptionAsync(extensionId, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -276,7 +287,7 @@ public sealed class OcrPresetCompositionService
         ExtensionConfigSnapshot stored;
         try
         {
-            stored = await _services.TranslationExtensions.Manager
+            stored = await _extensions.Manager
                 .ReadConfigAsync(extensionId, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -293,8 +304,7 @@ public sealed class OcrPresetCompositionService
         try
         {
             ExtensionConfigSnapshot resolved = ExtensionConfiguration.Resolve(fields, stored);
-            resolved = _services.ExtensionFiles?.ResolveDefaults(extensionId, fields, resolved) ??
-                       resolved;
+            resolved = _extensionFiles.ResolveDefaults(extensionId, fields, resolved);
             return Result<ResolvedComponent>.Success(new ResolvedComponent(resolved.Values,
                 DeclaredKeySet(resolved.Values.Keys.Concat(fields.Select(field => field.Key)))));
         }
@@ -348,7 +358,7 @@ public sealed class OcrPresetCompositionService
 
         return !string.IsNullOrWhiteSpace(definition.DefaultModelId)
             ? definition.DefaultModelId
-            : _services.LlmSettings.OcrSelection.Model;
+            : _llmSettings().OcrSelection.Model;
     }
 
     /// <summary>
@@ -365,7 +375,7 @@ public sealed class OcrPresetCompositionService
             return configured.Trim();
         }
 
-        return _services.OcrStorage.ModelDirectoryFor(definition.ModelDirectoryKind);
+        return _storage.ModelDirectoryFor(definition.ModelDirectoryKind);
     }
 
     /// <summary>

@@ -1,7 +1,7 @@
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Mcp;
+using Patchouli.Infrastructure.Caching;
 
 namespace Patchouli.Infrastructure.Documents;
 

@@ -181,9 +181,4 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
         }
     }
-
-    internal static string BuildIndexText(string canonicalText)
-    {
-        return SearchTextAnalyzer.BuildIndexText(canonicalText);
-    }
 }

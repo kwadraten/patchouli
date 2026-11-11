@@ -7,6 +7,7 @@ using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Dapper;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;

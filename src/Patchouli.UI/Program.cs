@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Threading;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Host.Composition;
 using Patchouli.Host.Lifecycle;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Services;

@@ -1,4 +1,5 @@
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;

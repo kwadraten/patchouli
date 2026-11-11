@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.UI.Services;

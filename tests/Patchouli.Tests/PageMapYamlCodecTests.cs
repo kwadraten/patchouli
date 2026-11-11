@@ -2,6 +2,7 @@ using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Pagination;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
 using Xunit;

@@ -10,7 +10,7 @@ namespace Patchouli.Host.Plugins;
 /// supervises one stdio plugin process per mount for real find/fetch/send. Verbs require the
 /// manifest declaration AND the registry allowed_verbs grant; nothing else is reachable.
 /// </summary>
-public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
+public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSource, IAsyncDisposable
 {
     private readonly string _registryPath;
     private readonly IPluginProcessLauncher _launcher;

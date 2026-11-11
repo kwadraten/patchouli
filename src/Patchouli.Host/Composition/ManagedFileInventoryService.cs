@@ -2,14 +2,14 @@ using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Extensions;
+using Patchouli.Host.ManagedFiles;
 using Patchouli.Host.Plugins;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Translation;
-using Patchouli.Mcp;
 using Patchouli.UI;
 
-namespace Patchouli.Host.ManagedFiles;
+namespace Patchouli.Host.Composition;
 
 /// <summary>
 /// One unified managed-file directory group for the Local Files inventory: every declaration —
@@ -75,12 +75,12 @@ public sealed class ManagedFileInventoryService
     private readonly TranslationExtensionCatalog _extensions;
     private readonly ExtensionManagedFileService _extensionFiles;
     private readonly OcrStorageLocations _storage;
-    private readonly IMcpPluginApi _plugins;
+    private readonly IPluginManagedDefinitionSource? _plugins;
     private readonly PluginManagedFileService _pluginFiles;
 
     public ManagedFileInventoryService(TranslationExtensionCatalog extensions,
         ExtensionManagedFileService extensionFiles, OcrStorageLocations storage,
-        IMcpPluginApi plugins, PluginManagedFileService pluginFiles)
+        IPluginManagedDefinitionSource? plugins, PluginManagedFileService pluginFiles)
     {
         _extensions = extensions;
         _extensionFiles = extensionFiles;
@@ -466,7 +466,7 @@ public sealed class ManagedFileInventoryService
         Func<string, string, string?, MutableGroup> getOrCreate,
         CancellationToken cancellationToken)
     {
-        if (_plugins is not HostPluginApi api)
+        if (_plugins is not { } api)
         {
             return;
         }

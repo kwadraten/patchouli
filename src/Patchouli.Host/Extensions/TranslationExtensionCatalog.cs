@@ -63,11 +63,6 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         _root = runtimeDirectory;
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         Resources = resources;
-        if (resources is HostExtensionResources hostResources)
-        {
-            hostResources.BindLayoutRecognition(new LayoutRecognitionService(this));
-        }
-
         _fileStore = new FileExtensionStore(runtimeDirectory);
         Manager = new ExtensionManager(runtimeDirectory, resources, _fileStore,
             new CompiledExtensionGenerationLoader(runtimeDirectory));

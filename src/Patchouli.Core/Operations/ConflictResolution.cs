@@ -1,6 +1,7 @@
 using Patchouli.Core.Results;
+using Patchouli.Core.Conflicts;
 
-namespace Patchouli.Core.Conflicts;
+namespace Patchouli.Core.Operations;
 
 public sealed record ConflictActionSelection(
     string ActionId,

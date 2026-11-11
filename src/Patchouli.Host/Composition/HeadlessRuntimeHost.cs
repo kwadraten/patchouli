@@ -3,14 +3,14 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Host.CitationInterop;
-using Patchouli.Host.Composition;
+using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.UI.Diagnostics;
 using System.Runtime.InteropServices;
 
-namespace Patchouli.Host.Lifecycle;
+namespace Patchouli.Host.Composition;
 
 /// <summary>Runs the UI executable as the persistent, UI-less owner of one Library.</summary>
 public static class HeadlessRuntimeHost
@@ -67,7 +67,7 @@ public static class HeadlessRuntimeHost
                 settings = settings with { Port = portOverride.Value };
             }
 
-            await using McpServerHost host = new(services, ReportUnexpected);
+            await using McpServerHost host = new(services.CreateMcpServerHostDependencies(), ReportUnexpected);
             await host.StartAsync(settings, cancellationToken);
             if (!host.IsRunning && portOverride is null)
             {

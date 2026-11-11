@@ -313,7 +313,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
         row.IsBusy = true;
         try
         {
-            OcrPresetCompositionService composition = new(services, minerU);
+            OcrPresetCompositionService composition = services.CreateOcrPresetCompositionService(minerU);
             OcrPresetVersionWrite? write = null;
             if (componentsChanged)
             {
@@ -488,7 +488,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
         // Resolve each preset's pinned version + composition readback off the dispatcher; a
         // preset whose version is unreadable still lists and reports its failure on the row.
-        OcrPresetCompositionService composition = new(services, minerU);
+        OcrPresetCompositionService composition = services.CreateOcrPresetCompositionService(minerU);
         RowSnapshot[] snapshots = await Task.Run(async () =>
         {
             RowSnapshot[] resolved = new RowSnapshot[presets.Value.Count];
