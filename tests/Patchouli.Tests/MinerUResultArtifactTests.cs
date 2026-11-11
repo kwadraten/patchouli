@@ -184,7 +184,7 @@ public sealed class MinerUResultArtifactTests
     {
         WithZip([("content_list.json", Flat.Replace(before, after, StringComparison.Ordinal))], path =>
         {
-            Page page = new(PageId.New(), DocumentInstanceId.New(), 0, null, 1000, 1000, 0,
+            Page page = new(PageId.New(), DocumentInstanceId.New(), 0, null, 1000, 1000, 0, 0,
                 "pdf", 1000, 1000, "test", null, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
             Result<OcrDocumentTreeCandidate> result = new MinerUResultParser()
                 .ParseStructuredTree(new MinerUPreparedResult(path, [], null), [page]);

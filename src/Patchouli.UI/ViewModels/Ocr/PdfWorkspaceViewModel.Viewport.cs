@@ -3,6 +3,9 @@ using Avalonia;
 using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -100,7 +103,7 @@ public sealed partial class PdfWorkspaceViewModel
     [ExcludeFromDerivedGeneration] public IBrush HoverBoxColor => _hoverRevealBox?.VisualBoxColor ?? Brushes.Gray;
 
     private RelayCommand? _cycleFitModeCommand;
-    private RelayCommand? _rotatePageCommand;
+    private AsyncCommand? _rotatePageCommand;
 
     /// <summary>Cycles the size button through Free → FitHeight → FitWidth.</summary>
     [ExcludeFromDerivedGeneration]
@@ -115,14 +118,50 @@ public sealed partial class PdfWorkspaceViewModel
         };
     });
 
-    /// <summary>Rotates the displayed page 90° clockwise.</summary>
+    /// <summary>Rotates the displayed page 90° clockwise and persists the angle on the page.</summary>
     [ExcludeFromDerivedGeneration]
-    public RelayCommand RotatePageCommand => _rotatePageCommand ??= new RelayCommand(_ =>
+    public AsyncCommand RotatePageCommand => _rotatePageCommand ??= new AsyncCommand(RotateCurrentPageAsync);
+
+    private async Task RotateCurrentPageAsync()
     {
         EnsureViewportWiring();
-        ViewportRotationAngle = (ViewportRotationAngle + 90) % 360;
-        ApplyFitZoom();
-    });
+        int angle = ((int)ViewportRotationAngle + 90) % 360;
+        if (_currentPageId is not { } pageId || PageIndex < 0 || PageIndex >= _pages.Count ||
+            _pages[PageIndex].PageId != pageId)
+        {
+            // No page is loaded (headless surface): keep the view-only rotation.
+            ViewportRotationAngle = angle;
+            ApplyFitZoom();
+            return;
+        }
+
+        int previous = _pages[PageIndex].UserRotation;
+        ApplyUserRotation(pageId, angle);
+        HostServices services = await _main.ServicesAsync();
+        Result<Page> updated = await Task.Run(
+            () => services.Pages.UpdateUserRotationAsync(pageId, angle),
+            _workspaceCancellation.Token);
+        if (updated.IsFailure)
+        {
+            ApplyUserRotation(pageId, previous);
+            Status = $"页面旋转保存失败:{updated.ErrorMessage}";
+            return;
+        }
+
+        ApplyUserRotation(pageId, updated.Value.UserRotation);
+    }
+
+    private void ApplyUserRotation(PageId pageId, int angle)
+    {
+        _pages = _pages.Select(candidate => candidate.PageId == pageId
+            ? candidate with { UserRotation = angle }
+            : candidate).ToArray();
+        if (_currentPageId == pageId)
+        {
+            ViewportRotationAngle = angle;
+            ApplyFitZoom();
+        }
+    }
 
     /// <summary>
     /// Called by the view once it can report viewport sizes. Wires the self-observation that

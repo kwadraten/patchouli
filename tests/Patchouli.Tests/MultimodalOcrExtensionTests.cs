@@ -596,7 +596,11 @@ public sealed class MultimodalOcrExtensionTests
     /// </summary>
     private static LlmAppSettings OcrHostSettings()
     {
-        return LlmAppSettings.Default() with
+        return LlmAppSettings.Default()
+            .WithProvider(new LlmProviderAppSettings("anthropic", "Anthropic",
+                "https://api.anthropic.com", "claude-vision"))
+            .WithProvider(new LlmProviderAppSettings("openai", "OpenAI",
+                "https://api.openai.com", "gpt-4o-mini")) with
         {
             OcrProviderId = "anthropic",
             OcrModel = "claude-vision",

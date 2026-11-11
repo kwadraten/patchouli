@@ -547,7 +547,7 @@ public sealed class MinerUPageRegionRunTests
     private static Page NewPage()
     {
         return new Page(PageId.New(), DocumentInstanceId.New(), 0, "1", null, null, 0,
-            CoordinateBasis.NormalizedPage, null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+            0, CoordinateBasis.NormalizedPage, null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -930,7 +930,7 @@ public sealed class MinerUPageRegionRunTests
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             return _engine.RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken,
                 progress, rotationDegrees);
@@ -938,7 +938,7 @@ public sealed class MinerUPageRegionRunTests
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             return _engine.RunPresetOnRegionAsync(documentInstanceId, presetId, pageId, regionBBox,
                 cancellationToken, rotationDegrees);
@@ -946,7 +946,7 @@ public sealed class MinerUPageRegionRunTests
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             return _engine.RecognizeRegionCandidateAsync(documentInstanceId, presetId, pageId, regionBBox,
                 cancellationToken, rotationDegrees);

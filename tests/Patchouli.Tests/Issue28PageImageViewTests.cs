@@ -167,6 +167,62 @@ public sealed class Issue28PageImageViewTests
         CountAccentPixels(result.Value.PngBytes).Should().Be(0);
     }
 
+    // ---------- persisted user rotation ----------
+
+    [Fact]
+    public async Task Page_view_applies_persisted_user_rotation_to_the_returned_image()
+    {
+        Harness harness = new(90);
+
+        Result<PageImageViewResult> result = await harness.Service.ViewAsync(harness.Request());
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.Rotation.Should().Be(90);
+        // The 800x600 unrotated buffer rotates clockwise into a 600x800 display image.
+        result.Value.Width.Should().Be(BufferHeight);
+        result.Value.Height.Should().Be(BufferWidth);
+        result.Value.CropRange.Should().Be(new NormalizedBBox(0, 0, 1, 1));
+    }
+
+    [Fact]
+    public async Task Rotated_view_maps_numbered_box_geometry_into_the_display_basis()
+    {
+        Harness harness = new(90);
+        DocumentBoxId a = harness.AddBox(null, null, new NormalizedBBox(0.05, 0.05, 0.20, 0.20));
+
+        Result<PageImageViewResult> result = await harness.Service.ViewAsync(
+            harness.Request(numberedBoxes: true));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        // Display basis 90° CW: (0.05,0.05,0.2,0.2) -> (0.75,0.05,0.2,0.2), which lands on the
+        // right half of the 600x800 image; the unrotated left-top position stays white.
+        CountAccentPixels(result.Value.PngBytes, 300, 0, 300, 800).Should().BeGreaterThan(0);
+        CountAccentPixels(result.Value.PngBytes, 0, 0, 300, 800).Should().Be(0);
+        result.Value.BoxNumbers.Should().Equal(new PageImageBoxNumber(1, a));
+    }
+
+    [Fact]
+    public async Task Rotated_region_view_reports_the_crop_range_in_the_display_basis()
+    {
+        Harness harness = new(90);
+        DocumentBoxId a = harness.AddBox(null, null, new NormalizedBBox(0.05, 0.05, 0.20, 0.20));
+
+        Result<PageImageViewResult> result = await harness.Service.ViewAsync(
+            harness.Request(a, PageImageViewContext.Region));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.Rotation.Should().Be(90);
+        // WithMargin(0.05,0.05,0.2,0.2) = (0.03,0.03,0.24,0.24) document-basis; 90° CW maps it to
+        // (0.73,0.03,0.24,0.24) in the rotated display basis.
+        result.Value.CropRange.X.Should().BeApproximately(0.73, 1e-6);
+        result.Value.CropRange.Y.Should().BeApproximately(0.03, 1e-6);
+        result.Value.CropRange.Width.Should().BeApproximately(0.24, 1e-6);
+        result.Value.CropRange.Height.Should().BeApproximately(0.24, 1e-6);
+        // The unrotated crop (24,18,192,144) pixels rotates into a 144x192 image.
+        result.Value.Width.Should().Be(144);
+        result.Value.Height.Should().Be(192);
+    }
+
     // ---------- tree-less pages ----------
 
     [Fact]
@@ -244,13 +300,16 @@ public sealed class Issue28PageImageViewTests
         return Result<DocumentTreeRevision>.Failure(AppErrorCodes.NotFound, "The page has no committed revision.");
     }
 
-    private static int CountAccentPixels(byte[] png)
+    private static int CountAccentPixels(byte[] png, int x0 = 0, int y0 = 0, int? width = null,
+        int? height = null)
     {
         using SKBitmap bitmap = SKBitmap.Decode(png);
+        int right = Math.Min(bitmap.Width, x0 + (width ?? bitmap.Width));
+        int bottom = Math.Min(bitmap.Height, y0 + (height ?? bitmap.Height));
         int count = 0;
-        for (int y = 0; y < bitmap.Height; y++)
+        for (int y = y0; y < bottom; y++)
         {
-            for (int x = 0; x < bitmap.Width; x++)
+            for (int x = x0; x < right; x++)
             {
                 SKColor pixel = bitmap.GetPixel(x, y);
                 if (pixel.Red > 170 && pixel.Green < 120 && pixel.Blue < 120)
@@ -267,10 +326,10 @@ public sealed class Issue28PageImageViewTests
     {
         private readonly List<DocumentBox> _boxes = [];
 
-        public Harness()
+        public Harness(int userRotation = 0)
         {
-            Page = new Page(PageId, DocId, 0, "1", 595, 842, 0, "pdfium", 595, 842, "v1", null,
-                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+            Page = new Page(PageId, DocId, 0, "1", 595, 842, 0, userRotation, "pdfium", 595, 842,
+                "v1", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
             Revision = new DocumentTreeRevision(RevisionId, DocId, PageId, null,
                 DocumentTreeRevisionSource.OcrAdopted, DocumentTreeRevisionStatus.Committed, true,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);

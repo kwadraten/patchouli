@@ -2309,6 +2309,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         CrossPageContinuationMarkers.Clear();
         _crossPageContinuationSources.Clear();
         _pages = [];
+        _currentPageId = null;
+        ViewportRotationAngle = 0;
         PreviewBlocks.Clear();
         ResetTranslationState();
         ReadingScene = null;
@@ -2626,6 +2628,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             using PdfPagePixelBufferLease raster = preview.Value;
+            ViewportRotationAngle = _pages[PageIndex].UserRotation;
             SwapPreviewImage(CreateBitmap(raster));
             WidthPixels = raster.WidthPixels;
             HeightPixels = raster.HeightPixels;

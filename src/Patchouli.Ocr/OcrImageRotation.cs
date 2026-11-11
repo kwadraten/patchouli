@@ -100,8 +100,13 @@ public static class OcrImageRotation
         File.WriteAllBytes(outputPath, RotateToPngBytes(source, degrees));
     }
 
-    private static SKBitmap RotateToBitmap(SKBitmap source, int clockwiseDegrees)
+    /// <summary>
+    /// Rotates a decoded bitmap clockwise by a quarter turn and returns the new bitmap.
+    /// 90/270 swap width and height. Degree 0 returns a same-size copy.
+    /// </summary>
+    public static SKBitmap RotateToBitmap(SKBitmap source, int clockwiseDegrees)
     {
+        ArgumentNullException.ThrowIfNull(source);
         bool swap = clockwiseDegrees is 90 or 270;
         int targetWidth = swap ? source.Height : source.Width;
         int targetHeight = swap ? source.Width : source.Height;

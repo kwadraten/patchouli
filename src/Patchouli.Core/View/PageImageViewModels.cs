@@ -63,7 +63,16 @@ public sealed record PageImageViewRequest(
 /// <param name="MimeType">Always image/png in v1.</param>
 /// <param name="Width">Actual image width in pixels.</param>
 /// <param name="Height">Actual image height in pixels.</param>
-/// <param name="CropRange">Actual crop range in page-normalized coordinates (reproducible).</param>
+/// <param name="CropRange">
+/// Actual crop range in page-normalized coordinates (reproducible). The range is expressed in
+/// the rotated display basis when <see cref="Rotation"/> is non-zero — the same frame the
+/// returned pixels and drawn box outlines live in.
+/// </param>
+/// <param name="Rotation">
+/// The page's persisted user rotation applied to the pixels, clockwise quarter-turn degrees
+/// (0/90/180/270). Persisted document boxes stay in the unrotated document basis; map them into
+/// this basis before comparing them with <see cref="CropRange"/> or the returned pixels.
+/// </param>
 /// <param name="ImageIndex">Index of the image content block; v1 fixed at 0.</param>
 /// <param name="UsedRevision">
 /// The tree revision actually used for this call; empty when the page has no committed
@@ -81,6 +90,7 @@ public sealed record PageImageViewResult(
     int Width,
     int Height,
     NormalizedBBox CropRange,
+    int Rotation,
     int ImageIndex,
     string UsedRevision,
     byte[] PngBytes,

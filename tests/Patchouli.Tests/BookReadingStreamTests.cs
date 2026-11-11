@@ -329,6 +329,7 @@ public sealed class BookReadingStreamTests
             100,
             100,
             0,
+            0,
             "upright_render",
             100,
             100,

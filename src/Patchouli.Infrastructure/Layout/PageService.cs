@@ -83,6 +83,7 @@ public sealed class PageService : IPageService
                 width,
                 height,
                 rotation,
+                0,
                 coordinateBasis.Trim(),
                 basisWidth,
                 basisHeight,
@@ -95,12 +96,12 @@ public sealed class PageService : IPageService
                 """
                 insert into pages (
                     page_id, document_instance_id, page_index, page_label, width, height,
-                    rotation, coordinate_basis, basis_width, basis_height, renderer_basis_version,
+                    rotation, user_rotation, coordinate_basis, basis_width, basis_height, renderer_basis_version,
                     source_file_hash, created_at, updated_at
                 )
                 values (
                     @PageId, @DocumentInstanceId, @PageIndex, @PageLabel, @Width, @Height,
-                    @Rotation, @CoordinateBasis, @BasisWidth, @BasisHeight, @RendererBasisVersion,
+                    @Rotation, @UserRotation, @CoordinateBasis, @BasisWidth, @BasisHeight, @RendererBasisVersion,
                     @SourceFileHash, @CreatedAt, @UpdatedAt
                 );
                 """,
@@ -109,6 +110,47 @@ public sealed class PageService : IPageService
 
             await transaction.CommitAsync(cancellationToken);
             return Result<Page>.Success(page);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-service"))
+        {
+            return DatabaseFailure<Page>(exception);
+        }
+    }
+
+    public async Task<Result<Page>> UpdateUserRotationAsync(
+        PageId pageId,
+        int userRotation,
+        CancellationToken cancellationToken = default)
+    {
+        if (userRotation is not (0 or 90 or 180 or 270))
+        {
+            return Result<Page>.Failure(AppErrorCodes.ValidationFailed,
+                "Page user rotation must be 0, 90, 180, or 270.");
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int updated = await connection.ExecuteAsync(
+                "update pages set user_rotation=@UserRotation, updated_at=@UpdatedAt where page_id=@PageId;",
+                new
+                {
+                    UserRotation = userRotation,
+                    UpdatedAt = FormatUtc(_clock.UtcNow),
+                    PageId = pageId.ToString()
+                });
+            if (updated == 0)
+            {
+                return Result<Page>.Failure(AppErrorCodes.NotFound, "Page was not found.");
+            }
+
+            return await GetPageAsync(pageId, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -249,6 +291,7 @@ public sealed class PageService : IPageService
             width as Width,
             height as Height,
             rotation as Rotation,
+            user_rotation as UserRotation,
             coordinate_basis as CoordinateBasis,
             basis_width as BasisWidth,
             basis_height as BasisHeight,
@@ -270,6 +313,7 @@ public sealed class PageService : IPageService
             page.Width,
             page.Height,
             page.Rotation,
+            page.UserRotation,
             page.CoordinateBasis,
             page.BasisWidth,
             page.BasisHeight,
@@ -304,6 +348,7 @@ public sealed class PageService : IPageService
         public double? Width { get; set; }
         public double? Height { get; set; }
         public int Rotation { get; set; }
+        public int UserRotation { get; set; }
         public string CoordinateBasis { get; set; } = string.Empty;
         public double? BasisWidth { get; set; }
         public double? BasisHeight { get; set; }
@@ -322,6 +367,7 @@ public sealed class PageService : IPageService
                 Width,
                 Height,
                 Rotation,
+                UserRotation,
                 CoordinateBasis,
                 BasisWidth,
                 BasisHeight,

@@ -10,6 +10,7 @@ public sealed record Page(
     double? Width,
     double? Height,
     int Rotation,
+    int UserRotation,
     string CoordinateBasis,
     double? BasisWidth,
     double? BasisHeight,

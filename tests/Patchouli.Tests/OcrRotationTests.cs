@@ -269,6 +269,69 @@ public sealed class OcrRotationTests
             "the ephemeral candidate still describes the unrotated document region");
     }
 
+    [Theory]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public async Task Persisted_user_rotation_drives_the_input_when_no_rotation_is_requested(
+        int userRotation)
+    {
+        await using Context context = await Context.CreateAsync();
+        await context.SetUserRotationAsync(context.Pages[0].PageId, userRotation);
+        OcrPresetVersion version = await context.CreatePresetVersionAsync(RecordingAdapter.Id);
+        RecordingAdapter adapter = new();
+        OcrAdapterRegistry registry = new();
+        registry.RegisterAdapter(adapter);
+        RotatingPageRenderService renders = new(context.SourceImagePath);
+        OcrRunEngine engine = context.CreateEngine(renders, registry);
+
+        // Null rotation: each page runs with its own persisted user rotation.
+        Result<OcrRun> run = await engine.RunPresetOnPagesAsync(context.Document.DocumentInstanceId,
+            version.PresetId, [context.Pages[0].PageId]);
+
+        run.IsSuccess.Should().BeTrue(run.ErrorMessage);
+        renders.LastRotationDegrees.Should().Be(userRotation);
+        OcrInputDescriptor input = adapter.Inputs.Should().ContainSingle().Subject;
+        using SKBitmap? recognized = SKBitmap.Decode(input.ImagePath);
+        recognized.Should().NotBeNull();
+        bool swapped = userRotation is 90 or 270;
+        recognized!.Width.Should().Be(swapped ? 3 : 4);
+        recognized.Height.Should().Be(swapped ? 4 : 3);
+        NormalizedBBox expected = OcrImageRotation.UnrotateFromImageBasis(RecordingAdapter.Box,
+            userRotation);
+        IReadOnlyList<DocumentBox> stored = await context.WorkingBoxesAsync(run.Value);
+        DocumentBox box = stored.Single(box => box.BoxType == DocumentBoxType.Text);
+        box.BBox.X.Should().BeApproximately(expected.X, 1e-9);
+        box.BBox.Y.Should().BeApproximately(expected.Y, 1e-9);
+        box.BBox.Width.Should().BeApproximately(expected.Width, 1e-9);
+        box.BBox.Height.Should().BeApproximately(expected.Height, 1e-9);
+    }
+
+    [Fact]
+    public async Task Explicit_rotation_overrides_the_pages_persisted_user_rotation()
+    {
+        await using Context context = await Context.CreateAsync();
+        await context.SetUserRotationAsync(context.Pages[0].PageId, 90);
+        OcrPresetVersion version = await context.CreatePresetVersionAsync(RecordingAdapter.Id);
+        RecordingAdapter adapter = new();
+        OcrAdapterRegistry registry = new();
+        registry.RegisterAdapter(adapter);
+        RotatingPageRenderService renders = new(context.SourceImagePath);
+        OcrRunEngine engine = context.CreateEngine(renders, registry);
+
+        Result<OcrRun> run = await engine.RunPresetOnPagesAsync(context.Document.DocumentInstanceId,
+            version.PresetId, [context.Pages[0].PageId], rotationDegrees: 0);
+
+        run.IsSuccess.Should().BeTrue(run.ErrorMessage);
+        renders.LastRotationDegrees.Should().Be(0,
+            "an explicit rotation is a uniform override; persisted page rotation loses");
+        OcrInputDescriptor input = adapter.Inputs.Should().ContainSingle().Subject;
+        using SKBitmap? recognized = SKBitmap.Decode(input.ImagePath);
+        recognized.Should().NotBeNull();
+        recognized!.Width.Should().Be(4);
+        recognized.Height.Should().Be(3);
+    }
+
     private static SKBitmap CornerBitmap()
     {
         SKBitmap bitmap = new(4, 3, SKColorType.Bgra8888, SKAlphaType.Premul);
@@ -522,14 +585,16 @@ public sealed class OcrRotationTests
     {
         private readonly TemporarySqliteDatabase _database;
         private readonly string _rootDirectory;
+        private readonly FixedClock _clock;
         private readonly DocumentTreeService _trees;
 
         private Context(TemporarySqliteDatabase database, string rootDirectory,
-            DocumentInstance document, IReadOnlyList<Page> pages,
+            DocumentInstance document, IReadOnlyList<Page> pages, FixedClock clock,
             DocumentTreeService trees, IOcrPresetService presets)
         {
             _database = database;
             _rootDirectory = rootDirectory;
+            _clock = clock;
             Document = document;
             Pages = pages;
             _trees = trees;
@@ -542,9 +607,18 @@ public sealed class OcrRotationTests
         }
 
         public DocumentInstance Document { get; }
-        public IReadOnlyList<Page> Pages { get; }
+        public IReadOnlyList<Page> Pages { get; private set; }
         public IOcrPresetService Presets { get; }
         public string SourceImagePath { get; }
+
+        public async Task<Page> SetUserRotationAsync(PageId pageId, int degrees)
+        {
+            Infrastructure.Layout.PageService pages = new(_database.ConnectionFactory, _clock);
+            Result<Page> updated = await pages.UpdateUserRotationAsync(pageId, degrees);
+            updated.IsSuccess.Should().BeTrue(updated.ErrorMessage);
+            Pages = Pages.Select(page => page.PageId == pageId ? updated.Value : page).ToArray();
+            return updated.Value;
+        }
 
         public OcrRunEngine CreateEngine(IPageRenderService renders,
             IOcrAdapterRegistry? adapters = null, IOcrEngineRuntime? engineRuntime = null)
@@ -594,7 +668,7 @@ public sealed class OcrRotationTests
             string root = Path.Combine(Path.GetTempPath(), $"ocr-rot-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
             DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
-            return new Context(database, root, document, created, trees,
+            return new Context(database, root, document, created, clock, trees,
                 new OcrPresetService(database.ConnectionFactory, libraries, clock));
         }
 
