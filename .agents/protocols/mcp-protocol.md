@@ -201,6 +201,8 @@ RESOURCE TREE
   patchouli://plugin/{plugin-id}/README.md
   patchouli://plugin/{plugin-id}/views/
   patchouli://plugin/{plugin-id}/views/{view-id}
+  patchouli://plugin/{plugin-id}/files/
+  patchouli://plugin/{plugin-id}/files/{path}
   patchouli://plugin/{plugin-id}/{declared-path}
 
   patchouli://library.yml
@@ -210,7 +212,9 @@ RESOURCE TREE
 
 Plugin 的 `plugin.yml`、README 和动作端点描述由宿主根据已验证静态清单生成，读取它们不启动插件进程。声明的插件自有目录与文件通过固定 stdio MCP 工具执行 find/fetch/send；运行时不能扩大声明范围，结果仍校验对应 Schema 和 URI 归属。
 
-`views` 与 `plugin.yml`、`README.md`、`files` 同为宿主保留挂载路径，插件不能自行声明。清单的 `[[ui.views]]` 段声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。存在 views 声明时，`find` 在挂载内列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`）条目，`plugin.yml` 包含 views 数组；`fetch` 作用于 `views/{view-id}` 返回宿主合成的 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，同样不启动插件进程。`view` 动词由此加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合，并在存在 views 时计入清单 `DeclaredVerbs`；桌面宿主按 placement 在保留工作区标签页、非模态弹窗或 PDF 侧栏的 WebView 容器中打开视图（容器与上下文注入契约见 ADR `0056`）。视图 HTML 由宿主经 `patchouli.plugin.fetch` 向声明的 source 节点读取，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。当前不支持 Plugin put/add/cite、托管 `files/`、后台动作或插件主体书库 grants。社区商店安装记录、来源和启停状态按设备保存，不进入书库快照。
+`views` 与 `plugin.yml`、`README.md`、`files` 同为宿主保留挂载路径，插件不能自行声明。清单的 `[[ui.views]]` 段声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。存在 views 声明时，`find` 在挂载内列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`）条目，`plugin.yml` 包含 views 数组；`fetch` 作用于 `views/{view-id}` 返回宿主合成的 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，同样不启动插件进程。`view` 动词由此加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合，并在存在 views 时计入清单 `DeclaredVerbs`；桌面宿主按 placement 在保留工作区标签页、非模态弹窗或 PDF 侧栏的 WebView 容器中打开视图（容器与上下文注入契约见 ADR `0056`）。视图 HTML 由宿主经 `patchouli.plugin.fetch` 向声明的 source 节点读取，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。
+
+清单根的 `[[files]]` 段声明宿主托管文件（issue #8）：`path`（必填，插件相对、不可穿越、非目录非模板文件路径）、`download_url`（可选，绝对 http/https）、`bytes`（可选正整数）、`sha256`（可选 64 位 hex，规范化为小写）与 `version`（可选非空字符串）。`files` 与 `plugin.yml`、`README.md`、`views` 同为宿主保留挂载路径，插件不能自行声明同名 VFS 节点。存在 files 声明时，`find` 在挂载内列出 `files/`（type `directory`）与各声明的 `files/{path}`（type `file`）条目，根目录清单同时列出 `files/`；`fetch` 作用于 `files/` 返回全部声明的就绪状态 JSON，作用于 `files/{path}` 返回单个声明的 `{path,ready,exists,bytes,sha256,expected_bytes,missing,mismatch,download_url,version}`，读取它们不启动插件进程，响应永远不携带本地路径。托管文件下载到宿主数据目录 `models/plugins/{plugin-id}/{declared-path}`，只在桌面宿主经用户确认后进行（`IPluginManagedFileInteraction`），校验声明的 bytes/sha256 后以 `.part` 原子安装，跨进程按文件命名信号量互斥；缺失或校验失败的文件在无 UI 交互时返回可操作错误，绝不自动下载。声明了 files 的插件进程启动时获得宿主注入参数 `--patchouli-managed-files {managedRoot}` 与逐个声明的 `--patchouli-managed-file {relative}|{absolute}`（置于插件自身 runtime args 之前）；启动本身不触发确认或下载。files 声明不改变清单 `DeclaredVerbs`、设备 `allowed_verbs` 或 `requested_verbs`。当前不支持 Plugin put/add/cite、后台动作或插件主体书库 grants。社区商店安装记录、来源和启停状态按设备保存，不进入书库快照。
 
 `patchouli://library.yml` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该资源内容使用 YAML，外层 MCP envelope 仍使用 TOON（或请求的 JSON）。MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.yml` 支持原子 put 来替换集合与标签目录，受 library.yml.put 和工具 put 权限控制。省略一个类别会保留它，[] 明确清空该类别。新集合省略 collection_id，现有集合保留其 ID；同 ID 改名保留成员。删除集合只解散关系，不删除题录。标签按名称识别，改名视为删除旧标签并新建，旧标签关系移除。题录归属通过题录 YAML 修改。library_id 与 display_name 不可编辑，item_count 是派生输出。legacy library.toon 仍只读。
 
@@ -1029,5 +1033,5 @@ rejected on plugin addresses. Library page images are read through `fetch` on
 envelope with no image block, and the images/ domain never applies to plugin paths. Desktop containers
 (retained `tab` workspace tab, non-modal `window` popup, `pdf-sidebar` sidebar tab) and
 the host→view theme/page context injection contract are specified in ADR `0056`. Plugin
-`put`/`add`/`cite`, managed `files/`, URI resolve, plugin library grants and background
+`put`/`add`/`cite`, URI resolve, plugin library grants and background
 actions remain undelivered.
