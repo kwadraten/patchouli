@@ -18,8 +18,8 @@ public sealed class LlmSubscriptionTests
     public void Codex_remains_a_separate_subscription_connection()
     {
         LlmSubscriptionCatalog.All.Should().ContainSingle().Which.ProviderId.Should().Be(SubscriptionProvider);
-        LlmAppSettings.Default().FindProvider(SubscriptionProvider)!.AuthenticationMode.Should()
-            .Be(LlmAuthenticationModes.Subscription);
+        LlmProviderAppSettings.FromCatalog(LlmProviderCatalog.Find(SubscriptionProvider)!).AuthenticationMode
+            .Should().Be(LlmAuthenticationModes.Subscription);
     }
 
     [Fact]

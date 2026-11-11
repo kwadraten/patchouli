@@ -75,16 +75,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 LlmProviderSettingsRowViewModel row =
                     section.Providers.Single(provider => provider.ProviderId == "deepseek");
                 row.Model = "deepseek-flash";
-                List<string> modelChanges = [];
-                row.PropertyChanged += (_, change) =>
-                {
-                    if (change.PropertyName is nameof(row.Model) or nameof(row.AuthenticationMode))
-                    {
-                        modelChanges.Add(
-                            $"{change.PropertyName}: model={row.Model}, auth={row.AuthenticationMode}\n{Environment.StackTrace}");
-                    }
-                };
-                row.ContextWindowTokens = 512000;
                 await section.SaveAsync();
                 await main.Settings.SelectSectionAsync("llm");
                 row.Model.Should().Be("deepseek-flash", "the model must first round-trip without a view");
@@ -97,17 +87,17 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 {
                     Dispatcher.UIThread.RunJobs();
                     row.Model.Should().Be("deepseek-flash", "hidden subscription selectors must not clear API models");
-                    TextBox model = page.GetVisualDescendants().OfType<TextBox>().Single(input =>
-                        ReferenceEquals(input.DataContext, row) && input.PlaceholderText == row.ModelWatermark);
-                    model.Text.Should().Be("deepseek-flash");
+                    page.GetVisualDescendants().OfType<TextBox>().Should().NotContain(input =>
+                            ReferenceEquals(input.DataContext, row) && input.PasswordChar != '•' &&
+                            input.PlaceholderText == row.ModelWatermark,
+                        "the API provider card no longer offers a model text box");
+                    Button[] rowButtons = page.GetVisualDescendants().OfType<Button>()
+                        .Where(button => ReferenceEquals(button.DataContext, row)).ToArray();
+                    rowButtons.Should().ContainSingle(button => button.Command == row.RemoveConnectionCommand,
+                        "the API card exposes exactly one destructive action");
+                    rowButtons.Should().NotContain(button => button.Command == row.RemoveApiKeyCommand);
                     section.IsDirty.Should().BeFalse("rendering saved controls is not a user edit");
-                    model.Focus();
-                    model.SelectAll();
-                    window.KeyTextInput("deepseek-reasoner");
-                    Dispatcher.UIThread.RunJobs();
-                    model.Text.Should().Be("deepseek-reasoner");
-                    row.Model.Should().Be("deepseek-reasoner",
-                        "typing must update the provider draft before auto-save");
+
                     TextBox key = page.GetVisualDescendants().OfType<TextBox>().Single(input =>
                         ReferenceEquals(input.DataContext, row) && input.PasswordChar == '•');
                     key.Focus();
@@ -125,30 +115,27 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     row.HasCredential.Should().BeTrue();
                     key.Text.Should().Be("replacement-secret");
                     key.PlaceholderText.Should().NotContain("•");
+                    key.IsFocused.Should().BeTrue(
+                        "the credential autosave refresh must not rebuild or defocus the editor");
                     PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek")!.Model.Should()
-                        .Be("deepseek-reasoner");
+                        .Be("deepseek-flash");
                     await main.Settings.SelectSectionAsync(awaySection);
                     Dispatcher.UIThread.RunJobs();
                     window.UpdateLayout();
                     await Task.Delay(600);
                     Dispatcher.UIThread.RunJobs();
-                    page.GetVisualDescendants().Should().Contain(model);
-                    model.IsEffectivelyVisible.Should().BeFalse(
-                        "the previous provider editor stays cached but is hidden while another section is active");
                     await main.Settings.SelectSectionAsync("llm");
                     Dispatcher.UIThread.RunJobs();
                     window.UpdateLayout();
                     await Task.Delay(1200);
                     Dispatcher.UIThread.RunJobs();
-                    row.Model.Should().Be("deepseek-reasoner", string.Join("\n", modelChanges));
-                    TextBox reopenedModel = page.GetVisualDescendants().OfType<TextBox>().Single(input =>
-                        ReferenceEquals(input.DataContext, row) && input.PlaceholderText == row.ModelWatermark);
-                    reopenedModel.Should().BeSameAs(model,
+                    row.Model.Should().Be("deepseek-flash");
+                    TextBox reopenedKey = page.GetVisualDescendants().OfType<TextBox>().Single(input =>
+                        ReferenceEquals(input.DataContext, row) && input.PasswordChar == '•');
+                    reopenedKey.Should().BeSameAs(key,
                         "returning to the provider section should reveal the cached editor instance");
-                    reopenedModel.Text.Should().Be("deepseek-reasoner");
-                    PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek")!.Model.Should()
-                        .Be("deepseek-reasoner");
-                    row.ContextWindowTokens.Should().Be(512000);
+                    reopenedKey.Text.Should().Be("replacement-secret");
+                    section.IsDirty.Should().BeFalse("re-entering the section must not fabricate edits");
                 }
                 finally
                 {
@@ -161,7 +148,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             await reopened.Settings.SelectSectionAsync("llm");
             LlmProviderSettingsRowViewModel savedRow = reopened.Settings.LlmSettings.VisibleProviders
                 .Single(provider => provider.ProviderId == "deepseek");
-            savedRow.Model.Should().Be("deepseek-reasoner");
+            savedRow.Model.Should().Be("deepseek-flash");
             savedRow.HasCredential.Should().BeTrue();
             savedRow.ApiKeyInput.Should().Be("replacement-secret");
             return true;
@@ -198,7 +185,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                 section.SelectedProviderToAdd = section.AvailableProviderOptions.Single(option =>
                     option.ProviderId == "openai");
                 section.AddProviderCommand.Execute(null);
-                section.VisibleProviders.Single().ApiKeyInput = "test-secret";
+                LlmProviderSettingsRowViewModel added = section.VisibleProviders.Single();
+                added.BaseUrl = "https://api.openai.com";
+                added.ApiKeyInput = "test-secret";
                 (await vm.Settings.SaveAllDirtySectionsAsync()).Should().BeTrue();
                 Dispatcher.UIThread.RunJobs();
                 section.LastError.Should().BeNull();
@@ -234,6 +223,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     public async Task Returning_to_saved_values_and_cancelling_an_addition_do_not_write_settings()
     {
         RecordingCredentialStore store = new();
+        store.SeedSecret("openai", "seeded-key");
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
         DateTime unchangedTime = new(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -242,6 +232,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.SelectedOcrProvider = null;
         LlmProviderSettingsRowViewModel openAi = section.Providers.Single(row => row.ProviderId == "openai");
         openAi.Model = "  gpt-4o-mini  ";
+        openAi.Model = "";
         openAi.ApiKeyInput = "  ";
         section.IsDirty.Should().BeFalse();
         section.CanSave.Should().BeFalse();
@@ -253,7 +244,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             section.AvailableProviderOptions.Single(option => option.ProviderId == "anthropic");
         section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel draft = section.VisibleProviders.Single();
-        draft.ContextWindowTokens.Should().Be(0);
         draft.Model = "claude-sonnet";
         draft.ApiKeyInput = "cancelled-secret";
         section.IsDirty.Should().BeTrue();
@@ -268,6 +258,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     public async Task Credential_only_changes_do_not_rewrite_settings_or_repeat_secret_writes()
     {
         RecordingCredentialStore store = new();
+        store.SeedSecret("openai", "seeded-key");
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
         DateTime unchangedTime = new(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -320,6 +311,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     public async Task A_null_scope_default_does_not_break_an_unrelated_provider_save()
     {
         RecordingCredentialStore store = new();
+        store.SeedSecret("openai", "seeded-key");
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
         section.ChatProviderId = null!;
@@ -334,11 +326,14 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     [Fact]
     public async Task Credential_only_updates_refresh_the_runtime_snapshot_without_changing_settings()
     {
-        (MainWindowViewModel vm, LlmSettingsViewModel section) = CreateSection(new RecordingCredentialStore());
+        RecordingCredentialStore store = new();
+        store.SeedSecret("openai", "seeded-key");
+        (MainWindowViewModel vm, LlmSettingsViewModel section) = CreateSection(store);
         Host.Composition.HostServices services = await vm.ServicesAsync();
         try
         {
             LlmAppSettings original = services.LlmSettings;
+            await section.LoadAsync();
             section.Providers.Single(row => row.ProviderId == "openai").ApiKeyInput = "test-secret";
             await section.SaveAsync();
             services.LlmSettings.Should().NotBeSameAs(original,
@@ -359,17 +354,13 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         RecordingCredentialStore store = new();
         (_, LlmSettingsViewModel section) = CreateSection(store);
 
-        section.Providers.Should().HaveCount(LlmProviderCatalog.All.Count);
-        section.Providers.Select(row => row.ProviderId).Should()
-            .Equal((IEnumerable<string>)LlmProviderCatalog.ProviderIds);
-        section.Providers.Select(row => row.DisplayName).Should()
-            .Equal(LlmProviderCatalog.All.Select(entry => entry.DisplayName));
-        section.Providers.Should().OnlyContain(row => row.ApiKeyInput.Length == 0,
-            "a fresh store has no saved keys to load");
+        section.Providers.Should().BeEmpty("no saved records or credentials means no cards");
         section.VisibleProviders.Should().BeEmpty();
         section.HasNoProviders.Should().BeTrue();
         section.AvailableProviderOptions.Select(option => option.ProviderId).Should()
             .Equal((IEnumerable<string>)LlmProviderCatalog.ProviderIds);
+        section.AvailableProviderOptions.Select(option => option.ProviderId).Should()
+            .NotContain(["azure-openai", "openai-subscription", "custom"]);
         section.ChatProviderOptions.Should().BeEmpty();
         section.OcrProviderOptions.Should().BeEmpty();
     }
@@ -390,6 +381,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.ChatProviderOptions.Should().BeEmpty();
 
         row.Model = "claude-sonnet";
+        row.BaseUrl = "https://api.anthropic.com";
         await section.SaveAsync();
         section.HasPendingProvider.Should().BeFalse();
         section.IsDirty.Should().BeFalse();
@@ -426,6 +418,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         LlmProviderSettingsRowViewModel row = section.VisibleProviders.Should().ContainSingle().Which;
         section.ChatProviderOptions.Should().BeEmpty();
         row.Model = "claude-sonnet";
+        row.BaseUrl = "https://api.anthropic.com";
         await section.SaveAsync();
         section.ChatProviderOptions.Should().ContainSingle();
         await row.RemoveApiKeyCommand.ExecuteAsync(null);
@@ -444,23 +437,34 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         RecordingCredentialStore store = new();
         (_, LlmSettingsViewModel section) = CreateSection(store);
         section.SelectedProviderToAdd =
-            section.AvailableProviderOptions.Single(option => option.ProviderId == "custom");
+            section.AvailableProviderOptions.Single(option => option.ProviderId == "openai");
         section.AddProviderCommand.Execute(null);
         await section.SaveAsync();
         section.IsDirty.Should().BeFalse();
         section.LastError.Should().NotBeNullOrWhiteSpace();
         (_, LlmSettingsViewModel reopened) = CreateSection(store);
         await reopened.LoadAsync();
-        reopened.VisibleProviders.Should().ContainSingle().Which.ProviderId.Should().Be("custom");
-        PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("custom")!.IsAdded.Should().BeTrue();
+        reopened.VisibleProviders.Should().ContainSingle().Which.ProviderId.Should().Be("openai");
+        PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("openai")!.IsAdded.Should().BeTrue();
         store.SaveCount.Should().Be(0);
     }
 
     [Fact]
-    public void Azure_only_fields_are_shown_for_exactly_the_catalog_entries_that_need_them()
+    public async Task Azure_only_fields_are_shown_for_exactly_the_catalog_entries_that_need_them()
     {
+        (PatchouliAppSettings.Default() with
+        {
+            Llm = LlmAppSettings.Default()
+                .WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
+                    "res", "dep") { IsAdded = true })
+                .WithProvider(new LlmProviderAppSettings("custom", "Custom", "http://localhost:11434",
+                    "llama") { IsAdded = true })
+                .WithProvider(new LlmProviderAppSettings("deepseek", "", "", "deepseek-chat")
+                    { IsAdded = true })
+        }).Save(_settings.Path);
         RecordingCredentialStore store = new();
         (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
 
         LlmProviderSettingsRowViewModel azure =
             section.Providers.Single(row => row.ProviderId == "azure-openai");
@@ -472,10 +476,11 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.Providers.Where(row => row.ProviderId != "azure-openai").Should()
             .OnlyContain(row => !row.IsAzure && !row.IsAzureSubscriptionRequired && !row.IsAzureDeploymentRequired);
 
-        // A provider without a catalog default endpoint must ask for one; the rest show the default.
         section.Providers.Single(row => row.ProviderId == "custom").RequiresBaseUrl.Should().BeTrue();
-        section.Providers.Where(row => row.ProviderId != "custom").Should()
-            .OnlyContain(row => !row.RequiresBaseUrl && row.DefaultBaseUrl.Length > 0);
+        section.Providers.Single(row => row.ProviderId == "deepseek").DefaultBaseUrl.Should()
+            .Be("https://api.deepseek.com");
+        LlmProviderCatalog.All.Where(entry => entry.RequiresBaseUrl).Should()
+            .OnlyContain(entry => entry.DefaultBaseUrl.Length == 0);
     }
 
     [Fact]
@@ -483,14 +488,21 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     {
         RecordingCredentialStore store = new();
         store.SeedSecret("openai", "api-secret");
+        store.SeedSecret(LlmSubscriptionCatalog.CredentialProviderId("openai-subscription"),
+            """{"AccessToken":"old","RefreshToken":"old","AccountId":"account"}""");
+        (PatchouliAppSettings.Default() with
+        {
+            Llm = LlmAppSettings.Default().WithProvider(
+                LlmProviderAppSettings.FromCatalog(LlmProviderCatalog.Find("openai-subscription")!) with
+                {
+                    IsAdded = true
+                })
+        }).Save(_settings.Path);
         (_, LlmSettingsViewModel section) = CreateSection(store);
         FakeSubscriptionService service = new(store);
         bool browserOpened = false;
         section.UseSubscriptionService(service, _ => browserOpened = true);
         await section.LoadAsync();
-        section.SelectedProviderToAdd =
-            section.AvailableProviderOptions.Single(option => option.ProviderId == "openai-subscription");
-        section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel row =
             section.VisibleProviders.Single(item => item.ProviderId == "openai-subscription");
         row.IsSubscription.Should().BeTrue();
@@ -499,6 +511,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         await row.LoginSubscriptionCommand.ExecuteAsync();
         browserOpened.Should().BeTrue();
         row.Model.Should().Be("subscription-model-a");
+        section.Providers.Single(item => item.ProviderId == "openai").BaseUrl = "https://api.openai.com";
         section.ChatProviderOptions.Select(option => option.ProviderId).Should()
             .Equal("openai", "openai-subscription");
         section.OcrProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("openai");
@@ -525,17 +538,17 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Cancelling_subscription_login_leaves_no_credential_and_keeps_the_draft_editable()
+    public async Task Cancelling_subscription_login_leaves_the_connection_card_editable()
     {
         RecordingCredentialStore store = new();
+        store.SeedSecret(LlmSubscriptionCatalog.CredentialProviderId("openai-subscription"),
+            """{"AccessToken":"old","RefreshToken":"old","AccountId":"account"}""");
         (_, LlmSettingsViewModel section) = CreateSection(store);
         FakeSubscriptionService service = new(store) { DelayLogin = true };
         section.UseSubscriptionService(service, _ => { });
         await section.LoadAsync();
-        section.SelectedProviderToAdd =
-            section.AvailableProviderOptions.Single(option => option.ProviderId == "openai-subscription");
-        section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel row = section.VisibleProviders.Single();
+        row.ProviderId.Should().Be("openai-subscription");
         row.LoginSubscriptionCommand.Execute(null);
         await service.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         row.IsSubscriptionBusy.Should().BeTrue();
@@ -543,8 +556,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         await row.LoginSubscriptionCommand.ExecutionTask!;
         row.IsSubscriptionBusy.Should().BeFalse();
         row.SubscriptionStatusText.Should().Be("已取消订阅操作");
-        store.SavedSecrets.Should().BeEmpty();
-        section.HasPendingProvider.Should().BeTrue();
+        section.VisibleProviders.Should().ContainSingle().Which.Should().BeSameAs(row,
+            "a credential-only connection card stays editable after a cancelled login");
+        section.HasPendingProvider.Should().BeFalse();
     }
 
     [Fact]
@@ -614,6 +628,11 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     public async Task Settings_round_trip_through_the_app_settings_file()
     {
         RecordingCredentialStore store = new();
+        (PatchouliAppSettings.Default() with
+        {
+            Llm = LlmAppSettings.Default().WithProvider(
+                new LlmProviderAppSettings("azure-openai", "Azure OpenAI") { IsAdded = true })
+        }).Save(_settings.Path);
         (MainWindowViewModel vm, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
 
@@ -634,12 +653,10 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         section.SaveState.Should().Be(SettingsSaveState.Saved, $"status: {section.Status}");
         section.IsDirty.Should().BeFalse();
 
-        // The in-memory settings the rest of the app reads already carry the new values.
         vm.AppOptions.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         vm.AppOptions.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
         vm.AppOptions.Llm.FindProvider("azure-openai")!.Deployment.Should().Be("gpt-4o-deployment");
 
-        // The same values round-trip through the settings file.
         PatchouliAppSettings reloaded = PatchouliAppSettings.Load(_settings.Path);
         reloaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         reloaded.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
@@ -676,6 +693,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         (_, LlmSettingsViewModel section) = CreateSection(store);
         await section.LoadAsync();
 
+        section.SelectedProviderToAdd =
+            section.AvailableProviderOptions.Single(option => option.ProviderId == "openai");
+        section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel openAi = section.Providers.Single(row => row.ProviderId == "openai");
         openAi.BaseUrl = "https://proxy.example";
         openAi.Model = "gpt-4o";
@@ -696,7 +716,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         json.Should().Contain("https://proxy.example");
         using JsonDocument document = JsonDocument.Parse(json);
         document.RootElement.GetProperty("Llm").GetProperty("Providers").GetArrayLength()
-            .Should().Be(LlmProviderCatalog.All.Count);
+            .Should().Be(1, "only the configured connection is stored");
     }
 
     [Fact]
@@ -706,12 +726,12 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         store.SeedSecret("anthropic", "sk-anthropic-secret");
         (_, LlmSettingsViewModel section) = CreateSection(store);
 
-        LlmProviderSettingsRowViewModel anthropic =
-            section.Providers.Single(row => row.ProviderId == "anthropic");
-        anthropic.CredentialStatusText.Should().Be("未配置 API key");
-        anthropic.ApiKeyPlaceholder.Should().NotContain("•");
+        section.Providers.Should().BeEmpty("readiness has not been inspected yet");
 
         await section.LoadAsync();
+
+        LlmProviderSettingsRowViewModel anthropic =
+            section.Providers.Single(row => row.ProviderId == "anthropic");
 
         anthropic.HasCredential.Should().BeTrue();
         anthropic.CredentialStatusText.Should().Be("已配置 API key");
@@ -780,6 +800,272 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         PatchouliAppSettings reloaded = PatchouliAppSettings.Load(_settings.Path);
     }
 
+    [Fact]
+    public async Task A_keyed_provider_without_a_model_is_ready_and_selectable()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret("deepseek", "test-secret");
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+
+        LlmProviderSettingsRowViewModel row = section.Providers.Single(item => item.ProviderId == "deepseek");
+        row.HasCredential.Should().BeTrue();
+        row.Readiness.Should().NotBeNull();
+        row.Readiness!.HasModel.Should().BeFalse();
+        row.Readiness.IsConfigured.Should().BeTrue(
+            "connection readiness is credential + endpoint + supported transport, not a provider model");
+        row.DiagnosticText.Should().Be("Ready.");
+        section.ChatProviderOptions.Should().ContainSingle().Which.ProviderId.Should().Be("deepseek");
+    }
+
+    [Fact]
+    public async Task An_unsupported_protocol_connection_reports_a_diagnostic_instead_of_readiness()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret("cohere", "test-secret");
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+
+        LlmProviderSettingsRowViewModel row = section.Providers.Single(item => item.ProviderId == "cohere");
+        row.HasCredential.Should().BeTrue();
+        row.Readiness!.IsConfigured.Should().BeFalse();
+        row.DiagnosticText.Should().Contain("unknown");
+        section.ChatProviderOptions.Should().BeEmpty(
+            "an unimplemented protocol must not reach the model selectors");
+    }
+
+    [Fact]
+    public async Task A_failed_credential_removal_keeps_the_connection_card()
+    {
+        RecordingCredentialStore store = new() { FailRemovals = true };
+        store.SeedSecret("deepseek", "test-secret");
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+        LlmProviderSettingsRowViewModel row = section.Providers.Single(item => item.ProviderId == "deepseek");
+
+        await row.RemoveConnectionCommand.ExecuteAsync();
+
+        section.Providers.Should().Contain(row, "a failed credential removal must not drop the card");
+        section.VisibleProviders.Should().ContainSingle().Which.Should().BeSameAs(row);
+        row.HasCredential.Should().BeTrue();
+        section.SaveState.Should().Be(SettingsSaveState.Failed);
+        store.SavedSecrets.Should().ContainKey("deepseek");
+        PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek").Should().BeNull(
+            "the failed removal must not silently persist a partial delete");
+    }
+
+    [Fact]
+    public async Task Removing_a_connection_deletes_its_record_and_restores_the_add_option()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret("deepseek", "test-secret");
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+        LlmProviderSettingsRowViewModel row = section.Providers.Single(item => item.ProviderId == "deepseek");
+
+        await row.RemoveConnectionCommand.ExecuteAsync();
+        await section.SaveAsync();
+
+        section.Providers.Should().BeEmpty();
+        section.VisibleProviders.Should().BeEmpty();
+        section.HasNoProviders.Should().BeTrue();
+        section.AvailableProviderOptions.Should().Contain(option => option.ProviderId == "deepseek");
+        PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek").Should().BeNull();
+        store.SavedSecrets.Should().NotContainKey("deepseek");
+    }
+
+    [Theory]
+    [InlineData("sync")]
+    [InlineData("mcp")]
+    public async Task The_saved_global_model_survives_section_switching_and_a_full_reload(string awaySection)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            RecordingCredentialStore store = new();
+            store.SeedSecret("deepseek", "test-secret");
+            (MainWindowViewModel main, LlmSettingsViewModel section) = CreateSection(store);
+            await using (main)
+            {
+                await section.LoadAsync();
+                section.ChatProviderId = "deepseek";
+                section.ChatModel = "deepseek-chat";
+                await section.SaveAsync();
+                section.IsDirty.Should().BeFalse();
+                PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek")
+                    .Should().BeNull("the provider row needs no stored model");
+
+                SettingsPage page = new() { DataContext = main.Settings };
+                Window window = new() { Width = 1200, Height = 900, Content = page };
+                window.Show();
+                try
+                {
+                    await main.Settings.SelectSectionAsync("llm");
+                    Dispatcher.UIThread.RunJobs();
+                    ComboBox model = page.GetVisualDescendants().OfType<ComboBox>()
+                        .Single(combo => ReferenceEquals(combo.ItemsSource, section.ChatModelOptions));
+                    model.SelectedItem.Should().Be("deepseek-chat");
+                    model.Text.Should().Be("deepseek-chat");
+
+                    await main.Settings.SelectSectionAsync(awaySection);
+                    Dispatcher.UIThread.RunJobs();
+                    await Task.Delay(600);
+                    Dispatcher.UIThread.RunJobs();
+                    await main.Settings.SelectSectionAsync("llm");
+                    Dispatcher.UIThread.RunJobs();
+                    await Task.Delay(600);
+                    Dispatcher.UIThread.RunJobs();
+
+                    model.SelectedItem.Should().Be("deepseek-chat",
+                        "leaving and re-entering the section must not clear the saved model");
+                    model.Text.Should().Be("deepseek-chat");
+                    section.ChatModel.Should().Be("deepseek-chat");
+                    section.IsDirty.Should().BeFalse();
+                    store.SaveCount.Should().Be(0, "re-entering must not rewrite credentials");
+                }
+                finally
+                {
+                    window.Close();
+                }
+            }
+
+            await using MainWindowViewModel reopened = new(settingsPath: _settings.Path);
+            reopened.Settings.LlmSettings.UseCredentialStore(store);
+            await reopened.Settings.SelectSectionAsync("llm");
+            await reopened.Settings.WaitForActiveSectionLoadAsync();
+
+            SettingsPage reopenedPage = new() { DataContext = reopened.Settings };
+            Window reopenedWindow = new() { Width = 1200, Height = 900, Content = reopenedPage };
+            reopenedWindow.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                ComboBox model = reopenedPage.GetVisualDescendants().OfType<ComboBox>()
+                    .Single(combo =>
+                        ReferenceEquals(combo.ItemsSource, reopened.Settings.LlmSettings.ChatModelOptions));
+                model.SelectedItem.Should().Be("deepseek-chat");
+                model.Text.Should().Be("deepseek-chat");
+                reopened.Settings.LlmSettings.ChatModel.Should().Be("deepseek-chat");
+                reopened.Settings.LlmSettings.IsDirty.Should().BeFalse();
+            }
+            finally
+            {
+                reopenedWindow.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_saved_model_absent_from_the_snapshot_stays_selectable()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret("deepseek", "test-secret");
+        (PatchouliAppSettings.Default() with
+        {
+            Llm = LlmAppSettings.Default() with
+            {
+                ChatProviderId = "deepseek", ChatModel = "unlisted-custom-model"
+            }
+        }).Save(_settings.Path);
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+
+        section.ChatModel.Should().Be("unlisted-custom-model");
+        section.SelectedChatModel.Should().Be("unlisted-custom-model",
+            "a legacy model id keeps an explicit option even when the snapshot lacks it");
+        section.ChatModelOptions.Should().Contain("unlisted-custom-model");
+        section.IsDirty.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Selected_chat_model_ignores_transient_clearing_and_accepts_real_selections()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret("deepseek", "test-secret");
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        await section.LoadAsync();
+        section.ChatProviderId = "deepseek";
+        section.ChatModel = "deepseek-chat";
+        await section.SaveAsync();
+
+        section.SelectedChatModel = null;
+        section.SelectedChatModel = "   ";
+        section.ChatModel.Should().Be("deepseek-chat");
+        section.IsDirty.Should().BeFalse("a transient null or blank item is not an edit");
+
+        section.SelectedChatModel = "deepseek-reasoner";
+        section.ChatModel.Should().Be("deepseek-reasoner");
+        await section.SaveAsync();
+        PatchouliAppSettings.Load(_settings.Path).Llm.ChatModel.Should().Be("deepseek-reasoner");
+    }
+
+    [Fact]
+    public async Task Legacy_default_rows_stay_loadable_and_keyed_ones_keep_working()
+    {
+        string legacyJson = """
+                            {
+                              "Llm": {
+                                "Providers": [
+                                  { "ProviderId": "openai", "DisplayName": "OpenAI", "BaseUrl": "https://api.openai.com",
+                                    "Model": "gpt-4o-mini" },
+                                  { "ProviderId": "anthropic", "DisplayName": "Anthropic",
+                                    "BaseUrl": "https://api.anthropic.com", "Model": "" },
+                                  { "ProviderId": "groq", "DisplayName": "Groq", "BaseUrl": "https://api.groq.com",
+                                    "Model": "" },
+                                  { "ProviderId": "deepseek", "DisplayName": "DeepSeek",
+                                    "BaseUrl": "https://api.deepseek.com", "Model": "" }
+                                ],
+                                "ChatProviderId": "openai",
+                                "ChatModel": "gpt-4o-mini"
+                              }
+                            }
+                            """;
+        File.WriteAllText(_settings.Path, legacyJson);
+
+        PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
+        loaded.Llm.FindProvider("openai")!.BaseUrl.Should().Be("https://api.openai.com");
+        loaded.Llm.FindProvider("openai")!.Model.Should().Be("gpt-4o-mini",
+            "a saved baseline model must not be eaten by migration");
+
+        RecordingCredentialStore store = new();
+        store.SeedSecret("openai", "openai-key");
+        store.SeedSecret("anthropic", "anthropic-key");
+        Result<LlmProviderRuntimeSettings> openAi =
+            await LlmProviderClientFactory.ResolveAsync(loaded.Llm, "openai", null, store);
+        Result<LlmProviderRuntimeSettings> anthropic =
+            await LlmProviderClientFactory.ResolveAsync(loaded.Llm, "anthropic", "claude-x", store);
+        openAi.IsSuccess.Should().BeTrue(openAi.ErrorMessage);
+        openAi.Value.BaseUrl.Should().Be("https://api.openai.com/{0}/{1}");
+        openAi.Value.Model.Should().Be("gpt-4o-mini");
+        anthropic.IsSuccess.Should().BeTrue(anthropic.ErrorMessage);
+
+        (_, LlmSettingsViewModel section) = CreateSection(store);
+        DateTime unchangedTime = new(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(_settings.Path, unchangedTime);
+        await section.LoadAsync();
+
+        string[] expectedVisible = new[] { "openai", "anthropic" }
+            .OrderBy(LlmProviderCatalog.CatalogOrder).ToArray();
+        section.VisibleProviders.Select(row => row.ProviderId).Should()
+            .Equal(expectedVisible,
+                "keyed legacy rows render; unkeyed legacy defaults stay out of the UI");
+        section.Providers.Single(row => row.ProviderId == "openai").BaseUrl.Should()
+            .Be("https://api.openai.com");
+        section.IsDirty.Should().BeFalse("opening the page never auto-writes");
+        store.SaveCount.Should().Be(0);
+        File.GetLastWriteTimeUtc(_settings.Path).Should().Be(unchangedTime);
+
+        section.ChatModel = "gpt-4o";
+        await section.SaveAsync();
+        PatchouliAppSettings saved = PatchouliAppSettings.Load(_settings.Path);
+        saved.Llm.FindProvider("openai")!.BaseUrl.Should().Be("https://api.openai.com");
+        saved.Llm.FindProvider("anthropic")!.BaseUrl.Should().Be("https://api.anthropic.com");
+        saved.Llm.FindProvider("deepseek").Should().NotBeNull(
+            "unkeyed legacy rows keep their stored data until the user removes them");
+    }
+
     public void Dispose()
     {
         _settings.Dispose();
@@ -791,7 +1077,6 @@ public sealed class LlmSettingsViewModelTests : IDisposable
         MainWindowViewModel vm = new(settingsPath: _settings.Path);
         LlmSettingsViewModel section = vm.Settings.LlmSettings;
 
-        // The page binds exactly this section, registered under the LLM category.
         vm.Settings.SectionEntries.Should()
             .ContainSingle(entry => ReferenceEquals(entry.Content, section))
             .Which.Title.Should().Be("模型连接");
@@ -804,6 +1089,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     {
         public int SaveCount { get; private set; }
         public bool PauseWrites { get; set; }
+        public bool FailRemovals { get; init; }
         public TaskCompletionSource WriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Dictionary<string, string> SavedSecrets { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -839,6 +1125,11 @@ public sealed class LlmSettingsViewModelTests : IDisposable
 
         public Task<Result> RemoveAsync(string providerId, CancellationToken cancellationToken = default)
         {
+            if (FailRemovals)
+            {
+                return Task.FromResult(Result.Failure(AppErrorCodes.InvalidState, "removal refused"));
+            }
+
             SavedSecrets.Remove(providerId);
             return Task.FromResult(Result.Success());
         }

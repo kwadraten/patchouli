@@ -50,13 +50,12 @@ public sealed class LlmModelCatalogTests
     }
 
     [Fact]
-    public void Model_limits_are_defaults_and_explicit_values_win()
+    public void Model_limits_come_from_the_model_catalog()
     {
         LlmProviderRuntimeSettings settings = new(LlmProviderCatalog.Find("openai")!, "key",
             "https://api.openai.com/{0}/{1}", "gpt-4o-mini", "", "", "");
         LlmModelCatalog.Shared.Find("openai", settings.Model)!.ContextLimit.Should().Be(128000);
         settings.ContextWindowTokens.Should().Be(128000);
-        (settings with { ContextWindowTokens = 200000 }).ContextWindowTokens.Should().Be(200000);
         (settings with { Model = "custom-unlisted-model" }).ContextWindowTokens.Should()
             .Be(LlmProviderAppSettings.DefaultContextWindowTokens);
 

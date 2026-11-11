@@ -96,9 +96,12 @@ internal sealed class LlmModelsDevTransport(LlmProviderRuntimeSettings settings,
             "anthropic-messages" => new AnthropicBackend(request.Model, "",
                 ApiKeyCredentialProvider.Anthropic(settings.ApiKey), options),
             "gemini" => new GeminiBackend(request.Model, "", ApiKeyCredentialProvider.Gemini(settings.ApiKey), options),
-            _ when settings.IsAzure => new OpenAIChatBackend(request.Model, "",
+            "openai-chat" when settings.IsAzure => new OpenAIChatBackend(request.Model, "",
                 new ApiKeyCredentialProvider(settings.ApiKey, "api-key", ""), options),
-            _ => new OpenAIChatBackend(request.Model, "", new ApiKeyCredentialProvider(settings.ApiKey), options)
+            "openai-chat" => new OpenAIChatBackend(request.Model, "",
+                new ApiKeyCredentialProvider(settings.ApiKey), options),
+            _ => throw new LlmChatException(LlmFailureCodes.BadEndpointConfig,
+                $"Provider '{settings.ProviderId}' uses unsupported protocol '{protocol}'.")
         };
 
         string endpoint = ResolveEndpoint(settings, request.Model, subscriptionHeaders is not null);
@@ -166,7 +169,9 @@ internal sealed class LlmModelsDevTransport(LlmProviderRuntimeSettings settings,
             {
                 format = root + "/{1}";
             }
-            else if (root == provider.CatalogEntry.DefaultBaseUrl && string.IsNullOrWhiteSpace(provider.ApiVersion))
+            else if (string.IsNullOrWhiteSpace(provider.ApiVersion) &&
+                     (root == provider.CatalogEntry.DefaultBaseUrl ||
+                      LlmProviderCatalog.IsLegacyDefaultBaseUrl(provider.ProviderId, root)))
             {
                 format = provider.ProviderId switch
                 {

@@ -17,7 +17,7 @@ public sealed class LlmContextAccountingTests
     {
         LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(provider)!;
         LlmProviderRuntimeSettings settings = new(entry, "key",
-            LlmProviderClientFactory.ResolveBaseUrl(entry, null, "", ""), "test", "", "", "");
+            "https://api.example/{0}/{1}", "test", "", "", "");
         using HttpClient http = new(new CompletionHandler(body));
         LlmModelsDevTransport transport = new(settings, http);
         LlmTransportResult result = await transport.SendAsync(new LlmTransportRequest(settings, "test",

@@ -53,12 +53,10 @@ public sealed class LlmModelCatalog
         return Embedded.TryGet(catalogId, model, out ModelInfo info) ? info : null;
     }
 
-    internal static int ResolveContextWindow(string providerId, string model, int contextOverride)
+    internal static int ResolveContextWindow(string providerId, string model)
     {
-        return contextOverride > 0
-            ? contextOverride
-            : ToTokenLimit(Shared.Find(providerId, model)?.ContextLimit) ??
-              LlmProviderAppSettings.DefaultContextWindowTokens;
+        return ToTokenLimit(Shared.Find(providerId, model)?.ContextLimit) ??
+               LlmProviderAppSettings.DefaultContextWindowTokens;
     }
 
     internal static int? ToTokenLimit(long? value)

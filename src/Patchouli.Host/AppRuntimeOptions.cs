@@ -1492,7 +1492,6 @@ public sealed record PatchouliAppSettings(
                     ReadString(provider, "ApiVersion", ""),
                     ReadString(provider, "AuthenticationMode", LlmAuthenticationModes.ApiKey))
                 {
-                    ContextWindowTokens = ReadInt(provider, "ContextWindowTokens", 0),
                     IsAdded = ReadBool(provider, "IsAdded", false)
                 });
             }

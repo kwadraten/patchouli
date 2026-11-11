@@ -30,14 +30,6 @@ public sealed record LlmProviderAppSettings(
     /// <summary>Retains an explicitly added connection even before its fields and credentials are complete.</summary>
     public bool IsAdded { get; init; }
 
-    /// <summary>Context capacity override. Zero uses the selected model’s catalog limit.</summary>
-    public int ContextWindowTokens { get; init; }
-
-    public static int NormalizeContextWindow(int value)
-    {
-        return value <= 0 ? 0 : Math.Max(4096, value);
-    }
-
     /// <summary>The credential store lookup key for this provider. Exactly one key per provider (D2).</summary>
     [JsonIgnore]
     public string CredentialProviderId => AuthenticationMode == LlmAuthenticationModes.Subscription
@@ -51,6 +43,46 @@ public sealed record LlmProviderAppSettings(
             AuthenticationMode: LlmSubscriptionCatalog.Find(entry.ProviderId) is not null
                 ? LlmAuthenticationModes.Subscription
                 : LlmAuthenticationModes.ApiKey);
+    }
+
+    public bool IsImplicitlyEmpty()
+    {
+        if (IsAdded ||
+            !string.IsNullOrWhiteSpace(Subscription) || !string.IsNullOrWhiteSpace(Deployment) ||
+            !string.IsNullOrWhiteSpace(ApiVersion))
+        {
+            return false;
+        }
+
+        string model = Model.Trim();
+        bool baselineModel = string.Equals(ProviderId.Trim(), "openai", StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(model, "gpt-4o-mini", StringComparison.OrdinalIgnoreCase);
+        if (model.Length != 0 && !baselineModel)
+        {
+            return false;
+        }
+
+        string expectedAuthentication = LlmSubscriptionCatalog.Find(ProviderId) is not null
+            ? LlmAuthenticationModes.Subscription
+            : LlmAuthenticationModes.ApiKey;
+        if (!string.Equals(AuthenticationMode, expectedAuthentication, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        LlmProviderCatalogEntry? entry = LlmProviderCatalog.Find(ProviderId);
+        string displayName = DisplayName.Trim();
+        if (displayName.Length != 0 &&
+            !string.Equals(displayName, entry?.DisplayName, StringComparison.OrdinalIgnoreCase) &&
+            !LlmProviderCatalog.IsLegacyDisplayName(ProviderId, displayName))
+        {
+            return false;
+        }
+
+        string baseUrl = BaseUrl.Trim();
+        return baseUrl.Length == 0 ||
+               string.Equals(baseUrl, entry?.DefaultBaseUrl, StringComparison.OrdinalIgnoreCase) ||
+               LlmProviderCatalog.IsLegacyDefaultBaseUrl(ProviderId, baseUrl);
     }
 }
 
@@ -94,20 +126,10 @@ public sealed record LlmAppSettings(
     /// <summary>Provider used when a configured provider id is blank or unknown.</summary>
     public const string DefaultProviderId = "openai";
 
-    /// <summary>
-    /// Defaults: one row per catalog provider, the default provider's row pre-filled with the default model so
-    /// a fresh install can already call it, and the default chat model selection.
-    /// </summary>
     public static LlmAppSettings Default()
     {
-        LlmProviderAppSettings[] providers = LlmProviderCatalog.All
-            .Select(entry => string.Equals(entry.ProviderId, DefaultProviderId, StringComparison.OrdinalIgnoreCase)
-                ? LlmProviderAppSettings.FromCatalog(entry) with { Model = DefaultOpenAiModel }
-                : LlmProviderAppSettings.FromCatalog(entry))
-            .ToArray();
-
         return new LlmAppSettings(
-            providers,
+            [],
             DefaultProviderId,
             DefaultOpenAiModel,
             DefaultProviderId,
@@ -134,56 +156,79 @@ public sealed record LlmAppSettings(
             string.Equals(provider.ProviderId.Trim(), providerId.Trim(), StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>
-    /// Replaces or adds one provider row, keeping catalog order so the persisted JSON is stable.
-    /// </summary>
     public LlmAppSettings WithProvider(LlmProviderAppSettings provider)
     {
         string providerId = provider.ProviderId.Trim();
-        bool replaced = FindProvider(providerId) is not null;
+        bool replaced = false;
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         List<LlmProviderAppSettings> merged = [];
-        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All)
+        foreach (LlmProviderAppSettings existing in Providers)
         {
-            if (string.Equals(entry.ProviderId, providerId, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(existing.ProviderId.Trim(), providerId, StringComparison.OrdinalIgnoreCase))
             {
-                merged.Add(provider);
+                if (!replaced)
+                {
+                    merged.Add(provider);
+                    replaced = true;
+                }
+
                 continue;
             }
 
-            LlmProviderAppSettings? existing = FindProvider(entry.ProviderId);
-            if (existing is not null)
+            if (seen.Add(existing.ProviderId.Trim()))
             {
                 merged.Add(existing);
             }
         }
 
-        return this with { Providers = replaced ? merged : [.. merged, provider] };
+        if (!replaced)
+        {
+            merged.Add(provider);
+        }
+
+        return this with { Providers = OrderProviders(merged) };
     }
 
-    /// <summary>
-    /// Normalizes a persisted instance: every catalog entry gets exactly one row, values are clamped and
-    /// the default provider/model selections fall back when blank.
-    /// </summary>
+    public LlmAppSettings WithoutProvider(string providerId)
+    {
+        string id = providerId.Trim();
+        return this with
+        {
+            Providers = Providers
+                .Where(existing => !string.Equals(existing.ProviderId.Trim(), id, StringComparison.OrdinalIgnoreCase))
+                .ToArray()
+        };
+    }
+
     public LlmAppSettings Normalize()
     {
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         List<LlmProviderAppSettings> normalized = [];
-        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All)
+        foreach (LlmProviderAppSettings row in Providers)
         {
-            LlmProviderAppSettings row = FindProvider(entry.ProviderId) ?? LlmProviderAppSettings.FromCatalog(entry);
-            normalized.Add(row with
+            string providerId = row.ProviderId.Trim();
+            if (providerId.Length == 0 || !seen.Add(providerId))
             {
-                ProviderId = entry.ProviderId,
-                DisplayName = string.IsNullOrWhiteSpace(row.DisplayName) ? entry.DisplayName : row.DisplayName.Trim(),
+                continue;
+            }
+
+            LlmProviderCatalogEntry? entry = LlmProviderCatalog.Find(providerId);
+            LlmProviderAppSettings normalizedRow = row with
+            {
+                ProviderId = entry?.ProviderId ?? providerId,
+                DisplayName = string.IsNullOrWhiteSpace(row.DisplayName)
+                    ? entry?.DisplayName ?? providerId
+                    : row.DisplayName.Trim(),
                 BaseUrl = row.BaseUrl.Trim(),
                 Model = row.Model.Trim(),
                 Subscription = row.Subscription.Trim(),
                 Deployment = row.Deployment.Trim(),
                 ApiVersion = row.ApiVersion.Trim(),
-                ContextWindowTokens = LlmProviderAppSettings.NormalizeContextWindow(row.ContextWindowTokens),
-                AuthenticationMode = LlmSubscriptionCatalog.Find(entry.ProviderId) is not null
+                AuthenticationMode = LlmSubscriptionCatalog.Find(providerId) is not null
                     ? LlmAuthenticationModes.Subscription
                     : LlmAuthenticationModes.ApiKey
-            });
+            };
+            normalized.Add(normalizedRow);
         }
 
         (string ocrProviderId, string ocrModel) = ResolveSelection(OcrProviderId, OcrModel);
@@ -191,7 +236,7 @@ public sealed record LlmAppSettings(
             ResolveSelection(ChatProviderId, ChatModel);
         return this with
         {
-            Providers = normalized,
+            Providers = OrderProviders(normalized),
             OcrProviderId = ocrProviderId,
             OcrModel = ocrModel,
             OcrLayoutModel = OcrLayoutModelIds.Normalize(OcrLayoutModel),
@@ -201,6 +246,16 @@ public sealed record LlmAppSettings(
             ChatModel = chatModel,
             Translation = Translation.Normalize()
         };
+    }
+
+    private static List<LlmProviderAppSettings> OrderProviders(IReadOnlyList<LlmProviderAppSettings> rows)
+    {
+        return rows
+            .Select((row, index) => (row, index))
+            .OrderBy(item => LlmProviderCatalog.CatalogOrder(item.row.ProviderId))
+            .ThenBy(item => item.index)
+            .Select(item => item.row)
+            .ToList();
     }
 
     /// <summary>

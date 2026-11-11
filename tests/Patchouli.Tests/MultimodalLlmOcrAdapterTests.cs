@@ -493,7 +493,12 @@ public sealed class MultimodalLlmOcrAdapterTests
 
     private static MultimodalLlmOcrRuntime RealRuntime(ICredentialStore credentialStore)
     {
-        return new MultimodalLlmOcrRuntime(() => LlmAppSettings.Default(), credentialStore);
+        LlmAppSettings settings = LlmAppSettings.Default().WithProvider(
+            LlmProviderAppSettings.FromCatalog(LlmProviderCatalog.Find("openai")!) with
+            {
+                BaseUrl = "https://api.openai.com", Model = "gpt-4o-mini"
+            });
+        return new MultimodalLlmOcrRuntime(() => settings, credentialStore);
     }
 
     private static OcrPresetVersion Preset(string modelId)

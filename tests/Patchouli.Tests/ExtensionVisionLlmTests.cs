@@ -227,7 +227,11 @@ public sealed class ExtensionVisionLlmTests
 
     private static LlmAppSettings OcrSettings()
     {
-        return LlmAppSettings.Default() with
+        return LlmAppSettings.Default()
+            .WithProvider(new LlmProviderAppSettings("anthropic", "Anthropic",
+                "https://api.anthropic.com", "claude-vision"))
+            .WithProvider(new LlmProviderAppSettings("openai", "OpenAI",
+                "https://api.openai.com", "gpt-4o-mini")) with
         {
             OcrProviderId = "anthropic",
             OcrModel = "claude-vision",
