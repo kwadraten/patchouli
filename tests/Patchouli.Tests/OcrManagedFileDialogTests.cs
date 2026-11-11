@@ -1,8 +1,10 @@
+using Patchouli.Core.Downloads;
 using Avalonia.Headless;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Downloads;
 using Patchouli.Host.Extensions;
 using Patchouli.UI;
 using Patchouli.UI.Services;
@@ -84,16 +86,15 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
     }
 
     [Fact]
-    public async Task Accepted_plan_runs_download_callback_with_progress_under_the_modal_runner()
+    public async Task Accepted_plan_registers_the_download_with_the_host_registry()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             RecordingDialogService dialogs = new() { Result = ConfirmDialogResult.Confirm };
-            RecordingModalRunner modal = new();
             await using MainWindowViewModel main = new(dialogs: dialogs,
-                modalOperations: modal, settingsPath: settings.Path,
+                settingsPath: settings.Path,
                 appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
@@ -111,11 +112,62 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
 
             result.IsSuccess.Should().BeTrue();
             downloads.Should().Be(1, "the handler invokes the host's download callback once");
-            modal.Options.Should().ContainSingle().Which.CanCancel.Should().BeTrue();
+            DownloadTaskStatus task = services.DownloadTasks.List().Should()
+                .ContainSingle("the confirmed download registers in the host download registry")
+                .Subject;
+            task.State.Should().Be(DownloadTaskService.SucceededState);
+            task.Progress.Should().Be(1.0);
             // The runner applies no-window progress back on the calling dispatcher before returning.
-            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-            modal.BlockingDialogs.Should().ContainSingle().Which.ProgressValue.Should()
-                .BeApproximately(50, 1, "callback progress reaches the blocking dialog");
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_registered_download_reports_live_progress_while_the_result_stays_pending()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            RecordingDialogService dialogs = new() { Result = ConfirmDialogResult.Confirm };
+            await using MainWindowViewModel main = new(dialogs: dialogs,
+                settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            OcrManagedFileDialogs.EnsureAttached(main, services);
+
+            TaskCompletionSource reportsSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<Result> pending = services.ExtensionFiles.Interaction!.ConfirmAndDownloadAsync(
+                Plan(), async (progress, token) =>
+                {
+                    (progress as IDownloadProgress)?.ReportFile(
+                        new DownloadFileProgress("inference.onnx", "running", 512, 1024));
+                    reportsSent.TrySetResult();
+                    await release.Task;
+                    return Result.Success();
+                });
+
+            try
+            {
+                await reportsSent.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                DownloadTaskStatus running = services.DownloadTasks.List().Single();
+                running.State.Should().Be(DownloadTaskService.RunningState,
+                    "the confirmed download registers while still running");
+                running.Progress.Should().BeApproximately(0.5, 0.001);
+                pending.IsCompleted.Should().BeFalse(
+                    "the interaction awaits the real download completion, never fire-and-forget");
+            }
+            finally
+            {
+                release.TrySetResult();
+            }
+
+            (await pending.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess.Should().BeTrue();
+            services.DownloadTasks.List().Single().State.Should()
+                .Be(DownloadTaskService.SucceededState);
             return 0;
         }, CancellationToken.None);
     }
@@ -154,16 +206,15 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
     }
 
     [Fact]
-    public async Task Download_callback_runs_off_the_dispatcher_even_in_inline_modal_fallback()
+    public async Task Download_callback_runs_off_the_dispatcher()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             RecordingDialogService dialogs = new() { Result = ConfirmDialogResult.Confirm };
-            RecordingModalRunner modal = new();
             await using MainWindowViewModel main = new(dialogs: dialogs,
-                modalOperations: modal, settingsPath: settings.Path,
+                settingsPath: settings.Path,
                 appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
@@ -180,8 +231,8 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
 
             result.IsSuccess.Should().BeTrue();
             onDispatcher.Should().BeFalse(
-                "the host download delegate is pinned to a background task; the inline modal " +
-                "fallback must never run file/network work on the UI thread");
+                "the host download delegate is pinned to a background registry task; file and " +
+                "network work must never run on the UI thread");
             return 0;
         }, CancellationToken.None);
     }
@@ -268,32 +319,48 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
     }
 
     [Fact]
-    public async Task Cancellation_returns_an_actionable_failure()
+    public async Task Cancelling_the_registered_task_returns_an_actionable_failure()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             RecordingDialogService dialogs = new() { Result = ConfirmDialogResult.Confirm };
-            CancellingModalRunner modal = new();
             await using MainWindowViewModel main = new(dialogs: dialogs,
-                modalOperations: modal, settingsPath: settings.Path,
+                settingsPath: settings.Path,
                 appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
             OcrManagedFileDialogs.EnsureAttached(main, services);
 
-            Result result = await services.ExtensionFiles.Interaction!.ConfirmAndDownloadAsync(
-                Plan(), (_, token) =>
+            using CancellationTokenSource cts = new();
+            Task<Result> pending = services.ExtensionFiles.Interaction!.ConfirmAndDownloadAsync(
+                Plan(), async (_, token) =>
                 {
-                    token.ThrowIfCancellationRequested();
-                    return Task.FromResult(Result.Success());
-                });
+                    await Task.Delay(Timeout.Infinite, token);
+                    return Result.Success();
+                }, cts.Token);
+
+            for (int attempt = 0;
+                 attempt < 400 &&
+                 services.DownloadTasks.List().SingleOrDefault()?.State !=
+                 DownloadTaskService.RunningState;
+                 attempt++)
+            {
+                await Task.Delay(25);
+            }
+
+            services.DownloadTasks.List().SingleOrDefault()?.State.Should()
+                .Be(DownloadTaskService.RunningState, "the confirmed download registered");
+            await cts.CancelAsync();
+            Result result = await pending.WaitAsync(TimeSpan.FromSeconds(10));
 
             result.IsFailure.Should().BeTrue();
             result.ErrorCode.Should()
                 .Be(OcrManagedFileDialogs.DesktopManagedFileInteraction.CancelledCode);
+            services.DownloadTasks.List().Single().State.Should()
+                .Be(DownloadTaskService.CancelledState);
             return 0;
         }, CancellationToken.None);
     }
@@ -456,36 +523,6 @@ public sealed class OcrManagedFileDialogTests(AvaloniaSharedSessionFixture headl
             return viewModel is ConfirmDialogViewModel && typeof(TResult) == typeof(ConfirmDialogResult)
                 ? (TResult?)(object)ConfirmDialogResult.Confirm
                 : default;
-        }
-    }
-
-    private sealed class RecordingModalRunner : IModalOperationRunner
-    {
-        public List<ModalOperationOptions> Options { get; } = [];
-        public List<BlockingOperationDialogViewModel> BlockingDialogs { get; } = [];
-
-        public async Task<T> RunAsync<T>(ModalOperationOptions options,
-            Func<ModalOperationContext, Task<T>> operation, CancellationToken cancellationToken = default)
-        {
-            Options.Add(options);
-            using BlockingOperationDialogViewModel dialog = new();
-            BlockingDialogs.Add(dialog);
-            ModalOperationContext context = new(dialog, cancellationToken, false);
-            T result = await Task.Run(() => operation(context), cancellationToken);
-            context.ApplyPendingUpdates();
-            return result;
-        }
-    }
-
-    private sealed class CancellingModalRunner : IModalOperationRunner
-    {
-        public async Task<T> RunAsync<T>(ModalOperationOptions options,
-            Func<ModalOperationContext, Task<T>> operation, CancellationToken cancellationToken = default)
-        {
-            using CancellationTokenSource cancelled = new();
-            await cancelled.CancelAsync();
-            using BlockingOperationDialogViewModel dialog = new();
-            return await operation(new ModalOperationContext(dialog, cancelled.Token, false));
         }
     }
 }

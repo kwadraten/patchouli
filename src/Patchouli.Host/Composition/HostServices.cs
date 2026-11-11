@@ -58,6 +58,7 @@ using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Downloads;
 using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
@@ -149,7 +150,9 @@ public sealed class HostServices
         AppStorageLocations storagePaths = (appPaths ?? new PlatformAppPaths()).Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(storagePaths);
         ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor);
-        LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
+        DownloadTasks = new DownloadTaskService();
+        LayoutModelDownload =
+            new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath, DownloadTasks);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = infrastructure?.Clock ?? new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
@@ -226,13 +229,15 @@ public sealed class HostServices
         OcrAdapters = adapterRegistry;
         _ndlKotenModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlKotenModel);
         NdlKotenModelDownload =
-            new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory);
+            new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory,
+                DownloadTasks);
         _ndlLiteModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlLiteModel);
         NdlLiteModelDownload =
-            new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory);
+            new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory, DownloadTasks);
         _rapidOcrModelHttpClient = httpClients.CreateClient(HostHttpPurpose.RapidOcrModel);
         RapidOcrModelDownload =
-            new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory);
+            new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory,
+                DownloadTasks);
         HostPdfServices pdf = infrastructure?.Pdf ?? HostPdfServices.CreateDefault();
         PdfPreviewRenderer = pdf.PreviewRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdf.Renderer, Clock,
@@ -326,16 +331,31 @@ public sealed class HostServices
             LibraryRevisions);
         ChapterScanner = new ChapterScanService(Pages, DocumentTrees, DocumentMarkdown, Markdown);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
+        PluginFiles = new Plugins.PluginManagedFileService(
+            Path.Combine(storagePaths.DataDirectory, "models", "plugins"), _pluginDownloadHttpClient);
         Plugins = infrastructure?.PluginApi ?? new Plugins.HostPluginApi(
             Host.Plugins.PluginRegistry.RegistryPath(storagePaths.DataDirectory),
             reportException: (exception, operation) =>
-                _reportUnexpectedException(exception, "plugins", operation));
+                _reportUnexpectedException(exception, "plugins", operation),
+            managedFiles: PluginFiles);
         _ownsPluginApi = infrastructure?.PluginApi is null;
+        ManagedFileInventory = new ManagedFiles.ManagedFileInventoryService(TranslationExtensions,
+            ExtensionFiles, OcrStorage, Plugins, PluginFiles);
         PluginStore = infrastructure?.PluginStore ?? new Plugins.PluginStore(_pluginCatalogHttpClient,
             _pluginDownloadHttpClient, new Plugins.PluginStoreOptions
             {
                 DataDirectory = storagePaths.DataDirectory
-            });
+            }, downloads: DownloadTasks, registryChanged: pluginId => Task.Run(() =>
+            {
+                if (Plugins is Plugins.HostPluginApi liveApi)
+                {
+                    liveApi.RefreshRegistry();
+                }
+                else
+                {
+                    _ = Plugins.Mounts;
+                }
+            }));
         _ownsPluginStore = infrastructure?.PluginStore is null;
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
@@ -508,6 +528,7 @@ public sealed class HostServices
     public OcrPresetDefaults OcrDefaults { get; }
     public OcrPresetSelectionService OcrSelections { get; }
     public ExtensionManagedFileService ExtensionFiles { get; }
+    public DownloadTaskService DownloadTasks { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
@@ -556,6 +577,19 @@ public sealed class HostServices
     /// Empty when no enabled registry records exist; plugin processes start lazily.
     /// </summary>
     public IMcpPluginApi Plugins { get; }
+
+    /// <summary>
+    /// Confirmed-download service for plugin-declared managed files ([[files]]). The UI bridge
+    /// assigns <see cref="Plugins.PluginManagedFileService.Interaction"/>; nothing prompts or
+    /// downloads without an explicit UI call — process launch only injects destination args.
+    /// </summary>
+    public Plugins.PluginManagedFileService PluginFiles { get; }
+
+    /// <summary>
+    /// Unified managed-file inventory: merges FSX extension declaration groups and plugin
+    /// <c>[[files]]</c> declaration groups by canonical directory for Local Files management.
+    /// </summary>
+    public ManagedFiles.ManagedFileInventoryService ManagedFileInventory { get; }
 
     public Plugins.IPluginStore PluginStore { get; }
 
@@ -1066,7 +1100,9 @@ public sealed class HostServices
             pluginStore.Dispose();
         }
 
+        DownloadTasks.Dispose();
         ExtensionFiles.Dispose(); // Close admission and cancel desktop prompts/direct downloads.
+        PluginFiles.Dispose(); // Same admission close for confirmed plugin managed-file downloads.
         IOcrQueueScheduler ocrQueue = ((QueuedOcrRunCoordinator)Ocr).Queue;
         if (ocrQueue is IAsyncDisposable ownedOcrQueue)
         {
@@ -1086,7 +1122,9 @@ public sealed class HostServices
 
         await LibraryRevisionMonitor.DisposeAsync();
         await TranslationExtensions.DisposeAsync();
+        await DownloadTasks.DisposeAsync();
         await ExtensionFiles.DisposeAsync();
+        await PluginFiles.DisposeAsync();
 
         // Page rendering owns the reusable PDFium document sessions for interactive viewing.
         // Every render consumer has stopped above, so disposing it now closes every open

@@ -974,9 +974,14 @@ public sealed class ExtensionManagedFileServiceTests : IDisposable
     [Fact]
     public async Task DisposeAsync_cancels_and_drains_a_direct_download_before_release()
     {
-        StubHandler handler = new((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        StubHandler handler = new((_, _) =>
         {
-            Content = new StreamContent(new NeverEndingStream())
+            entered.TrySetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new NeverEndingStream())
+            };
         });
         string managed = Path.Combine(_modelsRoot, "m");
         ExtensionManagedFileService service = Service(handler);
@@ -987,8 +992,10 @@ public sealed class ExtensionManagedFileServiceTests : IDisposable
         ]);
 
         Task<Result> download = service.DownloadAsync(plan);
-        // The stream blocks until the linked shutdown token fires — dispose must cancel the
-        // real work and wait for its file cleanup before releasing the transport.
+        // Wait until the response is streaming — the download is genuinely blocked mid-read —
+        // then dispose must cancel the real work and wait for its file cleanup before
+        // releasing the transport.
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await service.DisposeAsync();
         await FluentActions.Invoking(() => download).Should().ThrowAsync<OperationCanceledException>();
         Directory.GetFiles(managed, "*.part").Should().BeEmpty(

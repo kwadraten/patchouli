@@ -10,12 +10,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Results;
-using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Composition;
-using Patchouli.Host.Extensions;
-using Patchouli.Infrastructure.Bibliography.MetadataLookup;
-using Patchouli.Infrastructure.Ocr;
-using Patchouli.Infrastructure.Translation;
+using Patchouli.Host.ManagedFiles;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 
@@ -23,16 +19,27 @@ namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed partial class LocalFileManagementSettingsViewModel : SettingsSectionViewModelBase
 {
-    // Cosmetic ordering only — keeps the familiar row order for the known managed-directory
-    // aliases; unknown kinds and fallback directories sort after, by path. This is display
-    // metadata, never an engine-id switch: rows and downloads come from FSX declarations.
-    private static readonly string[] PreferredDirectoryKindOrder =
-    [
-        "doclayout-yolo-models", "pp-doclayout-v3-models",
-        "ndl-koten-models", "ndlocr-lite-models", "rapidocr-models"
-    ];
+    // Confirmation text for declaration-group downloads through the shared managed-file
+    // dialog: generic managed-file wording — a row may merge FSX and plugin declarations.
+    private static readonly ManagedFileDialogText DownloadText = new(
+        "下载文件",
+        "下载并修复文件",
+        "「{0}」缺少必需的文件，需要下载后才能使用。",
+        "「{0}」的必需文件缺失或校验不匹配，需要重新下载后才能使用。",
+        "书库已切换，未执行文件下载；请在新书库中重新触发该操作。",
+        "文件下载已取消。",
+        "已取消文件下载。",
+        OcrManagedFileDialogs.DesktopManagedFileInteraction.DeclinedCode,
+        OcrManagedFileDialogs.DesktopManagedFileInteraction.CancelledCode);
 
     private readonly MainWindowViewModel _main;
+
+    // One admitted download per canonical directory: the slot registers before any prepare or
+    // prompt await, so a second click for the same row can never reach a second confirmation.
+    // Other directories stay downloadable — the shared queue serializes the real work.
+    private readonly Dictionary<string, Task> _admittedDownloads =
+        new(ManagedFileService.PathComparer());
+
     private long _loadGeneration;
 
     public LocalFileManagementSettingsViewModel(MainWindowViewModel main)
@@ -44,12 +51,6 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
     }
 
     [ExcludeFromDerivedGeneration] public ObservableCollection<ManagedLocationViewModel> Locations { get; }
-
-    [ObservableProperty] public partial bool IsDownloading { get; private set; }
-
-    [ObservableProperty] public partial double DownloadProgress { get; private set; }
-
-    public bool CanDownloadModels => !IsDownloading;
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand DownloadModelsCommand { get; }
@@ -69,8 +70,9 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
             // Declaration reads and disk stats are real I/O — they stay off the dispatcher even
             // when callers or handlers would otherwise complete inline.
-            IReadOnlyList<ManagedLocationFileGroup> groups = await Task.Run(
-                () => LoadManagedFileGroupsAsync(services, cancellationToken), cancellationToken);
+            IReadOnlyList<ManagedInventoryGroup> groups = await Task.Run(
+                () => services.ManagedFileInventory.DescribeAsync(cancellationToken),
+                cancellationToken);
             if (generation != Volatile.Read(ref _loadGeneration) ||
                 !_main.IsCurrentLibraryContext(services, libraryGeneration) ||
                 cancellationToken.IsCancellationRequested)
@@ -80,10 +82,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
             }
 
             Locations.Clear();
-            // Model-file groups come from the actual FSX ManagedFile declarations of every
-            // known extension package — arbitrary future packages appear through the same
-            // mechanism without a per-engine switch.
-            foreach (ManagedLocationFileGroup group in groups)
+            // Managed-file groups come from the unified inventory: actual FSX ManagedFile
+            // declarations of every known extension package plus plugin [[files]] declarations —
+            // arbitrary future owners appear through the same mechanism without a UI switch.
+            foreach (ManagedInventoryGroup group in groups)
             {
                 Locations.Add(new ManagedLocationViewModel(this, group.Name, group.Directory,
                     true, true, DownloadKindFor(group.DirectoryKind), group));
@@ -131,127 +133,6 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         }
     }
 
-    /// <summary>
-    ///     Every declared managed-file directory group, merged across extensions by canonical
-    ///     destination directory so two packages sharing a model location produce one row.
-    /// </summary>
-    private async Task<IReadOnlyList<ManagedLocationFileGroup>> LoadManagedFileGroupsAsync(
-        HostServices services, CancellationToken cancellationToken)
-    {
-        OcrStorageLocations storage = services.OcrStorage;
-        Dictionary<string, ManagedLocationFileGroup> merged = new(StringComparer.OrdinalIgnoreCase);
-        List<string> order = [];
-        foreach (string extensionId in CandidateExtensionIds(services))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            ExtensionConfigurationDescription description;
-            try
-            {
-                description = await services.TranslationExtensions
-                    .GetConfigurationDescriptionAsync(extensionId, cancellationToken)
-                    .ConfigureAwait(true);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                continue;
-            }
-
-            if (!description.HasTrustedSchema)
-            {
-                continue;
-            }
-
-            ConfigFieldDescriptor[] managedFields = description.Fields
-                .Where(field => field.ManagedFiles is { Count: > 0 })
-                .ToArray();
-            if (managedFields.Length == 0)
-            {
-                continue;
-            }
-
-            ExtensionConfigSnapshot config;
-            try
-            {
-                config = await services.TranslationExtensions.Manager
-                    .ReadConfigAsync(extensionId, cancellationToken).ConfigureAwait(true);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                config = EmptyConfig();
-            }
-
-            IReadOnlyList<ExtensionManagedFileGroup> groups;
-            ExtensionConfigSnapshot resolvedConfig;
-            try
-            {
-                resolvedConfig = services.ExtensionFiles.ResolveDefaults(extensionId, managedFields,
-                    config);
-                groups = await services.ExtensionFiles
-                    .DescribeGroupsAsync(extensionId, managedFields, config, cancellationToken)
-                    .ConfigureAwait(true);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                continue;
-            }
-
-            foreach (ExtensionManagedFileGroup group in groups)
-            {
-                if (!merged.TryGetValue(group.Directory, out ManagedLocationFileGroup? target))
-                {
-                    string name = storage.ModelDirectoryDisplayNameFor(group.DirectoryKind) ??
-                                  $"{description.Name} {group.FieldLabel}";
-                    target = new ManagedLocationFileGroup(group.ExtensionId, group.DirectoryKind,
-                        group.Directory, name);
-                    merged[group.Directory] = target;
-                    order.Add(group.Directory);
-                }
-
-                target.Merge(group, resolvedConfig);
-            }
-        }
-
-        return order.OrderBy(directory =>
-            {
-                ManagedLocationFileGroup group = merged[directory];
-                int rank = group.DirectoryKind is { } kind
-                    ? Array.FindIndex(PreferredDirectoryKindOrder,
-                        candidate => string.Equals(candidate, kind, StringComparison.OrdinalIgnoreCase))
-                    : -1;
-                return (rank < 0 ? PreferredDirectoryKindOrder.Length : rank, directory);
-            }, Comparer<(int, string)>.Create(static (left, right) =>
-            {
-                int rank = left.Item1.CompareTo(right.Item1);
-                return rank != 0 ? rank : StringComparer.OrdinalIgnoreCase.Compare(left.Item2, right.Item2);
-            }))
-            .Select(directory => merged[directory])
-            .ToArray();
-    }
-
-    private static IEnumerable<string> CandidateExtensionIds(HostServices services)
-    {
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        foreach (string id in BuiltInOcrExtensions.PackageIds
-                     .Concat(BuiltInPdfTextLayerExtensions.Packages.Select(package => package.Id))
-                     .Concat(BuiltInLayoutRecognitionExtensions.Packages.Select(package => package.Id))
-                     .Concat(BuiltInLayoutRecognitionExtensions.Packages.Select(package => package.Id))
-                     .Concat(BuiltInTranslationExtensions.Packages.Select(package => package.Id))
-                     .Concat(BuiltInMetadataExtensions.Packages.Select(package => package.Id))
-                     .Concat(services.TranslationExtensions.ListWorkingPackages())
-                     .Concat(services.TranslationExtensions.Manager.List().Select(info => info.Id)))
-        {
-            if (seen.Add(id))
-            {
-                yield return id;
-            }
-        }
-    }
-
-    private static ExtensionConfigSnapshot EmptyConfig()
-    {
-        return new ExtensionConfigSnapshot(new Dictionary<string, string>(), 0);
-    }
-
     /// <summary>Legacy download-kind tag retained for rows/tests; the download itself is generic.</summary>
     private static ModelDownloadKind DownloadKindFor(string? directoryKind)
     {
@@ -281,7 +162,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         ManagedLocationViewModel? location = Locations.FirstOrDefault(static l => l.CanDownload);
         if (location is null)
         {
-            SetStatus("没有可下载的模型位置。");
+            SetStatus("没有可下载的文件位置。");
             return;
         }
 
@@ -290,20 +171,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
     internal async Task DownloadModelsAsync(ManagedLocationViewModel location)
     {
-        if (IsDownloading || (location.DownloadKind == ModelDownloadKind.None && location.Group is null))
+        if (location.Group is null)
         {
             return;
         }
-
-        string title = location.DownloadKind switch
-        {
-            ModelDownloadKind.DocLayoutYolo => "下载 DocLayout-YOLO 版面模型",
-            ModelDownloadKind.PpDocLayoutV3 => "下载 PP-DocLayoutV3 版面模型",
-            ModelDownloadKind.NdlKoten => "下载 NDL古典籍OCR-Lite 模型",
-            ModelDownloadKind.NdlLite => "下载 NDLOCR-Lite 模型",
-            ModelDownloadKind.RapidOcr => "下载 RapidOCR 模型",
-            _ => $"下载 {location.Name}"
-        };
 
         HostServices services = await _main.ServicesAsync();
         int libraryGeneration = _main.LibraryGeneration;
@@ -313,88 +184,104 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
             return;
         }
 
-        // Re-read the group's missing/invalid set at click time so the confirmation and the
-        // overwrite flags describe the real on-disk state, not the load-time snapshot. The
-        // re-read is declaration+disk I/O and stays off the dispatcher.
-        ManagedLocationFileGroup? group = location.Group is null
-            ? null
-            : (await Task.Run(() => LoadManagedFileGroupsAsync(services, CancellationToken.None)))
-            .FirstOrDefault(candidate => string.Equals(candidate.Directory, location.Path,
-                StringComparison.OrdinalIgnoreCase)) ?? location.Group;
-        IReadOnlyList<ExtensionManagedFileDownload> missing = group?.Missing ?? [];
-        if (group is not null && missing.Count == 0)
+        string key = Path.GetFullPath(location.Path);
+        if (ActiveDownload(location.Path) is not null)
         {
-            SetStatus($"{location.Name}的文件已完整，无需下载。");
+            SetStatus($"{location.Name}的下载已在进行中。");
             return;
         }
 
-        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-        {
-            SetStatus("书库已切换，未执行下载。");
-            return;
-        }
-
-        long totalBytes = group?.TotalExpectedBytes ?? 0;
-        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
-            new ConfirmDialogViewModel(
-                title,
-                $"将从网络下载约 {FormatBytes(totalBytes)} 的模型与配置文件到：\n{location.Path}",
-                "下载",
-                confirmDanger: false));
-        if (choice != ConfirmDialogResult.Confirm)
-        {
-            return;
-        }
-
-        // The prompt may have been open across a library switch — the captured host instance
-        // must still be the live one before any network/file work starts.
-        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-        {
-            SetStatus("书库已切换，未执行下载。");
-            return;
-        }
-
-        IsDownloading = true;
-        DownloadProgress = 0;
-        SetStatus($"正在下载 {location.Name}…");
+        // The slot registers before any await so a second click for this row can never reach a
+        // second confirmation; only this directory is deduplicated, other rows stay live. It
+        // completes only in the outer finally — after stats refresh — so a same-row caller
+        // joins the whole operation, never an intermediate point.
+        TaskCompletionSource admitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _admittedDownloads[key] = admitted.Task;
         try
         {
-            // Progress<T> captured this dispatcher; the download itself always runs on a
-            // background task — a modal runner's inline fallback must never put network/disk
-            // I/O on the UI thread.
-            Progress<double> progress = new(value => DownloadProgress = value);
-            Result result = group is null
-                ? Result.Failure(AppErrorCodes.ValidationFailed,
-                    $"没有可下载的声明文件：{location.Name}。")
-                : await Task.Run(() => services.ExtensionFiles.DownloadAsync(
-                    new ExtensionManagedFilesPlan(group.ExtensionId, location.Name,
-                        group.ResolvedConfig ?? EmptyConfig(), missing), progress));
-            if (result.IsFailure)
-            {
-                SetStatus($"下载失败：{result.ErrorMessage}");
-                return;
-            }
-
+            // Re-read the group's declarations at click time so the confirmation and the
+            // overwrite flags describe the real on-disk state, not the load-time snapshot. The
+            // re-read is declaration+disk I/O and stays off the dispatcher; a group that
+            // disappeared yields no download — never a stale fallback plan.
+            Result<ManagedInventoryDownload> prepared = await Task.Run(() =>
+                services.ManagedFileInventory.PrepareDownloadAsync(location.Path,
+                    CancellationToken.None));
             if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
             {
                 return;
             }
 
-            await location.RefreshAsync();
-            SetStatus($"{location.Name}下载完成。");
+            if (prepared.IsFailure)
+            {
+                // Prepare failures are actionable (e.g. conflicting duplicate declarations) —
+                // surface the real message instead of a vague refresh hint.
+                SetStatus($"下载失败：{prepared.ErrorMessage}");
+                return;
+            }
+
+            ManagedInventoryDownload download = prepared.Value;
+            if (download.Plan.IsEmpty)
+            {
+                SetStatus($"{location.Name}的文件已完整，无需下载。");
+                return;
+            }
+
+            SetStatus($"正在下载 {location.Name}…");
+            // The shared confirmation owns the prompt, the queue registration and the modal
+            // runner — the single progress and per-file status surface.
+            Result result = await ManagedFileDialogs.ConfirmAndDownloadAsync(_main, services,
+                libraryGeneration, download.Plan, download.Download, DownloadText,
+                CancellationToken.None);
+
+            // The library may have switched while the dialog ran; never stamp stale status or
+            // refresh rows belonging to another context.
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
+            if (result.IsSuccess)
+            {
+                await location.RefreshAsync();
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+            }
+
+            SetStatus(result.IsSuccess
+                ? $"{location.Name}下载完成。"
+                : $"下载未完成：{result.ErrorMessage}");
         }
-        catch (OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            SetStatus("下载已取消。");
-        }
-        catch (Exception exception)
-        {
-            SetStatus($"下载失败：{exception.Message}");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                SetStatus($"下载失败：{exception.Message}");
+            }
         }
         finally
         {
-            IsDownloading = false;
+            _admittedDownloads.Remove(key);
+            admitted.TrySetResult();
         }
+    }
+
+    private Task? ActiveDownload(string path)
+    {
+        string key = Path.GetFullPath(path);
+        if (!_admittedDownloads.TryGetValue(key, out Task? running))
+        {
+            return null;
+        }
+
+        if (!running.IsCompleted)
+        {
+            return running;
+        }
+
+        _admittedDownloads.Remove(key);
+        return null;
     }
 
     internal async Task ClearLocationAsync(ManagedLocationViewModel location)
@@ -461,7 +348,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
     /// re-derived after the prompt so a stale snapshot can never authorize a delete.
     /// </summary>
     private async Task ClearDeclaredGroupAsync(HostServices services, int libraryGeneration,
-        ManagedLocationViewModel location, ManagedLocationFileGroup declaredGroup)
+        ManagedLocationViewModel location, ManagedInventoryGroup declaredGroup)
     {
         IReadOnlyList<DeclaredTarget> targets =
             await Task.Run(() => DeclaredExistingTargets(declaredGroup));
@@ -502,10 +389,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
         // Re-derive the deletable set after confirmation: a stale snapshot must never delete,
         // and only the freshly declared+verified targets are removed.
-        ManagedLocationFileGroup? fresh =
-            (await Task.Run(() => LoadManagedFileGroupsAsync(services, CancellationToken.None)))
+        ManagedInventoryGroup? fresh =
+            (await Task.Run(() => services.ManagedFileInventory.DescribeAsync(CancellationToken.None)))
             .FirstOrDefault(candidate => string.Equals(candidate.Directory, location.Path,
-                StringComparison.OrdinalIgnoreCase));
+                ManagedFileService.PathComparison()));
         if (fresh is null || !_main.IsCurrentLibraryContext(services, libraryGeneration))
         {
             SetStatus("目录的声明信息已变化，未执行清理。");
@@ -516,7 +403,7 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         // A changed declaration cannot broaden an earlier confirmation, nor authorize deleting
         // a newer user file that appeared at the same path while the prompt was open.
         targets = targets.Where(confirmed => currentTargets.Any(current =>
-                string.Equals(current.Path, confirmed.Path, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(current.Path, confirmed.Path, ManagedFileService.PathComparison()) &&
                 current.Bytes == confirmed.Bytes && current.WriteUtcTicks == confirmed.WriteUtcTicks &&
                 current.Sha256 == confirmed.Sha256))
             .ToArray();
@@ -537,11 +424,11 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
     /// declaration-driven clear may ever delete. Directories and reparse points are excluded so
     /// a junctioned target is never followed and a subfolder is never removed.
     /// </summary>
-    internal static IReadOnlyList<DeclaredTarget> DeclaredExistingTargets(ManagedLocationFileGroup group)
+    internal static IReadOnlyList<DeclaredTarget> DeclaredExistingTargets(ManagedInventoryGroup group)
     {
         List<DeclaredTarget> targets = [];
-        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        foreach (ExtensionManagedFileDownload file in group.Files)
+        HashSet<string> seen = new(ManagedFileService.PathComparer());
+        foreach (ManagedFileDownload file in group.Files)
         {
             string destination = Path.GetFullPath(file.DestinationPath);
             if (!seen.Add(destination) || !File.Exists(destination))
@@ -702,52 +589,6 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
     }
 }
 
-/// <summary>
-/// One merged managed-file directory group backing a Local Files row: arbitrary extension
-/// declarations contributing files into the same canonical directory. Not an engine registry —
-/// it is built purely from FSX-declared groups.
-/// </summary>
-internal sealed class ManagedLocationFileGroup(
-    string extensionId,
-    string? directoryKind,
-    string directory,
-    string name)
-{
-    private readonly List<ExtensionManagedFileDownload> _files = [];
-    private readonly List<ExtensionManagedFileDownload> _missing = [];
-
-    public string ExtensionId => extensionId;
-    public string? DirectoryKind => directoryKind;
-    public string Directory => directory;
-    public string Name => name;
-    public IReadOnlyList<ExtensionManagedFileDownload> Files => _files;
-    public IReadOnlyList<ExtensionManagedFileDownload> Missing => _missing;
-    public ExtensionConfigSnapshot? ResolvedConfig { get; private set; }
-    public long TotalExpectedBytes => _missing.Sum(file => file.ExpectedBytes ?? 0);
-
-    public void Merge(ExtensionManagedFileGroup group, ExtensionConfigSnapshot resolvedConfig)
-    {
-        ResolvedConfig ??= resolvedConfig;
-        foreach (ExtensionManagedFileDownload file in group.Files)
-        {
-            if (_files.All(existing => !string.Equals(existing.DestinationPath, file.DestinationPath,
-                    StringComparison.OrdinalIgnoreCase)))
-            {
-                _files.Add(file);
-            }
-        }
-
-        foreach (ExtensionManagedFileDownload file in group.Missing)
-        {
-            if (_missing.All(existing => !string.Equals(existing.DestinationPath, file.DestinationPath,
-                    StringComparison.OrdinalIgnoreCase)))
-            {
-                _missing.Add(file);
-            }
-        }
-    }
-}
-
 public enum ModelDownloadKind
 {
     None,
@@ -769,7 +610,7 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
         bool canDownload,
         bool canClear,
         ModelDownloadKind downloadKind = ModelDownloadKind.None,
-        ManagedLocationFileGroup? group = null)
+        ManagedInventoryGroup? group = null)
     {
         _parent = parent;
         Name = name;
@@ -789,8 +630,8 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
     public bool CanClear { get; }
     public ModelDownloadKind DownloadKind { get; }
 
-    /// <summary>The FSX-declared file group backing this row; null for plain temp/work directories.</summary>
-    internal ManagedLocationFileGroup? Group { get; }
+    /// <summary>The declared managed-file group backing this row; null for plain temp/work directories.</summary>
+    internal ManagedInventoryGroup? Group { get; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(SizeDisplay))]
