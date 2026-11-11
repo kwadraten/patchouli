@@ -35,5 +35,6 @@ public enum WorkspaceTabKind
     About = 9,
     Changelog,
     Agent = 11,
-    PluginView = 12
+    PluginView = 12,
+    ExtensionManager
 }

@@ -113,6 +113,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private OcrQueueViewModel? _ocrQueueViewModel;
     private SearchEvidenceViewModel? _searchEvidenceViewModel;
     private AgentWorkspaceViewModel? _agentWorkspace;
+    private ExtensionManagerViewModel? _extensionManagerViewModel;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -385,6 +386,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AgentWorkspaceViewModel AgentWorkspace =>
         _agentWorkspace ??= CreateWithActivityTracker(() => new AgentWorkspaceViewModel(this));
 
+    /// <summary>
+    /// The cached 插件与扩展管理 page — kept alive across tab closes so a reopen reuses the
+    /// loaded catalog state and refreshes in place.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public ExtensionManagerViewModel ExtensionManager =>
+        _extensionManagerViewModel ??= CreateWithActivityTracker(() => new ExtensionManagerViewModel(this));
+
     [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchPageAwareness.ModeOptions;
 
@@ -464,6 +473,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
+    public AsyncCommand OpenExtensionManagerCommand { get; }
     public AsyncCommand OpenProcessingSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand OpenAgentTabCommand { get; }
@@ -1080,6 +1090,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenProcessingSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("import"));
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
+        OpenExtensionManagerCommand = new AsyncCommand(OpenExtensionManagerAsync);
+        SeedExtensionMenuEntries();
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
         OpenAgentTabCommand = new AsyncCommand(OpenAgentTabAsync);
         OpenOtherLibraryCommand = new AsyncCommand(OpenOtherLibraryAsync);
@@ -1502,6 +1514,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private void AttachHostServices(HostServices services)
     {
         OcrManagedFileDialogs.EnsureAttached(this, services);
+        PluginManagedFileDialogs.EnsureAttached(this, services);
         services.ObserveSettingsStore(_settingsStore);
         McpServerHost mcpHost = new(services, ReportUnexpectedException);
         _mcpHost = mcpHost;
@@ -3063,6 +3076,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<AgentMcpConfigDialogViewModel, AgentMcpConfigDialog>();
         service.Register<UpdateAvailableDialogViewModel, UpdateAvailableDialog>();
         service.Register<InfoDialogViewModel, InfoDialog>();
+        service.Register<TaskQueueErrorsDialogViewModel, TaskQueueErrorsDialog>();
+        service.Register<DownloadOperationDialogViewModel, DownloadOperationDialog>();
         return service;
     }
 
@@ -3222,6 +3237,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await ActivateTabAsync(WorkspaceTabKind.Agent, "Agent", "Agent 集成", "Terminal", true,
             () => AgentWorkspace);
         await AgentWorkspace.RefreshAsync(false);
+    }
+
+    /// <summary>Opens the standalone 插件与扩展管理 page and refreshes both inventories.</summary>
+    public async Task OpenExtensionManagerAsync()
+    {
+        await ActivateTabAsync(WorkspaceTabKind.ExtensionManager, "ExtensionManager", "插件与扩展管理",
+            "Puzzle", true, () => ExtensionManager);
+        await ExtensionManager.LoadAsync();
     }
 
     private async Task OpenOtherLibraryAsync()

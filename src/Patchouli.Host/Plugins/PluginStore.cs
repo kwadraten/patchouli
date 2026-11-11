@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
+using Patchouli.Host.Downloads;
 
 namespace Patchouli.Host.Plugins;
 
@@ -19,16 +21,21 @@ public sealed class PluginStore : IPluginStore, IDisposable
     private readonly string _registryPath;
     private readonly string _indexCachePath;
     private readonly string _signatureCachePath;
+    private readonly Func<string, Task>? _registryChanged;
+    private readonly DownloadTaskService? _downloads;
     private PluginCatalogIndex? _lastIndex;
 
     public PluginStore(HttpClient catalogClient, HttpClient downloadClient, PluginStoreOptions options,
-        IPluginProcessLauncher? launcher = null, PluginClientOptions? clientOptions = null)
+        IPluginProcessLauncher? launcher = null, PluginClientOptions? clientOptions = null,
+        Func<string, Task>? registryChanged = null, DownloadTaskService? downloads = null)
     {
         _catalogClient = catalogClient;
         _downloadClient = downloadClient;
         _options = options;
         _launcher = launcher ?? new PluginProcessLauncher();
         _clientOptions = clientOptions ?? new PluginClientOptions();
+        _registryChanged = registryChanged;
+        _downloads = downloads;
         _pluginsRoot = Path.GetFullPath(Path.Combine(options.DataDirectory, "plugins"));
         _registryPath = PluginRegistry.RegistryPath(options.DataDirectory);
         _indexCachePath = Path.Combine(_pluginsRoot, "catalog", "index.json");
@@ -92,8 +99,45 @@ public sealed class PluginStore : IPluginStore, IDisposable
             $"{remote.ErrorMessage} No verified cached index is available.");
     }
 
-    public async Task<Result<PluginDefinition>> InstallAsync(string pluginId,
+    public Task<Result<PluginDefinition>> InstallAsync(string pluginId,
         CancellationToken cancellationToken = default)
+    {
+        if (_downloads is not { } downloads)
+        {
+            return InstallCoreAsync(pluginId, null, cancellationToken);
+        }
+
+        Result<PluginDefinition>? captured = null;
+        Task<Result> completion = downloads.Start($"安装插件 {pluginId}", async (progress, token) =>
+        {
+            captured = await InstallCoreAsync(pluginId, progress, token)
+                .ConfigureAwait(false);
+            if (captured.IsSuccess)
+            {
+                return Result.Success();
+            }
+
+            return captured.ErrorCode == "cancelled" || token.IsCancellationRequested
+                ? Result.Failure(DownloadTaskService.CancelledErrorCode, captured.ErrorMessage!)
+                : Result.Failure(captured.ErrorCode!, captured.ErrorMessage!);
+        }, cancellationToken, canRetry: false).Completion;
+        return AwaitInstall(completion);
+
+        async Task<Result<PluginDefinition>> AwaitInstall(Task<Result> pending)
+        {
+            Result outcome = await pending.ConfigureAwait(false);
+            return outcome.IsSuccess && captured is { } done
+                ? done
+                : captured ?? Result<PluginDefinition>.Failure(
+                    outcome.ErrorCode == DownloadTaskService.CancelledErrorCode
+                        ? "cancelled"
+                        : outcome.ErrorCode ?? "install_failed",
+                    outcome.ErrorMessage ?? "The plugin installation failed.");
+        }
+    }
+
+    private async Task<Result<PluginDefinition>> InstallCoreAsync(string pluginId,
+        IProgress<double>? progress, CancellationToken cancellationToken)
     {
         string temporaryRoot = Path.Combine(_pluginsRoot, ".staging", Guid.NewGuid().ToString("N"));
         string workDirectory = Path.Combine(temporaryRoot, "package");
@@ -144,7 +188,8 @@ public sealed class PluginStore : IPluginStore, IDisposable
 
                 Directory.CreateDirectory(temporaryRoot);
                 Result<PluginDefinition> prepared = await PluginPackageInstaller.PrepareAsync(_downloadClient,
-                    entry, artifact, workDirectory, Path.Combine(temporaryRoot, "package.zip"), cancellationToken);
+                    entry, artifact, workDirectory, Path.Combine(temporaryRoot, "package.zip"),
+                    cancellationToken, progress);
                 if (prepared.IsFailure)
                 {
                     return prepared;
@@ -265,6 +310,282 @@ public sealed class PluginStore : IPluginStore, IDisposable
         }
     }
 
+    public async Task<Result> UninstallAsync(string pluginId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (!IsSafePluginId(pluginId))
+                {
+                    return Result.Failure(AppErrorCodes.InvalidArgument,
+                        $"'{pluginId}' is not a valid plugin id.");
+                }
+
+                PluginRegistrySnapshot registry = PluginRegistry.Load(_registryPath, true);
+                string pluginRoot = Path.GetFullPath(Path.Combine(_pluginsRoot, pluginId));
+                List<(PluginRegistryEntry Record, string Version)> managed = [];
+                foreach (PluginRegistryEntry record in registry.Entries)
+                {
+                    if (record.Source == "community" &&
+                        ManagedRecordVersion(record, pluginRoot) is { } version)
+                    {
+                        managed.Add((record, version));
+                    }
+                }
+
+                if (managed.Count == 0)
+                {
+                    PluginRegistryEntry? other = FindRecord(registry.Entries, pluginId);
+                    return other is not null
+                        ? Result.Failure(AppErrorCodes.InvalidArgument,
+                            $"Plugin '{pluginId}' is not installed from the community store.")
+                        : Result.Failure(AppErrorCodes.NotFound,
+                            $"Plugin '{pluginId}' is not installed from the community store.");
+                }
+
+                Result<List<string>> scope = DeletionScope(pluginRoot, pluginId,
+                    managed.Select(entry => entry.Version));
+                if (scope.IsFailure)
+                {
+                    return Result.Failure(scope.ErrorCode!, scope.ErrorMessage!);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                List<PluginRegistryEntry> disabled = registry.Entries
+                    .Select(record => managed.Any(entry => ReferenceEquals(entry.Record, record))
+                        ? record with { Enabled = false }
+                        : record).ToList();
+                PluginRegistry.Save(_registryPath, disabled);
+                await NotifyRegistryChangedAsync(pluginId);
+
+                Result ancestors = ValidateAncestors(pluginRoot, pluginId);
+                if (ancestors.IsFailure)
+                {
+                    return Result.Failure(ancestors.ErrorCode!,
+                        $"Plugin '{pluginId}' was disabled and its grants revoked, but {ancestors.ErrorMessage} " +
+                        "Retry the uninstall.");
+                }
+
+                HashSet<string> registered = new(managed.Select(entry => entry.Version),
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (string directory in scope.Value
+                             .OrderBy(directory => registered.Contains(Path.GetFileName(directory))
+                                 ? 1
+                                 : 0))
+                {
+                    if (ContainsReparsePoint(directory))
+                    {
+                        return Result.Failure(AppErrorCodes.InvalidArgument,
+                            $"Plugin '{pluginId}' was disabled and its grants revoked, but a reparse point " +
+                            $"appeared under '{directory}' before cleanup; refusing to delete. Retry the uninstall.");
+                    }
+
+                    try
+                    {
+                        Directory.Delete(directory, true);
+                    }
+                    catch (Exception exception) when (IsExpected(exception))
+                    {
+                        return Result.Failure(AppErrorCodes.ValidationFailed,
+                            $"Plugin '{pluginId}' was disabled and its grants revoked, but package " +
+                            $"cleanup is incomplete ({exception.Message}). Retry the uninstall to finish removal.");
+                    }
+                }
+
+                List<PluginRegistryEntry> remaining = registry.Entries
+                    .Where(record => managed.All(entry => !ReferenceEquals(entry.Record, record))).ToList();
+                PluginRegistry.Save(_registryPath, remaining);
+                await NotifyRegistryChangedAsync(pluginId);
+                if (Directory.Exists(pluginRoot) && !HasReparsePoint(pluginRoot) &&
+                    !Directory.EnumerateFileSystemEntries(pluginRoot).Any())
+                {
+                    TryDelete(pluginRoot);
+                }
+
+                return Result.Success();
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return Result.Failure("cancelled", "The plugin uninstall was cancelled.");
+        }
+        catch (Exception exception) when (IsExpected(exception))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, exception.Message);
+        }
+    }
+
+    private async Task NotifyRegistryChangedAsync(string pluginId)
+    {
+        if (_registryChanged is not null)
+        {
+            await _registryChanged(pluginId);
+        }
+    }
+
+    private bool IsSafePluginId(string pluginId)
+    {
+        return !string.IsNullOrWhiteSpace(pluginId) &&
+               string.Equals(Path.GetFileName(pluginId), pluginId, StringComparison.Ordinal) &&
+               pluginId is not ("." or "..") &&
+               pluginId.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+               string.Equals(
+                   Path.GetDirectoryName(Path.GetFullPath(Path.Combine(_pluginsRoot, pluginId))),
+                   _pluginsRoot, PathComparison);
+    }
+
+    private static string? ManagedRecordVersion(PluginRegistryEntry record, string pluginRoot)
+    {
+        string manifest = Path.GetFullPath(record.ManifestPath);
+        if (!string.Equals(Path.GetFileName(manifest), PluginManifestLoader.ManifestFileName,
+                PathComparison))
+        {
+            return null;
+        }
+
+        string? versionDirectory = Path.GetDirectoryName(manifest);
+        if (versionDirectory is null ||
+            !string.Equals(Path.GetDirectoryName(versionDirectory), pluginRoot, PathComparison))
+        {
+            return null;
+        }
+
+        string version = Path.GetFileName(versionDirectory);
+        return ExtensionVersion.TryParse(version, out _) ? version : null;
+    }
+
+    private Result<List<string>> DeletionScope(string pluginRoot, string pluginId,
+        IEnumerable<string> registeredVersions)
+    {
+        try
+        {
+            Result ancestors = ValidateAncestors(pluginRoot, pluginId);
+            if (ancestors.IsFailure)
+            {
+                return Failure<List<string>>(ancestors.ErrorCode!, ancestors.ErrorMessage!);
+            }
+
+            HashSet<string> registered = new(registeredVersions, StringComparer.OrdinalIgnoreCase);
+            List<string> scope = [];
+            if (Directory.Exists(pluginRoot))
+            {
+                foreach (string directory in Directory.EnumerateDirectories(pluginRoot))
+                {
+                    string version = Path.GetFileName(directory);
+                    if (HasReparsePoint(directory))
+                    {
+                        if (registered.Contains(version))
+                        {
+                            return Failure<List<string>>(AppErrorCodes.InvalidArgument,
+                                $"Plugin '{pluginId}' has a reparse point at registered version '{directory}'; refusing to delete.");
+                        }
+
+                        continue;
+                    }
+
+                    bool selected = registered.Contains(version);
+                    if (!selected)
+                    {
+                        Result<PluginDefinition> manifest = PluginManifestLoader.Load(
+                            Path.Combine(directory, PluginManifestLoader.ManifestFileName));
+                        selected = manifest.IsSuccess &&
+                                   manifest.Value.Id == pluginId &&
+                                   manifest.Value.Version == version &&
+                                   File.Exists(Path.Combine(directory, ".patchouli-install.json"));
+                    }
+
+                    if (!selected)
+                    {
+                        continue;
+                    }
+
+                    if (ContainsReparsePoint(directory))
+                    {
+                        return Failure<List<string>>(AppErrorCodes.InvalidArgument,
+                            $"Plugin '{pluginId}' contains a reparse point under '{directory}'; refusing to delete.");
+                    }
+
+                    scope.Add(directory);
+                }
+            }
+
+            return Result<List<string>>.Success(scope);
+        }
+        catch (Exception exception) when (IsExpected(exception))
+        {
+            return Failure<List<string>>(AppErrorCodes.ValidationFailed, exception.Message);
+        }
+    }
+
+    private Result ValidateAncestors(string pluginRoot, string pluginId)
+    {
+        string? ancestor = pluginRoot;
+        string stop = Path.GetFullPath(_options.DataDirectory);
+        while (ancestor is not null)
+        {
+            if (HasReparsePoint(ancestor))
+            {
+                return Result.Failure(AppErrorCodes.InvalidArgument,
+                    $"Plugin '{pluginId}' resolves through a reparse point at '{ancestor}'; refusing to delete.");
+            }
+
+            ancestor = string.Equals(ancestor, stop, PathComparison)
+                ? null
+                : Path.GetDirectoryName(ancestor);
+        }
+
+        return Result.Success();
+    }
+
+    private static bool HasReparsePoint(string path)
+    {
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException
+                                              or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsReparsePoint(string directory)
+    {
+        if (HasReparsePoint(directory))
+        {
+            return true;
+        }
+
+        List<string> pending = [directory];
+        while (pending.Count > 0)
+        {
+            string current = pending[^1];
+            pending.RemoveAt(pending.Count - 1);
+            foreach (string entry in Directory.EnumerateFileSystemEntries(current))
+            {
+                if (HasReparsePoint(entry))
+                {
+                    return true;
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    pending.Add(entry);
+                }
+            }
+        }
+
+        return false;
+    }
+
     private async Task<Result> UpdateRecordAsync(string pluginId, string? manifestPath, bool enabled,
         CancellationToken cancellationToken)
     {
@@ -369,13 +690,20 @@ public sealed class PluginStore : IPluginStore, IDisposable
         List<PluginStoreItem> items = [];
         foreach (PluginCatalogEntry entry in index.Plugins.OrderBy(plugin => plugin.Name, StringComparer.Ordinal))
         {
-            PluginRegistryEntry? current = FindRecord(registry.Entries, entry.Id);
+            PluginRegistryEntry? current = FindRecord(registry.Entries, entry.Id) ??
+                                           registry.Entries.FirstOrDefault(record =>
+                                               ManagedRecordVersion(record,
+                                                       Path.GetFullPath(Path.Combine(_pluginsRoot, entry.Id)))
+                                                   is not null && record.Source == "community");
             Result<PluginDefinition> installed = current is null
                 ? Failure<PluginDefinition>(AppErrorCodes.NotFound, "not installed")
                 : PluginManifestLoader.Load(current.ManifestPath);
             string? installedVersion = installed.IsSuccess && installed.Value.Id == entry.Id
                 ? installed.Value.Version
-                : null;
+                : current is not null
+                    ? ManagedRecordVersion(current,
+                        Path.GetFullPath(Path.Combine(_pluginsRoot, entry.Id)))
+                    : null;
             List<string> versions = InstalledVersions(entry.Id);
             items.Add(new PluginStoreItem(entry, installedVersion, current?.Enabled == true,
                 current is not null && IsManagedRecord(current, entry.Id), versions,
@@ -429,9 +757,8 @@ public sealed class PluginStore : IPluginStore, IDisposable
 
     private bool IsManagedRecord(PluginRegistryEntry record, string pluginId)
     {
-        string root = Path.GetFullPath(Path.Combine(_pluginsRoot, pluginId)) + Path.DirectorySeparatorChar;
-        return record.Source == "community" &&
-               Path.GetFullPath(record.ManifestPath).StartsWith(root, PathComparison);
+        string root = Path.GetFullPath(Path.Combine(_pluginsRoot, pluginId));
+        return record.Source == "community" && ManagedRecordVersion(record, root) is not null;
     }
 
     private static async Task<byte[]> GetLimitedAsync(HttpClient client, string url, int maximum,

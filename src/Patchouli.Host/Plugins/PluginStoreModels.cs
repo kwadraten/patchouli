@@ -68,4 +68,6 @@ public interface IPluginStore
 
     Task<Result<PluginDefinition>> ActivateAsync(string pluginId, string version,
         CancellationToken cancellationToken = default);
+
+    Task<Result> UninstallAsync(string pluginId, CancellationToken cancellationToken = default);
 }

@@ -3,16 +3,21 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Plugins;
-using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.UI.ViewModels.Settings;
 
-namespace Patchouli.UI.ViewModels.Settings;
+namespace Patchouli.UI.ViewModels;
 
-public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewModelBase
+/// <summary>
+/// The community-plugin half of the 插件与扩展管理 page: loads the signed store index and owns the
+/// install / enable / uninstall operations. It keeps the settings-section base for its Status /
+/// LastError / SaveState plumbing even though it no longer lives inside the settings page.
+/// </summary>
+public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
 
-    public PluginStoreSettingsViewModel(MainWindowViewModel main)
+    public PluginStoreViewModel(MainWindowViewModel main)
     {
         _main = main;
         RefreshCommand = new AsyncCommand(cancellationToken => RefreshAsync(true, cancellationToken));
@@ -59,7 +64,7 @@ public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewMo
         }
 
         IsBusy = true;
-        Status = force ? "正在刷新签名索引…" : "正在读取插件商店…";
+        Status = force ? "正在刷新签名索引…" : "正在读取插件目录…";
         try
         {
             HostServices services = await _main.ServicesAsync();
@@ -68,7 +73,7 @@ public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewMo
             {
                 LastError = result.ErrorMessage;
                 SaveState = SettingsSaveState.Failed;
-                Status = $"插件商店不可用：{result.ErrorMessage}";
+                Status = $"插件目录不可用：{result.ErrorMessage}";
                 return;
             }
 
@@ -89,7 +94,7 @@ public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewMo
         {
             LastError = exception.Message;
             SaveState = SettingsSaveState.Failed;
-            Status = $"插件商店加载失败：{exception.Message}";
+            Status = $"插件目录加载失败：{exception.Message}";
         }
         finally
         {
@@ -134,31 +139,80 @@ public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewMo
             "无法更改插件状态", enabled ? "插件已启用。" : "插件已停用。");
     }
 
-    internal async Task RollbackAsync(PluginStoreRowViewModel row, CancellationToken cancellationToken)
+    internal async Task UninstallAsync(PluginStoreRowViewModel row, CancellationToken cancellationToken)
     {
-        string? version = row.Item.RollbackVersion;
-        if (version is null)
+        if (IsBusy)
         {
             return;
         }
 
+        PluginCatalogEntry plugin = row.Item.Catalog;
+        int generation = _main.LibraryGeneration;
+        string versions = string.Join("、", row.Item.InstalledVersions);
         ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
-            new ConfirmDialogViewModel("回滚插件？",
-                $"将 {row.Item.Catalog.Name} 切换到本机保留的 {version}。已提交的题录和插件自有数据不会回滚。",
-                "回滚"));
-        if (choice != ConfirmDialogResult.Confirm)
+            new ConfirmDialogViewModel("卸载插件？",
+                $"将卸载 {plugin.Name}，删除已安装版本" +
+                (versions.Length > 0 ? $"（{versions}）" : "") +
+                "与可回滚版本包及其包内数据。书库中的文献、题录、插件在书库中保存的数据以及版本目录之外的插件数据不会删除。",
+                "卸载"));
+        if (choice != ConfirmDialogResult.Confirm || IsBusy ||
+            _main.LibraryGeneration != generation)
         {
             return;
         }
 
-        await RunOperationAsync(row, async services =>
+        IsBusy = true;
+        Status = $"正在卸载 {plugin.Name}…";
+        try
+        {
+            HostServices services = await _main.ServicesAsync();
+            if (!_main.IsCurrentLibraryContext(services, generation))
             {
-                Result<PluginDefinition> result = await services.PluginStore.ActivateAsync(row.Item.Catalog.Id,
-                    version, cancellationToken);
-                return result.IsSuccess
-                    ? Result.Success()
-                    : Result.Failure(result.ErrorCode!, result.ErrorMessage!);
-            }, "插件回滚失败", $"已回滚到 {version}。");
+                return;
+            }
+
+            Result result = await Task.Run(
+                () => services.PluginStore.UninstallAsync(plugin.Id, cancellationToken),
+                cancellationToken);
+            bool mountGone = await Task.Run(() => services.Plugins.FindMount(plugin.Id) is null);
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (result.IsSuccess || mountGone)
+            {
+                await _main.ClosePluginViewsAsync(plugin.Id);
+            }
+
+            if (result.IsFailure)
+            {
+                LastError = result.ErrorMessage;
+                SaveState = SettingsSaveState.Failed;
+                Status = $"插件卸载失败：{result.ErrorMessage}";
+                await RefreshAfterOperationAsync(services, Status);
+                await _main.RefreshExtensionMenuAsync();
+                return;
+            }
+
+            LastError = null;
+            SaveState = SettingsSaveState.Clean;
+            await RefreshAfterOperationAsync(services, $"已卸载 {plugin.Name}。");
+            await _main.RefreshExtensionMenuAsync();
+        }
+        catch (Exception exception)
+        {
+            if (_main.LibraryGeneration == generation)
+            {
+                LastError = exception.Message;
+                SaveState = SettingsSaveState.Failed;
+                Status = $"插件卸载失败：{exception.Message}";
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     private async Task RunOperationAsync(PluginStoreRowViewModel row,
@@ -219,50 +273,62 @@ public sealed partial class PluginStoreSettingsViewModel : SettingsSectionViewMo
     }
 }
 
-public sealed class PluginStoreRowViewModel : ViewModelBase
+/// <summary>One community-plugin card on the 插件与扩展管理 page.</summary>
+public sealed class PluginStoreRowViewModel : ExtensionManagerRowViewModel
 {
-    private readonly PluginStoreSettingsViewModel _owner;
+    private readonly PluginStoreViewModel _owner;
 
-    internal PluginStoreRowViewModel(PluginStoreSettingsViewModel owner, PluginStoreItem item)
+    internal PluginStoreRowViewModel(PluginStoreViewModel owner, PluginStoreItem item)
     {
         _owner = owner;
         Item = item;
         InstallCommand = new AsyncCommand(cancellationToken => owner.InstallAsync(this, cancellationToken));
         ToggleCommand = new AsyncCommand(cancellationToken => owner.ToggleAsync(this, cancellationToken));
-        RollbackCommand = new AsyncCommand(cancellationToken => owner.RollbackAsync(this, cancellationToken));
+        UninstallCommand = new AsyncCommand(cancellationToken => owner.UninstallAsync(this, cancellationToken));
     }
 
     internal PluginStoreItem Item { get; }
-    public bool IsBusy => _owner.IsBusy;
+    public override bool IsBusy => _owner.IsBusy;
 
     internal void NotifyBusyChanged()
     {
         Raise(nameof(IsBusy));
     }
 
-    public string Name => Item.Catalog.Name;
-    public string Description => Item.Catalog.Description;
+    public override ExtensionManagerRowCategory Category => ExtensionManagerRowCategory.Plugin;
+    public override bool IsInstalled => Item.InstalledVersion is not null;
+    public override string Name => Item.Catalog.Name;
+    public override string Description => Item.Catalog.Description;
+    public override string IdText => Item.Catalog.Id;
+    public override string VersionText => $"版本 {Item.Catalog.Version} · {Item.Catalog.License}";
+
+    public override string MetaText =>
+        $"来源：{Item.Catalog.Repository} · 宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 书库权限：无";
+
+    public override IReadOnlyList<string> Tags =>
+        Item is { InstalledVersion: not null, IsManaged: false }
+            ? ["插件", "本地"]
+            : ["插件", "社区"];
+
     public string Id => Item.Catalog.Id;
-    public string VersionText => $"版本 {Item.Catalog.Version} · {Item.Catalog.License}";
     public string SourceText => $"来源：{Item.Catalog.Repository}";
     public string PermissionsText => $"宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 书库权限：无";
 
-    public bool ShowInstall => Item.UnavailableReason is null &&
-                               (Item.InstalledVersion is null || Item.UpdateAvailable);
+    public override bool ShowInstall => Item.UnavailableReason is null &&
+                                        (Item.InstalledVersion is null || Item.UpdateAvailable);
 
-    public string InstallText => Item.UpdateAvailable ? "更新" : "安装";
-    public bool ShowToggle => Item.InstalledVersion is not null;
-    public string ToggleText => Item.IsEnabled ? "停用" : "启用";
-    public bool ShowRollback => Item.RollbackVersion is not null;
-    public string RollbackText => $"回滚到 {Item.RollbackVersion}";
+    public override string InstallText => Item.UpdateAvailable ? "更新" : "安装";
+    public override bool ShowToggle => Item.InstalledVersion is not null;
+    public override string ToggleText => Item.IsEnabled ? "停用" : "启用";
+    public override bool ShowUninstall => Item.IsManaged && Item.InstalledVersion is not null;
 
-    public string StatusText => Item.UnavailableReason ??
-                                (Item.InstalledVersion is null
-                                    ? "尚未安装"
-                                    : $"{Item.InstalledVersion} · {(Item.IsEnabled ? "已启用" : "已停用")}" +
-                                      (Item.UpdateAvailable ? " · 有可用更新" : ""));
+    public override string StatusText => Item.UnavailableReason ??
+                                         (Item.InstalledVersion is null
+                                             ? "尚未安装"
+                                             : $"{Item.InstalledVersion} · {(Item.IsEnabled ? "已启用" : "已停用")}" +
+                                               (Item.UpdateAvailable ? " · 有可用更新" : ""));
 
-    public AsyncCommand InstallCommand { get; }
-    public AsyncCommand ToggleCommand { get; }
-    public AsyncCommand RollbackCommand { get; }
+    public override AsyncCommand InstallCommand { get; }
+    public override AsyncCommand ToggleCommand { get; }
+    public override AsyncCommand UninstallCommand { get; }
 }

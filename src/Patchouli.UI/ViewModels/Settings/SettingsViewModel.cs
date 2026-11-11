@@ -73,7 +73,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.PdfTextLayer);
         LlmSettings = new LlmSettingsViewModel(main);
         ExtensionSettings = new ExtensionSettingsViewModel(main);
-        PluginStore = new PluginStoreSettingsViewModel(main);
         AgentIntegrationSettings = new AgentIntegrationSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
@@ -97,7 +96,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
             CaywSettings,
-            UpdateSettings, ExtensionSettings, PluginStore
+            UpdateSettings, ExtensionSettings
         ];
 
         _sections = sections;
@@ -137,8 +136,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
             new SettingsSectionEntryViewModel("virtual_links", "文献虚拟链接解析", VirtualLinkSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
-            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings),
-            new SettingsSectionEntryViewModel("plugin_store", "插件商店", PluginStore)
+            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
         ];
         foreach (SettingsSectionEntryViewModel entry in SectionEntries)
         {
@@ -182,7 +180,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new NavCategoryViewModel("搜索", "Filter", search),
             new NavCategoryViewModel("引用与题录", "Quote", citations),
             new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
-            new NavCategoryViewModel("插件", "Puzzle", PluginStore),
             new NavCategoryViewModel("更新设置", "Download", UpdateSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
@@ -235,7 +232,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public OcrComponentCatalogSettingsViewModel OcrTextLayerCatalog { get; }
     public LlmSettingsViewModel LlmSettings { get; }
     public ExtensionSettingsViewModel ExtensionSettings { get; }
-    public PluginStoreSettingsViewModel PluginStore { get; }
 
     public ExtensionSettingsViewModel CreateExtensionEditor()
     {

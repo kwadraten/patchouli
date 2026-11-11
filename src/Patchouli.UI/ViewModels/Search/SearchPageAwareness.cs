@@ -110,6 +110,7 @@ public static class SearchPageAwareness
             WorkspaceTabKind.Changelog => "更新日志",
             WorkspaceTabKind.Agent => "Agent 集成",
             WorkspaceTabKind.PluginView => "插件视图",
+            WorkspaceTabKind.ExtensionManager => "插件与扩展管理",
             _ => kind.ToString()
         };
     }

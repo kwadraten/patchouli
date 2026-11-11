@@ -369,6 +369,17 @@ public sealed partial class MainWindow : Window
             .Observe("ui-event", "ocr-preset-menu-refresh");
     }
 
+    private void OnExtensionMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, e.Source))
+        {
+            return;
+        }
+
+        UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshExtensionMenuAsync, "extension-menu-refresh")
+            .Observe("ui-event", "extension-menu-refresh");
+    }
+
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try

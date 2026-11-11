@@ -440,7 +440,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
             "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录",
-            "同步与快照", "插件", "更新设置");
+            "同步与快照", "更新设置");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
             .Where(content => content is AboutViewModel)
@@ -459,7 +459,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
             .Where(entry =>
-                entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions" or "plugin_store"))
+                entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
@@ -4426,7 +4426,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             Calls.Add("region");
             return Task.FromResult(Result<OcrRun>.Success(Run));
@@ -4473,14 +4473,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
             IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             throw new NotSupportedException();
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             throw new NotSupportedException();
         }

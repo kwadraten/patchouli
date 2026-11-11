@@ -46,6 +46,9 @@
     <DataTemplate DataType="{x:Type local:ChangelogViewModel}">
       <views:ChangelogPage />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type local:ExtensionManagerViewModel}">
+      <views:ExtensionManagerPage />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type local:PluginViewViewModel}">
       <views:PluginViewPage />
     </DataTemplate>
@@ -82,6 +85,7 @@
         <Menu Classes="toolbar" VerticalAlignment="Center" Background="Transparent">
           <MenuItem Header="书库">
             <MenuItem Header="打开其他书库…" Command="{Binding OpenOtherLibraryCommand}" />
+            <MenuItem Header="任务队列" Command="{Binding OpenOcrQueueCommand}" />
             <Separator />
             <MenuItem Header="侧边栏">
               <MenuItem Header="左侧边栏" ToggleType="CheckBox"
@@ -241,6 +245,7 @@
             </MenuItem>
             <Separator />
             <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}"
                       ToolTip.Tip="翻译当前所选题录主文档的全部页面" />
             <MenuItem Header="切换翻译引擎" Classes="translationEngine"
                       ItemsSource="{Binding TranslationEngineMenuEntries}"
@@ -260,7 +265,6 @@
               </MenuItem.Styles>
             </MenuItem>
             <Separator />
-            <MenuItem Header="任务队列" Command="{Binding OpenOcrQueueCommand}" />
             <MenuItem Header="文献加工设置" Command="{Binding OpenProcessingSettingsCommand}" />
           </MenuItem>
           <MenuItem Header="搜索">
@@ -276,6 +280,19 @@
             <MenuItem Header="AI集成设置" Command="{Binding OpenMcpSettingsCommand}" />
             <Separator />
             <MenuItem Header="Agent 集成" Command="{Binding OpenAgentTabCommand}" />
+          </MenuItem>
+          <MenuItem Header="扩展功能" SubmenuOpened="OnExtensionMenuOpened" Classes="extensionMenu"
+                    ItemsSource="{Binding ExtensionMenuEntries}" x:CompileBindings="False">
+            <MenuItem.ItemTemplate>
+              <DataTemplate x:DataType="local:ExtensionMenuEntryViewModel">
+                <TextBlock Text="{Binding Header}" />
+              </DataTemplate>
+            </MenuItem.ItemTemplate>
+            <MenuItem.Styles>
+              <Style Selector="MenuItem.extensionMenu MenuItem">
+                <Setter Property="Command" Value="{Binding OpenCommand}" />
+              </Style>
+            </MenuItem.Styles>
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />
