@@ -37,6 +37,24 @@ public sealed record PluginRuntimeSpec(
     IReadOnlyList<string> Arguments);
 
 /// <summary>
+/// One host-managed file declared at the manifest root ([[files]]): a plugin-relative,
+/// non-traversing file path the host provisions under its own managed directory before the
+/// plugin can rely on it. All fields are static declaration data — reading them never runs
+/// package code, creates directories, or touches the network.
+/// </summary>
+/// <param name="Path">Plugin-relative file path ('/'-separated, no trailing slash or templates).</param>
+/// <param name="DownloadUrl">Optional absolute http(s) location the confirmed download pulls from.</param>
+/// <param name="ExpectedBytes">Pinned byte length when declared.</param>
+/// <param name="Sha256">Pinned lowercase hex digest when declared.</param>
+/// <param name="Version">Optional manifest-side version marker for the declaration.</param>
+public sealed record PluginManagedFile(
+    string Path,
+    string? DownloadUrl,
+    long? ExpectedBytes,
+    string? Sha256,
+    string? Version);
+
+/// <summary>
 /// One declared web view inside a plugin mount ([[ui.views]]). The view itself is a
 /// host-synthesized resource at patchouli://plugin/{id}/views/{view-id}; <see cref="Source"/>
 /// is the plugin-relative file node that serves its HTML payload.
@@ -64,7 +82,8 @@ public sealed record PluginDefinition(
     PluginRuntimeSpec Runtime,
     IReadOnlyList<PluginVfsNode> Nodes,
     IReadOnlyList<PluginVfsEndpoint> Endpoints,
-    IReadOnlyList<PluginViewDeclaration> Views)
+    IReadOnlyList<PluginViewDeclaration> Views,
+    IReadOnlyList<PluginManagedFile> ManagedFiles)
 {
     public string RootUri => Patchouli.Mcp.McpResourceUris.PluginRootUri(Id);
 
@@ -108,6 +127,13 @@ public sealed record PluginDefinition(
     {
         return Views.FirstOrDefault(view =>
             string.Equals(view.Id, viewId, StringComparison.Ordinal));
+    }
+
+    /// <summary>The declared host-managed file with one exact relative path, if any.</summary>
+    public PluginManagedFile? FindManagedFile(string relativePath)
+    {
+        return ManagedFiles.FirstOrDefault(file =>
+            string.Equals(file.Path, relativePath, StringComparison.Ordinal));
     }
 
     /// <summary>The declared node matching a concrete relative path (literal or template), if any.</summary>

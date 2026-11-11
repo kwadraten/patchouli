@@ -148,8 +148,104 @@ public static class PluginManifestLoader
 
         VfsDeclaration vfs = ParseVfs(document, packageDirectory);
         IReadOnlyList<PluginViewDeclaration> views = ParseUiViews(document, vfs.Nodes);
+        IReadOnlyList<PluginManagedFile> managedFiles = ParseManagedFiles(document);
         return Result<PluginDefinition>.Success(new PluginDefinition(id, version, schema, hostApi,
-            name, description, readmePath, packageDirectory, runtime, vfs.Nodes, vfs.Endpoints, views));
+            name, description, readmePath, packageDirectory, runtime, vfs.Nodes, vfs.Endpoints, views,
+            managedFiles));
+    }
+
+    /// <summary>
+    /// Parses the optional manifest-root [[files]] array: host-managed files the plugin needs
+    /// provisioned under the host's managed directory. Every entry requires a plugin-relative,
+    /// non-traversing literal file path (no directories, trailing slashes or templates); the
+    /// optional download_url must be absolute http(s), bytes a positive integer, sha256 a
+    /// 64-hex digest and version a non-empty string. Static declaration only — no package
+    /// file, disk or network access happens here.
+    /// </summary>
+    private static IReadOnlyList<PluginManagedFile> ParseManagedFiles(
+        IReadOnlyDictionary<string, object?> document)
+    {
+        if (!document.TryGetValue("files", out object? filesValue))
+        {
+            return [];
+        }
+
+        const int maxManagedFiles = 256;
+        IReadOnlyList<object?> entries = RequireArray(filesValue, "files");
+        if (entries.Count > maxManagedFiles)
+        {
+            throw Fail($"Manifest [[files]] may declare at most {maxManagedFiles} files.");
+        }
+
+        List<PluginManagedFile> files = [];
+        HashSet<string> seenPaths = new(StringComparer.Ordinal);
+        foreach (object? entryValue in entries)
+        {
+            IReadOnlyDictionary<string, object?> entry = RequireTable(entryValue, "files[]");
+            string path = RequiredString(entry, "path");
+            if (!McpResourceUris.IsValidPluginRelativePath(path) ||
+                path.EndsWith("/", StringComparison.Ordinal) ||
+                path.Contains('{') || path.Contains('}'))
+            {
+                throw Fail($"files entry '{path}' must be a non-traversing relative file path " +
+                           "(no directories, trailing slashes or templates).");
+            }
+
+            if (!seenPaths.Add(path))
+            {
+                throw Fail($"Duplicate files path '{path}'.");
+            }
+
+            string? downloadUrl = OptionalStrictString(entry, "download_url", $"files '{path}'");
+            if (downloadUrl is not null &&
+                (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out Uri? url) ||
+                 url.Scheme is not ("http" or "https")))
+            {
+                throw Fail($"files '{path}' download_url '{downloadUrl}' must be an absolute " +
+                           "http or https URL.");
+            }
+
+            long? expectedBytes = null;
+            if (entry.TryGetValue("bytes", out object? bytesValue))
+            {
+                if (bytesValue is not long size || size <= 0)
+                {
+                    throw Fail($"files '{path}' bytes must be a positive integer.");
+                }
+
+                expectedBytes = size;
+            }
+
+            string? sha256 = OptionalStrictString(entry, "sha256", $"files '{path}'");
+            if (sha256 is not null)
+            {
+                if (sha256.Length != 64 || !sha256.All(char.IsAsciiHexDigit))
+                {
+                    throw Fail($"files '{path}' sha256 must be a 64-character hex digest.");
+                }
+
+                sha256 = sha256.ToLowerInvariant();
+            }
+
+            files.Add(new PluginManagedFile(path, downloadUrl, expectedBytes, sha256,
+                OptionalStrictString(entry, "version", $"files '{path}'")));
+        }
+
+        return files;
+    }
+
+    /// <summary>An optional string field that must be a non-empty string when present at all.</summary>
+    private static string? OptionalStrictString(IReadOnlyDictionary<string, object?> table, string key,
+        string field)
+    {
+        if (!table.TryGetValue(key, out object? value))
+        {
+            return null;
+        }
+
+        return value is string text && text.Length > 0
+            ? text
+            : throw Fail($"Manifest field '{key}' of {field} must be a non-empty string.");
     }
 
     /// <summary>

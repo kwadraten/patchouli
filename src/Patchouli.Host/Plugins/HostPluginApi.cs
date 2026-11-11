@@ -15,6 +15,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
     private readonly string _registryPath;
     private readonly IPluginProcessLauncher _launcher;
     private readonly PluginClientOptions _options;
+    private readonly PluginManagedFileService? _managedFiles;
     private readonly Action<Exception, string>? _reportException;
     private readonly object _gate = new();
     private readonly Dictionary<string, PluginMount> _mounts = new(StringComparer.Ordinal);
@@ -25,12 +26,14 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
 
     /// <summary>Registry location override; production passes the device data root path.</summary>
     public HostPluginApi(string registryPath, IPluginProcessLauncher? launcher = null,
-        PluginClientOptions? options = null, Action<Exception, string>? reportException = null)
+        PluginClientOptions? options = null, Action<Exception, string>? reportException = null,
+        PluginManagedFileService? managedFiles = null)
     {
         _registryPath = registryPath;
         _launcher = launcher ?? new PluginProcessLauncher();
         _options = options ?? new PluginClientOptions();
         _reportException = reportException;
+        _managedFiles = managedFiles;
     }
 
     public IReadOnlyList<string> Diagnostics => Snapshot().Registry.Diagnostics;
@@ -106,10 +109,14 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
                     SerializeDirectoryListing(definition)));
         }
 
-        if (relativePath == "files" || relativePath.StartsWith("files/", StringComparison.Ordinal))
+        if (relativePath is "files" or "files/")
         {
-            return Result<McpPluginFetchContent?>.Failure(AppErrorCodes.UnsupportedOperation,
-                "The managed-files capability is not supported by this host.");
+            return ManagedFilesListing(mount);
+        }
+
+        if (relativePath.StartsWith("files/", StringComparison.Ordinal))
+        {
+            return ManagedFileStatus(mount, relativePath["files/".Length..]);
         }
 
         if (relativePath is "views" or "views/")
@@ -164,6 +171,136 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
         return Result<McpPluginFetchContent?>.Success(null); // Plugin-owned content: answer live.
     }
 
+    /// <summary>
+    /// The <c>files</c>/<c>files/</c> static fetch: every declared managed file with its
+    /// readiness booleans. Agent-facing — local filesystem paths are never serialized.
+    /// </summary>
+    private Result<McpPluginFetchContent?> ManagedFilesListing(PluginMount mount)
+    {
+        if (mount.Definition.ManagedFiles.Count == 0)
+        {
+            return Result<McpPluginFetchContent?>.Failure(AppErrorCodes.NotFound,
+                $"'files' is not a declared resource of plugin '{mount.Definition.Id}'.");
+        }
+
+        if (_managedFiles is null)
+        {
+            return Result<McpPluginFetchContent?>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Managed plugin files are not available on this host.");
+        }
+
+        return Result<McpPluginFetchContent?>.Success(new McpPluginFetchContent("application/json",
+            SerializeManagedFiles(_managedFiles.DescribeStatus(mount.Definition))));
+    }
+
+    /// <summary>The <c>files/{path}</c> static fetch: one declaration's machine-readable status.</summary>
+    private Result<McpPluginFetchContent?> ManagedFileStatus(PluginMount mount, string filePath)
+    {
+        PluginDefinition definition = mount.Definition;
+        PluginManagedFile? file = definition.FindManagedFile(filePath);
+        if (file is null)
+        {
+            return Result<McpPluginFetchContent?>.Failure(AppErrorCodes.NotFound,
+                $"'files/{filePath}' is not a declared managed file of plugin '{definition.Id}'.");
+        }
+
+        if (_managedFiles is null)
+        {
+            return Result<McpPluginFetchContent?>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Managed plugin files are not available on this host.");
+        }
+
+        return Result<McpPluginFetchContent?>.Success(new McpPluginFetchContent("application/json",
+            SerializeManagedFile(
+                _managedFiles.DescribeStatus(file, _managedFiles.DestinationFor(definition.Id, file.Path)))));
+    }
+
+    /// <summary>
+    /// Own-plugin surface for the UI bridge: the absolute local path of one declared managed
+    /// file, only when it exists and verifies. This is the single place a filesystem location
+    /// leaves the host — never part of the MCP fetch payload.
+    /// </summary>
+    public Result<string> TryManagedFileLocalPath(string pluginId, string relativePath)
+    {
+        PluginMount? mount = GetMount(pluginId);
+        if (mount is null)
+        {
+            return Result<string>.Failure(AppErrorCodes.NotFound,
+                $"Plugin '{pluginId}' is not registered or is disabled.");
+        }
+
+        if (_managedFiles is null)
+        {
+            return Result<string>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Managed plugin files are not available on this host.");
+        }
+
+        return _managedFiles.TryVerifiedLocalPath(mount.Definition, relativePath);
+    }
+
+    /// <summary>Own-plugin surface for the UI bridge: the public status of all declared managed files.</summary>
+    public Result<PluginManagedFilesStatus> TryManagedFileStatus(string pluginId)
+    {
+        PluginMount? mount = GetMount(pluginId);
+        if (mount is null)
+        {
+            return Result<PluginManagedFilesStatus>.Failure(AppErrorCodes.NotFound,
+                $"Plugin '{pluginId}' is not registered or is disabled.");
+        }
+
+        if (_managedFiles is null)
+        {
+            return Result<PluginManagedFilesStatus>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Managed plugin files are not available on this host.");
+        }
+
+        return Result<PluginManagedFilesStatus>.Success(new PluginManagedFilesStatus(
+            mount.Definition.Id, mount.Definition.Name, _managedFiles.DescribeStatus(mount.Definition)));
+    }
+
+    /// <summary>
+    /// Host-only inventory surface: the validated definitions of every mounted plugin that
+    /// declares managed files. Snapshots the current mounts — disabled and unregistered
+    /// plugins are absent exactly as for <see cref="Mounts"/>, while mounts whose runtime
+    /// start failed or that hold no verb grants still appear: managing host-provisioned
+    /// files is not plugin execution. No process is started and no directory is created.
+    /// </summary>
+    public IReadOnlyList<PluginDefinition> ManagedFileDefinitions()
+    {
+        Snapshot();
+        lock (_gate)
+        {
+            return _mounts.Values
+                .Where(mount => mount.Definition.ManagedFiles.Count > 0)
+                .Select(mount => mount.Definition)
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Own-plugin surface for the UI bridge: plans the mount's declarations and runs the
+    /// service's confirmed ensure (the interaction prompts once per missing set; without an
+    /// assigned interaction missing files are an actionable failure, never an auto-download).
+    /// </summary>
+    public Task<Result> EnsureManagedFilesAsync(string pluginId,
+        CancellationToken cancellationToken = default)
+    {
+        PluginMount? mount = GetMount(pluginId);
+        if (mount is null)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.NotFound,
+                $"Plugin '{pluginId}' is not registered or is disabled."));
+        }
+
+        if (_managedFiles is null)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Managed plugin files are not available on this host."));
+        }
+
+        return _managedFiles.EnsureAsync(mount.Definition, cancellationToken);
+    }
+
     public async Task<Result<McpPluginFindPage>> FindAsync(string pluginId, string relativeScope,
         string? query, int limit, string? cursor, CancellationToken cancellationToken = default)
     {
@@ -201,6 +338,27 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
             return Result<McpPluginFindPage>.Success(new McpPluginFindPage(
                 mount.Definition.Views.Select(view => new McpPluginFindEntry(
                     mount.RootUri + "views/" + view.Id, view.Title, "view")).ToArray(), null));
+        }
+
+        // The host-synthesized files namespace lists statically: every declared managed file
+        // is a browsable entry; there is no plugin-side directory or query to forward to.
+        if (relativeScope is "files" or "files/")
+        {
+            if (mount.Definition.ManagedFiles.Count == 0)
+            {
+                return Result<McpPluginFindPage>.Failure(AppErrorCodes.NotFound,
+                    $"'{relativeScope}' is not a declared directory of plugin '{pluginId}'.");
+            }
+
+            if (!string.IsNullOrEmpty(query))
+            {
+                return Result<McpPluginFindPage>.Failure(AppErrorCodes.InvalidArgument,
+                    "The files namespace is discovery-only and accepts no query.");
+            }
+
+            return Result<McpPluginFindPage>.Success(new McpPluginFindPage(
+                mount.Definition.ManagedFiles.Select(file => new McpPluginFindEntry(
+                    mount.RootUri + "files/" + file.Path, file.Path, "file")).ToArray(), null));
         }
 
         if (!mount.Definition.Nodes.Any(node => node.IsDirectory &&
@@ -470,6 +628,11 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
             entries.Add(new McpPluginFindEntry(mount.RootUri + "views/", "views/", "directory"));
         }
 
+        if (definition.ManagedFiles.Count > 0)
+        {
+            entries.Add(new McpPluginFindEntry(mount.RootUri + "files/", "files/", "directory"));
+        }
+
         entries.Add(new McpPluginFindEntry(mount.RootUri + "plugin.yml", "plugin.yml", "file"));
         entries.Add(new McpPluginFindEntry(mount.RootUri + "README.md", "README.md", "file"));
         return entries.ToArray();
@@ -554,21 +717,64 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
 
     private static string SerializeDirectoryListing(PluginDefinition definition)
     {
+        List<object> entries = definition.Nodes
+            .Where(node => node.Path.Length == 0 ||
+                           !node.Path.TrimEnd('/').Contains('/', StringComparison.Ordinal))
+            .Where(node => !node.IsTemplate)
+            .Select(node => (object)new
+            {
+                uri = node.Path,
+                type = node.IsDirectory ? "directory" : "file",
+                summary = node.Summary
+            })
+            .ToList();
+        // The reserved files/ mount namespace is listed only when the plugin actually
+        // declares managed files — never as an empty directory.
+        if (definition.ManagedFiles.Count > 0)
+        {
+            entries.Add(new { uri = "files/", type = "directory", summary = (string?)null });
+        }
+
         return JsonSerializer.Serialize(new
         {
             uri = "",
             type = "directory",
-            entries = definition.Nodes
-                .Where(node => node.Path.Length == 0 ||
-                               !node.Path.TrimEnd('/').Contains('/', StringComparison.Ordinal))
-                .Where(node => !node.IsTemplate)
-                .Select(node => new
-                {
-                    uri = node.Path,
-                    type = node.IsDirectory ? "directory" : "file",
-                    summary = node.Summary
-                })
+            entries
         });
+    }
+
+    /// <summary>The files/ static listing payload: every declaration with its readiness booleans.</summary>
+    private static string SerializeManagedFiles(IReadOnlyList<PluginManagedFileStatus> statuses)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            uri = "files/",
+            type = "directory",
+            files = statuses.Select(StatusPayload).ToArray()
+        });
+    }
+
+    /// <summary>One files/{path} status payload — declaration metadata and booleans, no local path.</summary>
+    private static string SerializeManagedFile(PluginManagedFileStatus status)
+    {
+        return JsonSerializer.Serialize(StatusPayload(status));
+    }
+
+    private static object StatusPayload(PluginManagedFileStatus status)
+    {
+        return new
+        {
+            path = status.Path,
+            ready = status.Ready,
+            exists = status.Exists,
+            bytes = status.Bytes,
+            sha256 = status.Sha256,
+            expected_bytes = status.ExpectedBytes,
+            missing = status.Missing,
+            mismatch = status.Mismatch,
+            download_url = status.DownloadUrl,
+            version = status.Version
+        };
     }
 
     /// <summary>The static views/{view-id} resource: a compact self-description of one declared view.</summary>
@@ -612,7 +818,12 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
         }
     }
 
-    private (PluginRegistrySnapshot Registry, bool Changed) Snapshot()
+    internal void RefreshRegistry()
+    {
+        Snapshot(true);
+    }
+
+    private (PluginRegistrySnapshot Registry, bool Changed) Snapshot(bool force = false)
     {
         DateTime stamp;
         try
@@ -626,7 +837,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
 
         lock (_gate)
         {
-            if (_mountsCache is not null && stamp == _registryStamp)
+            if (!force && _mountsCache is not null && stamp == _registryStamp)
             {
                 return (_registry, false);
             }
@@ -660,7 +871,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
                 mount.Definition != definition)
             {
                 mount?.DisposeAsync().AsTask().Wait();
-                mount = new PluginMount(definition, entry);
+                mount = new PluginMount(definition, entry, _managedFiles);
                 _mounts[definition.Id] = mount;
             }
 
@@ -695,14 +906,17 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
     private sealed class PluginMount : IAsyncDisposable
     {
         private readonly SemaphoreSlim _startGate = new(1, 1);
+        private readonly PluginManagedFileService? _managedFiles;
         private Task<Result<PluginStdioClient>>? _startTask;
         private PluginStdioClient? _client;
         private string _stateName = "registered";
         private bool _disposed;
 
-        public PluginMount(PluginDefinition definition, PluginRegistryEntry entry)
+        public PluginMount(PluginDefinition definition, PluginRegistryEntry entry,
+            PluginManagedFileService? managedFiles)
         {
             Definition = definition;
+            _managedFiles = managedFiles;
             EffectiveVerbs = entry.AllowedVerbs
                 .Intersect(definition.DeclaredVerbs, StringComparer.Ordinal)
                 .ToArray();
@@ -746,9 +960,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
         {
             try
             {
-                PluginStdioClient client = new(
-                    new PluginProcessSpec(Definition.Runtime.Command, Definition.Runtime.Arguments,
-                        Definition.PackageDirectory), launcher, options);
+                PluginStdioClient client = new(ProcessSpec(), launcher, options);
                 Result started = await client.StartAsync(CancellationToken.None);
                 if (started.IsFailure)
                 {
@@ -769,6 +981,31 @@ public sealed class HostPluginApi : IMcpPluginApi, IAsyncDisposable
                 return Result<PluginStdioClient>.Failure("unavailable",
                     $"The plugin process failed to start: {exception.Message}");
             }
+        }
+
+        /// <summary>
+        /// The launch spec for this mount: when the manifest declares managed files and the host
+        /// wires a managed-file service, the host-controlled root and per-file mappings are
+        /// injected ahead of the plugin's own runtime args (the process learns where its
+        /// provisioned files live; it never receives other plugins' paths).
+        /// </summary>
+        private PluginProcessSpec ProcessSpec()
+        {
+            PluginProcessSpec spec = new(Definition.Runtime.Command, Definition.Runtime.Arguments,
+                Definition.PackageDirectory);
+            if (_managedFiles is null || Definition.ManagedFiles.Count == 0)
+            {
+                return spec;
+            }
+
+            return spec with
+            {
+                ManagedFilesRoot = _managedFiles.ManagedRootFor(Definition.Id),
+                ManagedFiles = Definition.ManagedFiles
+                    .Select(file => new PluginManagedFileMapping(file.Path,
+                        _managedFiles.DestinationFor(Definition.Id, file.Path)))
+                    .ToArray()
+            };
         }
 
         public async ValueTask DisposeAsync()
