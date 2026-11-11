@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Patchouli.Core.Results;
 using Patchouli.Mcp;
 using Patchouli.UI.Views;
 
@@ -26,10 +27,42 @@ public sealed partial class MainWindowViewModel
     /// <summary>Test seam: substitutes the plugin API without starting host services.</summary>
     internal Func<IMcpPluginApi>? PluginApiProvider { get; set; }
 
+    /// <summary>
+    /// Test seam: replaces the <c>files/status</c> leaf — fake <see cref="IMcpPluginApi"/>
+    /// doubles are not <c>HostPluginApi</c>, so the bridge round-trip needs a direct override.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<Result<PluginManagedFilesView>>>?
+        PluginFilesStatusOverride { get; set; }
+
+    /// <summary>
+    /// Test seam: replaces the <c>files/ensure</c> leaf — the real path calls
+    /// <c>HostPluginApi.EnsureManagedFilesAsync</c>, whose confirmation lives inside the
+    /// service's desktop interaction.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<Result<PluginManagedFilesView>>>?
+        PluginFilesEnsureOverride { get; set; }
+
     /// <summary>The plugin API — the provider override in tests, else live host services.</summary>
     internal async Task<IMcpPluginApi> PluginsAsync()
     {
         return PluginApiProvider?.Invoke() ?? (await ServicesAsync()).Plugins;
+    }
+
+    /// <summary>
+    /// Attaches the session's managed-files bridge surface (<c>files/status</c> and the
+    /// host-confirmed <c>files/ensure</c>) — called for every new
+    /// <see cref="PluginViewSession"/> by each container (tab, window, pdf-sidebar). The
+    /// callbacks route through <see cref="PluginManagedFileDialogs"/> so the session stays a
+    /// pure view-model and the host interaction's confirmation/modal-progress remains the
+    /// download authority.
+    /// </summary>
+    internal void ConfigurePluginViewSession(PluginViewSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ManagedFileStatusAsync = (pluginId, cancellationToken) =>
+            PluginManagedFileDialogs.StatusAsync(this, pluginId, cancellationToken);
+        session.ConfirmManagedFilesAsync = (pluginId, cancellationToken) =>
+            PluginManagedFileDialogs.EnsureAsync(this, pluginId, cancellationToken);
     }
 
     /// <summary>Opens a declared plugin view reached through patchouli://plugin/{id}/views/{view-id}.</summary>
@@ -92,6 +125,7 @@ public sealed partial class MainWindowViewModel
         }
 
         PluginViewSession session = new(pluginId, view);
+        ConfigurePluginViewSession(session);
         IPluginViewWindow window = PluginViewWindowFactory?.Invoke(session)
                                    ?? new PluginViewWindow(session);
         _pluginViewWindows[key] = window;
@@ -159,6 +193,43 @@ public sealed partial class MainWindowViewModel
         {
             window.Closed -= OnPluginViewWindowClosed;
             window.Session.Release();
+        }
+    }
+
+    internal async Task ClosePluginViewsAsync(string pluginId)
+    {
+        foreach (WorkspaceTabViewModel tab in Layout.Tabs
+                     .Where(tab => tab.Kind == WorkspaceTabKind.PluginView &&
+                                   tab.Content is PluginViewViewModel view &&
+                                   string.Equals(view.PluginId, pluginId, StringComparison.Ordinal))
+                     .ToArray())
+        {
+            await Workspace.CloseAsync(tab.TabId);
+        }
+
+        foreach (KeyValuePair<PluginViewWindowKey, IPluginViewWindow> pair in _pluginViewWindows
+                     .Where(pair => string.Equals(pair.Key.PluginId, pluginId, StringComparison.Ordinal))
+                     .ToArray())
+        {
+            _pluginViewWindows.Remove(pair.Key);
+            IPluginViewWindow window = pair.Value;
+            window.Closed -= OnPluginViewWindowClosed;
+            try
+            {
+                window.Close();
+            }
+            catch (Exception exception)
+            {
+                UnexpectedExceptions.Sink.Report(exception, nameof(MainWindowViewModel), "close-plugin-view");
+            }
+
+            window.Session.Release();
+        }
+
+        foreach (PdfWorkspaceViewModel pdf in Layout.Tabs
+                     .Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>().ToArray())
+        {
+            await pdf.RemovePluginViewsAsync(pluginId);
         }
     }
 

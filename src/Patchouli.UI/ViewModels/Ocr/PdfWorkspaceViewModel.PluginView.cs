@@ -60,6 +60,7 @@ public sealed partial class PdfWorkspaceViewModel
         }
 
         PluginViewSession session = new(pluginId, view);
+        _main.ConfigurePluginViewSession(session);
         ActivePluginSession?.Release();
         ActivePluginView = view;
         ActivePluginSession = session;
@@ -86,6 +87,23 @@ public sealed partial class PdfWorkspaceViewModel
             session.Release();
             Status = $"插件视图加载失败：{exception.Message}";
         }
+    }
+
+    internal async Task RemovePluginViewsAsync(string pluginId)
+    {
+        if (ActivePluginView is { } view &&
+            string.Equals(TryParsePluginId(view.Uri), pluginId, StringComparison.Ordinal))
+        {
+            ActivePluginSession?.Release();
+            ActivePluginSession = null;
+            ActivePluginView = null;
+            if (ActiveSidebarTab == SidebarTab.Plugin)
+            {
+                ActiveSidebarTab = SidebarTab.Content;
+            }
+        }
+
+        await RefreshPluginSidebarViewsAsync();
     }
 
     /// <summary>Rebuilds the sidebar's plugin-view menu from every enabled mount's declarations.</summary>

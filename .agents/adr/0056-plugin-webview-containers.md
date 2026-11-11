@@ -97,16 +97,55 @@ On webview creation and on every change, the host injects:
   revision and document changes, plus a `patchouli:page` DOM event.
 
 View JavaScript may call `invokeCSharpAction('{"type":"patchouli:request-context"}')` to ask
-the host for a re-push. No host tokens, objects or bridges are exposed beyond this injected
-context. External `http(s)` links open the system browser; only `about:` and `data:`
-navigations are allowed in place.
+the host for a re-push. External `http(s)` links open the system browser; only `about:` and
+`data:` navigations are allowed in place.
+
+### View→host plugin request bridge
+
+A view may also call its *own* plugin's declared `fetch`/`send` surface through a second
+message type. The document sends
+
+```json
+{"type":"patchouli:plugin-request","id":"<string ≤128 chars>","operation":"fetch|send",
+ "path":"<plugin-relative path>","action":"<send action>","args":{...},"request_id":"<optional>"}
+```
+
+through `invokeCSharpAction`, and the host replies by dispatching a
+`patchouli:plugin-response` CustomEvent on `window` whose `detail` is the serialized reply:
+`{id, ok:true, value:{content_type, content}}` for fetch,
+`{id, ok:true, value:{state, result}}` for send, and
+`{id, ok:false, error:{code, message}}` on any failure. Unrecognized messages get no reply;
+a malformed recognized request gets a structured error whenever an id can be recovered.
+
+The bridge is scoped and gated, not ambient:
+
+- The plugin id is always the bound session's own; requests cannot name another plugin and
+  cross-plugin calls are impossible by construction.
+- Every call re-checks `AllowsVerb(pluginId, "view")` plus the operation verb
+  (`fetch`/`send`); revoking a grant mid-session denies subsequent requests.
+- Paths must be plugin-relative (root `""` allowed): URI schemes, absolute or backslash
+  paths, NUL and `.`/`..` components are rejected; declaration and schema validation stay
+  in `IMcpPluginApi` underneath.
+- One request body is capped at 12 MiB chars and in-flight host calls at 16.
+- Replies are dropped unless the same webview, session and document generation is still
+  live, so a released session or a re-navigated document can never receive a late response.
+- The injected init script installs `window.patchouli.fetch(path)` and
+  `window.patchouli.send(path, action, args, requestId)` as stable Promise APIs (60s
+  timeout); context pushes merge `version`/`theme`/`page` fields and never replace the
+  function identities.
+
+No host tokens, objects or HTTP endpoints are exposed, and the unchanged CSP still forbids
+all network access from the document; this bridge is the only way view content can reach
+its own plugin process.
 
 ## Consequences
 
 - The `view` verb now has two delivered meanings: source-image reads on library page/box URIs
   (unchanged, MCP native ImageContent) and descriptor reads on plugin view URIs (text-only).
-  Plugin `put`/`add`/`cite`, managed `files/`, URI resolve, plugin library grants and
-  background plugin actions remain undelivered.
+  Plugin `put`/`add`/`cite`, URI resolve, plugin library grants and
+  background plugin actions remain undelivered. Host-managed `files/` is delivered
+  separately (issue #8): the manifest `[[files]]` declarations, the confirmed-download
+  service and the `--patchouli-managed-files` launch arguments.
 - Plugin pages run plugin HTML/JS in a real browser engine with the host-context injection
   above. This is a capability surface, not a containment boundary; store signature/hash
   verification likewise is not a security guarantee for plugin code.

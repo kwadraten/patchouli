@@ -19,6 +19,7 @@ public sealed class PluginViewViewModel : ViewModelBase
         PluginId = pluginId;
         View = view;
         Session = new PluginViewSession(pluginId, view);
+        _main.ConfigurePluginViewSession(Session);
     }
 
     public string PluginId { get; }

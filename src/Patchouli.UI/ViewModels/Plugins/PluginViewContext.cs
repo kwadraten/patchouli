@@ -83,15 +83,26 @@ public static class PluginViewContextBuilder
 /// an init script injected into the document head before the view's own markup runs (so
 /// <c>window.patchouli</c> is available synchronously at parse time), and a push script
 /// evaluated through <c>InvokeScript</c> that replaces the object, refreshes the CSS custom
-/// properties and dispatches <c>patchouli:theme</c>/<c>patchouli:page</c> CustomEvents. The only
-/// supported web→host message is
-/// <c>invokeCSharpAction({"type":"patchouli:request-context"})</c>, answered with a push.
+/// properties and dispatches <c>patchouli:theme</c>/<c>patchouli:page</c> CustomEvents. The
+/// supported web→host messages are
+/// <c>invokeCSharpAction({"type":"patchouli:request-context"})</c>, answered with a push, and
+/// <c>{"type":"patchouli:plugin-request",...}</c>, the permission-gated own-plugin
+/// fetch/send/files bridge answered with a <c>patchouli:plugin-response</c> CustomEvent.
 /// </summary>
 public static class PluginViewContextScript
 {
     public const string RequestContextMessageType = "patchouli:request-context";
     public const string ThemeEventName = "patchouli:theme";
     public const string PageEventName = "patchouli:page";
+
+    /// <summary>
+    /// View→host message type for permission-gated own-plugin fetch/send calls; replies are
+    /// pushed back as <see cref="PluginResponseEventName"/> CustomEvents on window.
+    /// </summary>
+    public const string PluginRequestMessageType = "patchouli:plugin-request";
+
+    /// <summary>DOM event carrying the serialized bridge reply for a plugin request.</summary>
+    public const string PluginResponseEventName = "patchouli:plugin-response";
 
     /// <summary>
     /// Content-Security-Policy injected into every loaded view document: no network fetches,
@@ -124,11 +135,81 @@ public static class PluginViewContextScript
         });
     }
 
-    /// <summary>Inline script injected into the document head: exposes the initial context and
-    /// applies the palette CSS variables before the view's own markup runs.</summary>
+    /// <summary>Inline script injected into the document head: exposes the initial context,
+    /// applies the palette CSS variables and installs the patchouli.fetch/patchouli.send
+    /// promise APIs before the view's own markup runs.</summary>
     public static string BuildInitScript(PluginViewContext context)
     {
-        return BuildApplyScript(context, false);
+        return BuildApplyScript(context, false) + BuildApiScript();
+    }
+
+    /// <summary>
+    /// Installs <c>window.patchouli.fetch(path)</c>,
+    /// <c>window.patchouli.send(path, action, args, requestId)</c>,
+    /// <c>window.patchouli.files()</c> and <c>window.patchouli.ensureFiles()</c> once. Each
+    /// call sends a <c>patchouli:plugin-request</c> message through invokeCSharpAction and
+    /// resolves with the reply value delivered by the <see cref="PluginResponseEventName"/>
+    /// event (or rejects with its error). Pending calls are capped at 16 and time out after
+    /// 60s — except <c>ensureFiles</c>, which waits up to 15 minutes because a confirmed
+    /// managed-file download can take that long for multi-GB models; the host-side operation
+    /// itself stays cancellation-aware through the modal runner, so the client timeout is
+    /// purely a reply-wait bound. <c>files()</c>/<c>ensureFiles()</c> resolve to
+    /// <c>{state, files:[{path, state, expected_bytes?, sha256?, version?}]}</c> —
+    /// local paths and download URLs are never exposed. Function identity is stable:
+    /// context pushes only replace version/theme/page fields.
+    /// </summary>
+    public static string BuildApiScript()
+    {
+        return "(function(){" +
+               "var w=window.patchouli=window.patchouli||{};" +
+               "if(w.fetch&&w.send&&w.files&&w.ensureFiles){return;}" +
+               "var pending={};var nextId=1;var MAX_PENDING=16;var TIMEOUT_MS=60000;" +
+               "var ENSURE_TIMEOUT_MS=900000;" +
+               "function pendingCount(){var n=0;for(var k in pending){n++;}return n;}" +
+               "window.addEventListener('" + PluginResponseEventName + "',function(ev){" +
+               "var d=ev.detail;" +
+               "if(!d||typeof d.id!=='string'){return;}" +
+               "var p=pending[d.id];" +
+               "if(!p){return;}" +
+               "delete pending[d.id];" +
+               "clearTimeout(p.timer);" +
+               "if(d.ok){p.resolve(d.value);}else{" +
+               "var e=new Error(d.error&&d.error.message||'plugin request failed');" +
+               "e.code=d.error&&d.error.code;" +
+               "p.reject(e);}});" +
+               "function request(operation,path,action,args,requestId,timeoutMs){" +
+               "return new Promise(function(resolve,reject){" +
+               "if(pendingCount()>=MAX_PENDING){" +
+               "reject(new Error('too many pending plugin requests'));return;}" +
+               "var id='preq'+(nextId++);" +
+               "var timer=setTimeout(function(){" +
+               "if(pending[id]){delete pending[id];reject(new Error('plugin request timed out'));}}," +
+               "timeoutMs||TIMEOUT_MS);" +
+               "pending[id]={resolve:resolve,reject:reject,timer:timer};" +
+               "var message={type:'" + PluginRequestMessageType + "',id:id,operation:operation};" +
+               "if(path!==undefined&&path!==null){message.path=path;}" +
+               "if(action!==undefined&&action!==null){message.action=action;}" +
+               "if(args!==undefined){message.args=args;}" +
+               "if(requestId!==undefined&&requestId!==null){message.request_id=requestId;}" +
+               "try{invokeCSharpAction(JSON.stringify(message));}catch(e){" +
+               "clearTimeout(timer);delete pending[id];reject(e);}});}" +
+               "w.fetch=function(path){return request('fetch',path);};" +
+               "w.send=function(path,action,args,requestId){" +
+               "return request('send',path,action,args,requestId);};" +
+               "w.files=function(){return request('files',null,'status');};" +
+               "w.ensureFiles=function(){" +
+               "return request('files',null,'ensure',undefined,undefined,ENSURE_TIMEOUT_MS);};" +
+               "})();";
+    }
+
+    /// <summary>Script evaluated via InvokeScript to deliver one bridge reply JSON to the
+    /// live document: dispatches a <see cref="PluginResponseEventName"/> CustomEvent whose
+    /// detail is the reply object ({id, ok, value|error}).</summary>
+    public static string BuildResponseDispatchScript(string replyJson)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(replyJson);
+        return "window.dispatchEvent(new CustomEvent('" + PluginResponseEventName +
+               "',{detail:" + replyJson + "}));";
     }
 
     /// <summary>Script evaluated via InvokeScript: replaces the context object, refreshes the
@@ -225,7 +306,8 @@ public static class PluginViewContextScript
 
         StringBuilder script = new(512 + variables.Length);
         script.Append("(function(){var p=").Append(Serialize(context))
-            .Append(";window.patchouli=p;var r=document.documentElement;if(r){")
+            .Append(";var w=window.patchouli=window.patchouli||{};")
+            .Append("w.version=p.version;w.theme=p.theme;w.page=p.page;var r=document.documentElement;if(r){")
             .Append("r.style.colorScheme=p.theme.scheme;")
             .Append("r.setAttribute('data-patchouli-color-scheme',p.theme.scheme);")
             .Append("var v=").Append(variables)

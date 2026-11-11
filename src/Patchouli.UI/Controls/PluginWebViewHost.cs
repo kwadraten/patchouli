@@ -3,8 +3,10 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
+using Microsoft.Win32;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Themes;
 using Patchouli.UI.ViewModels;
@@ -20,9 +22,11 @@ namespace Patchouli.UI.Controls;
 ///
 /// Security surface: only about: and data: navigations happen in place (the document is loaded
 /// via NavigateToString); http(s) targets open in the system browser; every other scheme is
-/// blocked. Dev tools are disabled, a strict CSP meta tag is injected into the document head,
-/// and the only host capability exposed to content is the patchouli:request-context message
-/// answering with a theme/palette/page snapshot — no tokens or objects.
+/// blocked. Dev tools are disabled and a strict CSP meta tag is injected into the document
+/// head. Host capabilities exposed to content are exactly two message types:
+/// patchouli:request-context (answered with a theme/palette/page snapshot) and
+/// patchouli:plugin-request (permission-gated fetch/send on the session's own plugin only,
+/// re-checking registry grants per call). No tokens or host objects cross the bridge.
 /// </summary>
 public sealed class PluginWebViewHost : ContentControl
 {
@@ -34,6 +38,7 @@ public sealed class PluginWebViewHost : ContentControl
     private PluginViewSession? _session;
     private string? _loadedHtml;
     private bool _themeSubscribed;
+    private int _documentGeneration;
 
     public PluginViewSession? Session
     {
@@ -46,6 +51,9 @@ public sealed class PluginWebViewHost : ContentControl
 
     /// <summary>Test seam: external-URI launch. Defaults to the top-level platform launcher.</summary>
     internal Func<Uri, Task>? ExternalLauncher { get; set; }
+
+    /// <summary>Test seam: web-view engine availability probe. Defaults to the platform check.</summary>
+    internal Func<bool>? RuntimeAvailabilityProbe { get; set; }
 
     /// <summary>Test-visible state: whether the native web view is currently materialized.</summary>
     internal bool HasLiveWebView => _webView is not null;
@@ -205,7 +213,26 @@ public sealed class PluginWebViewHost : ContentControl
             return;
         }
 
-        NativeWebView webView = WebViewFactory?.Invoke() ?? new NativeWebView();
+        // A missing web engine or an environment-creation failure would escape through the
+        // dispatcher and take down the process, so guard what can be guarded up front.
+        if (!(RuntimeAvailabilityProbe ?? DetectWebViewRuntimeAvailability)())
+        {
+            _session.ReportError("未检测到 WebView2 运行时，插件视图无法加载。");
+            return;
+        }
+
+        NativeWebView webView;
+        try
+        {
+            webView = WebViewFactory?.Invoke() ?? new NativeWebView();
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(PluginWebViewHost), "create-webview");
+            _session.ReportError("插件视图初始化失败。");
+            return;
+        }
+
         _webView = webView;
         webView.EnvironmentRequested += OnEnvironmentRequested;
         webView.NavigationStarted += OnNavigationStarted;
@@ -223,6 +250,7 @@ public sealed class PluginWebViewHost : ContentControl
             return;
         }
 
+        _documentGeneration++;
         _webView = null;
         _loadedHtml = null;
         webView.EnvironmentRequested -= OnEnvironmentRequested;
@@ -241,6 +269,7 @@ public sealed class PluginWebViewHost : ContentControl
             return;
         }
 
+        _documentGeneration++;
         _loadedHtml = html;
         if (html is null)
         {
@@ -269,6 +298,59 @@ public sealed class PluginWebViewHost : ContentControl
     private void OnEnvironmentRequested(object? sender, WebViewEnvironmentRequestedEventArgs e)
     {
         e.EnableDevTools = false;
+        if (e is WindowsWebView2EnvironmentRequestedEventArgs webView2)
+        {
+            // WebView2 defaults its user-data folder next to the executable, which is not
+            // writable for installed builds (Program Files) nor accessible to the
+            // medium-integrity browser processes under elevated launches — both surface
+            // as E_ACCESSDENIED that crashes the process. Pin it under the app data dir.
+            webView2.UserDataFolder = ResolveWebViewUserDataFolder();
+        }
+    }
+
+    private static string ResolveWebViewUserDataFolder()
+    {
+        try
+        {
+            return Path.Combine(new PlatformAppPaths().Resolve().DataDirectory, "webview2");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(PluginWebViewHost), "webview-udf");
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Patchouli", "webview2");
+        }
+    }
+
+    private static bool DetectWebViewRuntimeAvailability()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Non-Windows adapters resolve their own engine; availability is their concern.
+            return true;
+        }
+
+        // Evergreen WebView2 runtime client registration (documented detection point).
+        const string client = @"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+        return HasClientVersion(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\" + client)
+               || HasClientVersion(Registry.LocalMachine, @"SOFTWARE\" + client)
+               || HasClientVersion(Registry.CurrentUser, @"SOFTWARE\" + client);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static bool HasClientVersion(RegistryKey hive, string subKey)
+    {
+        try
+        {
+            using RegistryKey? key = hive.OpenSubKey(subKey);
+            return key?.GetValue("pv") is string version && version.Length > 0;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private void OnNavigationStarted(object? sender, WebViewNavigationStartingEventArgs e)
@@ -312,11 +394,39 @@ public sealed class PluginWebViewHost : ContentControl
 
     private void OnWebMessageReceived(object? sender, WebMessageReceivedEventArgs e)
     {
-        // The single supported web→host call; malformed or other types are ignored.
+        // Context re-push requests are answered synchronously; everything else is a candidate
+        // plugin-request bridged asynchronously — replies are dropped unless this exact
+        // webview/session/document generation is still live when they arrive.
         if (PluginViewContextScript.IsContextRequestMessage(e.Body))
         {
             PushContext();
+            return;
         }
+
+        if (_webView is { } webView && _session is { } session && e.Body is { } body)
+        {
+            DispatchPluginRequestAsync(body, webView, session, _documentGeneration)
+                .Observe(nameof(PluginWebViewHost), "plugin-request");
+        }
+    }
+
+    private async Task DispatchPluginRequestAsync(
+        string body,
+        NativeWebView webView,
+        PluginViewSession session,
+        int generation)
+    {
+        string? reply = await session.HandleRequestAsync(body).ConfigureAwait(true);
+        if (reply is null ||
+            !ReferenceEquals(webView, _webView) ||
+            !ReferenceEquals(session, _session) ||
+            generation != _documentGeneration)
+        {
+            return;
+        }
+
+        await webView.InvokeScript(PluginViewContextScript.BuildResponseDispatchScript(reply))
+            .ConfigureAwait(true);
     }
 
     private void OpenExternal(Uri uri)

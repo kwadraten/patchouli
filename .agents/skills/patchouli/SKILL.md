@@ -32,4 +32,4 @@ Patchouli 是个人文献管理器。每个书库只有一个运行中的 .NET �
 
 ## Plugin 范围
 
-已安装并启用的 Plugin 挂载于 `patchouli://plugin/{plugin-id}/`。先用 `find` 和 `fetch plugin.yml` 阅读静态声明，再按声明调用 `find`/`fetch`/`send`。声明了 UI 视图的插件还会列出 `views/`：`fetch` 或 `view` 作用于 `views/{view-id}` 返回宿主合成的视图描述符（不启动插件进程，`view` 对它不返回图像），桌面按声明的 placement 在工作区标签页、非模态弹窗或 PDF 侧栏打开对应的 WebView 容器。仍不要把 `put`/`add`/`cite`、托管 `files/` 或插件书库授权当成现有能力。桌面「设置 → 插件 → 插件商店」使用验签的社区索引安装独立 stdio MCP 插件；安装记录按设备保存，不进入书库快照。
+已安装并启用的 Plugin 挂载于 `patchouli://plugin/{plugin-id}/`。先用 `find` 和 `fetch plugin.yml` 阅读静态声明，再按声明调用 `find`/`fetch`/`send`。声明了 UI 视图的插件还会列出 `views/`：`fetch` 或 `view` 作用于 `views/{view-id}` 返回宿主合成的视图描述符（不启动插件进程，`view` 对它不返回图像），桌面按声明的 placement 在工作区标签页、非模态弹窗或 PDF 侧栏打开对应的 WebView 容器。声明了 `[[files]]` 宿主托管文件的插件列出 `files/`：`find`/`fetch` 只返回声明与就绪状态 JSON（`ready`、`missing`、`mismatch` 等），绝不携带本地路径；缺失文件由桌面端经用户确认后下载，agent 不能触发下载。仍不要把 `put`/`add`/`cite` 或插件书库授权当成现有能力。桌面「设置 → 插件 → 插件商店」使用验签的社区索引安装独立 stdio MCP 插件；安装记录按设备保存，不进入书库快照。

@@ -132,7 +132,7 @@ public sealed class PluginViewTests
 
         string script = PluginViewContextScript.BuildPushScript(context);
 
-        script.Should().Contain("window.patchouli=p");
+        script.Should().Contain("window.patchouli=window.patchouli||{}");
         script.Should().Contain("'patchouli:theme'");
         script.Should().Contain("'patchouli:page'");
         script.Should().Contain("patchouli://texts/d/page-3.xml");
@@ -404,6 +404,317 @@ public sealed class PluginViewTests
         workspace.CurrentPageUri.Should().Be(workspace.ActivePluginSession.PageUri);
     }
 
+    // ---------- 插件 menu ----------
+
+    [Fact]
+    public async Task Menu_lists_tab_and_window_views_flat_for_a_single_plugin()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Mounts.Add(new McpPluginMountInfo("demo", "演示插件", "1.0", "patchouli://plugin/demo",
+            ["view"], "verified"));
+        api.Allow("demo", "view");
+        api.AddView("demo", TabView);
+        api.AddView("demo", WindowView);
+        api.AddView("demo", SidebarView);
+        main.PluginApiProvider = () => api;
+
+        await main.RefreshExtensionMenuAsync();
+
+        main.HasPluginViewMenuEntries.Should().BeTrue();
+        main.PluginViewMenuEntries.Should().HaveCount(2);
+        main.PluginViewMenuEntries.Select(entry => entry.Header).Should()
+            .Equal("插件笔记", "配色面板");
+        main.PluginViewMenuEntries.Should().OnlyContain(entry => entry.OpenCommand != null);
+        main.ExtensionMenuEntries.Should().HaveCount(4,
+            "管理入口 + 分隔符 + 两个扁平的视图入口");
+        main.ExtensionMenuEntries[0].Should().BeOfType<ExtensionMenuEntryViewModel>()
+            .Which.Header.Should().Be("插件与扩展管理");
+        main.ExtensionMenuEntries[1].Should().BeOfType<Separator>();
+        main.ExtensionMenuEntries.Skip(2).Cast<ExtensionMenuEntryViewModel>()
+            .Select(entry => entry.Header).Should().Equal("插件笔记", "配色面板");
+    }
+
+    [Fact]
+    public async Task Menu_prefixes_view_titles_with_the_plugin_name_when_several_contribute()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Mounts.Add(new McpPluginMountInfo("demo", "演示插件", "1.0", "patchouli://plugin/demo",
+            ["view"], "verified"));
+        api.Mounts.Add(new McpPluginMountInfo("extra", "Extra Tools", "2.0", "patchouli://plugin/extra",
+            ["view"], "verified"));
+        api.Allow("demo", "view");
+        api.Allow("extra", "view");
+        api.AddView("demo", TabView);
+        api.AddView("extra", new McpPluginViewInfo("dash", "仪表盘", "window",
+            "patchouli://plugin/extra/views/dash",
+            "patchouli://plugin/extra/ui/dash.html", "ui/dash.html"));
+        main.PluginApiProvider = () => api;
+
+        await main.RefreshExtensionMenuAsync();
+
+        main.HasPluginViewMenuEntries.Should().BeTrue();
+        main.PluginViewMenuEntries.Select(entry => entry.Header).Should()
+            .Equal("演示插件 · 插件笔记", "Extra Tools · 仪表盘");
+        main.PluginViewMenuEntries.Should().OnlyContain(entry => entry.OpenCommand != null);
+        main.ExtensionMenuEntries.Should().HaveCount(4,
+            "视图入口直接显示在二级菜单，不再嵌套三级菜单");
+    }
+
+    [Fact]
+    public async Task Menu_omits_failed_mounts_and_mounts_without_the_view_grant()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Mounts.Add(new McpPluginMountInfo("broken", "坏插件", "1.0", "patchouli://plugin/broken",
+            ["view"], "failed"));
+        api.Mounts.Add(new McpPluginMountInfo("denied", "未授权插件", "1.0",
+            "patchouli://plugin/denied", ["find"], "verified"));
+        api.Allow("broken", "view");
+        api.AddView("broken", TabView);
+        api.AddView("denied", TabView);
+        main.PluginApiProvider = () => api;
+
+        await main.RefreshExtensionMenuAsync();
+
+        main.HasPluginViewMenuEntries.Should().BeFalse();
+        main.PluginViewMenuEntries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Menu_shows_the_management_entry_before_any_refresh()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+
+        // 空 ItemsSource 的 MenuItem 无法展开子菜单；固定入口必须在首次刷新前就存在。
+        main.ExtensionMenuEntries.Should().ContainSingle()
+            .Which.Should().BeOfType<ExtensionMenuEntryViewModel>()
+            .Which.Header.Should().Be("插件与扩展管理");
+    }
+
+    [Fact]
+    public async Task Menu_shows_only_the_management_entry_without_eligible_views()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        main.PluginApiProvider = () => api;
+
+        await main.RefreshExtensionMenuAsync();
+
+        main.HasPluginViewMenuEntries.Should().BeFalse();
+        main.PluginViewMenuEntries.Should().BeEmpty();
+        main.ExtensionMenuEntries.Should().ContainSingle()
+            .Which.Should().BeOfType<ExtensionMenuEntryViewModel>()
+            .Which.Header.Should().Be("插件与扩展管理");
+    }
+
+    [Fact]
+    public async Task Menu_reenumerates_mounts_on_every_refresh()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Mounts.Add(new McpPluginMountInfo("demo", "演示插件", "1.0", "patchouli://plugin/demo",
+            ["view"], "verified"));
+        api.Allow("demo", "view");
+        api.AddView("demo", TabView);
+        main.PluginApiProvider = () => api;
+
+        await main.RefreshExtensionMenuAsync();
+        main.PluginViewMenuEntries.Should().ContainSingle();
+
+        api.Mounts.Clear();
+        await main.RefreshExtensionMenuAsync();
+
+        main.HasPluginViewMenuEntries.Should().BeFalse();
+        main.PluginViewMenuEntries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Menu_entry_opens_the_view_through_the_plugin_view_router()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Mounts.Add(new McpPluginMountInfo("demo", "演示插件", "1.0", "patchouli://plugin/demo",
+            ["view"], "verified"));
+        api.Allow("demo", "view");
+        api.AddView("demo", TabView);
+        api.FetchResult = Result<McpPluginFetchContent>.Success(
+            new McpPluginFetchContent("text/html", ViewHtml));
+        main.PluginApiProvider = () => api;
+        await main.RefreshExtensionMenuAsync();
+
+        await main.PluginViewMenuEntries[0].OpenCommand!.ExecuteAsync();
+
+        main.Layout.Tabs.Should().ContainSingle(tab =>
+            tab.Kind == WorkspaceTabKind.PluginView && tab.TabId == "PluginView:demo:notes");
+        main.Layout.ActiveTab.Should().BeSameAs(
+            main.Layout.Tabs.Single(tab => tab.Kind == WorkspaceTabKind.PluginView));
+    }
+
+    [Fact]
+    public async Task ClosePluginViews_releases_matching_containers_and_preserves_other_plugins()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Allow("demo", "view");
+        api.Allow("other", "view");
+        api.AddView("demo", TabView);
+        api.AddView("demo", WindowView);
+        api.AddView("demo", SidebarView);
+        api.AddView("other", new McpPluginViewInfo("panel", "其他面板", "tab",
+            "patchouli://plugin/other/views/panel",
+            "patchouli://plugin/other/ui/panel.html", "ui/panel.html"));
+        api.AddView("other", new McpPluginViewInfo("side", "其他侧栏", "pdf-sidebar",
+            "patchouli://plugin/other/views/side",
+            "patchouli://plugin/other/ui/side.html", "ui/side.html"));
+        api.Mounts.Add(new McpPluginMountInfo("demo", "Demo", "1.0", "patchouli://plugin/demo",
+            ["view"], "verified"));
+        api.Mounts.Add(new McpPluginMountInfo("other", "Other", "1.0", "patchouli://plugin/other",
+            ["view"], "verified"));
+        api.FetchResult = Result<McpPluginFetchContent>.Success(
+            new McpPluginFetchContent("text/html", ViewHtml));
+        main.PluginApiProvider = () => api;
+        List<FakePluginViewWindow> windows = [];
+        main.PluginViewWindowFactory = session =>
+        {
+            FakePluginViewWindow window = new(session);
+            windows.Add(window);
+            return window;
+        };
+
+        await main.NavigateToVfsUriAsync("patchouli://plugin/demo/views/notes");
+        await main.NavigateToVfsUriAsync("patchouli://plugin/demo/views/palette");
+        await main.NavigateToVfsUriAsync("patchouli://plugin/other/views/panel");
+        PluginViewSession demoWindowSession = windows.Single().Session;
+        await demoWindowSession.LoadAsync(api);
+        main.RuntimeDatabasePath = settings.CreateDatabasePath("runtime");
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        using PdfWorkspaceViewModel workspace = new(main, Item(documentId));
+        MarkDocumentLoaded(workspace, documentId);
+        await workspace.ActivatePluginViewAsync(SidebarView);
+        PluginViewSession demoSidebarSession = workspace.ActivePluginSession!;
+        demoSidebarSession.Html.Should().Be(ViewHtml);
+        WorkspaceTabViewModel demoPdfTab = new(WorkspaceTabKind.PdfWorkspace,
+            "PdfWorkspace:demo-doc", "demo doc", "File", true, null, workspace);
+        main.Layout.Tabs.Add(demoPdfTab);
+        McpPluginViewInfo otherSidebar = new("side", "其他侧栏", "pdf-sidebar",
+            "patchouli://plugin/other/views/side",
+            "patchouli://plugin/other/ui/side.html", "ui/side.html");
+        using PdfWorkspaceViewModel otherWorkspace = new(main, Item(DocumentInstanceId.New()));
+        MarkDocumentLoaded(otherWorkspace, DocumentInstanceId.New());
+        await otherWorkspace.ActivatePluginViewAsync(otherSidebar);
+        PluginViewSession otherSidebarSession = otherWorkspace.ActivePluginSession!;
+        otherSidebarSession.Html.Should().Be(ViewHtml);
+        WorkspaceTabViewModel otherPdfTab = new(WorkspaceTabKind.PdfWorkspace,
+            "PdfWorkspace:other-doc", "other doc", "File", true, null, otherWorkspace);
+        main.Layout.Tabs.Add(otherPdfTab);
+
+        api.Mounts.RemoveAll(mount => mount.PluginId == "demo");
+        await main.ClosePluginViewsAsync("demo");
+
+        main.Layout.Tabs.Should().NotContain(tab =>
+            tab.Kind == WorkspaceTabKind.PluginView && tab.TabId.StartsWith("PluginView:demo:"));
+        main.Layout.Tabs.Should().ContainSingle(tab =>
+                tab.Kind == WorkspaceTabKind.PluginView && tab.TabId == "PluginView:other:panel",
+            "uninstalling demo leaves the other plugin's tab alone");
+        windows.Single().CloseCalls.Should().Be(1);
+        demoWindowSession.Html.Should().BeNull("the released session is dropped");
+        workspace.ActivePluginView.Should().BeNull();
+        workspace.ActivePluginSession.Should().BeNull();
+        workspace.IsPluginTabActive.Should().BeFalse();
+        demoSidebarSession.Html.Should().BeNull();
+        workspace.PluginSidebarMenuEntries.Should().ContainSingle()
+            .Which.Title.Should().Be("其他侧栏");
+        workspace.HasNoPluginSidebarViews.Should().BeFalse();
+        otherWorkspace.ActivePluginSession.Should().BeSameAs(otherSidebarSession);
+        otherSidebarSession.Html.Should().Be(ViewHtml,
+            "the unrelated plugin's sidebar session is untouched");
+        main.Layout.Tabs.Remove(demoPdfTab);
+        main.Layout.Tabs.Remove(otherPdfTab);
+    }
+
+    // ---------- managed files bridge wiring ----------
+
+    [Fact]
+    public async Task Sessions_get_managed_file_callbacks_from_the_view_model()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Allow("demo", "view");
+        api.AddView("demo", TabView);
+        api.FetchResult = Result<McpPluginFetchContent>.Success(
+            new McpPluginFetchContent("text/html", ViewHtml));
+        main.PluginApiProvider = () => api;
+
+        await main.NavigateToVfsUriAsync("patchouli://plugin/demo/views/notes");
+
+        PluginViewViewModel viewModel = (PluginViewViewModel)main.Layout.Tabs
+            .Single(tab => tab.Kind == WorkspaceTabKind.PluginView).Content;
+        viewModel.Session.ManagedFileStatusAsync.Should().NotBeNull(
+            "ConfigurePluginViewSession wires files/status through the dialogs layer");
+        viewModel.Session.ConfirmManagedFilesAsync.Should().NotBeNull(
+            "ConfigurePluginViewSession wires the host-confirmed files/ensure");
+    }
+
+    [Fact]
+    public async Task Files_status_round_trips_through_main_and_strips_local_paths()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        await using MainWindowViewModel main = CreateMain(settings.Path);
+        FakePluginApi api = new();
+        api.Allow("demo", "view");
+        api.AddView("demo", TabView);
+        api.FetchResult = Result<McpPluginFetchContent>.Success(
+            new McpPluginFetchContent("text/html", ViewHtml));
+        int statusCalls = 0;
+        main.PluginFilesStatusOverride = (pluginId, _) =>
+        {
+            statusCalls++;
+            return Task.FromResult(Result<PluginManagedFilesView>.Success(
+                new PluginManagedFilesView(pluginId, "missing",
+                [
+                    new PluginManagedFileView("models/ocr.onnx", "missing", 4096,
+                        "aabb", "1.2.0")
+                ])));
+        };
+        main.PluginApiProvider = () => api;
+
+        await main.NavigateToVfsUriAsync("patchouli://plugin/demo/views/notes");
+        PluginViewViewModel viewModel = (PluginViewViewModel)main.Layout.Tabs
+            .Single(tab => tab.Kind == WorkspaceTabKind.PluginView).Content;
+        await viewModel.EnsureLoadedAsync();
+
+        string request = "{\"type\":\"patchouli:plugin-request\",\"id\":\"f1\"," +
+                         "\"operation\":\"files\",\"action\":\"status\"}";
+        string replyJson = (await viewModel.Session.HandleRequestAsync(request))!;
+        using JsonDocument document = JsonDocument.Parse(replyJson);
+        JsonElement reply = document.RootElement;
+
+        reply.GetProperty("ok").GetBoolean().Should().BeTrue();
+        JsonElement value = reply.GetProperty("value");
+        value.GetProperty("state").GetString().Should().Be("missing");
+        JsonElement file = value.GetProperty("files")[0];
+        file.GetProperty("path").GetString().Should().Be("models/ocr.onnx");
+        file.GetProperty("state").GetString().Should().Be("missing");
+        file.GetProperty("expected_bytes").GetInt64().Should().Be(4096);
+        file.GetProperty("sha256").GetString().Should().Be("aabb");
+        statusCalls.Should().Be(1);
+        replyJson.Should().NotContain("local_path")
+            .And.NotContain("destination_path")
+            .And.NotContain("\"url\"")
+            .And.NotContain("D:\\", "the host's local paths never reach the document");
+    }
+
     // ---------- helpers ----------
 
     private static MainWindowViewModel CreateMain(string settingsPath)
@@ -445,6 +756,7 @@ public sealed class PluginViewTests
         public PluginViewSession Session { get; }
         public int ShowCalls { get; private set; }
         public int ActivateCalls { get; private set; }
+        public int CloseCalls { get; private set; }
 
         public void Show(Window? owner)
         {
@@ -458,6 +770,7 @@ public sealed class PluginViewTests
 
         public void Close()
         {
+            CloseCalls++;
         }
 
         public event EventHandler? Closed;
