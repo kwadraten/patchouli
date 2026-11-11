@@ -12,6 +12,7 @@
   <Color x:Key="PrimaryColor">#553BB5</Color>
   <Color x:Key="PrimaryContainerColor">#6E56CF</Color>
   <Color x:Key="OnPrimaryColor">#F2F0F0</Color>
+  <Color x:Key="OnPrimaryStrongColor">#F2F0F0</Color>
   <Color x:Key="TertiaryColor">#EFE8FF</Color>
   <!-- List/grid selection tint: accent step 5, mid-light — dark text stays readable. -->
   <Color x:Key="SelectionColor">#D4CAFE</Color>
@@ -36,6 +37,8 @@
   <SolidColorBrush x:Key="PrimaryContainerBrush" Color="{StaticResource PrimaryContainerColor}" />
   <!-- Text/icons on Primary backgrounds; reuses the palette's light inverse tone. -->
   <SolidColorBrush x:Key="OnPrimaryBrush" Color="{StaticResource OnPrimaryColor}" />
+  <!-- Text/icons on the stronger PrimaryColor (step 11) backgrounds. -->
+  <SolidColorBrush x:Key="OnPrimaryStrongBrush" Color="{StaticResource OnPrimaryStrongColor}" />
   <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
   <SolidColorBrush x:Key="SelectionBrush" Color="{StaticResource SelectionColor}" />
   <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />

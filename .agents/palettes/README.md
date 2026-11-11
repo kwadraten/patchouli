@@ -35,6 +35,8 @@
 
 配色数据和语义映射由 scripts/generate-palettes.ps1 维护；先修改 generator 再重生成，禁止手写生成文件。按钮文字优先保留已有前景；若与 PrimaryContainerColor 的 WCAG 相对亮度对比度低于 4.5:1，generator 生成的解析器选择对比更高的黑色或白色。原始 Radix 色阶保持不变。
 
+PrimaryContainerColor（色阶 9）配 OnPrimaryColor；更深的 PrimaryColor（色阶 11）实心表面（按钮、徽章、图标）配 OnPrimaryStrongColor——默认取浅色前景，必要时同样按 4.5:1 规则修正为对比更高的黑或白。
+
 ## 5. 深色背景与状态栏
 
 深色模式的大面积背景使用当前主色系的 Radix dark 1–5 色阶，分隔线使用第 6 阶；不再使用配对中性色作为背景。深色状态栏的 InverseSurfaceColor 等于当前 PrimaryColor，前景按既有可读性规则选取。浅色模式的所有颜色及暗色状态栏保持原样。缺失模式的反相算法不变。

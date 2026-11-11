@@ -94,7 +94,7 @@
     </Style>
     <Style Selector="Button.PageBadge">
       <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryStrongBrush}" />
       <Setter Property="CornerRadius" Value="7" />
       <Setter Property="Padding" Value="5,1" />
       <Setter Property="BorderThickness" Value="0" />
@@ -103,7 +103,7 @@
     </Style>
     <Style Selector="Button.PageBadge:pointerover">
       <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
     </Style>
     <Style Selector="Border.BBox.selected">
       <Setter Property="BorderThickness" Value="4" />
@@ -582,9 +582,7 @@
               <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                 <Button Content="取消拆分" Command="{Binding CancelSplitCommand}" />
                 <Button Content="确认拆分" Command="{Binding ConfirmSplitCommand}"
-                        IsEnabled="{Binding CanConfirmSplit}"
-                        Background="{DynamicResource PrimaryBrush}"
-                        Foreground="{DynamicResource OnPrimaryBrush}" />
+                        IsEnabled="{Binding CanConfirmSplit}" Classes="Primary" />
               </StackPanel>
             </Grid>
           </Border>
@@ -596,9 +594,7 @@
                        PlaceholderText="合并结果内容（必填）" />
               <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                 <Button Content="取消合并" Command="{Binding CancelMergeCommand}" />
-                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}"
-                        Background="{DynamicResource PrimaryBrush}"
-                        Foreground="{DynamicResource OnPrimaryBrush}" />
+                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}" Classes="Primary" />
               </StackPanel>
             </StackPanel>
           </Border>
@@ -633,8 +629,6 @@
                               </Style>
                             </MenuItem.Styles>
                           </MenuItem>
-                          <MenuItem Header="插件视图（无可用）" IsEnabled="False"
-                                    IsVisible="{Binding HasNoPluginSidebarViews}" />
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
@@ -970,8 +964,6 @@
                               </Style>
                             </MenuItem.Styles>
                           </MenuItem>
-                          <MenuItem Header="插件视图（无可用）" IsEnabled="False"
-                                    IsVisible="{Binding HasNoPluginSidebarViews}" />
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
@@ -1066,9 +1058,7 @@
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                   <Button Content="放弃更改" Command="{Binding CancelEditModeCommand}"
                           Foreground="{DynamicResource ErrorBrush}" Background="Transparent" />
-                  <Button Command="{Binding SaveAndExitCommand}"
-                          Background="{DynamicResource PrimaryBrush}"
-                          Foreground="{DynamicResource OnPrimaryBrush}">
+                  <Button Command="{Binding SaveAndExitCommand}" Classes="Primary">
                     <StackPanel Orientation="Horizontal" Spacing="4">
                       <lucide:Lucide Icon="Save" Width="14" Height="14" />
                       <TextBlock Text="保存并退出" FontSize="12" />
@@ -1114,8 +1104,7 @@
                       SelectedItem="{Binding SelectedReadingContentMode, Mode=TwoWay}" MinWidth="100"
                       ToolTip.Tip="原文、译文或双语阅读" />
           </StackPanel>
-          <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}"
-                  Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
+          <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}" Classes="Primary"
                   VerticalAlignment="Center"
                   ToolTip.Tip="退出阅读模式，返回 PDF 查看模式">
             <StackPanel Orientation="Horizontal" Spacing="4">

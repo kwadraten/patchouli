@@ -275,7 +275,7 @@
                             Background="{DynamicResource PrimaryBrush}" Command="{Binding ToggleTagEditorCommand}"
                             ToolTip.Tip="添加标签" IsEnabled="{Binding !IsMergedSource}">
                       <lucide:Lucide Icon="Plus" Width="11" Height="11"
-                                     StrokeBrush="{DynamicResource OnPrimaryBrush}" />
+                                     StrokeBrush="{DynamicResource OnPrimaryStrongBrush}" />
                     </Button>
                   </Grid>
                 </Border>

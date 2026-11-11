@@ -93,7 +93,7 @@
               <Button Command="{Binding AddFilterRowCommand}" Height="26" Padding="10,0" FontSize="12">
                 <StackPanel Orientation="Horizontal" Spacing="4">
                   <lucide:Lucide Icon="Plus" Width="12" Height="12"
-                                 StrokeBrush="{DynamicResource OnPrimaryBrush}" />
+                                 StrokeBrush="{DynamicResource OnSurfaceBrush}" />
                   <TextBlock Text="添加筛选" FontSize="12" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>

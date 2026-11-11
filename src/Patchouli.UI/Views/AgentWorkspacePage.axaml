@@ -125,7 +125,8 @@
             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,0">
               <Button Classes="Primary" Command="{Binding StartCommand}" IsVisible="{Binding ShowStartShortcut}">
                 <StackPanel Orientation="Horizontal" Spacing="6">
-                  <lucide:Lucide Icon="Play" Width="14" Height="14" StrokeBrush="{DynamicResource OnPrimaryBrush}" />
+                  <lucide:Lucide Icon="Play" Width="14" Height="14"
+                                 StrokeBrush="{DynamicResource OnPrimaryStrongBrush}" />
                   <TextBlock Text="启动 Agent" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>

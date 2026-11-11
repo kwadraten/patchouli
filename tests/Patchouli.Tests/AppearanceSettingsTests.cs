@@ -269,6 +269,7 @@ public sealed class AppearanceSettingsTests : IDisposable
                 foreach ((string foregroundKey, string backgroundKey) in new[]
                          {
                              ("OnPrimaryColor", "PrimaryContainerColor"),
+                             ("OnPrimaryStrongColor", "PrimaryColor"),
                              ("InverseOnSurfaceColor", "InverseSurfaceColor")
                          })
                 {
