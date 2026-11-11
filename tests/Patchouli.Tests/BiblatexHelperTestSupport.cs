@@ -16,7 +16,7 @@ internal static class BiblatexHelperTestSupport
     /// The helper path for tests that construct
     /// <see cref="BiblatexHelperClient"/> with an explicit path: the staged
     /// default location, or the in-repo build output under
-    /// <c>tools/biblatex-helper/target</c>. Throws a skip when no binary
+    /// <c>sidecar/biblatex-helper/target</c>. Throws a skip when no binary
     /// exists in either place.
     /// </summary>
     public static string RequireHelperPath()
@@ -35,8 +35,8 @@ internal static class BiblatexHelperTestSupport
 
         throw SkipException.ForSkip(
             $"biblatex-helper binary not found (staged path '{staged}', no build output under " +
-            "tools/biblatex-helper/target). Build the helper (cargo build --release in " +
-            "tools/biblatex-helper) or stage the sidecar binary; this test must not pass " +
+            "sidecar/biblatex-helper/target). Build the helper (cargo build --release in " +
+            "sidecar/biblatex-helper) or stage the sidecar binary; this test must not pass " +
             "without exercising the real helper.");
     }
 
@@ -70,7 +70,7 @@ internal static class BiblatexHelperTestSupport
                 foreach (string configuration in (string[])["release", "debug"])
                 {
                     string candidate = Path.Combine(
-                        current.FullName, "tools", "biblatex-helper", "target", configuration, fileName);
+                        current.FullName, "sidecar", "biblatex-helper", "target", configuration, fileName);
                     if (File.Exists(candidate))
                     {
                         return candidate;
