@@ -89,7 +89,8 @@ public sealed class CslDownloadTaskTests(AvaloniaSharedSessionFixture headless)
                 running.IsIndeterminate.Should().Be(unknownLength);
                 installation.IsCompleted.Should().BeFalse();
                 (await services.CslStore.ListInstalledStylesAsync().WaitAsync(Deadline))
-                    .Value.Should().BeEmpty("a partially received body must never install a style");
+                    .Value.Should().NotContain(style => style.StyleId == catalog.StyleId,
+                        "a partially received body must never install the downloaded style");
 
                 await dialog.ToggleDetailsCommand.ExecuteAsync().WaitAsync(Deadline);
                 dialog.IsDetailsVisible.Should().BeTrue();
@@ -100,7 +101,7 @@ public sealed class CslDownloadTaskTests(AvaloniaSharedSessionFixture headless)
                 DownloadTaskStatus background = services.DownloadTasks.List().Single();
                 background.State.Should().Be(DownloadTaskService.RunningState);
                 background.Files.Single().Should().Be(file);
-                manager.InstalledStyles.Should().BeEmpty();
+                manager.InstalledStyles.Should().NotContain(style => style.StyleId == catalog.StyleId);
 
                 body.Release();
                 await installation.WaitAsync(Deadline);
@@ -119,15 +120,15 @@ public sealed class CslDownloadTaskTests(AvaloniaSharedSessionFixture headless)
                     finished.ErrorMessage.Should().NotBeNullOrWhiteSpace();
                     completedFile.State.Should().Be("failed");
                     completedFile.ErrorMessage.Should().NotBeNullOrWhiteSpace();
-                    installed.Value.Should().BeEmpty();
-                    manager.InstalledStyles.Should().BeEmpty();
+                    installed.Value.Should().NotContain(style => style.StyleId == catalog.StyleId);
+                    manager.InstalledStyles.Should().NotContain(style => style.StyleId == catalog.StyleId);
                 }
                 else
                 {
                     finished.State.Should().Be(DownloadTaskService.SucceededState);
                     completedFile.State.Should().Be("succeeded");
-                    installed.Value.Should().ContainSingle().Which.StyleId.Should().Be(catalog.StyleId);
-                    manager.InstalledStyles.Should().ContainSingle().Which.StyleId.Should().Be(catalog.StyleId);
+                    installed.Value.Should().ContainSingle(style => style.StyleId == catalog.StyleId);
+                    manager.InstalledStyles.Should().ContainSingle(style => style.StyleId == catalog.StyleId);
                     (await services.CslStore.GetStyleContentAsync(catalog.StyleId).WaitAsync(Deadline))
                         .Value.Should().Contain("Progress Style");
                     collectionThreads.Should().NotBeEmpty();

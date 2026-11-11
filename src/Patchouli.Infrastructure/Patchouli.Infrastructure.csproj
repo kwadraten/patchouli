@@ -19,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Csl\Styles\*.csl" />
     <EmbeddedResource Include="$(BuiltInExtensionSchemaOutput)"
                        LogicalName="Patchouli.Infrastructure.Extensions.BuiltInExtensionSchemas.json" />
     <None Include="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"

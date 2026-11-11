@@ -931,6 +931,13 @@ public sealed class HostServices
             {
                 startupProgress?.Report(StartupStage.ApplyingMigrations);
                 await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+                Result builtInStyles = await ((CslStyleStore)services.CslStore)
+                    .EnsureBuiltInStylesAsync(CancellationToken.None);
+                if (builtInStyles.IsFailure)
+                {
+                    throw new InvalidOperationException(builtInStyles.ErrorMessage);
+                }
+
                 if (runtimeHostLease is not null)
                 {
                     try
