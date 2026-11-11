@@ -181,7 +181,15 @@ public sealed class PluginStoreTests
         FakeLauncher launcher = new();
         using HttpClient catalogClient = new(http);
         using HttpClient downloadClient = new(http);
-        using PluginStore store = CreateStore(root, key, catalogClient, downloadClient, launcher);
+        List<(string Version, bool Enabled)> observed = [];
+        using PluginStore store = CreateStore(root, key, catalogClient, downloadClient, launcher,
+            _ =>
+            {
+                PluginRegistryEntry entry = PluginRegistry.Load(PluginRegistry.RegistryPath(root), true).Entries
+                    .Single();
+                observed.Add((PluginManifestLoader.Load(entry.ManifestPath).Value.Version, entry.Enabled));
+                return Task.CompletedTask;
+            });
         (await store.RefreshAsync(true)).IsSuccess.Should().BeTrue();
 
         Result<PluginDefinition> installed = await store.InstallAsync(PluginId);
@@ -215,6 +223,9 @@ public sealed class PluginStoreTests
         rolledBack.Value.Items.Single().RollbackVersion.Should().BeNull();
         (await store.ActivateAsync(PluginId, "0.2.0")).IsSuccess.Should().BeTrue();
         launcher.Starts.Should().Be(4);
+        observed.Should().Equal(
+            ("0.1.0", true), ("0.1.0", false), ("0.1.0", true),
+            ("0.2.0", true), ("0.1.0", true), ("0.2.0", true));
     }
 
     [Fact]
@@ -282,6 +293,8 @@ public sealed class PluginStoreTests
         (await store.InstallAsync(PluginId)).IsSuccess.Should().BeTrue();
         Directory.Exists(Path.Combine(root, "plugins", PluginId, "0.1.0")).Should().BeTrue();
         Directory.Exists(Path.Combine(root, "plugins", PluginId, "0.2.0")).Should().BeTrue();
+        callbackStates.Should().HaveCount(2, "each successful installation refreshes the live registry");
+        callbackStates.Clear();
 
         string foreignRoot = Path.Combine(root, "external-plugin");
         WriteManifest(foreignRoot, "other.dev-plugin", "9.9.9");
@@ -552,10 +565,11 @@ public sealed class PluginStoreTests
         string backup = Path.Combine(root, "moved-plugin-root");
         string sentinel = Path.Combine(root, "sentinel-tree", PluginId);
         int calls = 0;
+        ReplacementState replacement = new();
         using PluginStore store = CreateStore(root, key, catalogClient, downloadClient, launcher,
             _ =>
             {
-                if (++calls == 1)
+                if (replacement.Armed && ++calls == 1)
                 {
                     Directory.Move(pluginRoot, backup);
                     Directory.CreateSymbolicLink(pluginRoot,
@@ -566,6 +580,7 @@ public sealed class PluginStoreTests
             });
         (await store.RefreshAsync(true)).IsSuccess.Should().BeTrue();
         (await store.InstallAsync(PluginId)).IsSuccess.Should().BeTrue();
+        replacement.Armed = true;
         WriteManifest(Path.Combine(sentinel, "0.1.0"), PluginId, "0.1.0");
         try
         {
@@ -754,6 +769,11 @@ public sealed class PluginStoreTests
               verbs = ["find"]
               """);
         File.WriteAllText(Path.Combine(directory, "README.md"), "# Fixture\n");
+    }
+
+    private sealed class ReplacementState
+    {
+        public bool Armed { get; set; }
     }
 
     private static PluginStore CreateStore(string root, SigningKey key, HttpClient catalog, HttpClient download,

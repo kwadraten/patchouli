@@ -212,6 +212,7 @@ public sealed class PluginStore : IPluginStore, IDisposable
                     Path.Combine(finalDirectory, PluginManifestLoader.ManifestFileName), true,
                     prepared.Value.DeclaredVerbs, "community", entry.Repository, entry.SourceRevision));
                 PluginRegistry.Save(_registryPath, records);
+                await NotifyRegistryChangedAsync(pluginId);
                 return prepared;
             }
             finally
@@ -293,6 +294,7 @@ public sealed class PluginStore : IPluginStore, IDisposable
                     SourceRevision = metadata.SourceRevision
                 });
                 PluginRegistry.Save(_registryPath, records);
+                await NotifyRegistryChangedAsync(pluginId);
                 return loaded;
             }
             finally
@@ -606,6 +608,7 @@ public sealed class PluginStore : IPluginStore, IDisposable
                     .Where(record => !ReferenceEquals(record, current)).ToList();
                 records.Add(current with { Enabled = enabled, ManifestPath = manifestPath ?? current.ManifestPath });
                 PluginRegistry.Save(_registryPath, records);
+                await NotifyRegistryChangedAsync(pluginId);
                 return Result.Success();
             }
             finally
