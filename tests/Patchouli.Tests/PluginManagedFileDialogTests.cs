@@ -575,5 +575,11 @@ public sealed class PluginManagedFileDialogTests(AvaloniaSharedSessionFixture he
         {
             throw new NotSupportedException();
         }
+
+        public Task<Result<McpPluginPutOutcome>> PutAsync(string pluginId, string relativePath,
+            string content, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

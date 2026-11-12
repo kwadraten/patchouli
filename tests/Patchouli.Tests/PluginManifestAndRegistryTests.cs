@@ -164,7 +164,7 @@ public sealed class PluginManifestAndRegistryTests
     {
         string package = NewPackage();
         string badVerb = ValidManifest.Replace("verbs = [\"find\",\"fetch\"]",
-            "verbs = [\"find\",\"put\"]", StringComparison.Ordinal);
+            "verbs = [\"find\",\"add\"]", StringComparison.Ordinal);
         PluginManifestLoader.Load(WriteManifest(package, badVerb)).IsFailure.Should().BeTrue();
         File.Delete(Path.Combine(package, PluginManifestLoader.ManifestFileName));
 
@@ -185,6 +185,33 @@ public sealed class PluginManifestAndRegistryTests
         string missingReadme = ValidManifest.Replace("readme = \".agents/plugin-usage.md\"",
             "readme = \"docs/missing.md\"", StringComparison.Ordinal);
         PluginManifestLoader.Load(WriteManifest(package, missingReadme)).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Put_verb_is_accepted_on_file_and_directory_nodes()
+    {
+        string package = NewPackage();
+
+        string filePut = ValidManifest.Replace("verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            "verbs = [\"fetch\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"", StringComparison.Ordinal);
+        Result<PluginDefinition> loaded = PluginManifestLoader.Load(WriteManifest(package, filePut));
+        loaded.IsSuccess.Should().BeTrue();
+        loaded.Value.DeclaredVerbs.Should().Contain("put");
+        loaded.Value.FindNode("status.json")!.Verbs.Should().BeEquivalentTo("fetch", "put");
+        File.Delete(Path.Combine(package, PluginManifestLoader.ManifestFileName));
+
+        string directoryPut = ValidManifest.Replace("path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\"]",
+            "path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\",\"put\"]", StringComparison.Ordinal);
+        Result<PluginDefinition> directoryLoaded =
+            PluginManifestLoader.Load(WriteManifest(package, directoryPut));
+        directoryLoaded.IsSuccess.Should().BeTrue();
+        directoryLoaded.Value.FindNode("results/")!.Verbs.Should().BeEquivalentTo("find", "put");
+        File.Delete(Path.Combine(package, PluginManifestLoader.ManifestFileName));
+
+        // find stays directory-only: a file node may declare fetch/put, never find.
+        string fileFind = ValidManifest.Replace("verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            "verbs = [\"find\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"", StringComparison.Ordinal);
+        PluginManifestLoader.Load(WriteManifest(package, fileFind)).IsFailure.Should().BeTrue();
     }
 
     [Fact]
@@ -228,6 +255,12 @@ public sealed class PluginManifestAndRegistryTests
         PluginRegistrySnapshot withView = PluginRegistry.Load(registry);
         withView.Entries.Should().HaveCount(1);
         withView.Entries[0].AllowedVerbs.Should().BeEquivalentTo("find", "fetch", "view");
+
+        File.WriteAllText(registry,
+            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find","fetch","put"]}]""");
+        PluginRegistrySnapshot withPut = PluginRegistry.Load(registry);
+        withPut.Entries.Should().HaveCount(1);
+        withPut.Entries[0].AllowedVerbs.Should().BeEquivalentTo("find", "fetch", "put");
     }
 
     private const string ViewSourceNodes =

@@ -17,7 +17,7 @@ namespace Patchouli.Tests;
 /// <summary>
 /// Command-surface tests for the plugin mount seam: URI parsing, root discovery, static vs
 /// live fetch routing, registry allowed_verbs + existing switch/domain gates, send target
-/// rules and put/cite denial on the patchouli://plugin/ namespace.
+/// rules, put routing to the plugin process, and cite denial on the patchouli://plugin/ namespace.
 /// </summary>
 public sealed class PluginGatewayTests
 {
@@ -25,11 +25,12 @@ public sealed class PluginGatewayTests
     private const string Root = "patchouli://plugin/kwadraten.kuzushi-classifier/";
 
     private static McpCommandService CreateCommands(FakePluginApi? plugins = null,
-        Func<CancellationToken, Task<McpServerSettings>>? permissions = null, bool sendEnabled = true)
+        Func<CancellationToken, Task<McpServerSettings>>? permissions = null, bool sendEnabled = true,
+        bool putEnabled = true)
     {
         return new McpCommandService(Stub<IMcpReadApi>.Create(), Stub<IMcpWriteApi>.Create(),
             Stub<IBiblatexImportService>.Create(), Stub<IItemService>.Create(),
-            Stub<IVersionedEvidenceReader>.Create(), sendEnabled: sendEnabled,
+            Stub<IVersionedEvidenceReader>.Create(), sendEnabled: sendEnabled, putEnabled: putEnabled,
             permissionSettings: permissions, pluginApi: plugins);
     }
 
@@ -169,13 +170,38 @@ public sealed class PluginGatewayTests
     }
 
     [Fact]
-    public async Task Plugin_uris_are_read_only_for_put_and_cite()
+    public async Task Plugin_put_routes_to_the_plugin_when_granted_and_denied_without_the_grant()
     {
-        McpCommandService commands = CreateCommands(new FakePluginApi(PluginId, ["find", "fetch"]));
+        FakePluginApi granted = new(PluginId, ["find", "fetch", "put"]);
+        McpCommandService commands = CreateCommands(granted);
         McpCommandResult<McpPutMeta, McpPutResult> put =
             await commands.PutAsync(new McpPutRequest(Root + "status.json", "{}"));
-        put.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+        put.IsSuccess.Should().BeTrue();
+        granted.Puts.Should().Be(1);
+        put.Envelope!.Entries[0].Committed.Should().BeTrue();
+        put.Envelope.Entries[0].ResourceType.Should().Be("plugin");
+        put.Envelope.Entries[0].Result.Should().NotBeNull();
+        put.Envelope.Meta.Summary.Should().Contain("written");
 
+        McpCommandResult<McpPutMeta, McpPutResult> ungranted = await CreateCommands(
+                new FakePluginApi(PluginId, ["find", "fetch"]))
+            .PutAsync(new McpPutRequest(Root + "status.json", "{}"));
+        ungranted.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+
+        McpCommandResult<McpPutMeta, McpPutResult> rootPut = await commands.PutAsync(
+            new McpPutRequest(Root, "{}"));
+        rootPut.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpPutMeta, McpPutResult> switchedOff = await CreateCommands(granted,
+                putEnabled: false)
+            .PutAsync(new McpPutRequest(Root + "status.json", "{}"));
+        switchedOff.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Plugin_uris_are_still_not_citable()
+    {
+        McpCommandService commands = CreateCommands(new FakePluginApi(PluginId, ["find", "fetch"]));
         McpCommandResult<McpCiteMeta, McpCitationResult> cite =
             await commands.CiteAsync(new McpCiteRequest([Root + "status.json"], null, null, false, false));
         cite.Envelope!.Entries[0].Error.Should().Contain("NOT_CITABLE");
@@ -193,6 +219,7 @@ public sealed class PluginGatewayTests
         public int LiveFinds { get; private set; }
         public int LiveFetches { get; private set; }
         public int Sends { get; private set; }
+        public int Puts { get; private set; }
 
         public IReadOnlyList<McpPluginMountInfo> Mounts { get; } =
         [
@@ -277,6 +304,14 @@ public sealed class PluginGatewayTests
             Sends++;
             return Task.FromResult(Result<McpPluginSendOutcome>.Success(
                 new McpPluginSendOutcome("completed", new { result_id = "r1", action })));
+        }
+
+        public Task<Result<McpPluginPutOutcome>> PutAsync(string id, string relativePath, string content,
+            CancellationToken cancellationToken = default)
+        {
+            Puts++;
+            return Task.FromResult(Result<McpPluginPutOutcome>.Success(
+                new McpPluginPutOutcome("written", new { resource_uri = relativePath, stored = true })));
         }
     }
 

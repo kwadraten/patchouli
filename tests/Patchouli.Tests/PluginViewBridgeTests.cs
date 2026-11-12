@@ -695,5 +695,11 @@ public sealed class PluginViewBridgeTests
             SendCalls.Add((pluginId, endpointPath, action, args.Clone(), requestId));
             return Task.FromResult(SendResult);
         }
+
+        public Task<Result<McpPluginPutOutcome>> PutAsync(string pluginId, string relativePath,
+            string content, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

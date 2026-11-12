@@ -857,5 +857,11 @@ public sealed class PluginViewTests
         {
             throw new NotSupportedException();
         }
+
+        public Task<Result<McpPluginPutOutcome>> PutAsync(string pluginId, string relativePath,
+            string content, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }
