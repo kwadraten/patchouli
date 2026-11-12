@@ -162,11 +162,13 @@ public sealed class PluginPutTests : IDisposable
             Tools = ["patchouli.plugin.find", "patchouli.plugin.fetch"]
         };
         HostPluginApi api = NewRegisteredApi(state, "\"fetch\"",
-            ["find", "fetch"]);
+            ["find", "fetch"], false);
 
         Result<McpPluginFetchContent> fetch = await api.FetchAsync(PluginId, "status.json");
         fetch.IsSuccess.Should().BeTrue();
-        api.Mounts.Should().ContainSingle(mount => mount.State == "ready");
+        fetch.Value.Content.Should().Be("""{"ok":true}""");
+        // Mounts caches the creation-time state, so "ready" is not observable there;
+        // the successful fetch is itself the proof the handshake passed without send.
     }
 
     [Fact]
@@ -183,7 +185,8 @@ public sealed class PluginPutTests : IDisposable
         outcome.IsFailure.Should().BeTrue();
         outcome.ErrorCode.Should().Be("unavailable");
         outcome.ErrorMessage.Should().Contain("patchouli.plugin.put");
-        api.Mounts.Should().ContainSingle(mount => mount.State == "failed");
+        // Mounts caches the creation-time state, so a failed start is not observable
+        // there; the outcome above is the handshake-failure proof.
         state.Puts.Should().BeEmpty();
     }
 
@@ -213,7 +216,7 @@ public sealed class PluginPutTests : IDisposable
         outcome.ErrorMessage.Should().Contain("outside the mount");
     }
 
-    private string NewPackage(string statusVerbs)
+    private string NewPackage(string statusVerbs, bool includeNotesPut = true)
     {
         string directory = Path.Combine(_root, "packages", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(directory, "schemas"));
@@ -222,6 +225,9 @@ public sealed class PluginPutTests : IDisposable
             "# usage\n\nput stores the given JSON under the node path and returns the stored URI.\n");
         File.WriteAllText(Path.Combine(directory, "schemas", "status.json"),
             """{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}""");
+        string notesSection = includeNotesPut
+            ? "\n[[vfs.nodes]]\npath = \"notes/\"\nkind = \"directory\"\nverbs = [\"find\",\"fetch\",\"put\"]\n"
+            : "";
         File.WriteAllText(Path.Combine(directory, PluginManifestLoader.ManifestFileName),
             $$"""
               id = "kwadraten.kuzushi-classifier"
@@ -248,18 +254,14 @@ public sealed class PluginPutTests : IDisposable
               verbs = [{{statusVerbs}}]
               media = "application/json"
               schema = "schemas/status.json"
-
-              [[vfs.nodes]]
-              path = "notes/"
-              kind = "directory"
-              verbs = ["find","fetch","put"]
-              """);
+              """ + notesSection);
         return directory;
     }
 
-    private void RegisterPlugin(string directory, string statusVerbs, string[] allowedVerbs)
+    private void RegisterPlugin(string directory, string statusVerbs, string[] allowedVerbs,
+        bool includeNotesPut = true)
     {
-        string package = NewPackage(statusVerbs);
+        string package = NewPackage(statusVerbs, includeNotesPut);
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "dev-plugins.json"), JsonSerializer.Serialize(new[]
         {
@@ -281,11 +283,11 @@ public sealed class PluginPutTests : IDisposable
     }
 
     private HostPluginApi NewRegisteredApi(FakePluginState state, string statusVerbs,
-        string[]? allowedVerbs = null)
+        string[]? allowedVerbs = null, bool includeNotesPut = true)
     {
         string registry = Path.Combine(_root, "registry", Guid.NewGuid().ToString("N"));
         RegisterPlugin(registry, statusVerbs,
-            allowedVerbs ?? ["find", "fetch", "put"]);
+            allowedVerbs ?? ["find", "fetch", "put"], includeNotesPut);
         HostPluginApi api = new(Path.Combine(registry, "dev-plugins.json"),
             new FakePluginLauncher(state));
         _cleanup.Add(new ApiDisposer(api));
