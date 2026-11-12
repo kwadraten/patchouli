@@ -12,7 +12,7 @@
 | `fetch <URI>...` | `patchouli.fetch` | 读取已知资源，逐 URI 独立返回结果；作用于 plugin `views/{view-id}` 时返回视图描述符而非图像 |
 | `add <PATH> [--kind pdf\|csl]` | `patchouli.add { path, kind }` | 导入宿主机本地文件 |
 | `fetch patchouli://images/<document-id>/page-<N>.png --output <PNG>` | `patchouli.fetch` | 读取源页面图像（原生 image 内容块，不进文本字段）；`?rev=` 读历史修订、`?box=` 裁剪到该框、`?overlay=boxes` 叠加与页面 XML 顺序一致的带序号边界框、`?max_edge=` 限最长边；单次调用只能含一个 images/ URI，不可用 `--range`/`--limit-bytes`；`--output` 必填 |
-| `put <URI> --from/--stdin` 或 `--boxes-from/--boxes-stdin` | `patchouli.put` | 替换一个可写资源 |
+| `put <URI> --from/--stdin` 或 `--boxes-from/--boxes-stdin` | `patchouli.put` | 替换一个可写资源；作用于 `patchouli://plugin/{id}/{declared-path}` 时，节点声明并授予 `put` 后写入交给插件进程实现，插件返回的具体结果放在 `result` 字段 |
 | `cite <REF>...` | `patchouli.cite` | 渲染引用 |
 | `send <ENDPOINT> <ACTION> <TARGET> [选项]` | `patchouli.send` | 向领域端点发送类型化消息 |
 

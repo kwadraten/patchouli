@@ -6,14 +6,14 @@
 |---|---|---|
 | Core | 身份、校验、事务、历史、并发、证据与快照规则 | 由宿主维护，不能替换 |
 | Extension | 可替换的核心业务动作实现，例如翻译引擎、元数据来源 | 正在实现：可信编译 FSX 包；尚未完成验收 |
-| Plugin | 独立应用，可以拥有自己的数据，通过 MCP 使用书库 | 已支持静态声明的 stdio MCP 与社区商店；当前开放 find/fetch/send、声明视图的宿主合成描述符与桌面 WebView 容器，尚无插件书库授权 |
+| Plugin | 独立应用，可以拥有自己的数据，通过 MCP 使用书库 | 已支持静态声明的 stdio MCP 与社区商店；当前开放 find/fetch/send/put、声明视图的宿主合成描述符与桌面 WebView 容器，尚无插件书库授权 |
 
 扩展的业务契约是返回候选结果，由宿主校验并提交；但扩展是宿主内运行的可信代码，不是安全边界或沙箱。
 
 ## Plugin 与社区商店
 
-- 包根目录的 `patchouli-plugin.toml` 声明 `patchouli.plugin/1`、`patchouli.plugins/1`、SemVer、stdio 启动命令、README、VFS 节点和同步动作 Schema。宿主只挂载声明的 `find`/`fetch`/`send`，并校验运行时输入和结果。
-- 清单还可用 `[[ui.views]]` 声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。`views` 是宿主保留挂载路径（与 `plugin.yml`、`README.md`、`files` 同级，插件不能自行声明）；`patchouli://plugin/{id}/views/{view-id}` 由宿主合成，`find` 列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`），`fetch`/`view` 返回 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，读取它们不启动插件进程。声明 views 后 `view` 计入清单 `DeclaredVerbs`，并加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合；plugin 地址上的 `put`/`add`/`cite` 仍被拒绝。
+- 包根目录的 `patchouli-plugin.toml` 声明 `patchouli.plugin/1`、`patchouli.plugins/1`、SemVer、stdio 启动命令、README、VFS 节点和同步动作 Schema。宿主只挂载声明的动词，并校验运行时输入和结果；动词的语义由插件实现（见下「动词模型」）。
+- 清单还可用 `[[ui.views]]` 声明插件视图：`id`（插件内唯一，`^[a-zA-Z][a-zA-Z0-9_-]{0,63}$`）、`title`、`placement`（`tab`/`window`/`pdf-sidebar`）与 `source`（一个已声明 `kind="file"` 且 `verbs` 含 `fetch` 的 VFS 节点路径）。`views` 是宿主保留挂载路径（与 `plugin.yml`、`README.md`、`files` 同级，插件不能自行声明）；`patchouli://plugin/{id}/views/{view-id}` 由宿主合成，`find` 列出 `views/`（type `directory`）与 `views/{view-id}`（type `view`），`fetch`/`view` 返回 JSON 描述符 `{uri, plugin_id, view_id, title, placement, source_uri}`，读取它们不启动插件进程。声明 views 后 `view` 计入清单 `DeclaredVerbs`，并加入设备 `allowed_verbs` 与社区 `requested_verbs` 的合法集合；plugin 地址上的 `add`/`cite` 仍被拒绝（`put` 已支持，见下「动词模型」）。
 - 桌面容器按 placement 打开视图：`tab` 为保留的工作区标签页（按 plugin/view 去重），`window` 为非模态弹窗（已有窗口则重新激活），`pdf-sidebar` 出现在 PDF 工作台右侧栏的页签选择器中（沿用既有侧栏显隐与 200–800 px 分隔条，box 编辑模式下隐藏；无活动 PDF 工作台时 URI 激活退回标签页容器）。打开入口是应用内/URI 激活 view URI 与 PDF 侧栏页签菜单中列出的已授权 pdf-sidebar 视图。视图 HTML 由宿主经 `patchouli.plugin.fetch` 读取声明的 source 节点，不直接读包文件、不缓存 HTML；插件离线、停用或未授权时容器显示明确的不可用状态。
 - 宿主向视图注入上下文：webview 创建及每次变化时设置 `window.patchouli.theme = {dark, colors{全部调色板变量}}`，在 `:root` 上写入 `--patchouli-color-*` CSS 变量与 `color-scheme`，并派发 `patchouli:theme` DOM 事件；pdf-sidebar 视图另收 `window.patchouli.page = {uri}`（当前页的 canonical `patchouli://texts/{doc}/page-N.xml?rev=…` 链接），随页面/修订/文档变化推送并派发 `patchouli:page` 事件。页面内 JS 可调用 `invokeCSharpAction('{"type":"patchouli:request-context"}')` 请求重推。不暴露宿主 token、对象或桥接；外部 http(s) 链接交给系统浏览器，仅 `about:`/`data:` 允许原地导航。WebView 为 `Avalonia.Controls.WebView`（Windows WebView2、macOS WKWebView、Linux WebKitGTK），不构成 OS 沙箱。
 - 清单根的 `[[files]]` 段声明宿主托管文件：`path`（必填，插件相对、不可穿越的文件路径，不能是目录、带尾斜杠或模板）、`download_url`（可选，绝对 http/https）、`bytes`（可选正整数）、`sha256`（可选 64 位 hex）与 `version`（可选）。宿主把文件下载到数据目录 `models/plugins/{plugin-id}/{path}`，只在桌面端经用户确认后下载并校验 bytes/sha256；`patchouli://plugin/{id}/files/{path}` 的 `fetch`/`find` 返回声明与就绪状态，绝不泄露本地路径。声明了 files 的插件启动时收到宿主注入的 `--patchouli-managed-files {managedRoot}` 与逐个 `--patchouli-managed-file {relative}|{absolute}` 参数（位于自身 runtime args 之前），进程据此读取已校验文件；启动不触发下载。files 声明不改变 `DeclaredVerbs` 与 `allowed_verbs`。
@@ -21,6 +21,26 @@
 - 社区包安装到设备数据目录 `plugins/{id}/{version}/`，先解包校验并完成 MCP 握手，再更新 `plugins/dev-plugins.json`。旧版本保留用于回滚；更新或回滚不会撤销已提交数据。本地开发包与社区包来源分别记录，商店不会接管手工 dev 注册。
 - 安装确认会列出请求的宿主动词、源码仓库和固定修订。当前不支持插件书库 grants、后台动作或 URI resolve。独立进程不是 OS 沙箱，索引签名与哈希也不是代码安全保证。
 - 社区索引仓库为 `https://github.com/kwadraten/patchouli-community`；作者仓库固定源码修订和发行产物摘要由索引 CI 复核。不得把“不能访问数据库/文件/网络”当作安全保证。
+
+### 动词模型
+
+宿主是经纪人加形状校验器：它保证插件声明的动词可达、校验输入/输出的形状（节点 `Schema`），但动词的语义归插件；插件把自己的内部数据/实现投影为 VFS，供 MCP agent 调用。宿主从不关心插件的内部实现。动词没有逐动词 Schema，复用节点的 `Schema` 字段。
+
+| 动词 | 状态 | 含义 |
+|---|---|---|
+| `find` | 已实现 | 浏览/搜索插件挂载内的目录与条目 |
+| `fetch` | 已实现 | 读取插件节点内容，输出按节点 Schema 校验 |
+| `send` | 已实现 | 向声明的控制端点发送类型化消息 |
+| `view` | 已实现（MCP 侧） | 宿主合成的视图描述符；桌面 WebView 容器验收进行中 |
+| `put` | 已实现 | 见下 |
+| `add` | 已设计、未实现 | 见下 |
+| `cite` | 已设计、未实现 | 见下 |
+
+- **`put`**：实现由插件自己定义。宿主经 `patchouli.put` 把写入交给插件进程，输入先按节点 Schema 校验（只校验声明了 Schema 的节点），`content_type` 取节点的 `media`。插件必须返回操作的具体结果（`{state, result}`），并在 readme.md 声明结果的含义；宿主不规定创建还是覆盖。结果原样返回给 agent（`result` 字段），其中 `resource_uri` 会被重写回挂载 URI。文件节点可声明 `fetch`/`put`，目录节点可声明 `find`/`fetch`/`put`。
+- **`add`**（未实现）：默认由宿主管理导入（接受文件名）；目标是插件域时由插件域管理，插件声明自己接受的输入形式（文件路径/长文本/参数）。宿主导入失败时，toon/json 结果里写失败原因（如宿主不支持该格式），并询问是否导入到插件、列出支持的插件。
+- **`cite`**（未实现）：两种结果形状——插件自己渲染的字符串，或交给宿主 F# citeproc 渲染的 CSL-JSON；style 语义与既有 cite 工具相同。
+- **stdio 协议**：插件进程是 stdio MCP 服务。握手时宿主发 `tools/list`，按清单 `DeclaredVerbs` 要求对应工具：声明的动词必须有工具，未声明的动词不要求（只声明 find/fetch 的插件不必提供 send/put 的工具；`view` 没有进程工具，由宿主合成）。调用用 `tools/call`，工具名为 `patchouli.plugin.find` / `patchouli.plugin.fetch` / `patchouli.plugin.send` / `patchouli.plugin.put`，结果放在 `structuredContent` 里。
+- **权限模型**：有效授权 = 清单 `DeclaredVerbs` ∩ 设备 `allowed_verbs`（`dev-plugins.json` 注册记录）。社区商店的 `requested_verbs` 与设备 `allowed_verbs` 使用同一动词表。未声明、未授权的动词一律不可达。后台动作与插件主体书库 grants 仍不支持，不要把它们写进插件文档。
 
 ## 扩展包与生命周期
 
