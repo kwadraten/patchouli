@@ -25,8 +25,10 @@ public sealed record PluginRegistrySnapshot(
 public static class PluginRegistry
 {
     public const string FileName = "dev-plugins.json";
+
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
         { "find", "fetch", "send", "view" };
+
     private const int MaxRegistryBytes = 64 * 1024;
 
     public static string RegistryPath(string dataDirectory)

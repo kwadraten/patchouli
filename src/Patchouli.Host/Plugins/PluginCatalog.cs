@@ -37,6 +37,7 @@ public sealed record PluginCatalogIndex(
 public static class PluginCatalogReader
 {
     public const string SupportedSchema = "patchouli.community.index/1";
+
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
         { "find", "fetch", "send", "view" };
 
