@@ -544,7 +544,8 @@ public sealed class PdfPageRenderingTests
                 "056_index_file_location_paths.sql",
                 "057_sql_browse_indexes.sql",
                 "058_create_library_tag_definitions.sql",
-                "059_pages_user_rotation.sql");
+                "059_pages_user_rotation.sql",
+                "060_remove_legacy_document_tree_revisions.sql");
     }
 
     private sealed class Context : IAsyncDisposable
