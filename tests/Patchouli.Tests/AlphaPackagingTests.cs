@@ -229,7 +229,7 @@ public sealed class AlphaPackagingTests
 
         workflow.Should().Contain("pull_request:").And.Contain("contents: read")
             .And.Contain("scripts/package-windows.ps1").And.Contain("-Smoke")
-            .And.Contain("runs-on: macos-14")
+            .And.Contain("runs-on: macos-15")
             .And.Contain("VERSION=\"$PACKAGE_VERSION\" bash scripts/package-macos.sh osx-arm64")
             .And.Contain(
                 "bash scripts/verify-macos-dmg.sh \".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg\"")
