@@ -836,12 +836,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     public void OnPointerPressed(double x, double y)
     {
-        if (ActiveTool == PdfWorkspaceTool.Select)
+        if (SplitSource is null && ActiveTool == PdfWorkspaceTool.Select)
         {
             return;
         }
 
-        if (ActiveTool == PdfWorkspaceTool.CreateBox && !IsEditMode)
+        if (SplitSource is null && ActiveTool == PdfWorkspaceTool.CreateBox && !IsEditMode)
         {
             return;
         }
@@ -1260,7 +1260,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SplitSource = original;
         SplitFirstText = parts.Length > 1 ? parts[0] : text[..(text.Length / 2)];
         SplitSecondText = parts.Length > 1 ? string.Join("\n\n", parts.Skip(1)) : text[(text.Length / 2)..];
-        SetActiveTool(PdfWorkspaceTool.CreateBox);
         Status = SplitStepText;
         await Task.CompletedTask;
     }

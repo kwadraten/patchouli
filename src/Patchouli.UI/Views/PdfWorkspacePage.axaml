@@ -467,7 +467,7 @@
                       <Border Background="Transparent"
                               Width="{Binding ActualWidthPixels}"
                               Height="{Binding ActualHeightPixels}"
-                              IsVisible="{Binding HasImage}"
+                              IsVisible="{Binding !IsSplitPending}"
                               IsHitTestVisible="{Binding IsRectToolActive}"
                               PointerPressed="OnCanvasPointerPressed"
                               PointerMoved="OnCanvasPointerMoved"
@@ -475,7 +475,7 @@
 
                       <!-- Selection Drawing Preview -->
                       <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
-                              IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                              IsVisible="{Binding !IsSplitPending}" IsHitTestVisible="False">
                         <Border Classes="BBox draft"
                                 BorderBrush="DarkOrange"
                                 Canvas.Left="{Binding SelectionLeft}"
@@ -484,35 +484,6 @@
                                 Height="{Binding SelectionHeight}"
                                 IsVisible="{Binding SelectionVisible}" />
                       </Canvas>
-
-                      <!-- Split Draft Boxes Overlay -->
-                      <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
-                                    Width="{Binding ActualWidthPixels}"
-                                    Height="{Binding ActualHeightPixels}"
-                                    IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                        <ItemsControl.ItemContainerTheme>
-                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
-                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                          </ControlTheme>
-                        </ItemsControl.ItemContainerTheme>
-                        <ItemsControl.ItemsPanel>
-                          <ItemsPanelTemplate>
-                            <Canvas />
-                          </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
-                            <Border Classes="BBox draft"
-                                    BorderBrush="DarkOrange"
-                                    Width="{Binding Width}"
-                                    Height="{Binding Height}">
-                              <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="Bold"
-                                         Foreground="DarkOrange" />
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
                     </Grid>
                   </LayoutTransformControl>
 
@@ -567,39 +538,7 @@
       <!-- Right: Sidebar Viewer/Editor -->
       <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
         <Grid RowDefinitions="Auto,Auto,*">
-          <!-- Split wizard -->
-          <Border Classes="WizardCard" Grid.RowSpan="3" IsVisible="{Binding IsSplitPending}">
-            <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8">
-              <TextBlock Text="拆分边界框" FontWeight="SemiBold" FontSize="14" />
-              <TextBlock Grid.Row="1" Text="{Binding SplitStepText}" TextWrapping="Wrap" FontSize="12"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="8">
-                <TextBox Text="{Binding SplitFirstText}" AcceptsReturn="True" TextWrapping="Wrap"
-                         PlaceholderText="第一个边界框内容" />
-                <TextBox Grid.Column="1" Text="{Binding SplitSecondText}" AcceptsReturn="True" TextWrapping="Wrap"
-                         PlaceholderText="第二个边界框内容" />
-              </Grid>
-              <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="取消拆分" Command="{Binding CancelSplitCommand}" />
-                <Button Content="确认拆分" Command="{Binding ConfirmSplitCommand}"
-                        IsEnabled="{Binding CanConfirmSplit}" Classes="Primary" />
-              </StackPanel>
-            </Grid>
-          </Border>
-          <!-- Merge wizard -->
-          <Border Grid.Row="1" Classes="WizardCard" IsVisible="{Binding IsMergePending}">
-            <StackPanel Spacing="8">
-              <TextBlock Text="确认合并内容" FontWeight="SemiBold" FontSize="14" />
-              <TextBox Text="{Binding MergeText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100"
-                       PlaceholderText="合并结果内容（必填）" />
-              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="取消合并" Command="{Binding CancelMergeCommand}" />
-                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}" Classes="Primary" />
-              </StackPanel>
-            </StackPanel>
-          </Border>
-
-          <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
+          <Grid Grid.Row="2">
             <!-- View mode: tabbed sidebar — page content (read-only Markdown preview) or version history -->
             <Grid RowDefinitions="Auto,*" IsVisible="{Binding IsNavigationSidebarVisible}">
               <Border Classes="SidebarHeader">
@@ -936,7 +875,7 @@
             </Grid>
 
             <!-- Edit mode: Box tree -->
-            <Grid RowDefinitions="Auto,*,Auto,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
+            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
               <Border Classes="SidebarHeader">
                 <Grid ColumnDefinitions="Auto,*" Height="32">
                   <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
@@ -1032,28 +971,7 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                            IsVisible="{Binding HasNoBoundingBoxes}" />
               </Grid>
-              <!-- 接续源框挑选面板：候选为全书同类型合法框（含跨页），选择只写关系不搬文字。 -->
               <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
-                      Padding="14,10" IsVisible="{Binding IsPickingContinuationSource}">
-                <StackPanel Spacing="6">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="选择接续源框" FontSize="12" FontWeight="Bold"
-                               VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Content="取消" Command="{Binding CancelContinuationPickCommand}"
-                            Background="Transparent" FontSize="12" />
-                  </Grid>
-                  <ItemsControl ItemsSource="{Binding ContinuationSourceCandidates}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:ContinuationSourceCandidate">
-                        <Button Content="{Binding Display}" Command="{Binding ChooseCommand}"
-                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
-                                Background="Transparent" FontSize="12" />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
-              <Border Grid.Row="3" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
                       Padding="14,10">
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                   <Button Content="放弃更改" Command="{Binding CancelEditModeCommand}"

@@ -253,4 +253,42 @@ public sealed class PdfWorkspaceLayoutTests
         xaml.Should().NotContain("Button.PreviewBlock");
         viewModel.Should().Contain("ReadingSelectedBoxId = _previewSelectedBoxId");
     }
+
+    [Fact]
+    public void BoxEditor_local_ocr_candidate_is_a_scrollable_side_by_side_comparison()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "BoxEditorDialog.axaml"));
+
+        xaml.Should().Contain("x:Name=\"LocalOcrCandidateScrollViewer\"")
+            .And.Contain("ColumnDefinitions=\"*,*\"")
+            .And.Contain("x:Name=\"LocalOcrSourceColumn\"")
+            .And.Contain("VerticalScrollBarVisibility=\"Auto\"")
+            .And.NotContain("MaxHeight=\"80\"");
+    }
+
+    [Fact]
+    public void Box_operation_candidates_use_a_dialog_instead_of_sidebar_panels()
+    {
+        string workspaceXaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string dialogXaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "BoxOperationDialog.axaml"));
+        string codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml.cs"));
+
+        workspaceXaml.Should().NotContain("Classes=\"WizardCard\"")
+            .And.NotContain("Text=\"选择接续源框\"")
+            .And.NotContain("ItemsSource=\"{Binding SplitDraftBoxes}\"");
+        dialogXaml.Should().Contain("Text=\"拆分边界框\"")
+            .And.Contain("x:Name=\"SplitScrollViewer\"")
+            .And.Contain("x:Name=\"SplitDrawingSurface\"")
+            .And.Contain("ItemsSource=\"{Binding SplitDraftBoxes}\"")
+            .And.Contain("Text=\"边界框 1\"")
+            .And.Contain("Text=\"边界框 2\"")
+            .And.Contain("Text=\"确认合并内容\"")
+            .And.Contain("Text=\"选择接续源框\"");
+        codeBehind.Should().Contain("SynchronizeBoxOperationDialog")
+            .And.Contain("_boxOperationDialog.Show(owner)");
+    }
 }
