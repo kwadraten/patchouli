@@ -8,6 +8,7 @@
 - CLI 删除 `view` 命令（改用 `fetch patchouli://images/.../page-<n>.png --output <image.png>`），`fetch` 新增 `--output/--overwrite`；images/ 取图缺 `--output` 时直接报用法错误。
 - 修复元数据 `mapType` 未识别 `JournalArticle`：Semantic Scholar 返回的 `JournalArticle` 经小写化为 `journalarticle` 后此前无匹配分支，`SuggestedItemType` 为空；共享 `Support.fsx` 新增 `"journalarticle"` 分支，映射为 `article-journal`（DOI 10.1038/nature12373 回归测试覆盖）。
 - 受影响的 15 个内置元数据扩展（除 Crossref 外均包含共享 `Support.fsx`）版本由 `1.1.0` 升至 `1.1.1`，遵循 ADR 0055：同 SemVer 下不得修改包内容；已安装 1.1.0 扩展的升级路径由回归测试覆盖，升级时自动替换为新包且不触发版本冲突。
+- 插件 `put` 动词落地：插件可在清单节点上声明 `put`，宿主按设备 `allowed_verbs` 授予后经 `patchouli.put` 把写入交给插件进程实现（`patchouli.plugin.put`），输入按节点 Schema 校验，插件返回操作的具体结果并在 readme.md 声明；握手时按清单 `DeclaredVerbs` 要求对应工具，未声明的动词不再强制要求。`add`/`cite` 仍未实现。
 
 ## 0.3.16
 
