@@ -44,6 +44,14 @@ public sealed class PluginStdioClient : IAsyncDisposable
     private readonly StringBuilder _stderr = new();
     private readonly object _stderrGate = new();
 
+    // Outstanding host → plugin calls made while answering a reverse host-verb call,
+    // keyed by the reverse depth that caused them with a per-depth call count. A
+    // plugin-initiated call inherits the deepest outstanding depth plus one, so a
+    // plugin → host → plugin → host chain is bounded even though the depth cannot
+    // cross the process boundary in an AsyncLocal (ADR 0058).
+    private readonly object _reverseDepthGate = new();
+    private readonly Dictionary<int, int> _outstandingReverseDepths = new();
+
     private IPluginChildProcess? _process;
     private Task? _readerTask;
     private Task? _stderrTask;
@@ -57,6 +65,54 @@ public sealed class PluginStdioClient : IAsyncDisposable
         _spec = spec;
         _launcher = launcher ?? new PluginProcessLauncher();
         _options = options ?? new PluginClientOptions();
+    }
+
+    /// <summary>
+    /// The reverse host-verb dispatcher for this mount, attached by the mount owner
+    /// before the process starts. Null means reverse calls are ignored, as before.
+    /// </summary>
+    internal PluginReverseHostDispatcher? ReverseHost { get; set; }
+
+    /// <summary>Deepest reverse depth among outbound calls currently outstanding, or -1.</summary>
+    internal int CurrentReverseDepth
+    {
+        get
+        {
+            lock (_reverseDepthGate)
+            {
+                return _outstandingReverseDepths.Count == 0 ? -1 : _outstandingReverseDepths.Keys.Max();
+            }
+        }
+    }
+
+    internal IDisposable RegisterOutboundReverseCall(int depth)
+    {
+        lock (_reverseDepthGate)
+        {
+            _outstandingReverseDepths[depth] = _outstandingReverseDepths.TryGetValue(depth, out int count)
+                ? count + 1
+                : 1;
+        }
+
+        return new ReverseDepthRegistration(this, depth);
+    }
+
+    private sealed class ReverseDepthRegistration(PluginStdioClient client, int depth) : IDisposable
+    {
+        public void Dispose()
+        {
+            lock (client._reverseDepthGate)
+            {
+                if (client._outstandingReverseDepths.TryGetValue(depth, out int count) && count > 1)
+                {
+                    client._outstandingReverseDepths[depth] = count - 1;
+                }
+                else
+                {
+                    client._outstandingReverseDepths.Remove(depth);
+                }
+            }
+        }
     }
 
     public PluginClientState State { get; private set; } = PluginClientState.NotStarted;
@@ -188,6 +244,13 @@ public sealed class PluginStdioClient : IAsyncDisposable
         JsonElement result;
         try
         {
+            // Tag an outbound call made while answering a reverse host-verb call with
+            // that call's depth, so the plugin's next reverse call inherits depth + 1.
+            // Forward (agent-initiated) calls carry no depth and register nothing.
+            int? reverseDepth = PluginReverseCallDepth.Current.Value;
+            using IDisposable? registration = reverseDepth.HasValue
+                ? RegisterOutboundReverseCall(reverseDepth.Value)
+                : null;
             result = await RequestAsync("tools/call", new { name = tool, arguments },
                 timeout ?? _options.RequestTimeout, cancellationToken).ConfigureAwait(false);
         }
@@ -433,8 +496,61 @@ public sealed class PluginStdioClient : IAsyncDisposable
                 completion.TrySetException(new PluginCallException("unavailable",
                     "The plugin response carried neither result nor error."));
             }
+
+            return;
         }
-        // Requests with an unknown id and notifications (method field) are ignored.
+
+        // A plugin-initiated request (method + an id no host request owns) is a reverse
+        // host-verb call. The reader loop never awaits it: awaiting would block reading
+        // the plugin's answers to outstanding host calls, which is exactly the
+        // reentrancy the reverse dispatcher guards against. Notifications (no id)
+        // still get no answer.
+        if (ReverseHost is not null &&
+            root.TryGetProperty("id", out JsonElement requestId) &&
+            root.TryGetProperty("method", out JsonElement methodElement) &&
+            methodElement.ValueKind == JsonValueKind.String)
+        {
+            _ = HandleReverseRequestAsync(requestId.Clone(), methodElement.GetString()!,
+                root, CancellationToken.None);
+        }
+        // Anything else (unknown ids, notifications) is ignored.
+    }
+
+    private async Task HandleReverseRequestAsync(JsonElement id, string method, JsonElement root,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            PluginReverseHostDispatcher? dispatcher = ReverseHost;
+            if (dispatcher is null)
+            {
+                return;
+            }
+
+            JsonElement parameters = root.TryGetProperty("params", out JsonElement paramsElement)
+                ? paramsElement.Clone()
+                : default;
+            ReverseHostReply reply = await dispatcher.DispatchAsync(method, parameters, cancellationToken)
+                .ConfigureAwait(false);
+            if (!reply.Handled)
+            {
+                await WriteMessageAsync(new
+                {
+                    jsonrpc = "2.0",
+                    id,
+                    error = new { code = -32601, message = $"Method '{method}' is not supported by this host." }
+                }, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await WriteMessageAsync(new { jsonrpc = "2.0", id, result = reply.Result },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A failed reverse reply must never break the reader loop or leak an
+            // unobserved task failure; the plugin treats the missing answer as a timeout.
+        }
     }
 
     private async Task StderrLoopAsync()

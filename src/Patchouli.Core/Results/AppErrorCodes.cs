@@ -23,4 +23,7 @@ public static class AppErrorCodes
     public const string NotCitable = "not_citable";
     public const string ItemMerged = "item_merged";
     public const string ItemInTrash = "item_in_trash";
+    public const string PermissionDenied = "permission_denied";
+    public const string ReentrancyRefused = "reentrancy_refused";
+    public const string DepthExceeded = "depth_exceeded";
 }
