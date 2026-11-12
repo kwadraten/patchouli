@@ -960,7 +960,8 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
         {
             try
             {
-                PluginStdioClient client = new(ProcessSpec(), launcher, options);
+                PluginStdioClient client = new(ProcessSpec(), launcher, options,
+                    PluginStdioClient.RequiredToolsForVerbs(Definition.DeclaredVerbs));
                 Result started = await client.StartAsync(CancellationToken.None);
                 if (started.IsFailure)
                 {

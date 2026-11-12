@@ -31,13 +31,36 @@ public enum PluginClientState
 public sealed class PluginStdioClient : IAsyncDisposable
 {
     public static readonly string[] RequiredTools =
-        ["patchouli.plugin.find", "patchouli.plugin.fetch", "patchouli.plugin.send"];
+        ["patchouli.plugin.find", "patchouli.plugin.fetch", "patchouli.plugin.send", "patchouli.plugin.put"];
+
+    /// <summary>
+    /// The stdio tools a mount must expose for its declared verbs. A declared verb
+    /// requires its tool; an undeclared verb never does — a find/fetch-only plugin must
+    /// not fail the handshake for lacking send or put, and view has no process tool
+    /// (the host synthesizes views from the manifest).
+    /// </summary>
+    public static IReadOnlyList<string> RequiredToolsForVerbs(IEnumerable<string> verbs)
+    {
+        return verbs
+            .Select(verb => verb switch
+            {
+                "find" => "patchouli.plugin.find",
+                "fetch" => "patchouli.plugin.fetch",
+                "send" => "patchouli.plugin.send",
+                "put" => "patchouli.plugin.put",
+                _ => null,
+            })
+            .Where(tool => tool is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray()!;
+    }
 
     private const string ProtocolVersion = "2025-06-18";
 
     private readonly PluginProcessSpec _spec;
     private readonly IPluginProcessLauncher _launcher;
     private readonly PluginClientOptions _options;
+    private readonly IReadOnlyList<string> _requiredTools;
     private readonly object _gate = new();
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _writeGate = new(1, 1);
@@ -52,11 +75,12 @@ public sealed class PluginStdioClient : IAsyncDisposable
     private string? _failure;
 
     public PluginStdioClient(PluginProcessSpec spec, IPluginProcessLauncher? launcher = null,
-        PluginClientOptions? options = null)
+        PluginClientOptions? options = null, IReadOnlyList<string>? requiredTools = null)
     {
         _spec = spec;
         _launcher = launcher ?? new PluginProcessLauncher();
         _options = options ?? new PluginClientOptions();
+        _requiredTools = requiredTools ?? RequiredTools;
     }
 
     public PluginClientState State { get; private set; } = PluginClientState.NotStarted;
@@ -127,7 +151,7 @@ public sealed class PluginStdioClient : IAsyncDisposable
             await NotifyAsync("notifications/initialized", new { }).ConfigureAwait(false);
             JsonElement listed = await RequestAsync("tools/list", new { },
                 _options.HandshakeTimeout, CancellationToken.None).ConfigureAwait(false);
-            string[] missing = RequiredTools
+            string[] missing = _requiredTools
                 .Except(ListToolNames(listed), StringComparer.Ordinal)
                 .ToArray();
             if (missing.Length > 0)
