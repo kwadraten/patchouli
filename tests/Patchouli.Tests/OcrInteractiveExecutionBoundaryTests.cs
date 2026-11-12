@@ -66,7 +66,7 @@ public sealed class OcrInteractiveExecutionBoundaryTests(AvaloniaSharedSessionFi
             });
             using BlockingRegionAdapter adapter = new("rotated page text") { AutoRelease = true };
             services.OcrAdapters.RegisterAdapter(adapter);
-            workspace.RotatePageCommand.Execute(null);
+            await workspace.RotatePageCommand.ExecuteAsync().WaitAsync(OperationTimeout);
             if (fullPage)
             {
                 await workspace.CancelEditModeCommand.ExecuteAsync();

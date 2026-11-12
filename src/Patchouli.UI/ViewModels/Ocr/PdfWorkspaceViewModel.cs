@@ -2309,6 +2309,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _crossPageContinuationSources.Clear();
         _pages = [];
         _currentPageId = null;
+        _pendingRotations.Clear();
         ViewportRotationAngle = 0;
         PreviewBlocks.Clear();
         ResetTranslationState();
@@ -2587,7 +2588,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             PageCount = pages.Value.Count;
-            _pages = pages.Value;
+            _pages = _pendingRotations.Count == 0
+                ? pages.Value
+                : pages.Value.Select(page => _pendingRotations.TryGetValue(page.PageId, out int pending)
+                    ? page with { UserRotation = pending }
+                    : page).ToArray();
             if (PageCount == 0)
             {
                 ClearSourceValidation();

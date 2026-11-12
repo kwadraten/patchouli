@@ -105,6 +105,12 @@ public sealed partial class PdfWorkspaceViewModel
     private RelayCommand? _cycleFitModeCommand;
     private AsyncCommand? _rotatePageCommand;
 
+    // Optimistic rotation angles whose persistence write is still in flight. A page-list
+    // refetch (ReloadAsync clears _pages, then RenderCurrentPageAsync reads pages back from
+    // the database) can observe the pre-commit row; these entries overlay the stale read so
+    // the viewport and OCR rotation capture never snap back to the old angle.
+    private readonly Dictionary<PageId, int> _pendingRotations = [];
+
     /// <summary>Cycles the size button through Free → FitHeight → FitWidth.</summary>
     [ExcludeFromDerivedGeneration]
     public RelayCommand CycleFitModeCommand => _cycleFitModeCommand ??= new RelayCommand(_ =>
@@ -137,18 +143,26 @@ public sealed partial class PdfWorkspaceViewModel
 
         int previous = _pages[PageIndex].UserRotation;
         ApplyUserRotation(pageId, angle);
+        _pendingRotations[pageId] = angle;
         HostServices services = await _main.ServicesAsync();
-        Result<Page> updated = await Task.Run(
-            () => services.Pages.UpdateUserRotationAsync(pageId, angle),
-            _workspaceCancellation.Token);
-        if (updated.IsFailure)
+        try
         {
-            ApplyUserRotation(pageId, previous);
-            Status = $"页面旋转保存失败:{updated.ErrorMessage}";
-            return;
-        }
+            Result<Page> updated = await Task.Run(
+                () => services.Pages.UpdateUserRotationAsync(pageId, angle),
+                _workspaceCancellation.Token);
+            if (updated.IsFailure)
+            {
+                ApplyUserRotation(pageId, previous);
+                Status = $"页面旋转保存失败:{updated.ErrorMessage}";
+                return;
+            }
 
-        ApplyUserRotation(pageId, updated.Value.UserRotation);
+            ApplyUserRotation(pageId, updated.Value.UserRotation);
+        }
+        finally
+        {
+            _pendingRotations.Remove(pageId);
+        }
     }
 
     private void ApplyUserRotation(PageId pageId, int angle)
