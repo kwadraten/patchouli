@@ -48,7 +48,7 @@ public sealed class PluginStdioClient : IAsyncDisposable
                 "fetch" => "patchouli.plugin.fetch",
                 "send" => "patchouli.plugin.send",
                 "put" => "patchouli.plugin.put",
-                _ => null,
+                _ => null
             })
             .Where(tool => tool is not null)
             .Distinct(StringComparer.Ordinal)

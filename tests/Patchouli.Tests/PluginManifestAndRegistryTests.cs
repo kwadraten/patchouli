@@ -192,16 +192,20 @@ public sealed class PluginManifestAndRegistryTests
     {
         string package = NewPackage();
 
-        string filePut = ValidManifest.Replace("verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
-            "verbs = [\"fetch\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"", StringComparison.Ordinal);
+        string filePut = ValidManifest.Replace(
+            "verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            "verbs = [\"fetch\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            StringComparison.Ordinal);
         Result<PluginDefinition> loaded = PluginManifestLoader.Load(WriteManifest(package, filePut));
         loaded.IsSuccess.Should().BeTrue();
         loaded.Value.DeclaredVerbs.Should().Contain("put");
         loaded.Value.FindNode("status.json")!.Verbs.Should().BeEquivalentTo("fetch", "put");
         File.Delete(Path.Combine(package, PluginManifestLoader.ManifestFileName));
 
-        string directoryPut = ValidManifest.Replace("path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\"]",
-            "path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\",\"put\"]", StringComparison.Ordinal);
+        string directoryPut = ValidManifest.Replace(
+            "path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\"]",
+            "path = \"results/\"\n        kind = \"directory\"\n        verbs = [\"find\",\"put\"]",
+            StringComparison.Ordinal);
         Result<PluginDefinition> directoryLoaded =
             PluginManifestLoader.Load(WriteManifest(package, directoryPut));
         directoryLoaded.IsSuccess.Should().BeTrue();
@@ -209,8 +213,10 @@ public sealed class PluginManifestAndRegistryTests
         File.Delete(Path.Combine(package, PluginManifestLoader.ManifestFileName));
 
         // find stays directory-only: a file node may declare fetch/put, never find.
-        string fileFind = ValidManifest.Replace("verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
-            "verbs = [\"find\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"", StringComparison.Ordinal);
+        string fileFind = ValidManifest.Replace(
+            "verbs = [\"fetch\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            "verbs = [\"find\",\"put\"]\n        media = \"application/json\"\n        schema = \"schemas/status.json\"",
+            StringComparison.Ordinal);
         PluginManifestLoader.Load(WriteManifest(package, fileFind)).IsFailure.Should().BeTrue();
     }
 

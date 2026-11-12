@@ -55,7 +55,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_on_a_declared_file_node_stores_and_returns_the_concrete_result()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "status.json",
             """{"ok":true}""");
@@ -74,7 +74,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_on_a_declared_directory_node_works_without_a_schema()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "notes/", "hello notes");
         outcome.IsSuccess.Should().BeTrue();
@@ -87,7 +87,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_on_an_undeclared_path_fails_and_never_reaches_the_process()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "nope.json",
             """{"ok":true}""");
@@ -100,7 +100,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_on_a_node_without_the_put_verb_fails()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "status.json",
             """{"ok":true}""");
@@ -114,7 +114,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_validates_input_against_the_node_schema()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> wrongType = await api.PutAsync(PluginId, "status.json",
             """{"ok":"yes"}""");
@@ -132,7 +132,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_on_an_unregistered_plugin_fails()
     {
         FakePluginState state = new();
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync("other.plugin", "status.json",
             """{"ok":true}""");
@@ -145,12 +145,12 @@ public sealed class PluginPutTests : IDisposable
     public void Registry_grant_gates_put_through_AllowsVerb()
     {
         FakePluginState state = new();
-        HostPluginApi granted = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"",
-            allowedVerbs: ["find", "fetch", "put"]);
+        HostPluginApi granted = NewRegisteredApi(state, "\"fetch\",\"put\"",
+            ["find", "fetch", "put"]);
         granted.AllowsVerb(PluginId, "put").Should().BeTrue();
 
-        HostPluginApi ungranted = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"",
-            allowedVerbs: ["find", "fetch"]);
+        HostPluginApi ungranted = NewRegisteredApi(state, "\"fetch\",\"put\"",
+            ["find", "fetch"]);
         ungranted.AllowsVerb(PluginId, "put").Should().BeFalse();
     }
 
@@ -161,8 +161,8 @@ public sealed class PluginPutTests : IDisposable
         {
             Tools = ["patchouli.plugin.find", "patchouli.plugin.fetch"]
         };
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\"",
-            allowedVerbs: ["find", "fetch"]);
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\"",
+            ["find", "fetch"]);
 
         Result<McpPluginFetchContent> fetch = await api.FetchAsync(PluginId, "status.json");
         fetch.IsSuccess.Should().BeTrue();
@@ -176,7 +176,7 @@ public sealed class PluginPutTests : IDisposable
         {
             Tools = ["patchouli.plugin.find", "patchouli.plugin.fetch"]
         };
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "status.json",
             """{"ok":true}""");
@@ -191,7 +191,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_with_a_malformed_plugin_result_fails_unavailable()
     {
         FakePluginState state = new() { MalformedPutResult = true };
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "status.json",
             """{"ok":true}""");
@@ -204,7 +204,7 @@ public sealed class PluginPutTests : IDisposable
     public async Task Put_whose_result_escapes_the_mount_fails_unavailable()
     {
         FakePluginState state = new() { EscapingPutResult = true };
-        HostPluginApi api = NewRegisteredApi(state, statusVerbs: "\"fetch\",\"put\"");
+        HostPluginApi api = NewRegisteredApi(state, "\"fetch\",\"put\"");
 
         Result<McpPluginPutOutcome> outcome = await api.PutAsync(PluginId, "status.json",
             """{"ok":true}""");

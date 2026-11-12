@@ -682,7 +682,7 @@ public sealed partial class McpCommandService
             return McpCommandResult<McpPutMeta, McpPutResult>.ErrorWithContent(failed, code, detail);
         }
 
-        McpPutResult putResult = new(parsed.CanonicalUri, "plugin", Committed: true,
+        McpPutResult putResult = new(parsed.CanonicalUri, "plugin", true,
             Encoding.UTF8.GetByteCount(request.Content!), Result: outcome.Value.Result);
         McpEnvelope<McpPutMeta, McpPutResult> envelope =
             McpEnvelope<McpPutMeta, McpPutResult>.Create(
