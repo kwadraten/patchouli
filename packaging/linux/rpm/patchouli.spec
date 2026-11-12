@@ -48,6 +48,13 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Fri Nov 13 2026 kwadraten <schild0van0man@duck.com> - 0.4.0-1
+- Milestone release: full plugin architecture with stdio plugins, declared web views and a unified plugin/extension manager
+- Install community extensions from the signed index; route downloads and OCR through a shared task queue
+- Toolbar metadata search filters, paged collection/untagged queries, persisted page rotation and a box edit dialog
+- MCP replaces patchouli.view with a read-only images/ VFS domain and native image blocks; models.dev LLM transport
+- Add patchouli:// protocol activation, Windows application manifest and dual-mode theme palettes
+
 * Fri Nov 06 2026 kwadraten <schild0van0man@duck.com> - 0.3.16-1
 - Upgrade the extension platform to patchouli.extensions/4 with versioned built-ins, compiled artifacts and read-only source templates
 - Move layout recognition models into dedicated extension packages and share layout detection across multimodal OCR and the visual-guided text layer

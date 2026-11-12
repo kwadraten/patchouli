@@ -1,7 +1,20 @@
 # 更新日志
 
-## 0.4.0（开发中，未发布）
+## 0.4.0
 
+发布：2026-11-13 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.4.0) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.16...0.4.0)
+
+**里程碑版本：插件架构完整落地。** 应用从「内置扩展」进化为可运行的插件平台——stdio 插件可声明并挂载 Web View、由宿主导管文件供给与会话桥接，配合统一的插件/扩展管理界面与社区扩展签名索引，第三方功能可以正式插件形式安装、升级与管理。
+
+- 插件架构：stdio 插件按声明挂载 Web View，宿主为插件声明的托管文件提供供给与生命周期管理；插件与宿主经 web-view 文件桥与会话机制通信；扩展运行时迁移到设备级数据目录，与库数据解耦。
+- 统一的插件/扩展管理器：应用菜单新增扩展入口，集中管理内置扩展、第三方插件与视图；行操作改用图标按钮；应用可从签名索引安装社区扩展并在商店变更后即时刷新运行中的注册表。
+- 共享任务队列：模型与应用下载、OCR 运行统一经由带逐文件进度的任务队列受理与跟踪，状态栏入口直达队列；OCR 运行由队列协调器统一调度。
+- 搜索与书库：工具栏筛选弹窗直接驱动书库元数据搜索；集合与未打标签过滤条件下推到分页查询，避免全库扫描；未知标签错误给出现有标签建议；文档域查询保持 FTS 匹配；虚拟链接文本按条目标识符解析。
+- OCR 工作台：框拆分/合并/接续关系选择移入专用对话框；原生 OCR 引擎独立为 Patchouli.Ocr.Engines；用户页面旋转在视图与 OCR 间持久化，正在写入的旋转在页面重载间保持生效。
+- LLM：模型传输层由 LlmTornado 替换为 models.dev 协议与 Codex 认证，设置页提供 models.dev 目录与订阅提供方配置。
+- 元数据与引用：新增内置 Historical Research 引用样式。
+- MCP 另新增条目文档链接与 OCR 索引状态过滤；`runs/` 保留 OCR、翻译与元数据三个独立任务子树。
+- 平台与界面：注册并激活 `patchouli://` 协议链接；Windows 增加应用程序清单；主题升级为双模式调色板并加强 on-primary 对比；P/Invoke 迁移到 `LibraryImport`（按 `SYSLIB1054` 门禁）；托管文件清单与生命周期统一，域与宿主组合边界进一步澄清；清理遗留 document-tree revision 行。
 - MCP 删除独立的 `patchouli.view` 工具，改为通过 `patchouli.fetch` 读取新增的只读 `patchouli://images/` 虚拟域：`patchouli://images/{document-id}/page-{n}.png` 按需从原始 PDF 渲染，不落盘；`?rev=` 读历史修订、`?box=` 按框裁剪、`?overlay=boxes` 叠加与页面 XML 顺序一致的编号框、`?max_edge=` 限制最长边。单次 fetch 含 images/ URI 时只能含该一个 URI，不可混批文本、不可用 range；图片永不按文本 `limit_bytes` 截断，沿用渲染器的 8 MiB 上限。图片以原生 image 内容块返回，文本包络只带图片元数据。
 - `fetch` 文本页（page/evidence/translation）与 `find --long` 投影现在直接给出可取用的 `image_uri`；`find patchouli://images/` 列出各文档的图片目录，`find patchouli://images/{document-id}/` 列出该文档的逐页图片。
 - 权限以 `images × fetch` 取代 `view`：动词表与 texts/translations 的 view 支持删除，迁移把已显式开启的 view 授权转为 images.fetch，未显式开启者一律得到 `images.fetch` 拒绝，迁移不扩大授权。插件注册的 `view` 动作与插件 UI View 加载机制不变。
