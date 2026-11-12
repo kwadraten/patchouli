@@ -979,6 +979,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
             refusal = string.Empty;
             return true;
         }
+
         public string StateName => _stateName;
 
         public async Task<Result<PluginStdioClient>> EnsureClientAsync(IPluginProcessLauncher launcher,

@@ -355,7 +355,9 @@ public sealed class PluginStoreRowViewModel : ExtensionManagerRowViewModel
 
     public string Id => Item.Catalog.Id;
     public string SourceText => $"来源：{Item.Catalog.Repository}";
-    public string PermissionsText => $"宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 宿主动词：{(Item.Catalog.RequestedHostVerbs.Count == 0 ? "无" : string.Join("、", Item.Catalog.RequestedHostVerbs))} · 书库权限：无";
+
+    public string PermissionsText =>
+        $"宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 宿主动词：{(Item.Catalog.RequestedHostVerbs.Count == 0 ? "无" : string.Join("、", Item.Catalog.RequestedHostVerbs))} · 书库权限：无";
 
     public override bool ShowInstall => Item.UnavailableReason is null &&
                                         (Item.InstalledVersion is null || Item.UpdateAvailable);

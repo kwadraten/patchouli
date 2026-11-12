@@ -188,9 +188,14 @@ internal sealed class PluginReverseHostDispatcher(
     {
         string prefix = McpResourceUris.PluginRootUri(_pluginId);
         string bare = prefix.TrimEnd('/');
-        bool IsOwn(string? uri) => uri is not null &&
-            (string.Equals(uri, bare, StringComparison.Ordinal) ||
-             uri.StartsWith(prefix, StringComparison.Ordinal));
+
+        bool IsOwn(string? uri)
+        {
+            return uri is not null &&
+                   (string.Equals(uri, bare, StringComparison.Ordinal) ||
+                    uri.StartsWith(prefix, StringComparison.Ordinal));
+        }
+
         return verb switch
         {
             "find" => IsOwn(OptionalString(arguments, "in")),
