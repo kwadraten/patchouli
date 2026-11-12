@@ -113,6 +113,31 @@ public sealed class PluginManifestAndRegistryTests
     }
 
     [Fact]
+    public void Host_verbs_are_declared_in_the_manifest_and_default_to_none()
+    {
+        string package = NewPackage();
+        Result<PluginDefinition> bare = PluginManifestLoader.Load(WriteManifest(package, ValidManifest));
+        bare.IsSuccess.Should().BeTrue();
+        bare.Value.RequestedHostVerbs.Should().BeEmpty();
+
+        string withHost = ValidManifest + "\n[host]\nverbs = [\"find\",\"fetch\",\"put\"]\n";
+        Result<PluginDefinition> loaded = PluginManifestLoader.Load(WriteManifest(package, withHost));
+        loaded.IsSuccess.Should().BeTrue();
+        loaded.Value.RequestedHostVerbs.Should().BeEquivalentTo("find", "fetch", "put");
+
+        string badVerb = ValidManifest + "\n[host]\nverbs = [\"find\",\"execute\"]\n";
+        Result<PluginDefinition> rejected = PluginManifestLoader.Load(WriteManifest(package, badVerb));
+        rejected.IsFailure.Should().BeTrue();
+        rejected.ErrorMessage.Should().Contain("not a host verb");
+
+        string duplicate = ValidManifest + "\n[host]\nverbs = [\"find\",\"find\"]\n";
+        PluginManifestLoader.Load(WriteManifest(package, duplicate)).IsFailure.Should().BeTrue();
+
+        string notArray = ValidManifest + "\n[host]\nverbs = \"find\"\n";
+        PluginManifestLoader.Load(WriteManifest(package, notArray)).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
     public void Manifest_rejections_are_explicit()
     {
         string package = NewPackage();
@@ -193,6 +218,9 @@ public sealed class PluginManifestAndRegistryTests
         string directory = Path.Combine(TestRoot, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         string registry = Path.Combine(directory, "dev-plugins.json");
+        // A platform-absolute manifest path: the Windows literal below is not
+        // fully qualified on Linux, so cases that must load use this instead.
+        string absManifest = Path.Combine(directory, "abs", "plugin.toml");
 
         PluginRegistry.Load(registry).Entries.Should().BeEmpty(); // missing file: nothing granted
 
@@ -218,16 +246,37 @@ public sealed class PluginManifestAndRegistryTests
         badVerb.Diagnostics.Should().NotBeEmpty();
 
         File.WriteAllText(registry,
-            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find","send"]}]""");
+            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find","send"]}]"""
+            .Replace("D:/abs/plugin.toml", absManifest, StringComparison.Ordinal));
         PluginRegistrySnapshot valid = PluginRegistry.Load(registry);
         valid.Entries.Should().HaveCount(1);
         valid.Entries[0].AllowedVerbs.Should().BeEquivalentTo("find", "send");
 
         File.WriteAllText(registry,
-            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find","fetch","view"]}]""");
+            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find","fetch","view"]}]"""
+            .Replace("D:/abs/plugin.toml", absManifest, StringComparison.Ordinal));
         PluginRegistrySnapshot withView = PluginRegistry.Load(registry);
         withView.Entries.Should().HaveCount(1);
         withView.Entries[0].AllowedVerbs.Should().BeEquivalentTo("find", "fetch", "view");
+
+        File.WriteAllText(registry,
+            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find"],"allowed_host_verbs":["find","put"]}]"""
+            .Replace("D:/abs/plugin.toml", absManifest, StringComparison.Ordinal));
+        PluginRegistrySnapshot withHost = PluginRegistry.Load(registry);
+        withHost.Entries.Should().HaveCount(1);
+        withHost.Entries[0].AllowedHostVerbs.Should().BeEquivalentTo("find", "put");
+
+        File.WriteAllText(registry,
+            """[{"manifest_path":"D:/abs/plugin.toml","enabled":true,"allowed_verbs":["find"],"allowed_host_verbs":["find","execute"]}]""");
+        PluginRegistrySnapshot badHostVerb = PluginRegistry.Load(registry);
+        badHostVerb.Entries.Should().BeEmpty();
+        badHostVerb.Diagnostics.Should().NotBeEmpty();
+
+        // Round-trip: Save preserves the host grant.
+        PluginRegistry.Save(registry, withHost.Entries);
+        PluginRegistrySnapshot reloaded = PluginRegistry.Load(registry);
+        reloaded.Entries.Should().HaveCount(1);
+        reloaded.Entries[0].AllowedHostVerbs.Should().BeEquivalentTo("find", "put");
     }
 
     private const string ViewSourceNodes =
