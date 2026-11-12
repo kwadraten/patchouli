@@ -166,10 +166,6 @@
                       Command="{Binding CopyCslBibliographyDescriptor}"
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="{Binding ExportItemDescriptor.Label}"
-                      Command="{Binding ExportItemDescriptor}"
-                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
