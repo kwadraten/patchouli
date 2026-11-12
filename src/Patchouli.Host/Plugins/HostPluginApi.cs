@@ -438,6 +438,85 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
             new McpPluginFetchContent(contentType.GetString()!, content.GetString()!));
     }
 
+    public async Task<Result<McpPluginPutOutcome>> PutAsync(string pluginId, string relativePath,
+        string content, CancellationToken cancellationToken = default)
+    {
+        PluginMount? mount = GetMount(pluginId);
+        if (mount is null)
+        {
+            return Result<McpPluginPutOutcome>.Failure(AppErrorCodes.NotFound,
+                $"Plugin '{pluginId}' is not registered or is disabled.");
+        }
+
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return Result<McpPluginPutOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                "Plugin put requires a declared resource path.");
+        }
+
+        PluginVfsNode? node = mount.Definition.FindNode(relativePath);
+        if (node is null)
+        {
+            return Result<McpPluginPutOutcome>.Failure(AppErrorCodes.NotFound,
+                $"'{relativePath}' is not a declared node of plugin '{pluginId}'.");
+        }
+
+        if (!node.Verbs.Contains("put", StringComparer.Ordinal))
+        {
+            return Result<McpPluginPutOutcome>.Failure(AppErrorCodes.InvalidArgument,
+                $"Node '{relativePath}' of plugin '{pluginId}' does not declare the put verb.");
+        }
+
+        if (node.Schema is not null)
+        {
+            string? schemaError = ValidateSchemaAsset(mount.Definition, node.Schema, content);
+            if (schemaError is not null)
+            {
+                return Result<McpPluginPutOutcome>.Failure(AppErrorCodes.InvalidArgument, schemaError);
+            }
+        }
+
+        Result<PluginStdioClient> client = await mount.EnsureClientAsync(_launcher, _options,
+            _reportException, cancellationToken);
+        if (client.IsFailure)
+        {
+            return Result<McpPluginPutOutcome>.Failure(client.ErrorCode!, client.ErrorMessage!);
+        }
+
+        Result<JsonElement> structured = await client.Value.CallToolAsync("patchouli.plugin.put",
+            BuildArgs(("uri", relativePath), ("content", content), ("content_type", node.Media)),
+            null, cancellationToken);
+        if (structured.IsFailure)
+        {
+            return Result<McpPluginPutOutcome>.Failure(structured.ErrorCode!, structured.ErrorMessage!);
+        }
+
+        JsonElement body = structured.Value;
+        if (!body.TryGetProperty("state", out JsonElement state) || state.ValueKind != JsonValueKind.String)
+        {
+            return Result<McpPluginPutOutcome>.Failure("unavailable",
+                "Plugin returned a malformed put result (expected state + result).");
+        }
+
+        object? result = null;
+        if (body.TryGetProperty("result", out JsonElement resultValue) &&
+            resultValue.ValueKind != JsonValueKind.Null)
+        {
+            try
+            {
+                result = RewriteResultUris(mount, resultValue);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return Result<McpPluginPutOutcome>.Failure("unavailable",
+                    $"Plugin put result references a URI outside the mount: {exception.Message}");
+            }
+        }
+
+        return Result<McpPluginPutOutcome>.Success(
+            new McpPluginPutOutcome(state.GetString()!, result));
+    }
+
     public async Task<Result<McpPluginSendOutcome>> SendAsync(string pluginId, string endpointPath,
         string action, JsonElement args, string? requestId, CancellationToken cancellationToken = default)
     {

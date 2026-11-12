@@ -243,7 +243,10 @@ public sealed record McpPutResult(
     IReadOnlyList<string>? ModifiedBoxIds = null,
     [property: JsonPropertyName("box_errors")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<McpBoxPutError>? BoxErrors = null);
+    IReadOnlyList<McpBoxPutError>? BoxErrors = null,
+    [property: JsonPropertyName("result")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    object? Result = null);
 
 public sealed record McpBoxPutError(
     [property: JsonPropertyName("box_id")] string BoxId,

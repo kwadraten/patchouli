@@ -35,6 +35,14 @@ public sealed record McpPluginSendOutcome(
     object? Result);
 
 /// <summary>
+/// The concrete result of a plugin <c>put</c>: the plugin-defined state plus the
+/// operation's concrete result (declared by the plugin in its readme.md).
+/// </summary>
+public sealed record McpPluginPutOutcome(
+    string State,
+    object? Result);
+
+/// <summary>
 /// One declared plugin web view ([[ui.views]]) projected for the command surface. The view
 /// itself is a host-synthesized resource (<see cref="Uri"/>); <see cref="SourceUri"/>/
 /// <see cref="SourcePath"/> address the declared file node that serves its HTML payload.
@@ -51,7 +59,7 @@ public sealed record McpPluginViewInfo(
 /// The local development-plugin mount surface consumed by <see cref="McpCommandService"/>.
 /// Implementations own the device registry (explicit install + approval records), manifest
 /// validation and lazy plugin processes. The command service stays transport-free: it only
-/// sees mounts, verb gates, declared views, static descriptors and typed find/fetch/send
+/// sees mounts, verb gates, declared views, static descriptors and typed find/fetch/send/put
 /// operations.
 /// </summary>
 public interface IMcpPluginApi
@@ -101,4 +109,13 @@ public interface IMcpPluginApi
     /// </summary>
     Task<Result<McpPluginSendOutcome>> SendAsync(string pluginId, string endpointPath, string action,
         JsonElement args, string? requestId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Plugin-defined write to a declared node. The implementation validates the input content
+    /// against the node schema where declared, then delegates the write to the plugin process
+    /// (<c>patchouli.plugin.put</c>) and returns the plugin's concrete result. The host
+    /// imposes no create-vs-overwrite convention; semantics belong to the plugin.
+    /// </summary>
+    Task<Result<McpPluginPutOutcome>> PutAsync(string pluginId, string relativePath, string content,
+        CancellationToken cancellationToken = default);
 }

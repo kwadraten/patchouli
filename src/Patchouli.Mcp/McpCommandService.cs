@@ -573,6 +573,11 @@ public sealed partial class McpCommandService
                 "Box replacements require a current XML page URI.");
         }
 
+        if (kind is McpUriKind.PluginsScope or McpUriKind.Plugin or McpUriKind.PluginResource)
+        {
+            return await PutPluginAsync(request, parsed.Value, cancellationToken);
+        }
+
         if (kind == McpUriKind.Library && parsed.Value.IsLegacy)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
@@ -584,8 +589,7 @@ public sealed partial class McpCommandService
             or McpUriKind.RunsScope or McpUriKind.RunsOcrScope or McpUriKind.RunOcrStatus
             or McpUriKind.RunsTranslationScope or McpUriKind.RunTranslationStatus
             or McpUriKind.RunsMetadataScope or McpUriKind.RunMetadataStatus
-            or McpUriKind.RunEndpoint
-            or McpUriKind.PluginsScope or McpUriKind.Plugin or McpUriKind.PluginResource)
+            or McpUriKind.RunEndpoint)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.yml, csl-styles/*.csl, " +
@@ -634,6 +638,56 @@ public sealed partial class McpCommandService
             McpEnvelope<McpPutMeta, McpPutResult>.Create(
                 new McpPutMeta(newRevision) { Summary = result.Value.Summary ?? string.Empty }, [putResult],
                 message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
+        return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
+    }
+
+    /// <summary>
+    /// Plugin put: the host routes to the plugin process, which owns the write semantics.
+    /// The plugin returns its concrete result, surfaced on the put result; the library
+    /// revision is unchanged by a plugin write.
+    /// </summary>
+    private async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutPluginAsync(McpPutRequest request,
+        McpUriParseResult parsed, CancellationToken cancellationToken)
+    {
+        if (_pluginApi is null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.Unavailable,
+                "Plugin mounts are unavailable on this host.");
+        }
+
+        if (parsed.Kind != McpUriKind.PluginResource || string.IsNullOrWhiteSpace(parsed.PluginPath))
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
+                "Plugin put requires a declared resource URI: patchouli://plugin/<plugin-id>/<path>.");
+        }
+
+        string pluginId = parsed.PluginId!;
+        if (!_pluginApi.AllowsVerb(pluginId, "put"))
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
+                $"Plugin '{pluginId}' has not granted the put verb in its allowed_verbs registry entry.");
+        }
+
+        string revision = await CurrentLibraryRevisionAsync(cancellationToken);
+        Result<McpPluginPutOutcome> outcome = await _pluginApi.PutAsync(
+            pluginId, parsed.PluginPath!, request.Content!, cancellationToken);
+        if (outcome.IsFailure)
+        {
+            McpErrorCode code = ToPluginError(outcome.ErrorCode);
+            string detail = outcome.ErrorMessage ?? outcome.ErrorCode ?? "Plugin put failed.";
+            McpEnvelope<McpPutMeta, McpPutResult> failed =
+                McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(revision), []);
+            McpMessage message = new(McpToolError.From(code, detail).ToTerminalLine(), []);
+            failed = failed with { Message = message };
+            return McpCommandResult<McpPutMeta, McpPutResult>.ErrorWithContent(failed, code, detail);
+        }
+
+        McpPutResult putResult = new(parsed.CanonicalUri, "plugin", Committed: true,
+            Encoding.UTF8.GetByteCount(request.Content!), Result: outcome.Value.Result);
+        McpEnvelope<McpPutMeta, McpPutResult> envelope =
+            McpEnvelope<McpPutMeta, McpPutResult>.Create(
+                new McpPutMeta(revision) { Summary = $"Plugin put completed: {outcome.Value.State}." },
+                [putResult]);
         return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
     }
 
