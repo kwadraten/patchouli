@@ -51,7 +51,7 @@ public static class PluginManifestLoader
 
     private const int MaxViewTitleLength = 200;
 
-    private static readonly HashSet<string> NodeVerbs = new(StringComparer.Ordinal) { "find", "fetch" };
+    private static readonly HashSet<string> NodeVerbs = new(StringComparer.Ordinal) { "find", "fetch", "put" };
 
     private static readonly HashSet<string> ExecutionModes = new(StringComparer.Ordinal) { "sync" };
 
@@ -454,12 +454,12 @@ public static class PluginManifestLoader
                                       ?? throw Fail($"vfs node '{path}' requires a non-empty verbs array.");
         if (verbs.Count == 0 || verbs.Any(verb => !NodeVerbs.Contains(verb)))
         {
-            throw Fail($"vfs node '{path}' verbs must be a non-empty subset of find/fetch.");
+            throw Fail($"vfs node '{path}' verbs must be a non-empty subset of find/fetch/put.");
         }
 
-        if (kind == "file" && verbs.Any(verb => verb != "fetch"))
+        if (kind == "file" && verbs.Any(verb => verb != "fetch" && verb != "put"))
         {
-            throw Fail($"vfs node '{path}' is a file; only the fetch verb is supported.");
+            throw Fail($"vfs node '{path}' is a file; only the fetch and put verbs are supported.");
         }
 
         if (IsReservedPath(path))

@@ -589,7 +589,7 @@ public sealed class HostServices
     public McpCommandService McpCommands { get; }
 
     /// <summary>
-    /// The device plugin mount surface behind the shared MCP find/fetch/send/view commands.
+    /// The device plugin mount surface behind the shared MCP find/fetch/send/put/view commands.
     /// Empty when no enabled registry records exist; plugin processes start lazily.
     /// </summary>
     public IMcpPluginApi Plugins { get; }

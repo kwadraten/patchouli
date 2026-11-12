@@ -35,7 +35,7 @@ public static class McpPermissionPolicy
             "runs" => verb is "find" or "fetch",
             "library.yml" => verb is "find" or "fetch" or "put",
             _ => domain == "plugin" || domain.StartsWith("plugin/", StringComparison.Ordinal)
-                ? verb is "find" or "fetch" or "view"
+                ? verb is "find" or "fetch" or "view" or "put"
                 : false
         };
     }
@@ -115,10 +115,11 @@ public static class McpPermissionPolicy
             return false;
         }
 
-        if (!string.IsNullOrEmpty(uri) && verb is not "find" and not "fetch" &&
+        if (!string.IsNullOrEmpty(uri) && verb is not "find" and not "fetch" and not "put" &&
             McpVfsAddress.TryNormalize(uri, out string normalized) && IsPluginAddress(normalized))
         {
-            // Plugin mounts support find/fetch only; put/cite/add never apply.
+            // Plugin mounts do not support cite/add yet; put is allowed (gated by the
+            // registry allowed_verbs grant, enforced by the plugin mount).
             return false;
         }
 

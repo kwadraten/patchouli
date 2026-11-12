@@ -56,7 +56,7 @@ public static class PluginCatalogReader
     public const string SupportedSchema = "patchouli.community.index/1";
 
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
-        { "find", "fetch", "send", "view" };
+        { "find", "fetch", "send", "view", "put" };
 
     public static Result<PluginCatalogIndex> Parse(ReadOnlySpan<byte> content)
     {
@@ -158,7 +158,7 @@ public static class PluginCatalogReader
         if (verbs.Count == 0 || verbs.Any(verb => !ValidVerbs.Contains(verb)) ||
             verbs.Distinct(StringComparer.Ordinal).Count() != verbs.Count)
         {
-            throw Error($"Plugin '{id}' requested_verbs must be unique find/fetch/send/view values.");
+            throw Error($"Plugin '{id}' requested_verbs must be unique find/fetch/send/view/put values.");
         }
 
         if (StringArray(Required(plugin, "library_grants"), "library_grants").Count != 0)

@@ -7,7 +7,7 @@ namespace Patchouli.Host.Plugins;
 /// <summary>
 /// The development-plugin mount surface: reads the device registry, validates manifests,
 /// answers static descriptor/directory/readme/view requests without a process, and lazily
-/// supervises one stdio plugin process per mount for real find/fetch/send. Verbs require the
+/// supervises one stdio plugin process per mount for real find/fetch/send/put. Verbs require the
 /// manifest declaration AND the registry allowed_verbs grant; nothing else is reachable.
 /// </summary>
 public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSource, IAsyncDisposable

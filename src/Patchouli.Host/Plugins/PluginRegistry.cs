@@ -27,7 +27,7 @@ public static class PluginRegistry
     public const string FileName = "dev-plugins.json";
 
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
-        { "find", "fetch", "send", "view" };
+        { "find", "fetch", "send", "view", "put" };
 
     private const int MaxRegistryBytes = 64 * 1024;
 
@@ -161,7 +161,7 @@ public static class PluginRegistry
                 }
                 else
                 {
-                    Reject("allowed_verbs may only contain find/fetch/send/view.");
+                    Reject("allowed_verbs may only contain find/fetch/send/view/put.");
                     return null;
                 }
             }
