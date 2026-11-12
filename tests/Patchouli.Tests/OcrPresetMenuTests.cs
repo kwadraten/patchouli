@@ -26,7 +26,8 @@ public sealed class OcrPresetMenuTests : IDisposable
 
     private async Task<MainWindowViewModel> OpenMainAsync(string tag)
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path)
+        MainWindowViewModel main = new(settingsPath: _settings.Path,
+            appPaths: new TestAppPaths(Path.GetDirectoryName(_settings.Path)!))
         {
             RuntimeDatabasePath = _settings.CreateDatabasePath($"ocr-menu-{tag}")
         };

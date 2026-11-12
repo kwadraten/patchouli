@@ -257,7 +257,8 @@ public sealed class HostServices
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
         TranslationExtensions = new TranslationExtensionCatalog(
-            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
+            DeviceExtensionRuntimeMigration.MigrateRuntime(runtimeDatabasePath, storagePaths.DataDirectory,
+                _logger),
             () => LlmSettings, ExtensionResources);
         LayoutRecognition = new LayoutRecognitionService(TranslationExtensions, ExtensionFiles);
         ExtensionResources.BindLayoutRecognition(LayoutRecognition);

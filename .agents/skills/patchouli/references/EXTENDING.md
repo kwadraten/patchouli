@@ -24,7 +24,7 @@
 
 ## 扩展包与生命周期
 
-- 每个扩展包有 `main.fsx` 入口，可 `#load` 包内 `.fsx`；包源码位于应用数据目录下的 `extensions/{extension-id}/`。入口 XML 文档仍是必需契约：在 `let extension` 前使用 `/// <patchouli-extension id="…" kind="…" version="1.0.0" host-api="patchouli.extensions/4">`，并包含 `<name>` 与入口文档 `<summary>`。它不是 attribute 元数据。可参考随包 `main.fsx`。
+- 每个扩展包有 `main.fsx` 入口，可 `#load` 包内 `.fsx`；包源码位于设备级扩展运行时目录（应用数据目录下的 `extensions/`）内的 `extensions/{extension-id}/`。入口 XML 文档仍是必需契约：在 `let extension` 前使用 `/// <patchouli-extension id="…" kind="…" version="1.0.0" host-api="patchouli.extensions/4">`，并包含 `<name>` 与入口文档 `<summary>`。它不是 attribute 元数据。可参考随包 `main.fsx`。
 - 新扩展使用 `/4` 与严格 SemVer 2.0.0（支持预发布和构建元数据），发布后修改内容须提高版本。新宿主继续接受 `/3`，既有扩展不需要改入口协议或新增 OCR 接口；旧缓存若与编译器/ABI 不匹配则需要重新编译，不代表拒绝 `/3`。
 - 内置包采用 `1.1.0` 起的新版本；同 ID 较新版本会替换旧实现，旧工作文件保留为 `.generations/{fingerprint}/` 中的非活动快照，配置和 LKG 保留。同版本不同内容会报告冲突，构建元数据不影响版本排序；不会自动降级。已开始的任务保留原 generation。
 - FSX 源码编译为 DLL，按 generation 缓存并在宿主内 collectible `AssemblyLoadContext` 执行。允许外部 BCL、包内 DLL 和 NuGet 依赖。NuGet 冷还原需要已安装的 .NET SDK；只有 runtime 的安装不能替代 SDK。包内 DLL、BCL 引用和已验证编译产物缓存命中不需要 NuGet SDK 还原。依赖版本由仓库中央管理：`FSharp.Core` 10.1.401、`FSharp.Compiler.Service` 43.12.401。可信代码不是沙箱。

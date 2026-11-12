@@ -238,7 +238,7 @@ public sealed class OcrPresetCompositionTests
         await using Context context = await Context.CreateAsync();
         // A working draft that cannot be parsed leaves no trusted schema — freezing raw values
         // here would emit an underspecified preset against the latest source.
-        string working = Path.Combine(context.Root, "extension-runtime", "extensions",
+        string working = Path.Combine(context.Root, "data", "extensions", "extensions",
             "ocr.rapidocr");
         Directory.CreateDirectory(working);
         await File.WriteAllTextAsync(Path.Combine(working, "main.fsx"),
@@ -298,7 +298,7 @@ public sealed class OcrPresetCompositionTests
                     DefaultStagingRoot = Path.Combine(root, "staging"),
                     LogDirectory = Path.Combine(root, "logs")
                 }
-            }, settingsPath);
+            }, settingsPath, appPaths: new TestAppPaths(root));
             (await services.Library.CreateLibraryAsync("OCR composition")).IsSuccess.Should()
                 .BeTrue();
             return new Context(root, settingsPath, services);

@@ -24,7 +24,8 @@ public sealed class OcrQueueExtensionProgressTests
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
         await session.Dispatch<int>(async () =>
         {
-            await using MainWindowViewModel main = new(new Clipboard(), settingsPath: settings.Path)
+            await using MainWindowViewModel main = new(new Clipboard(), settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!))
             {
                 RuntimeDatabasePath = settings.CreateDatabasePath("ocr-live-extension-progress")
             };

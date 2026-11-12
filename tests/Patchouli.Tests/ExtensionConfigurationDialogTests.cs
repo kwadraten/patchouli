@@ -42,7 +42,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await headless.Session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             using ExtensionSettingsViewModel editor = new(main);
             ExtensionConfigurationDialog dialog = new() { DataContext = editor };
             dialog.Show();
@@ -78,7 +79,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
@@ -110,7 +112,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();
             editor.SelectedExtension = new ExtensionListItem("translation.google-free", "Google", "source");
             editor.Fields.Add(Field("concurrency", "4"));
@@ -135,7 +138,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
@@ -164,7 +168,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
@@ -269,7 +274,8 @@ public sealed class ExtensionConfigurationDialogTests(AvaloniaSharedSessionFixtu
         await session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             HostServices services = await main.ServicesAsync();
