@@ -65,6 +65,18 @@ public interface IMcpReadApi
     Task<Result<string>> GetPrimaryDocumentOcrIndexStatusAsync(ItemId itemId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the lean per-instance link rows of one Item, primary instance first. Used to
+    /// embed the item's texts/, images/, and translations/ directory URIs into the item YAML
+    /// so agents do not need a filtered browse to locate them.
+    /// </summary>
+    Task<Result<IReadOnlyList<McpItemDocumentLink>>> GetItemDocumentLinksAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<IReadOnlyList<McpItemDocumentLink>>.Failure(
+            AppErrorCodes.UnsupportedOperation, "Document link projection unavailable."));
+    }
+
     Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,
         IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 

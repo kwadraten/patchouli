@@ -1,7 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using LlmTornado;
-using LlmTornado.Codex;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Results;
 
@@ -13,7 +11,7 @@ public static class LlmAuthenticationModes
     public const string Subscription = "subscription";
 }
 
-/// <summary>Only subscription protocols implemented by the pinned LLMTornado package are advertised.</summary>
+/// <summary>Subscription connections supported by Patchouli.</summary>
 public sealed record LlmSubscriptionProvider(string ProviderId, string DisplayName, string Backend);
 
 public static class LlmSubscriptionCatalog
@@ -49,9 +47,9 @@ public interface ILlmSubscriptionService
 }
 
 /// <summary>Stores the complete rotating credential set in the existing local credential store.</summary>
-public sealed class LlmCodexCredentialStore(ICredentialStore store, string providerId) : ICodexOAuthCredentialStore
+public sealed class LlmCodexCredentialStore(ICredentialStore store, string providerId)
 {
-    public async Task<CodexOAuthCredentials?> LoadAsync(CancellationToken cancellationToken = default)
+    public async Task<LlmCodexCredentials?> LoadAsync(CancellationToken cancellationToken = default)
     {
         Result<string> secret = await store.GetActiveSecretForProviderAsync(
             LlmSubscriptionCatalog.CredentialProviderId(providerId), cancellationToken).ConfigureAwait(false);
@@ -65,10 +63,10 @@ public sealed class LlmCodexCredentialStore(ICredentialStore store, string provi
             throw new InvalidOperationException("Subscription credentials could not be read.");
         }
 
-        CodexOAuthCredentials? credentials;
+        LlmCodexCredentials? credentials;
         try
         {
-            credentials = JsonSerializer.Deserialize<CodexOAuthCredentials>(secret.Value);
+            credentials = JsonSerializer.Deserialize<LlmCodexCredentials>(secret.Value);
         }
         catch (JsonException)
         {
@@ -84,7 +82,7 @@ public sealed class LlmCodexCredentialStore(ICredentialStore store, string provi
         return credentials;
     }
 
-    public async Task SaveAsync(CodexOAuthCredentials credentials, CancellationToken cancellationToken = default)
+    public async Task SaveAsync(LlmCodexCredentials credentials, CancellationToken cancellationToken = default)
     {
         Result<ProviderCredentialMetadata> saved = await store.SaveAsync(
             LlmSubscriptionCatalog.CredentialProviderId(providerId), "ChatGPT / Codex 订阅",
@@ -123,9 +121,8 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
     public async Task<LlmSubscriptionAccount?> GetAccountAsync(string providerId,
         CancellationToken cancellationToken = default)
     {
-        EnsureSupported(providerId);
-        CodexOAuthCredentials? credentials = await new LlmCodexCredentialStore(store, providerId)
-            .LoadAsync(cancellationToken).ConfigureAwait(false);
+        LlmCodexCredentials? credentials =
+            await GetStore(providerId).LoadAsync(cancellationToken).ConfigureAwait(false);
         return credentials is null
             ? null
             : new LlmSubscriptionAccount(credentials.Email ?? "", credentials.PlanType ?? "");
@@ -134,28 +131,13 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
     public async Task LoginAsync(string providerId, Action<Uri> openBrowser,
         CancellationToken cancellationToken = default)
     {
-        EnsureSupported(providerId);
+        LlmCodexCredentialStore credentials = GetStore(providerId);
         SemaphoreSlim gate = LlmSubscriptionAccess.For(store);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using CodexOAuthSession session =
-                await ConnectAsync(providerId, cancellationToken).ConfigureAwait(false);
-            CodexOAuthBrowserLogin login =
-                await session.StartBrowserLoginAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                openBrowser(login.AuthorizationUrl);
-                CodexOAuthLoginResult result = await login.WaitAsync(cancellationToken).ConfigureAwait(false);
-                if (!result.Success)
-                {
-                    throw new InvalidOperationException("Subscription login did not complete. Try signing in again.");
-                }
-            }
-            finally
-            {
-                await login.CancelAsync().ConfigureAwait(false);
-            }
+            await new LlmCodexAuthentication(credentials).LoginAsync(openBrowser, cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -166,17 +148,13 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
     public async Task<IReadOnlyList<LlmSubscriptionModel>> ListModelsAsync(string providerId,
         CancellationToken cancellationToken = default)
     {
-        EnsureSupported(providerId);
+        LlmCodexCredentialStore credentials = GetStore(providerId);
         SemaphoreSlim gate = LlmSubscriptionAccess.For(store);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using CodexOAuthSession session =
-                await ConnectAsync(providerId, cancellationToken).ConfigureAwait(false);
-            IReadOnlyList<CodexModel> models =
-                await session.ListModelsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            return models.Select(model => new LlmSubscriptionModel(model.Model, model.DisplayName, model.IsDefault))
-                .ToArray();
+            return await new LlmCodexAuthentication(credentials).ListModelsAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -186,14 +164,12 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
 
     public async Task LogoutAsync(string providerId, CancellationToken cancellationToken = default)
     {
-        EnsureSupported(providerId);
+        LlmCodexCredentialStore credentials = GetStore(providerId);
         SemaphoreSlim gate = LlmSubscriptionAccess.For(store);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using CodexOAuthSession session =
-                await ConnectAsync(providerId, cancellationToken).ConfigureAwait(false);
-            await session.LogoutAsync(cancellationToken).ConfigureAwait(false);
+            await credentials.ClearAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -201,20 +177,13 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
         }
     }
 
-    private Task<CodexOAuthSession> ConnectAsync(string providerId, CancellationToken cancellationToken)
-    {
-        return new TornadoApi().Codex.ConnectOAuthAsync(new CodexOAuthOptions
-        {
-            CredentialStore = new LlmCodexCredentialStore(store, providerId)
-        }, cancellationToken);
-    }
-
-    private static void EnsureSupported(string providerId)
+    private LlmCodexCredentialStore GetStore(string providerId)
     {
         if (LlmSubscriptionCatalog.Find(providerId)?.Backend != "codex-oauth")
         {
-            throw new NotSupportedException(
-                "This LLMTornado version has no subscription protocol for the selected provider.");
+            throw new NotSupportedException("This provider has no supported subscription backend.");
         }
+
+        return new LlmCodexCredentialStore(store, providerId);
     }
 }

@@ -2,8 +2,6 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using LlmTornado;
-using LlmTornado.Codex;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -17,14 +15,11 @@ public sealed class LlmSubscriptionTests
     private const string SubscriptionProvider = "openai-subscription";
 
     [Fact]
-    public void Every_public_oauth_session_in_the_pinned_library_has_a_subscription_adapter()
+    public void Codex_remains_a_separate_subscription_connection()
     {
-        typeof(TornadoApi).Assembly.GetExportedTypes()
-            .Where(type => type.Name.EndsWith("OAuthSession", StringComparison.Ordinal))
-            .Should().Equal(typeof(CodexOAuthSession));
         LlmSubscriptionCatalog.All.Should().ContainSingle().Which.ProviderId.Should().Be(SubscriptionProvider);
-        LlmAppSettings.Default().FindProvider(SubscriptionProvider)!.AuthenticationMode.Should()
-            .Be(LlmAuthenticationModes.Subscription);
+        LlmProviderAppSettings.FromCatalog(LlmProviderCatalog.Find(SubscriptionProvider)!).AuthenticationMode
+            .Should().Be(LlmAuthenticationModes.Subscription);
     }
 
     [Fact]
@@ -34,17 +29,38 @@ public sealed class LlmSubscriptionTests
         await store.SaveAsync("openai", "OpenAI", "api-key");
         LlmCodexCredentialStore adapter = new(store, SubscriptionProvider);
         await adapter.SaveAsync(Credentials());
-        CodexOAuthCredentials rotated = Credentials();
+        LlmCodexCredentials rotated = Credentials();
         rotated.AccessToken = "new-access";
         rotated.RefreshToken = "new-refresh";
         await adapter.SaveAsync(rotated);
-        CodexOAuthCredentials? loaded = await adapter.LoadAsync();
+        LlmCodexCredentials? loaded = await adapter.LoadAsync();
         loaded!.AccessToken.Should().Be("new-access");
         loaded.RefreshToken.Should().Be("new-refresh");
         loaded.AccountId.Should().Be("account");
         await adapter.ClearAsync();
         (await adapter.LoadAsync()).Should().BeNull();
         (await store.GetActiveSecretForProviderAsync("openai")).Value.Should().Be("api-key");
+    }
+
+    [Fact]
+    public async Task Expired_legacy_credentials_are_refreshed_and_rotated_before_inference()
+    {
+        MemoryCredentialStore store = new();
+        await store.SaveAsync(LlmSubscriptionCatalog.CredentialProviderId(SubscriptionProvider), "Subscription",
+            """
+            {"AccessToken":"old","RefreshToken":"refresh","AccountId":"account","ExpiresAtUtc":"2000-01-01T00:00:00+00:00"}
+            """);
+        LlmCodexCredentialStore credentials = new(store, SubscriptionProvider);
+        using HttpClient http = new(new RefreshHandler());
+        LlmCodexAuthentication auth = new(credentials, http);
+
+        IReadOnlyDictionary<string, string> headers = await auth.GetHeadersAsync(false, CancellationToken.None);
+
+        headers["Authorization"].Should().Be("Bearer new-access");
+        headers["ChatGPT-Account-ID"].Should().Be("account");
+        LlmCodexCredentials? rotated = await credentials.LoadAsync();
+        rotated!.RefreshToken.Should().Be("new-refresh");
+        rotated.ExpiresAtUtc.Should().BeAfter(DateTimeOffset.UtcNow);
     }
 
     [Fact]
@@ -63,7 +79,7 @@ public sealed class LlmSubscriptionTests
             await LlmProviderClientFactory.ResolveAsync(settings, SubscriptionProvider, null, store);
         resolved.IsSuccess.Should().BeTrue();
         resolved.Value.ApiKey.Should().BeEmpty();
-        LlmClientFactory.CreateTransport(resolved.Value).Should().BeOfType<LlmTornadoSubscriptionTransport>();
+        LlmClientFactory.CreateTransport(resolved.Value).Should().BeOfType<LlmModelsDevTransport>();
         IReadOnlyList<LlmProviderReadiness> readiness = await LlmProviderClientFactory.InspectAsync(settings, store);
         readiness.Single(item => item.ProviderId == SubscriptionProvider).IsConfigured.Should().BeTrue();
         readiness.Single(item => item.ProviderId == SubscriptionProvider).SupportsVision.Should().BeFalse();
@@ -83,18 +99,18 @@ public sealed class LlmSubscriptionTests
             SubscriptionSettings(), SubscriptionProvider, null, store);
         ProtocolHandler handler = new();
         using HttpClient http = new(handler);
-        CodexOAuthOptions httpOptions = new() { HttpClient = http };
-        LlmTornadoSubscriptionTransport transport = new(store, credentials => new CodexOAuthOptions
-        {
-            CredentialStore = credentials,
-            HttpClient = httpOptions.HttpClient
-        });
+        LlmModelsDevTransport transport = new(resolved.Value, http);
         LlmTransportMessage[] messages =
         [
             Message(LlmChatRole.System, "Keep Markdown structure."),
             Message(LlmChatRole.User, "用户消息"),
-            Message(LlmChatRole.Assistant, "fetch request"),
-            Message(LlmChatRole.Tool, "fetch: document text"),
+            new(LlmChatRole.Assistant,
+            [
+                new LlmMessagePart.LlmTextPart("fetch request"),
+                new LlmMessagePart.LlmToolCallPart("call_1", "fetch", "{}")
+            ]),
+            new(LlmChatRole.Tool,
+                [new LlmMessagePart.LlmToolResultPart("call_1", "fetch", "fetch: document text", false)]),
             Message(LlmChatRole.System, "An appended instruction")
         ];
         string[] tools =
@@ -112,27 +128,25 @@ public sealed class LlmSubscriptionTests
             .BeGreaterThan(0, "native declarations expose tools without SDK-owned execution");
         payload.RootElement.GetProperty("store").GetBoolean().Should().BeFalse();
         payload.RootElement.GetProperty("input")[0].GetProperty("role").GetString().Should().Be("developer");
-        payload.RootElement.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString()
+        payload.RootElement.GetProperty("input")[0].GetProperty("content").GetString()
             .Should().Contain("Keep Markdown structure.",
                 "the host instruction prefix must also retain protocol-level authority");
-        string nativeInput = payload.RootElement.GetProperty("input").GetRawText();
-        nativeInput.Should().Contain("用户消息").And.Contain("fetch request").And.Contain("fetch: document text");
-        payload.RootElement.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString()
-            .Should().Contain("An appended instruction");
+        JsonElement input = payload.RootElement.GetProperty("input");
+        input[1].GetProperty("content").GetString().Should().Be("用户消息");
+        input[2].GetProperty("content")[0].GetProperty("text").GetString().Should().Be("fetch request");
+        input[3].GetProperty("call_id").GetString().Should().Be("call_1");
+        input[4].GetProperty("output").GetString().Should().Be("fetch: document text");
+        payload.RootElement.GetProperty("input")[5].GetProperty("content").GetString()
+            .Should().Be("An appended instruction");
     }
 
     [Fact]
     public async Task Vision_is_rejected_before_creating_a_subscription_connection()
     {
-        bool connected = false;
-        LlmTornadoSubscriptionTransport transport = new(new MemoryCredentialStore(), _ =>
-        {
-            connected = true;
-            throw new InvalidOperationException();
-        });
         LlmProviderRuntimeSettings provider = new(LlmProviderCatalog.Find(SubscriptionProvider)!, "", "", "test-model",
             "", "", "",
             LlmAuthenticationModes.Subscription);
+        LlmModelsDevTransport transport = new(provider);
         LlmTransportResult result = await transport.SendAsync(new LlmTransportRequest(provider, "test-model",
             [
                 new LlmTransportMessage(LlmChatRole.User,
@@ -140,7 +154,6 @@ public sealed class LlmSubscriptionTests
             ],
             [], null, null, false, null, null));
         result.ErrorCode.Should().Be(LlmFailureCodes.UnsupportedInput);
-        connected.Should().BeFalse();
     }
 
     private static LlmAppSettings SubscriptionSettings()
@@ -155,9 +168,9 @@ public sealed class LlmSubscriptionTests
             };
     }
 
-    private static CodexOAuthCredentials Credentials()
+    private static LlmCodexCredentials Credentials()
     {
-        return new CodexOAuthCredentials
+        return new LlmCodexCredentials
         {
             AccessToken = "access", RefreshToken = "refresh", AccountId = "account", Email = "test@example.com",
             PlanType = "pro",
@@ -197,10 +210,27 @@ public sealed class LlmSubscriptionTests
                                             data: {"type":"response.output_text.delta","delta":"translated"}
 
                                             event: response.completed
-                                            data: {"type":"response.completed","response":{"id":"response-1","status":"completed","usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14,"input_tokens_details":{"cached_tokens":8}}}}
+                                            data: {"type":"response.completed","response":{"id":"response-1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"translated"}]}],"usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14,"input_tokens_details":{"cached_tokens":8}}}}
 
 
                                             """, Encoding.UTF8, "text/event-stream")
+            };
+        }
+    }
+
+    private sealed class RefreshHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            request.RequestUri.Should().Be(new Uri("https://auth.openai.com/oauth/token"));
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            body.RootElement.GetProperty("refresh_token").GetString().Should().Be("refresh");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""
+                                            {"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}
+                                            """, Encoding.UTF8, "application/json")
             };
         }
     }

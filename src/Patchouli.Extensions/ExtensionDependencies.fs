@@ -34,6 +34,11 @@ type internal ExtensionNugetInputs =
       Sources: string array }
 
 module ExtensionDependencies =
+    // Path helpers report null only when the input is null, but the declared nullability of the
+    // return type varies across .NET reference packs; keeping ofObj behind a | null parameter
+    // compiles under both annotation generations.
+    let private pathOption (value: string | null) = Option.ofObj value
+
     let private diagnostic (item: FSharpDiagnostic) =
         let severity =
             match item.Severity with
@@ -42,7 +47,7 @@ module ExtensionDependencies =
             | _ -> ExtensionDiagnosticSeverity.Information
         let file =
             if String.IsNullOrWhiteSpace item.FileName then "main.fsx"
-            else Path.GetFileName item.FileName |> Option.ofObj |> Option.defaultValue "main.fsx"
+            else pathOption (Path.GetFileName item.FileName) |> Option.defaultValue "main.fsx"
         ExtensionDiagnostic(severity, item.ErrorNumberText, item.Message,
             ExtensionSourceLocation(file, max 1 item.StartLine, item.StartColumn, max 1 item.EndLine, item.EndColumn))
 
@@ -208,7 +213,7 @@ module ExtensionDependencies =
                                     | None -> None
                                     | Some value when value.Split([| Path.DirectorySeparatorChar; Path.AltDirectorySeparatorChar |])
                                                           |> Array.exists (fun part -> String.Equals(part, "ref", StringComparison.OrdinalIgnoreCase)) ->
-                                        Path.GetFileName value |> Option.ofObj |> Option.map (fun tfm -> Path.Combine(packageRoot, "lib", tfm))
+                                        pathOption (Path.GetFileName value) |> Option.map (fun tfm -> Path.Combine(packageRoot, "lib", tfm))
                                     | Some value -> Some value)
                                 |> Array.filter Directory.Exists
                             let runtimeRoot = Path.Combine(packageRoot, "runtimes")
@@ -220,7 +225,7 @@ module ExtensionDependencies =
                                     let runtimeLib =
                                         frameworkDirectories
                                         |> Array.choose (fun framework ->
-                                            Path.GetFileName framework |> Option.ofObj |> Option.map (fun tfm -> Path.Combine(root, "lib", tfm)))
+                                            pathOption (Path.GetFileName framework) |> Option.map (fun tfm -> Path.Combine(root, "lib", tfm)))
                                     Array.append runtimeLib [| native |])
                                 |> Array.filter Directory.Exists
                             Array.concat [ frameworkDirectories; runtimeDirectories ]

@@ -1,9 +1,7 @@
-using System.Collections.Concurrent;
 using System.Net;
-using System.Security.Cryptography;
-using System.Text;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
+using Patchouli.Host.ManagedFiles;
 using Patchouli.UI;
 
 namespace Patchouli.Host.Extensions;
@@ -115,38 +113,16 @@ public interface IExtensionManagedFileInteraction
 /// field value always wins over injected defaults — and a stored value equal to any declared
 /// managed destination is recognized as a previously injected default, so selection changes
 /// re-resolve it rather than treating it as a user override.
+/// All verification, transfer, single-flight and lifecycle work is the shared
+/// <see cref="ManagedFileService"/> engine; this facade only owns FSX declaration→destination
+/// resolution and the public extension-typed contract.
 /// </summary>
 public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
 {
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
-
     private readonly string _modelsRoot;
     private readonly Func<string, string?>? _directoryResolver;
-    private readonly HttpMessageInvoker _http;
-    private readonly bool _ownsHttp;
-
-    // One in-flight ensure per immutable required-declaration set: a second caller for the same
-    // file set awaits the same confirmation+download instead of stacking prompts per page/task.
-    private readonly ConcurrentDictionary<string, EnsureFlight> _ensures =
-        new(StringComparer.Ordinal);
-
-    // One lifecycle gate for admission, shutdown and drain: a caller either registers its
-    // operation slot or is rejected BEFORE any work starts — shutdown can never observe an
-    // empty drain while a new operation is being admitted. _drained is the single pending
-    // shutdown task every DisposeAsync caller awaits.
-    private readonly object _lifecycle = new();
-
-    private readonly TaskCompletionSource _drained =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    private readonly CancellationTokenSource _shutdown = new();
-    private readonly CancellationToken _shutdownToken;
-    private int _active;
+    private readonly ManagedFileService _engine;
     private bool _closed;
-    private bool _shutdownStarted;
-
-    private readonly TaskCompletionSource _shutdownCompleted =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public ExtensionManagedFileService(string modelsRoot,
         Func<string, string?>? legacyDirectoryResolver = null,
@@ -155,14 +131,7 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(modelsRoot);
         _modelsRoot = Path.GetFullPath(modelsRoot);
         _directoryResolver = legacyDirectoryResolver;
-        // Captured once: the struct stays valid after the source is disposed, so an operation
-        // racing teardown can still link its token without touching a disposed source.
-        _shutdownToken = _shutdown.Token;
-        _ownsHttp = http is null;
-        _http = http ?? new HttpMessageInvoker(new SocketsHttpHandler
-        {
-            AutomaticDecompression = DecompressionMethods.All
-        }, true);
+        _engine = new ManagedFileService(http);
     }
 
     /// <summary>Optional desktop interaction; when unset, missing files report an actionable failure — never an automatic download.</summary>
@@ -228,9 +197,8 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
         ThrowIfClosed();
         ArgumentNullException.ThrowIfNull(config);
         ExtensionConfigSnapshot resolved = ResolveDefaults(extensionId, fields, config);
-        List<ExtensionManagedFileDownload> required = [];
-        List<ExtensionManagedFileDownload> downloads = [];
-        HashSet<string> destinations = new(StringComparer.OrdinalIgnoreCase);
+        List<ManagedFileTarget> targets = [];
+        HashSet<string> destinations = new(ManagedFileService.PathComparer());
         foreach (ConfigFieldDescriptor field in fields)
         {
             if (field.ManagedFiles is not { Count: > 0 } managedFiles ||
@@ -263,21 +231,18 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
                     continue;
                 }
 
-                (ExtensionManagedFileDownload download, bool satisfied) =
-                    await DescribeExistingAsync(file, destination, cancellationToken)
-                        .ConfigureAwait(false);
-                required.Add(download);
-                if (!satisfied)
-                {
-                    downloads.Add(download);
-                }
+                targets.Add(new ManagedFileTarget(file.RelativePath, file.DownloadUrl,
+                    destination, file.ExpectedBytes, file.Sha256));
             }
         }
 
+        ManagedFilesPlan plan = await _engine
+            .PlanAsync(OwnerKey(extensionId, scope), extensionId, targets, cancellationToken)
+            .ConfigureAwait(false);
         return new ExtensionManagedFilesPlan(extensionId, extensionId, resolved,
-            downloads.AsReadOnly())
+            plan.Files.Select(ToTyped).ToArray())
         {
-            RequiredFiles = required.AsReadOnly()
+            RequiredFiles = plan.RequiredFiles.Select(ToTyped).ToArray()
         };
     }
 
@@ -295,412 +260,37 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
-        ExtensionManagedFilesPlan plan =
-            await PlanAsync(extensionId, fields, config, scope, cancellationToken).ConfigureAwait(false);
-        if (plan.IsEmpty)
+        ExtensionManagedFilesPlan? planned = null;
+
+        async Task<ManagedFilesPlan> Plan(CancellationToken token)
         {
-            return Result.Success();
+            planned = await PlanAsync(extensionId, fields, config, scope, token)
+                .ConfigureAwait(false);
+            return ToNormalized(planned, scope);
         }
 
-        string key = FlightKey(plan, scope);
-        while (true)
-        {
-            EnsureFlight flight = JoinFlight(key, extensionId, fields, config, scope);
-            try
-            {
-                // The shared operation materializes only now — after this waiter's registration —
-                // so a flight nobody observes never starts and a completed flight simply yields
-                // its result. Each waiter cancels only its own wait; the shared operation lives
-                // on the flight's own shutdown-linked token.
-                return await flight.GetOrStartOperation()
-                    .WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // The shared operation was cancelled without this caller asking. A flight that
-                // was orphaned (its last other waiter withdrew) is retried on a fresh one; a
-                // shared user/modal cancellation — the operation ended cancelled with no orphan
-                // cancel-requested — is a real cancellation for every waiter and propagates
-                // rather than reopening the prompt. Shutdown rethrows as disposed.
-                ThrowIfClosed();
-                if (!flight.CancelRequested)
-                {
-                    throw;
-                }
-            }
-            finally
-            {
-                Task<Result>? draining = flight.Withdraw(out bool wasLast);
-                if (wasLast)
-                {
-                    // No shared owner remains: request cancellation and drain the real work
-                    // before this caller's cancellation is visible upstream — an OCR task must
-                    // not report cancelled while its own downloader still runs.
-                    if (draining is not null && !draining.IsCompleted)
-                    {
-                        flight.RequestCancel();
-                        await ((Task)draining).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                    }
-
-                    _ensures.TryRemove(new KeyValuePair<string, EnsureFlight>(key, flight));
-                    flight.DisposeCancellation();
-                }
-                else if (flight.IsDead)
-                {
-                    _ensures.TryRemove(new KeyValuePair<string, EnsureFlight>(key, flight));
-                }
-            }
-        }
-    }
-
-    private EnsureFlight JoinFlight(string key, string extensionId,
-        IReadOnlyList<ConfigFieldDescriptor> fields, ExtensionConfigSnapshot config, string? scope)
-    {
-        while (true)
-        {
-            // The flight token is also linked to shutdown inside BeginOperation, which registers
-            // the operation slot under the lifecycle gate before any work can start.
-            EnsureFlight flight = GetOrCreateFlight(key,
-                token => BeginOperation(inner => RunEnsureAsync(extensionId, fields, config, scope,
-                    inner), token));
-            if (flight.TryJoin())
-            {
-                return flight;
-            }
-
-            // Lost the race against its cancel-request: it is dead, back out (no waiter was
-            // registered) and retry for a fresh one.
-            _ensures.TryRemove(new KeyValuePair<string, EnsureFlight>(key, flight));
-            ThrowIfClosed();
-        }
+        IExtensionManagedFileInteraction? interaction = Interaction;
+        return await _engine.EnsureAsync(OwnerKey(extensionId, scope), Plan,
+                interaction is null
+                    ? null
+                    : (normalized, download, token) => interaction.ConfirmAndDownloadAsync(
+                        Rebind(normalized, planned ?? throw new InvalidOperationException(
+                            "The ensure interaction ran before planning completed.")), download,
+                        token),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Returns a live flight for the key — never a completed or cancel-requested one. Dead
-    /// flights are evicted and replaced so each ensure re-verifies the plan inside the
-    /// operation; a synchronously completing operation is a legitimate result the joined caller
-    /// awaits, never a reason to spin.
-    /// </summary>
-    private EnsureFlight GetOrCreateFlight(string key,
-        Func<CancellationToken, Task<Result>> run)
-    {
-        while (true)
-        {
-            EnsureFlight flight = _ensures.GetOrAdd(key,
-                _ => new EnsureFlight(run, _shutdownToken));
-            if (!flight.IsDead)
-            {
-                return flight;
-            }
-
-            _ensures.TryRemove(new KeyValuePair<string, EnsureFlight>(key, flight));
-            // Every fresh flight still dies instantly only while shutdown cancels them all —
-            // without this check a closing service would spin here forever.
-            ThrowIfClosed();
-        }
-    }
-
-    private async Task<Result> RunEnsureAsync(string extensionId,
-        IReadOnlyList<ConfigFieldDescriptor> fields, ExtensionConfigSnapshot config, string? scope,
-        CancellationToken cancellationToken)
-    {
-        // The flight key is the immutable required set, not the missing subset — a caller whose
-        // plan predates a shared operation installing files can still arrive here. Re-plan the
-        // same frozen inputs so an already-satisfied set never prompts or downloads again.
-        ExtensionManagedFilesPlan plan =
-            await PlanAsync(extensionId, fields, config, scope, cancellationToken)
-                .ConfigureAwait(false);
-        if (plan.IsEmpty)
-        {
-            return Result.Success();
-        }
-
-        if (Interaction is not { } interaction)
-        {
-            string sample = Path.GetFileName(plan.Files[0].DestinationPath);
-            return Result.Failure(AppErrorCodes.NotFound,
-                $"{plan.DisplayName} requires {plan.Files.Count} managed file(s) that are missing " +
-                $"or invalid (for example '{sample}'). Download them in Settings > Local Files, or " +
-                "confirm the download when the desktop app prompts for it.");
-        }
-
-        Result result;
-        try
-        {
-            result = await interaction.ConfirmAndDownloadAsync(plan,
-                    (progress, token) => DownloadCoreAsync(plan, progress, token), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            // A throwing handler is a bug, but every waiter still deserves a classified Result
-            // rather than a faulted shared operation. The message stays sanitized.
-            return Result.Failure(AppErrorCodes.InvalidState,
-                $"The managed-file confirmation for '{plan.DisplayName}' failed to run " +
-                $"({ClassifyError(exception)}).");
-        }
-
-        if (result.IsFailure)
-        {
-            return result;
-        }
-
-        // A reported success is only a claim: re-verify the same frozen declaration/config/scope
-        // so a handler that skipped the download cannot turn a missing resource into a runnable
-        // task. This intentionally re-reads the plan inputs, never the latest package source.
-        ExtensionManagedFilesPlan verified =
-            await PlanAsync(extensionId, fields, config, scope, cancellationToken)
-                .ConfigureAwait(false);
-        return verified.IsEmpty
-            ? Result.Success()
-            : Result.Failure(AppErrorCodes.NotFound,
-                $"{plan.DisplayName} still lacks {verified.Files.Count} managed file(s) after the " +
-                "confirmed download reported success (for example '" +
-                Path.GetFileName(verified.Files[0].DestinationPath) + "').");
-    }
-
-    /// <summary>
-    /// Downloads each planned file sequentially: HTTP success only, declared byte length and
-    /// pinned SHA-256 are verified, a unique same-directory partial is written and atomically
-    /// installed. Files that already verify are skipped; an existing mismatched file is replaced
-    /// only when the plan flagged it as confirmed — and then only after its plan-time identity
-    /// still matches, so a newer user file is never clobbered. A target created mid-download is
-    /// never silently overwritten: an already-satisfying file counts as installed, anything else
-    /// is a conflict. Cancellation removes only this call's own partials and never deletes user
-    /// files or whole directories.
+    /// Downloads each planned file sequentially under the shared engine's per-destination
+    /// cross-process lock, verification and atomic install rules.
     /// </summary>
     public Task<Result> DownloadAsync(ExtensionManagedFilesPlan plan,
         IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
         ArgumentNullException.ThrowIfNull(plan);
-        // Admission and tracking are one atomic step: the slot registers before the download
-        // factory runs, so a concurrent DisposeAsync can never drain an empty set while work
-        // is still being admitted.
-        return BeginOperation(token => DownloadCoreAsync(plan, progress, token), cancellationToken);
-    }
-
-    private async Task<Result> DownloadCoreAsync(ExtensionManagedFilesPlan plan,
-        IProgress<double>? progress, CancellationToken cancellationToken)
-    {
-        if (plan.IsEmpty)
-        {
-            progress?.Report(1);
-            return Result.Success();
-        }
-
-        double totalWeight = plan.Files.Sum(file => WeightOf(file));
-        double completedWeight = 0;
-        foreach (ExtensionManagedFileDownload file in plan.Files)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            double weight = WeightOf(file);
-            double baseWeight = completedWeight;
-
-            void Report(double fraction)
-            {
-                progress?.Report(Math.Min(0.999,
-                    (baseWeight + weight * Math.Clamp(fraction, 0, 1)) / totalWeight));
-            }
-
-            if (await IsSatisfiedAsync(file.DestinationPath, file.ExpectedBytes, file.Sha256,
-                    cancellationToken).ConfigureAwait(false))
-            {
-                completedWeight += weight;
-                Report(1);
-                continue;
-            }
-
-            if (File.Exists(file.DestinationPath) && !file.OverwritesExisting)
-            {
-                return Result.Failure(AppErrorCodes.Conflict,
-                    $"'{file.RelativePath}' exists at its destination and does not match the " +
-                    "declared manifest. Replacing it needs the explicit confirmation of a " +
-                    "managed-file download plan.");
-            }
-
-            Result downloaded = await DownloadFileAsync(file, Report, cancellationToken)
-                .ConfigureAwait(false);
-            if (downloaded.IsFailure)
-            {
-                return downloaded;
-            }
-
-            completedWeight += weight;
-            Report(1);
-        }
-
-        progress?.Report(1);
-        return Result.Success();
-    }
-
-    private async Task<Result> DownloadFileAsync(ExtensionManagedFileDownload file,
-        Action<double> report, CancellationToken cancellationToken)
-    {
-        string target = file.DestinationPath;
-        string partial = target + "." + Guid.NewGuid().ToString("N") + ".part";
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            using HttpRequestMessage request = new(HttpMethod.Get, file.DownloadUrl);
-            // Public model hosts (ModelScope among them) 403 anonymous clients — the shipped
-            // downloaders identify as Patchouli, and this service must match.
-            request.Headers.UserAgent.ParseAdd("Patchouli");
-            using CancellationTokenSource bounded =
-                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            bounded.CancelAfter(RequestTimeout);
-            using HttpResponseMessage response = await _http.SendAsync(request, bounded.Token)
-                .ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return Result.Failure(AppErrorCodes.NetworkError,
-                    $"Failed to download '{file.RelativePath}': HTTP {(int)response.StatusCode}.");
-            }
-
-            await using (FileStream destination = new(partial, FileMode.CreateNew, FileAccess.Write,
-                             FileShare.None))
-            {
-                await using Stream source = await response.Content
-                    .ReadAsStreamAsync(bounded.Token).ConfigureAwait(false);
-                byte[] buffer = new byte[81920];
-                long downloaded = 0;
-                int read;
-                while ((read = await source.ReadAsync(buffer, bounded.Token)
-                           .ConfigureAwait(false)) > 0)
-                {
-                    await destination.WriteAsync(buffer.AsMemory(0, read), bounded.Token)
-                        .ConfigureAwait(false);
-                    downloaded += read;
-                    if (file.ExpectedBytes is { } expected && downloaded > expected)
-                    {
-                        return Result.Failure(AppErrorCodes.NetworkError,
-                            $"Downloaded '{file.RelativePath}' exceeds the declared size.");
-                    }
-
-                    report(file.ExpectedBytes is { } expected2 && expected2 > 0
-                        ? (double)downloaded / expected2
-                        : 0);
-                }
-
-                if (file.ExpectedBytes is { } expectedSize && downloaded != expectedSize)
-                {
-                    return Result.Failure(AppErrorCodes.NetworkError,
-                        $"Downloaded '{file.RelativePath}' is {downloaded} bytes, expected {expectedSize}.");
-                }
-            }
-
-            if (!await IsSatisfiedAsync(partial, file.ExpectedBytes, file.Sha256, cancellationToken)
-                    .ConfigureAwait(false))
-            {
-                return Result.Failure(AppErrorCodes.NetworkError,
-                    $"Downloaded '{file.RelativePath}' failed size or SHA-256 verification. Please retry.");
-            }
-
-            return await InstallPartialAsync(file, target, partial, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            // Only the bounded timeout remains — a genuine caller cancellation rethrows.
-            return Result.Failure(AppErrorCodes.NetworkError,
-                $"Download of '{file.RelativePath}' timed out.");
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (exception is HttpRequestException or IOException
-                                              or UnauthorizedAccessException)
-        {
-            // Messages carry the relative file name only — never the URL's query/credential
-            // material or local paths — so results stay safe for public surfaces and logs.
-            return Result.Failure(AppErrorCodes.NetworkError,
-                $"Download of '{file.RelativePath}' failed: {ClassifyError(exception)}.");
-        }
-        finally
-        {
-            TryDelete(partial);
-        }
-    }
-
-    /// <summary>
-    /// Moves the verified partial onto the destination. Fresh installs use non-overwriting move:
-    /// a target that appeared mid-download is a success when it already satisfies the
-    /// declaration, otherwise a conflict. Confirmed replacements revalidate the plan-time file
-    /// identity so a newer user file between prompt and install is never clobbered.
-    /// </summary>
-    private async Task<Result> InstallPartialAsync(ExtensionManagedFileDownload file, string target,
-        string partial, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (!file.OverwritesExisting)
-            {
-                try
-                {
-                    File.Move(partial, target, false);
-                    return Result.Success();
-                }
-                catch (IOException)
-                {
-                    if (await IsSatisfiedAsync(target, file.ExpectedBytes, file.Sha256,
-                            cancellationToken).ConfigureAwait(false))
-                    {
-                        return Result.Success();
-                    }
-
-                    return Result.Failure(AppErrorCodes.Conflict,
-                        $"'{file.RelativePath}' appeared at its destination during the download " +
-                        "and does not match the declared manifest.");
-                }
-            }
-
-            if (file.ExistingLength is { } existingLength)
-            {
-                bool changed;
-                try
-                {
-                    FileInfo current = new(target);
-                    changed = current.Exists &&
-                              (current.Length != existingLength ||
-                               current.LastWriteTimeUtc.Ticks != file.ExistingWriteUtcTicks ||
-                               (file.ExistingSha256 is { } pinned &&
-                                !string.Equals(
-                                    await HashFileAsync(target, cancellationToken).ConfigureAwait(false),
-                                    pinned, StringComparison.OrdinalIgnoreCase)));
-                }
-                catch (IOException)
-                {
-                    // Cannot reverify identity → never overwrite.
-                    changed = true;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    changed = true;
-                }
-
-                if (changed)
-                {
-                    return Result.Failure(AppErrorCodes.Conflict,
-                        $"'{file.RelativePath}' changed at its destination after the replacement " +
-                        "was confirmed; refusing to overwrite a newer user file.");
-                }
-            }
-
-            File.Move(partial, target, true);
-            return Result.Success();
-        }
-        catch (IOException exception)
-        {
-            return Result.Failure(AppErrorCodes.NetworkError,
-                $"Install of '{file.RelativePath}' failed: {ClassifyError(exception)}.");
-        }
-        catch (UnauthorizedAccessException exception)
-        {
-            return Result.Failure(AppErrorCodes.NetworkError,
-                $"Install of '{file.RelativePath}' failed: {ClassifyError(exception)}.");
-        }
+        return _engine.DownloadAsync(ToNormalized(plan, null), progress, cancellationToken);
     }
 
     /// <summary>
@@ -738,7 +328,7 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
                      applicable.Select(file => (File: file,
                              Destination: ResolveDestination(extensionId, field, file, custom)))
                          .GroupBy(pair => Path.GetDirectoryName(pair.Destination) ?? pair.Destination,
-                             StringComparer.OrdinalIgnoreCase))
+                             ManagedFileService.PathComparer()))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 (ExtensionManagedFile File, string Destination)[] items = directory.ToArray();
@@ -746,13 +336,15 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
                 List<ExtensionManagedFileDownload> missing = [];
                 foreach ((ExtensionManagedFile declared, string destination) in items)
                 {
-                    (ExtensionManagedFileDownload download, bool satisfied) =
-                        await DescribeExistingAsync(declared, destination, cancellationToken)
-                            .ConfigureAwait(false);
-                    files.Add(download);
+                    (ManagedFileDownload download, bool satisfied) =
+                        await ManagedFileService.DescribeExistingAsync(
+                            new ManagedFileTarget(declared.RelativePath, declared.DownloadUrl,
+                                destination, declared.ExpectedBytes, declared.Sha256),
+                            cancellationToken).ConfigureAwait(false);
+                    files.Add(ToTyped(download));
                     if (!satisfied)
                     {
-                        missing.Add(download);
+                        missing.Add(ToTyped(download));
                     }
                 }
 
@@ -765,359 +357,53 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
         return groups.AsReadOnly();
     }
 
-    /// <summary>
-    /// The single admission point for all real work: under the lifecycle gate the closed flag is
-    /// checked and the operation slot reserved BEFORE the factory is invoked, so a concurrent
-    /// shutdown can never pass an empty drain while work is being admitted. The factory runs
-    /// outside the gate; the slot is released only when the task actually completes — an
-    /// operation that ignores cancellation still holds its slot until its work exits.
-    /// </summary>
-    private Task<Result> BeginOperation(Func<CancellationToken, Task<Result>> start,
-        CancellationToken cancellationToken)
+    internal static string OwnerKey(string extensionId, string? scope)
     {
-        CancellationTokenSource linked;
-        lock (_lifecycle)
-        {
-            ObjectDisposedException.ThrowIf(_closed, this);
-            linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
-                _shutdownToken);
-            _active++;
-        }
-
-        Task<Result> operation;
-        try
-        {
-            operation = start(linked.Token);
-        }
-        catch
-        {
-            linked.Dispose();
-            ReleaseOperation();
-            throw;
-        }
-
-        _ = operation.ContinueWith(_ =>
-            {
-                linked.Dispose();
-                ReleaseOperation();
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-        return operation;
+        return $"extension:{extensionId}\n{scope ?? ""}";
     }
 
-    private void ReleaseOperation()
+    public static ManagedFileDownload ToNormalized(ExtensionManagedFileDownload file)
     {
-        lock (_lifecycle)
-        {
-            if (--_active == 0 && _closed)
-            {
-                _drained.TrySetResult();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Marks the service closed under the gate and returns the shared drain task — pending while
-    /// any admitted operation still runs, so every <see cref="DisposeAsync"/> caller awaits the
-    /// same completion.
-    /// </summary>
-    private Task Close()
-    {
-        lock (_lifecycle)
-        {
-            _closed = true;
-            if (_active == 0)
-            {
-                _drained.TrySetResult();
-            }
-
-            return _drained.Task;
-        }
-    }
-
-    /// <summary>
-    /// Single-flight identity: the immutable required declaration set (destination, URL, bytes,
-    /// digest) — never the mutable missing subset. Two different manifests for the same
-    /// destination therefore form distinct flights, while concurrent ensures needing the same
-    /// files share one prompt.
-    /// </summary>
-    private static string FlightKey(ExtensionManagedFilesPlan plan, string? scope)
-    {
-        IReadOnlyList<ExtensionManagedFileDownload> required = plan.RequiredFiles.Count > 0
-            ? plan.RequiredFiles
-            : plan.Files;
-        StringBuilder builder = new StringBuilder(plan.ExtensionId).Append('\n').Append(scope ?? "");
-        foreach (ExtensionManagedFileDownload file in required.OrderBy(
-                     file => file.DestinationPath, StringComparer.OrdinalIgnoreCase))
-        {
-            builder.Append('\n').Append(file.DownloadUrl).Append('|')
-                .Append(file.DestinationPath).Append('|')
-                .Append(file.ExpectedBytes?.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        ?? "-").Append('|')
-                .Append(file.Sha256 ?? "-");
-        }
-
-        return builder.ToString();
-    }
-
-    /// <summary>
-    /// One shared ensure operation with its own cancellation scope. Join, withdraw, the
-    /// cancel-requested flag and operation publication are all atomic under a single gate — a
-    /// caller is either registered on a live flight or rejected before its slot can race the
-    /// last-waiter cancel — and the gate never holds arbitrary work (the operation factory only
-    /// runs to its first real await inside it). The operation materializes on first registered
-    /// access, so a losing GetOrAdd flight allocates nothing and never runs. The cancellation
-    /// source is created only when the operation starts and disposed after the last waiter
-    /// drains it.
-    /// </summary>
-    private sealed class EnsureFlight
-    {
-        private readonly object _gate = new();
-        private readonly Func<CancellationToken, Task<Result>> _run;
-        private readonly CancellationToken _shutdownToken;
-        private CancellationTokenSource? _cancellation;
-        private Task<Result>? _operation;
-        private int _waiters;
-        private bool _cancelRequested;
-
-        public EnsureFlight(Func<CancellationToken, Task<Result>> run,
-            CancellationToken shutdownToken)
-        {
-            _run = run;
-            _shutdownToken = shutdownToken;
-        }
-
-        /// <summary>True once the flight is unusable: cancel-requested or its operation finished.</summary>
-        public bool IsDead
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _cancelRequested || _operation?.IsCompleted == true;
-                }
-            }
-        }
-
-        /// <summary>
-        /// True when the flight's own cancellation was requested (orphan or shutdown path).
-        /// A shared operation that ends cancelled without this flag is a real user cancellation
-        /// for every waiter — not an orphan to retry.
-        /// </summary>
-        public bool CancelRequested
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _cancelRequested;
-                }
-            }
-        }
-
-        /// <summary>Atomically registers a waiter on a live flight; false when it is dead.</summary>
-        public bool TryJoin()
-        {
-            lock (_gate)
-            {
-                if (_cancelRequested)
-                {
-                    return false;
-                }
-
-                _waiters++;
-                return true;
-            }
-        }
-
-        /// <summary>
-        /// Publishes the shared operation exactly once, called only by a registered waiter. A
-        /// synchronous start failure poisons the flight instead of caching a fault no one can
-        /// observe; a cancelled flight never starts work — its waiters retry on a fresh flight.
-        /// </summary>
-        public Task<Result> GetOrStartOperation()
-        {
-            lock (_gate)
-            {
-                if (_cancelRequested)
-                {
-                    throw new OperationCanceledException();
-                }
-
-                if (_operation is not null)
-                {
-                    return _operation;
-                }
-
-                _cancellation ??= CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken);
-                try
-                {
-                    _operation = _run(_cancellation.Token);
-                }
-                catch
-                {
-                    _cancelRequested = true;
-                    throw;
-                }
-
-                return _operation;
-            }
-        }
-
-        /// <summary>
-        /// Withdraws one waiter under the gate. When the last leaves, the flight is
-        /// cancel-requested and its operation (if it ever started) is returned for the caller to
-        /// cancel and drain before reporting cancellation upstream.
-        /// </summary>
-        public Task<Result>? Withdraw(out bool wasLast)
-        {
-            lock (_gate)
-            {
-                _waiters--;
-                wasLast = _waiters == 0;
-                if (wasLast)
-                {
-                    _cancelRequested = true;
-                }
-
-                return _operation;
-            }
-        }
-
-        /// <summary>Fires the flight's own cancellation after the last waiter withdrew.</summary>
-        public void RequestCancel()
-        {
-            CancellationTokenSource? cancellation;
-            lock (_gate)
-            {
-                _cancelRequested = true;
-                cancellation = _cancellation;
-            }
-
-            cancellation?.Cancel();
-        }
-
-        /// <summary>Releases the flight's cancellation source once no waiter can observe it.</summary>
-        public void DisposeCancellation()
-        {
-            lock (_gate)
-            {
-                if (_waiters == 0)
-                {
-                    _cancellation?.Dispose();
-                    _cancellation = null;
-                }
-            }
-        }
-    }
-
-    private static double WeightOf(ExtensionManagedFileDownload file)
-    {
-        return file.ExpectedBytes is > 0 ? file.ExpectedBytes.Value : 1;
-    }
-
-    private static async Task<(ExtensionManagedFileDownload Download, bool Satisfied)>
-        DescribeExistingAsync(ExtensionManagedFile file, string destination,
-            CancellationToken cancellationToken)
-    {
-        FileInfo info = new(destination);
-        bool exists = info.Exists;
-        long? length = null;
-        long? writeTicks = null;
-        string? existingSha = null;
-        bool satisfied = false;
-        if (exists)
-        {
-            // One metadata snapshot captures the plan-time identity; the confirmed replacement
-            // revalidates it before installing so a newer user file is never clobbered.
-            length = info.Length;
-            writeTicks = info.LastWriteTimeUtc.Ticks;
-            bool sizeMatches = file.ExpectedBytes is not { } expected || length == expected;
-            if (sizeMatches && file.Sha256 is null)
-            {
-                satisfied = true;
-            }
-            else
-            {
-                // The existing bytes are hashed once here: it both verifies a declared digest
-                // and pins the mismatched file's identity for the confirmed-replacement check —
-                // length+timestamp alone cannot spot a same-size rewrite that kept the mtime.
-                try
-                {
-                    existingSha = await HashFileAsync(destination, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (IOException)
-                {
-                    existingSha = null;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    existingSha = null;
-                }
-
-                satisfied = sizeMatches && file.Sha256 is not null && existingSha is not null &&
-                            string.Equals(existingSha, file.Sha256, StringComparison.OrdinalIgnoreCase);
-            }
-
-            if (satisfied)
-            {
-                existingSha = null;
-            }
-        }
-
-        ExtensionManagedFileDownload download = new(file.RelativePath, file.DownloadUrl, destination,
+        return new ManagedFileDownload(file.RelativePath, file.DownloadUrl, file.DestinationPath,
             file.ExpectedBytes, file.Sha256)
         {
-            OverwritesExisting = exists && !satisfied,
-            ExistingLength = length,
-            ExistingWriteUtcTicks = writeTicks,
-            ExistingSha256 = existingSha
+            OverwritesExisting = file.OverwritesExisting,
+            ExistingLength = file.ExistingLength,
+            ExistingWriteUtcTicks = file.ExistingWriteUtcTicks,
+            ExistingSha256 = file.ExistingSha256
         };
-        return (download, satisfied);
     }
 
-    /// <summary>SHA-256 of a file's actual bytes — lowercase hex for comparison and pinning.</summary>
-    private static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
+    public static ExtensionManagedFileDownload ToTyped(ManagedFileDownload file)
     {
-        await using FileStream stream = File.OpenRead(path);
-        byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-        return Convert.ToHexStringLower(hash);
+        return new ExtensionManagedFileDownload(file.RelativePath, file.DownloadUrl!,
+            file.DestinationPath, file.ExpectedBytes, file.Sha256)
+        {
+            OverwritesExisting = file.OverwritesExisting,
+            ExistingLength = file.ExistingLength,
+            ExistingWriteUtcTicks = file.ExistingWriteUtcTicks,
+            ExistingSha256 = file.ExistingSha256
+        };
     }
 
-    private static async Task<bool> IsSatisfiedAsync(string path, long? expectedBytes, string? sha256,
-        CancellationToken cancellationToken)
+    public static ManagedFilesPlan ToNormalized(ExtensionManagedFilesPlan plan, string? scope)
     {
-        try
+        return new ManagedFilesPlan(OwnerKey(plan.ExtensionId, scope), plan.DisplayName,
+            plan.Files.Select(ToNormalized).ToArray())
         {
-            if (!File.Exists(path))
-            {
-                return false;
-            }
+            RequiredFiles = plan.RequiredFiles.Select(ToNormalized).ToArray()
+        };
+    }
 
-            if (expectedBytes is { } expected && new FileInfo(path).Length != expected)
-            {
-                return false;
-            }
-
-            if (sha256 is null)
-            {
-                return true;
-            }
-
-            return string.Equals(await HashFileAsync(path, cancellationToken).ConfigureAwait(false),
-                sha256, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (IOException)
+    /// <summary>Rebinds a normalized ensure-plan onto the typed plan's captured resolved config.</summary>
+    private static ExtensionManagedFilesPlan Rebind(ManagedFilesPlan plan,
+        ExtensionManagedFilesPlan typed)
+    {
+        return new ExtensionManagedFilesPlan(typed.ExtensionId, typed.DisplayName,
+            typed.ResolvedConfig, plan.Files.Select(ToTyped).ToArray())
         {
-            // A file we cannot read cannot verify — treat it as not satisfied so planning and
-            // install surface a classified conflict instead of crashing the caller.
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
+            RequiredFiles = plan.RequiredFiles.Select(ToTyped).ToArray()
+        };
     }
 
     /// <summary>
@@ -1214,33 +500,6 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
         return ResolveFileDestination(extensionId, field.Key, file);
     }
 
-    private static string ClassifyError(Exception exception)
-    {
-        return exception switch
-        {
-            HttpRequestException => "network error",
-            UnauthorizedAccessException => "access denied",
-            IOException => "I/O error",
-            _ => "internal error"
-        };
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            // Cleanup is best effort and must not hide the original download failure.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // The original failure is still returned if temporary-file cleanup is denied.
-        }
-    }
-
     private void ThrowIfClosed()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _closed), this);
@@ -1248,68 +507,21 @@ public sealed class ExtensionManagedFileService : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Requests shutdown without blocking: no new operations are admitted and every in-flight
-    /// operation observes cancellation. The owned transport is released only by
-    /// <see cref="DisposeAsync"/>, after actual network/file work drains — the host awaits that
-    /// path on teardown.
+    /// operation observes cancellation on the shared engine.
     /// </summary>
     public void Dispose()
     {
-        _ = BeginShutdown();
+        _closed = true;
+        _engine.Dispose();
     }
 
     /// <summary>
     /// Closes the service, cancels all admitted operations and waits for their real network/file
-    /// work to exit — including sources that ignore cancellation — before the owned transport is
-    /// released. Every concurrent caller awaits the same pending drain task; a prior
-    /// <see cref="Dispose"/> only requested shutdown and never short-circuits this drain.
+    /// work to exit before the owned transport is released by the shared engine.
     /// </summary>
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        return new ValueTask(BeginShutdown());
-    }
-
-    private Task BeginShutdown()
-    {
-        Task drain;
-        lock (_lifecycle)
-        {
-            if (_shutdownStarted)
-            {
-                return _shutdownCompleted.Task;
-            }
-
-            _shutdownStarted = true;
-            drain = Close();
-        }
-
-        _ = FinishShutdownAsync(drain);
-        return _shutdownCompleted.Task;
-    }
-
-    private async Task FinishShutdownAsync(Task drain)
-    {
-        try
-        {
-            try
-            {
-                // CancelAsync keeps even a blocking registration off the disposing UI caller.
-                await _shutdown.CancelAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                await drain.ConfigureAwait(false);
-                _shutdown.Dispose();
-                if (_ownsHttp)
-                {
-                    _http.Dispose();
-                }
-            }
-
-            _shutdownCompleted.TrySetResult();
-        }
-        catch (Exception exception)
-        {
-            _shutdownCompleted.TrySetException(exception);
-        }
+        _closed = true;
+        await _engine.DisposeAsync().ConfigureAwait(false);
     }
 }

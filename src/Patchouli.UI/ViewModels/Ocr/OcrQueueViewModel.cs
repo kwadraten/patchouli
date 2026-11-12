@@ -1,3 +1,4 @@
+using Patchouli.Core.Downloads;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Globalization;
@@ -12,9 +13,12 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Translation;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Downloads;
 using Patchouli.Ocr;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -29,6 +33,11 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     private readonly IScheduler _uiScheduler;
     private readonly TimeSpan _refreshThrottle;
     private readonly SerialDisposable _queueSubscription = new();
+    private readonly SerialDisposable _downloadSubscription = new();
+    private DownloadTaskService? _subscribedDownloads;
+    private DownloadTaskService? _downloadService;
+    private readonly Dictionary<Guid, OcrQueueTaskViewModel> _downloads = new();
+    private readonly HashSet<Guid> _retryingDownloads = new();
     private readonly SerialDisposable _scheduledRefresh = new();
     private IOcrQueueScheduler? _subscribedQueue;
     private readonly ObservableCollection<OcrQueueTaskViewModel> _ocrActive = new();
@@ -94,7 +103,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         }
     }
 
-    public IReadOnlyList<string> TaskTypes { get; } = ["全部任务", "OCR", "翻译", "元数据"];
+    public IReadOnlyList<string> TaskTypes { get; } = ["全部任务", "OCR", "翻译", "元数据", "下载"];
     [ObservableProperty] public partial string SelectedTaskType { get; set; } = "全部任务";
 
     partial void OnSelectedTaskTypeChanged(string value)
@@ -156,6 +165,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         OcrQueueTaskViewModel[] all = _ocrActive.Concat(_ocrFinished)
             .Concat(_translations.Values)
             .Concat(_metadataRuns.Values)
+            .Concat(_downloads.Values)
             .ToArray();
         string? focused = FocusedTaskId;
         foreach (OcrQueueTaskViewModel row in all)
@@ -167,9 +177,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             SelectedTaskType switch
             {
                 "全部任务" => true,
-                "OCR" => !row.IsTranslation && !row.IsMetadata,
+                "OCR" => !row.IsTranslation && !row.IsMetadata && !row.IsDownload,
                 "翻译" => row.IsTranslation,
                 "元数据" => row.IsMetadata,
+                "下载" => row.IsDownload,
                 _ => true
             }).ToArray();
         // Running work always leads the active tab; a focused row is highlighted and promoted
@@ -185,9 +196,132 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             .OrderByDescending(row => row.SortTimestamp)
             .ThenBy(row => row.TaskId, StringComparer.Ordinal));
         HasFinishedTasks = _ocrFinished.Count > 0 || _translations.Values.Any(row => !row.IsActive) ||
-                           _metadataRuns.Values.Any(row => !row.IsActive);
+                           _metadataRuns.Values.Any(row => !row.IsActive) ||
+                           _downloads.Values.Any(row => !row.IsActive);
         HasRetryableTasks = _ocrFinished.Concat(_translations.Values).Concat(_metadataRuns.Values)
+            .Concat(_downloads.Values)
             .Any(row => row.CanRetry);
+    }
+
+    public async Task ShowDownloadDetailsAsync(OcrQueueTaskViewModel row)
+    {
+        if (!row.IsDownload || _downloadService is null ||
+            !Guid.TryParse(row.TaskId, out Guid taskId))
+        {
+            return;
+        }
+
+        await new DownloadOperationRunner(_main.Dialogs)
+            .ShowAsync(row.DocumentTitle, _downloadService, taskId);
+    }
+
+    public async Task ShowErrorsAsync(OcrQueueTaskViewModel row)
+    {
+        if (row.Errors.Count == 0)
+        {
+            return;
+        }
+
+        await _main.Dialogs.ShowDialogAsync<bool>(
+            new TaskQueueErrorsDialogViewModel(row.DocumentTitle, row.Errors.ToArray()));
+    }
+
+    internal void UpdateDownloads(IReadOnlyList<DownloadTaskStatus> tasks, DownloadTaskService service)
+    {
+        if (_isDetached || _queueDisposed)
+        {
+            return;
+        }
+
+        if (_downloadService is not null && !ReferenceEquals(_downloadService, service))
+        {
+            _downloads.Clear();
+            _retryingDownloads.Clear();
+        }
+
+        _downloadService = service;
+        HashSet<Guid> incoming = tasks.Select(task => task.TaskId).ToHashSet();
+        foreach (Guid id in _downloads.Keys.Where(id => !incoming.Contains(id)).ToArray())
+        {
+            _downloads.Remove(id);
+        }
+
+        foreach (DownloadTaskStatus task in tasks)
+        {
+            if (!_downloads.TryGetValue(task.TaskId, out OcrQueueTaskViewModel? row))
+            {
+                int generation = _main.LibraryGeneration;
+                row = new OcrQueueTaskViewModel(task,
+                    () => CancelDownloadAsync(task.TaskId, generation, service),
+                    () => RetryDownloadAsync(task.TaskId, generation, service));
+                _downloads.Add(task.TaskId, row);
+            }
+
+            row.UpdateDownload(task);
+        }
+
+        ApplyTaskFilter();
+    }
+
+    private bool IsCurrentDownload(Guid taskId, int generation, DownloadTaskService service)
+    {
+        return !_isDetached && !_queueDisposed && _main.LibraryGeneration == generation &&
+               ReferenceEquals(_downloadService, service) && _downloads.ContainsKey(taskId);
+    }
+
+    private async Task CancelDownloadAsync(Guid taskId, int generation, DownloadTaskService service)
+    {
+        if (!IsCurrentDownload(taskId, generation, service))
+        {
+            return;
+        }
+
+        Result result = await Task.Run(() => service.Cancel(taskId));
+        if (!IsCurrentDownload(taskId, generation, service))
+        {
+            return;
+        }
+
+        if (result.IsFailure)
+        {
+            _main.ReportError($"取消下载失败：{result.ErrorMessage}");
+        }
+
+        await RefreshAfterControlAsync();
+    }
+
+    private async Task RetryDownloadAsync(Guid taskId, int generation, DownloadTaskService service)
+    {
+        if (!IsCurrentDownload(taskId, generation, service) || !_downloads[taskId].CanRetry ||
+            !_retryingDownloads.Add(taskId))
+        {
+            return;
+        }
+
+        try
+        {
+            Result<DownloadTaskHandle> result = await Task.Run(() => service.Retry(taskId));
+            if (!IsCurrentDownload(taskId, generation, service))
+            {
+                return;
+            }
+
+            if (result.IsSuccess)
+            {
+                _downloads[taskId].RetryStarted = true;
+            }
+            else
+            {
+                _main.ReportError($"重试下载失败：{result.ErrorMessage}");
+            }
+
+            ApplyTaskFilter();
+            await RefreshAfterControlAsync();
+        }
+        finally
+        {
+            _retryingDownloads.Remove(taskId);
+        }
     }
 
     private static void SyncVisible(ObservableCollection<OcrQueueTaskViewModel> target,
@@ -513,6 +647,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         _refreshThrottle = refreshThrottle ?? DefaultRefreshThrottle;
 
         Register(_queueSubscription);
+        Register(_downloadSubscription);
         Register(_polling);
         Register(_scheduledRefresh);
 
@@ -706,27 +841,19 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private async Task RetryFailedAsync()
     {
-        IOcrQueueScheduler? queue = await GetQueueAsync();
-        if (queue is null)
-        {
-            return;
-        }
-
-        Result<IReadOnlyList<OcrQueueTask>>
-            tasks = await Task.Run(() => queue.ListTasksAsync(new OcrQueueTaskFilter()));
-        if (tasks.IsFailure)
-        {
-            _main.ReportError($"读取失败 OCR 任务失败：{tasks.ErrorMessage}");
-            return;
-        }
-
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
         int retried = 0;
         int failed = 0;
-        foreach (OcrQueueTask task in tasks.Value.Where(task =>
-                     task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
+        foreach (Guid id in _downloads.Where(pair => pair.Value.CanRetry).Select(pair => pair.Key).ToArray())
         {
-            Result<OcrQueueTask> result = await Task.Run(() => queue.RetryTaskAsync(task.TaskId));
-            if (result.IsSuccess)
+            await RetryDownloadAsync(id, generation, services.DownloadTasks);
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (_downloads.TryGetValue(id, out OcrQueueTaskViewModel? row) && row.RetryStarted)
             {
                 retried++;
             }
@@ -736,8 +863,48 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             }
         }
 
-        HostServices services = await _main.ServicesAsync();
-        int generation = _main.LibraryGeneration;
+        IOcrQueueScheduler? queue = await GetQueueAsync();
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
+        if (queue is not null)
+        {
+            Result<IReadOnlyList<OcrQueueTask>> tasks =
+                await Task.Run(() => queue.ListTasksAsync(new OcrQueueTaskFilter()));
+            if (!_main.IsCurrentLibraryContext(services, generation))
+            {
+                return;
+            }
+
+            if (tasks.IsFailure)
+            {
+                _main.ReportError($"读取失败 OCR 任务失败：{tasks.ErrorMessage}");
+            }
+            else
+            {
+                foreach (OcrQueueTask task in tasks.Value.Where(task =>
+                             task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
+                {
+                    Result<OcrQueueTask> result = await Task.Run(() => queue.RetryTaskAsync(task.TaskId));
+                    if (!_main.IsCurrentLibraryContext(services, generation))
+                    {
+                        return;
+                    }
+
+                    if (result.IsSuccess)
+                    {
+                        retried++;
+                    }
+                    else
+                    {
+                        failed++;
+                    }
+                }
+            }
+        }
+
         if (services.TranslationRuns is ITranslationTaskControls controls)
         {
             foreach (Guid id in _translations.Where(pair => pair.Value.CanRetry).Select(pair => pair.Key).ToArray())
@@ -815,13 +982,23 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private async Task ClearFinishedAsync()
     {
-        IOcrQueueScheduler? queue = await GetQueueAsync();
-        if (queue is null)
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        await Task.Run(services.DownloadTasks.ClearFinished);
+        IReadOnlyList<DownloadTaskStatus> downloads = await Task.Run(services.DownloadTasks.List);
+        if (!_main.IsCurrentLibraryContext(services, generation))
         {
             return;
         }
 
-        queue.ClearFinishedTasks();
+        UpdateDownloads(downloads, services.DownloadTasks);
+        IOcrQueueScheduler? queue = await GetQueueAsync();
+        if (!_main.IsCurrentLibraryContext(services, generation))
+        {
+            return;
+        }
+
+        queue?.ClearFinishedTasks();
         foreach (Guid id in _translations.Where(pair => !pair.Value.IsActive).Select(pair => pair.Key).ToArray())
         {
             _hiddenTranslations.Add(id);
@@ -834,6 +1011,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _metadataRuns.Remove(id);
         }
 
+        ApplyTaskFilter();
         _main.Report("已清空完成的任务。");
         await RefreshAfterControlAsync();
     }
@@ -1165,19 +1343,23 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
                     }
                 }
 
-                return !_main.IsCurrentLibraryContext(services, generation)
-                    ? null
-                    : new QueueSnapshotContext(
-                        services,
-                        generation,
-                        epoch,
-                        new Dictionary<string, DateTimeOffset>(_translationTitleResolvedUtc,
-                            StringComparer.Ordinal),
-                        new Dictionary<string, DateTimeOffset>(_itemTitleResolvedUtc,
-                            StringComparer.Ordinal),
-                        new Dictionary<string, DateTimeOffset>(_pageLabelsResolvedUtc,
-                            StringComparer.Ordinal),
-                        OcrQueueRowsDecorator);
+                if (!_main.IsCurrentLibraryContext(services, generation))
+                {
+                    return null;
+                }
+
+                SubscribeDownloads(services, generation);
+                return new QueueSnapshotContext(
+                    services,
+                    generation,
+                    epoch,
+                    new Dictionary<string, DateTimeOffset>(_translationTitleResolvedUtc,
+                        StringComparer.Ordinal),
+                    new Dictionary<string, DateTimeOffset>(_itemTitleResolvedUtc,
+                        StringComparer.Ordinal),
+                    new Dictionary<string, DateTimeOffset>(_pageLabelsResolvedUtc,
+                        StringComparer.Ordinal),
+                    OcrQueueRowsDecorator);
             }).ConfigureAwait(false);
             if (context is null)
             {
@@ -1264,6 +1446,8 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     {
         HostServices services = context.Services;
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<DownloadTaskStatus> downloads = services.DownloadTasks.List();
 
         IReadOnlyList<TranslationRunStatus>? translations = null;
         string? translationsError = null;
@@ -1394,6 +1578,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         }
 
         return new OcrQueueSnapshot(
+            downloads,
             translations, translationsError,
             metadataRuns, metadataError,
             queue, queueError, status,
@@ -1578,6 +1763,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             _pageLabelsResolvedUtc[documentKey] = appliedUtc;
         }
 
+        UpdateDownloads(snapshot.Downloads, context.Services.DownloadTasks);
         if (snapshot.Translations is not null)
         {
             UpdateTranslations(snapshot.Translations, context.Services.TranslationRuns);
@@ -1743,6 +1929,33 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             .Subscribe(pattern => OnQueueChanged(pattern.Sender, pattern.EventArgs));
     }
 
+    private void SubscribeDownloads(HostServices services, int generation)
+    {
+        DownloadTaskService downloads = services.DownloadTasks;
+        if (ReferenceEquals(_subscribedDownloads, downloads))
+        {
+            return;
+        }
+
+        _subscribedDownloads = downloads;
+        _downloadSubscription.Disposable = Observable.FromEventPattern(
+                h => downloads.Changed += h,
+                h => downloads.Changed -= h)
+            .Subscribe(_ =>
+            {
+                lock (_refreshGate)
+                {
+                    if (_queueDisposed || _isDetached || !ReferenceEquals(_subscribedDownloads, downloads) ||
+                        !_main.IsCurrentLibraryContext(services, generation))
+                    {
+                        return;
+                    }
+
+                    RequestRefresh();
+                }
+            });
+    }
+
     public void ObserveQueue(IOcrQueueScheduler queue)
     {
         SubscribeQueue(queue);
@@ -1833,6 +2046,11 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         }
 
         _queueSubscription.Disposable = null;
+        _downloadSubscription.Disposable = null;
+        _subscribedDownloads = null;
+        _downloadService = null;
+        _downloads.Clear();
+        _retryingDownloads.Clear();
         _subscribedQueue = null;
         _ocrActive.Clear();
         _ocrFinished.Clear();
@@ -1850,6 +2068,8 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         _retriedMetadataRuns.Clear();
         ActiveTaskRows.Clear();
         FinishedTaskRows.Clear();
+        HasFinishedTasks = false;
+        HasRetryableTasks = false;
         StatusSummary = "等待运行数据库打开。";
     }
 
@@ -1869,6 +2089,10 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             }
 
             _subscribedQueue = null;
+            _subscribedDownloads = null;
+            _downloadService = null;
+            _downloads.Clear();
+            _retryingDownloads.Clear();
         }
 
         base.Dispose(disposing);
@@ -1894,6 +2118,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
     /// document keys whose lookups succeeded so the apply step can stamp their cache ages.
     /// </summary>
     private sealed record OcrQueueSnapshot(
+        IReadOnlyList<DownloadTaskStatus> Downloads,
         IReadOnlyList<TranslationRunStatus>? Translations,
         string? TranslationsError,
         IReadOnlyList<MetadataBatchRunStatus>? MetadataRuns,
@@ -1950,7 +2175,23 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
     public bool IsTranslation { get; }
     public bool IsMetadata { get; }
+    public bool IsDownload { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ProgressPercentText))]
+    public partial bool IsDownloadIndeterminate { get; private set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDownloadDetails))]
+    public partial IReadOnlyList<DownloadFileProgress> DownloadFiles { get; private set; } = [];
+
+    public bool HasDownloadDetails => IsDownload && DownloadFiles.Count > 0;
     private bool TranslationControls { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanRetry))]
+    public partial bool DownloadRetryable { get; private set; } = true;
+
     [ObservableProperty] public partial bool RetryStarted { get; internal set; }
 
     /// <summary>True while this row is the deliberately focused task; used for highlight only.</summary>
@@ -1965,9 +2206,55 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         RetryCommand?.NotifyCanExecuteChanged();
     }
 
-    public bool SupportsPause => !IsMetadata && (!IsTranslation || TranslationControls);
-    public bool CanRetry => IsFailed && !IsActive && !RetryStarted && (!IsTranslation || TranslationControls);
-    public string TaskTypeText => IsTranslation ? "翻译" : IsMetadata ? "元数据" : "OCR";
+    public bool SupportsPause => !IsDownload && !IsMetadata && (!IsTranslation || TranslationControls);
+
+    public bool CanRetry => IsFailed && !IsActive && !RetryStarted &&
+                            (!IsTranslation || TranslationControls) &&
+                            (!IsDownload || DownloadRetryable);
+
+    public string TaskTypeText => IsDownload ? "下载" : IsTranslation ? "翻译" : IsMetadata ? "元数据" : "OCR";
+
+    public OcrQueueTaskViewModel(DownloadTaskStatus status, Func<Task> cancel, Func<Task> retry)
+    {
+        IsDownload = true;
+        TaskId = status.TaskId.ToString();
+        ShortTaskId = TaskId[..8];
+        Kind = "下载";
+        Priority = "";
+        EngineId = "";
+        Source = "";
+        ScopeText = "";
+        PauseCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
+        ResumeCommand = new AsyncCommand(() => Task.CompletedTask, () => false);
+        CancelCommand = new AsyncCommand(cancel, () => IsActive);
+        RetryCommand = new AsyncCommand(retry, () => CanRetry);
+        UpdateDownload(status);
+    }
+
+    public void UpdateDownload(DownloadTaskStatus status)
+    {
+        DocumentTitle = status.DisplayName;
+        IsActive = status.State is "queued" or "running";
+        IsFailed = status.State == "failed";
+        IsPaused = false;
+        State = status.State;
+        RetryStarted = status.RetryTaskId is not null;
+        SortTimestamp = status.FinishedAt ?? status.UpdatedAt;
+        ProgressValue = Math.Clamp(status.Progress, 0, 1) * 100;
+        IsDownloadIndeterminate = status.IsIndeterminate && IsActive;
+        DownloadFiles = status.Files;
+        DownloadRetryable = status.CanRetry;
+        StageText = StateText;
+        SetErrors(ErrorEntry(status.ErrorMessage, status.ErrorCode) is { } error ? [error] : []);
+        MetaText = $"任务 {ShortTaskId} · 下载 · 创建于 {status.CreatedAt.ToLocalTime():g}";
+        if (status.FinishedAt is { } finished)
+        {
+            MetaText += $" · 完成于 {finished.ToLocalTime():g}";
+        }
+
+        CancelCommand.NotifyCanExecuteChanged();
+        RetryCommand.NotifyCanExecuteChanged();
+    }
 
     public OcrQueueTaskViewModel(TranslationRunStatus run, string title, Func<Task> cancel,
         Func<Task>? pause = null, Func<Task>? resume = null, Func<Task>? retry = null)
@@ -2032,18 +2319,20 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         StageText = $"{run.Completed}/{run.Total} 项 · 成功 {run.Succeeded} · 失败 {run.Failed} · 待处理 {PendingCount}";
 
         List<string> errors = new();
-        if (!string.IsNullOrWhiteSpace(run.ErrorMessage))
+        if (ErrorEntry(run.ErrorMessage, run.ErrorCode) is { } error)
         {
-            errors.Add(run.ErrorMessage);
+            errors.Add(error);
         }
 
-        foreach (MetadataBatchItemResult item in run.Items.Where(item =>
-                     !item.IsSuccess && !string.IsNullOrWhiteSpace(item.ErrorMessage)))
+        foreach (MetadataBatchItemResult item in run.Items.Where(item => !item.IsSuccess))
         {
-            errors.Add($"题录 {item.ItemId}：{item.ErrorMessage}");
+            if (ErrorEntry(item.ErrorMessage, item.ErrorCode) is { } itemError)
+            {
+                errors.Add($"题录 {item.ItemId}：{itemError}");
+            }
         }
 
-        ErrorText = string.Join("\n", errors);
+        SetErrors(errors);
         MetaText = $"任务 {ShortTaskId} · 批量元数据获取 · {run.Total} 项";
         PauseCommand.NotifyCanExecuteChanged();
         ResumeCommand.NotifyCanExecuteChanged();
@@ -2074,10 +2363,21 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
             StageText += $" · 第 {step.PageIndex} 页 {DescribeTranslationPhase(step.Phase)}{count}";
         }
 
-        ErrorText = string.Join("\n", new[] { run.ErrorMessage }.Concat(run.Pages
-                .Where(page => page.ErrorMessage is not null || page.ErrorCode is not null)
-                .Select(page => $"第 {page.PageIndex} 页：{page.ErrorMessage ?? page.ErrorCode}"))
-            .Where(message => !string.IsNullOrWhiteSpace(message)));
+        List<string> errors = [];
+        if (ErrorEntry(run.ErrorMessage, run.ErrorCode) is { } error)
+        {
+            errors.Add(error);
+        }
+
+        foreach (TranslationPageOutcome page in run.Pages)
+        {
+            if (ErrorEntry(page.ErrorMessage, page.ErrorCode) is { } pageError)
+            {
+                errors.Add($"第 {page.PageIndex} 页：{pageError}");
+            }
+        }
+
+        SetErrors(errors);
         MetaText = $"任务 {ShortTaskId} · 全文翻译";
         PauseCommand.NotifyCanExecuteChanged();
         ResumeCommand.NotifyCanExecuteChanged();
@@ -2200,15 +2500,33 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 
     [ObservableProperty] public partial double ProgressValue { get; private set; }
 
-    public string ProgressPercentText => $"{ProgressValue:F0}%";
+    public string ProgressPercentText =>
+        IsDownloadIndeterminate ? "--" : $"{ProgressValue:F0}%";
 
     [ObservableProperty] public partial string StageText { get; private set; } = "";
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasError))]
-    public partial string ErrorText { get; private set; } = "";
+    [ObservableProperty] public partial string ErrorText { get; private set; } = "";
 
-    [ExcludeFromDerivedGeneration] public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ErrorCount))]
+    [NotifyPropertyChangedFor(nameof(ErrorCountText))]
+    [NotifyPropertyChangedFor(nameof(HasError))]
+    public partial IReadOnlyList<string> Errors { get; private set; } = [];
+
+    [ExcludeFromDerivedGeneration] public int ErrorCount => Errors.Count;
+    [ExcludeFromDerivedGeneration] public string ErrorCountText => $"错误 {ErrorCount}";
+    [ExcludeFromDerivedGeneration] public bool HasError => ErrorCount > 0;
+
+    private static string? ErrorEntry(string? message, string? code)
+    {
+        return !string.IsNullOrWhiteSpace(message) ? message : !string.IsNullOrWhiteSpace(code) ? code : null;
+    }
+
+    private void SetErrors(IReadOnlyList<string> errors)
+    {
+        Errors = errors.ToArray();
+        ErrorText = string.Join("\n", Errors);
+    }
 
     [ObservableProperty] public partial string MetaText { get; private set; } = "";
 
@@ -2228,11 +2546,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         IsFailed = task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked;
         RunIdShort = Shorten(task.RunId?.ToString());
         SortTimestamp = finishedAt ?? task.UpdatedAt;
-        ErrorText = !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorMessage)
-            ? task.LastErrorMessage!
-            : !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorCode)
-                ? task.LastErrorCode!
-                : "";
+        SetErrors(!IsActive && ErrorEntry(task.LastErrorMessage, task.LastErrorCode) is { } error ? [error] : []);
 
         if (!IsActive)
         {

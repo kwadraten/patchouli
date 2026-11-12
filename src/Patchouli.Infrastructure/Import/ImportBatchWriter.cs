@@ -408,7 +408,8 @@ public sealed class ImportBatchWriter
 
             values.Append("(@p").Append(i).Append("_PageId,@p").Append(i).Append("_DocumentInstanceId,@p").Append(i)
                 .Append("_PageIndex,@p").Append(i).Append("_PageLabel,@p").Append(i).Append("_Width,@p").Append(i)
-                .Append("_Height,@p").Append(i).Append("_Rotation,@p").Append(i).Append("_CoordinateBasis,@p")
+                .Append("_Height,@p").Append(i).Append("_Rotation,@p").Append(i).Append("_UserRotation,@p").Append(i)
+                .Append("_CoordinateBasis,@p")
                 .Append(i).Append("_BasisWidth,@p").Append(i).Append("_BasisHeight,@p").Append(i)
                 .Append("_RendererBasisVersion,@p").Append(i).Append("_SourceFileHash,@p").Append(i)
                 .Append("_CreatedAt,@p").Append(i).Append("_UpdatedAt)");
@@ -420,6 +421,7 @@ public sealed class ImportBatchWriter
             parameters[prefix + "Width"] = page.Width;
             parameters[prefix + "Height"] = page.Height;
             parameters[prefix + "Rotation"] = page.Rotation;
+            parameters[prefix + "UserRotation"] = page.UserRotation;
             parameters[prefix + "CoordinateBasis"] = page.CoordinateBasis;
             parameters[prefix + "BasisWidth"] = page.BasisWidth;
             parameters[prefix + "BasisHeight"] = page.BasisHeight;
@@ -431,7 +433,7 @@ public sealed class ImportBatchWriter
 
         await connection.ExecuteAsync(
             "insert into pages (" +
-            "page_id, document_instance_id, page_index, page_label, width, height, rotation, coordinate_basis, " +
+            "page_id, document_instance_id, page_index, page_label, width, height, rotation, user_rotation, coordinate_basis, " +
             "basis_width, basis_height, renderer_basis_version, source_file_hash, created_at, updated_at) values " +
             values,
             parameters,

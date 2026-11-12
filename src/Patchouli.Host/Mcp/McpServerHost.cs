@@ -2,7 +2,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
-using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
@@ -39,11 +38,6 @@ public sealed class McpServerHost : IAsyncDisposable
     private IMcpServerInstance? _server;
     private Task? _backgroundStartTask;
     private McpServerHostStatusSnapshot _status = McpServerHostStatusSnapshot.Initial;
-
-    public McpServerHost(HostServices services, Action<Exception, string, string?> reportUnexpectedException)
-        : this(McpServerHostDependencies.FromHostServices(services), reportUnexpectedException)
-    {
-    }
 
     public McpServerHost(McpServerHostDependencies dependencies,
         Action<Exception, string, string?> reportUnexpectedException)

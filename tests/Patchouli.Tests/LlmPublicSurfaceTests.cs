@@ -17,17 +17,15 @@ public sealed class LlmPublicSurfaceTests
     }
 
     [Fact]
-    public void The_factory_builds_a_tornado_client_for_resolved_settings()
+    public void The_factory_builds_a_modelsdev_transport_for_resolved_settings()
     {
         LlmProviderRuntimeSettings settings = Settings();
 
-        LlmTornado.TornadoApi api = LlmClientFactory.CreateApi(settings);
         ILlmChatTransport transport = LlmClientFactory.CreateTransport(settings);
 
-        api.Should().NotBeNull();
-        api.ApiUrlFormat.Should().Be("https://api.openai.com/{0}/{1}");
-        api.ApiVersion.Should().Be("v1");
-        transport.Should().BeOfType<LlmTornadoChatTransport>();
+        LlmModelsDevTransport.ResolveEndpoint(settings, settings.Model)
+            .Should().Be("https://api.openai.com/v1/chat/completions");
+        transport.Should().BeOfType<LlmModelsDevTransport>();
     }
 
     [Fact]
@@ -40,9 +38,9 @@ public sealed class LlmPublicSurfaceTests
             Deployment = "deployment"
         };
 
-        LlmTornado.TornadoApi api = LlmClientFactory.CreateApi(azure);
-
-        api.ApiVersion.Should().Be(LlmProviderClientFactory.DefaultAzureApiVersion);
+        LlmModelsDevTransport.ResolveEndpoint(azure, azure.Model).Should()
+            .Be(
+                "https://resource.openai.azure.com/openai/deployments/deployment/chat/completions?api-version=2024-10-21");
         LlmProviderClientFactory.ResolveApiVersion(azure with { ApiVersion = "2025-01-01" })
             .Should().Be("2025-01-01");
     }

@@ -229,7 +229,7 @@ public sealed class AlphaPackagingTests
 
         workflow.Should().Contain("pull_request:").And.Contain("contents: read")
             .And.Contain("scripts/package-windows.ps1").And.Contain("-Smoke")
-            .And.Contain("runs-on: macos-14")
+            .And.Contain("runs-on: macos-15")
             .And.Contain("VERSION=\"$PACKAGE_VERSION\" bash scripts/package-macos.sh osx-arm64")
             .And.Contain(
                 "bash scripts/verify-macos-dmg.sh \".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg\"")
@@ -446,9 +446,11 @@ public sealed class AlphaPackagingTests
             ("FSharp.Core", "MIT", "https://github.com/dotnet/fsharp"),
             ("FSharp.Compiler.Service", "MIT", "https://github.com/dotnet/fsharp"),
             ("System.Reflection.MetadataLoadContext", "MIT", "https://github.com/dotnet/runtime"),
-            ("LLMTornado", "MIT", "https://github.com/lofcz/LlmTornado"),
+            ("FSharp.ModelsDev", "MIT", "https://github.com/kwadraten/FSharp.ModelsDev"),
             ("Blake3.NET", "BSD-2-Clause", "https://github.com/xoofx/Blake3.NET"),
             ("BLAKE3", "CC0 / Apache-2.0", "https://github.com/BLAKE3-team/BLAKE3"),
+            ("NSec.Cryptography", "MIT", "https://github.com/ektrah/nsec"),
+            ("libsodium", "ISC", "https://github.com/jedisct1/libsodium"),
             ("SourceGear.sqlite3", "Public Domain", "https://github.com/sourcegear/sqlite-builds"),
             ("Skia", "BSD-3-Clause", "https://github.com/google/skia"),
             ("HtmlAgilityPack", "MIT", "https://github.com/zzzprojects/html-agility-pack"),

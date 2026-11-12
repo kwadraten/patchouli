@@ -16,6 +16,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 using Patchouli.Core.Settings;
 using Patchouli.Ocr;
 using Avalonia.Threading;
@@ -51,11 +52,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     private CancellationTokenSource _pagingSession = new();
     private TaskCompletionSource _refreshCompletion = NewRefreshCompletion(true);
     private LibraryPageQuery? _pageQuery;
+    private BibliographicItemSearch? _metadataSearch;
     private LibraryItemCursor? _nextPageCursor;
     private int _pageLoadInFlight;
     private int _pagingGeneration;
     private int _cursorVersion;
     private int _filterSelectionGeneration;
+    private bool _sidebarCatalogLoaded;
     private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
     private CancellationTokenSource? _purgeCancellation;
@@ -338,7 +341,9 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 .TrySetResult();
             _pagingSession.Cancel();
             _pageQuery = null;
+            _metadataSearch = null;
             _nextPageCursor = null;
+            _sidebarCatalogLoaded = false;
             Interlocked.Increment(ref _cursorVersion);
             HasMoreItems = false;
             _observedLibraryRevisions = null;
@@ -950,12 +955,23 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         return RefreshItemsCoreAsync(CancellationToken.None);
     }
 
-    private Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
+    internal Task ApplyMetadataSearchAsync(BibliographicItemSearch search)
     {
-        return _operationLifetime.RunAsync(() => RefreshItemsTrackedAsync(cancellationToken));
+        _metadataSearch = string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0 ? null : search;
+        if (Sidebar.IsTrashSelected)
+        {
+            Sidebar.SelectedSection = Sidebar.Sections[0];
+        }
+
+        return RefreshItemsCoreAsync(CancellationToken.None, false);
     }
 
-    private async Task RefreshItemsTrackedAsync(CancellationToken cancellationToken)
+    private Task RefreshItemsCoreAsync(CancellationToken cancellationToken, bool reloadSidebar = true)
+    {
+        return _operationLifetime.RunAsync(() => RefreshItemsTrackedAsync(cancellationToken, reloadSidebar));
+    }
+
+    private async Task RefreshItemsTrackedAsync(CancellationToken cancellationToken, bool reloadSidebar)
     {
         int pagingGeneration = Interlocked.Increment(ref _pagingGeneration);
         int filterGeneration = Volatile.Read(ref _filterSelectionGeneration);
@@ -984,13 +1000,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             refreshToken.ThrowIfCancellationRequested();
 
             bool isTrashScope = Sidebar.SelectedScope == LibrarySidebarScope.Trash;
+            bool loadCatalog = !isTrashScope && (reloadSidebar || !_sidebarCatalogLoaded);
             IReadOnlyList<string> requiredTags = isTrashScope ? [] : Sidebar.GetSelectedTagNames();
             CollectionId? requiredCollectionId = isTrashScope ? null : Sidebar.SelectedCollection?.CollectionId;
             IReadOnlyList<Collection> refreshedCollections = [];
             IReadOnlyList<string> pinnedTags = [];
             IReadOnlyList<TagInfo> refreshedTags = [];
             int refreshedUntaggedCount = 0;
-            if (!isTrashScope)
+            if (loadCatalog)
             {
                 Result<IReadOnlyList<Collection>> collections =
                     await Task.Run(() => services.Collections.ListCollectionsAsync(refreshToken), refreshToken);
@@ -1025,25 +1042,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             }
 
             bool noTagSelected = !isTrashScope && Sidebar.IsNoTagSelected;
-            HashSet<ItemId>? collectionMemberIds = null;
-            if (requiredCollectionId is { } collectionId)
-            {
-                Result<IReadOnlyList<ItemId>> members =
-                    await Task.Run(() => services.Collections.GetCollectionItemIdsAsync(collectionId, refreshToken),
-                        refreshToken);
-                if (members.IsFailure)
-                {
-                    throw new InvalidOperationException(members.ErrorMessage);
-                }
-
-                collectionMemberIds = members.Value.ToHashSet();
-            }
-
             LibraryPageQuery pageQuery = new(
                 isTrashScope,
                 noTagSelected,
                 requiredTags.ToArray(),
-                collectionMemberIds,
+                requiredCollectionId,
+                _metadataSearch,
                 _main.LibraryGeneration,
                 pagingGeneration);
             LibraryVisiblePage page = await Task.Run(
@@ -1063,12 +1067,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 _main.RaiseLibraryTitleChanged();
             }
 
-            if (!isTrashScope)
+            if (loadCatalog)
             {
                 Sidebar.LoadCollections(refreshedCollections);
                 Raise(nameof(HasCollections));
                 Sidebar.LoadTags(refreshedTags, refreshedUntaggedCount, pinnedTags);
                 Sidebar.ApplyPinnedOrder(pinnedTags);
+                _sidebarCatalogLoaded = true;
             }
 
             List<LibraryItemViewModel> refreshedItems = page.Rows.Select(CreateItemViewModel).ToList();
@@ -1260,47 +1265,23 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         LibraryItemCursor? after,
         CancellationToken cancellationToken)
     {
-        List<LibraryItemRow> visibleRows = new(LibraryPageSize);
-        LibraryItemCursor? sourceCursor = after;
-        bool sourceHasMore;
-        do
+        Result<LibraryItemPage> result = query.IsTrashScope
+            ? await services.LibraryItems.ListTrashedRowsAsync(LibraryPageSize, after, cancellationToken)
+            : await services.LibraryItems.ListRowsAsync(
+                LibraryPageSize,
+                after,
+                query.RequiredTags.Count == 0 ? null : query.RequiredTags,
+                query.RequiredCollectionId,
+                query.NoTagSelected,
+                query.MetadataSearch,
+                cancellationToken);
+        if (result.IsFailure)
         {
-            int sourceLimit = LibraryPageSize - visibleRows.Count;
-            Result<LibraryItemPage> result = query.IsTrashScope
-                ? await services.LibraryItems.ListTrashedRowsAsync(
-                    sourceLimit, sourceCursor, cancellationToken)
-                : await services.LibraryItems.ListRowsAsync(
-                    sourceLimit,
-                    sourceCursor,
-                    query.RequiredTags.Count == 0 ? null : query.RequiredTags,
-                    cancellationToken);
-            if (result.IsFailure)
-            {
-                throw new InvalidOperationException(result.ErrorMessage);
-            }
+            throw new InvalidOperationException(result.ErrorMessage);
+        }
 
-            LibraryItemPage sourcePage = result.Value;
-            foreach (LibraryItemRow row in sourcePage.Rows)
-            {
-                if (query.NoTagSelected && row.Tags is { Count: > 0 })
-                {
-                    continue;
-                }
-
-                if (query.CollectionMemberIds is not null && !query.CollectionMemberIds.Contains(row.ItemId))
-                {
-                    continue;
-                }
-
-                visibleRows.Add(row);
-            }
-
-            LibraryItemCursor? previousCursor = sourceCursor;
-            sourceCursor = sourcePage.NextCursor;
-            sourceHasMore = sourcePage.HasMore && sourceCursor is not null && sourceCursor != previousCursor;
-        } while (visibleRows.Count < LibraryPageSize && sourceHasMore);
-
-        return new LibraryVisiblePage(visibleRows, sourceCursor, sourceHasMore);
+        LibraryItemPage page = result.Value;
+        return new LibraryVisiblePage(page.Rows, page.NextCursor, page.HasMore);
     }
 
     private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(
@@ -1672,7 +1653,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         Raise(nameof(CanModifyLibraryItems));
         Raise(nameof(HasSelectedCollectionFilter));
         Raise(nameof(SelectedCollectionFilterName));
-        await RefreshItemsCoreAsync(cancellationToken);
+        await RefreshItemsCoreAsync(cancellationToken, false);
     }
 
     private async Task CreateCollectionAsync()
@@ -1949,13 +1930,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
-        bool hasActiveFilter = Sidebar.HasSelectedCollection || Sidebar.IsNoTagSelected ||
+        bool hasActiveFilter = _metadataSearch is not null || Sidebar.HasSelectedCollection ||
+                               Sidebar.IsNoTagSelected ||
                                Sidebar.GetSelectedTagNames().Count > 0;
         if (Sidebar.SelectedScope == LibrarySidebarScope.Trash || hasActiveFilter)
         {
             // Incremental row lookup returns active items by ID without applying the current
-            // sidebar relation filters. Re-run the filtered query so newly imported/scanned
-            // items cannot leak into an empty collection or a tag-filtered view.
+            // current filters. Re-run the filtered query to keep membership correct after edits and imports.
             await DispatcherTasks.RunAsync(() => RefreshItemsCoreAsync(cancellationToken), cancellationToken);
             return;
         }
@@ -2201,7 +2182,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         if (previousSelection != currentSelection || currentSelection is not null)
         {
             // The filter selection changed or an active collection's membership may have changed.
-            await RefreshItemsCoreAsync(cancellationToken);
+            await RefreshItemsCoreAsync(cancellationToken, false);
         }
     }
 
@@ -2211,7 +2192,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     /// </summary>
     private async Task ApplyTagFilterMembershipAsync(CancellationToken cancellationToken)
     {
-        await RefreshItemsCoreAsync(cancellationToken);
+        await RefreshItemsCoreAsync(cancellationToken, false);
     }
 
     private LibraryItemViewModel CreateItemViewModel(LibraryItemRow row)
@@ -2953,7 +2934,8 @@ internal sealed record LibraryPageQuery(
     bool IsTrashScope,
     bool NoTagSelected,
     IReadOnlyList<string> RequiredTags,
-    HashSet<ItemId>? CollectionMemberIds,
+    CollectionId? RequiredCollectionId,
+    BibliographicItemSearch? MetadataSearch,
     int LibraryGeneration,
     int PagingGeneration);
 

@@ -4,6 +4,7 @@ using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -230,6 +231,83 @@ public sealed class PdfViewportInteractionTests(AvaloniaSharedSessionFixture hea
                 await main.ShutdownAsync();
             }
         }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Split_dialog_draws_both_regions_on_its_own_fitted_canvas()
+    {
+        await headless.Session.Dispatch(() =>
+        {
+            using MainWindowViewModel main = new(new Clipboard(), settingsPath: _settings.Path);
+            LibraryItemViewModel item = new(ItemId.New().ToString(), "拆分预览", "book", "", "", "",
+                null, null, null, "source.pdf", "", 1, 0, "", _ => Task.CompletedTask, _ => Task.CompletedTask);
+            using PdfWorkspaceViewModel workspace = new(main, item);
+            using WriteableBitmap image = new(new PixelSize(800, 1000), new Vector(96, 96),
+                Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Premul);
+            SetProperty(workspace, nameof(workspace.WidthPixels), 800);
+            SetProperty(workspace, nameof(workspace.HeightPixels), 1000);
+            SetProperty(workspace, nameof(workspace.Image), image);
+            PageId pageId = PageId.New();
+            typeof(PdfWorkspaceViewModel).GetField("_currentPageId", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(workspace, pageId);
+            typeof(PdfWorkspaceViewModel).GetField("_draftRevisionId", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(workspace, DocumentTreeRevisionId.New());
+            DocumentBox box = new(DocumentTreeRevisionId.New(), DocumentBoxId.New(), DocumentInstanceId.New(), pageId,
+                null, null, DocumentBoxType.Text, null, new NormalizedBBox(.1, .1, .3, .2),
+                new TextBoxPayload("Split content"), null, null, null, false);
+            workspace.BoundingBoxes.Add(new PdfBBoxViewModel(main, workspace, box, 800, 1000, false)
+            {
+                IsSelected = true
+            });
+            SetProperty(workspace, nameof(workspace.SplitSource), box);
+            double workspaceZoom = workspace.Zoom;
+            Window owner = new() { Width = 1000, Height = 700 };
+            BoxOperationDialog dialog = new() { DataContext = workspace };
+            try
+            {
+                owner.Show();
+                dialog.Show(owner);
+                Pump(owner);
+                Pump(dialog);
+                Control canvas = dialog.FindControl<Border>("SplitDrawingSurface")!;
+                ScaleTransform scale = (ScaleTransform)dialog.FindControl<LayoutTransformControl>(
+                    "SplitLayoutTransform")!.LayoutTransform!;
+                scale.ScaleX.Should().NotBe(1, "the source box is fitted with surrounding context on open");
+
+                Draw(dialog, canvas, new Point(100, 150), new Point(180, 240));
+                Draw(dialog, canvas, new Point(300, 350), new Point(380, 440));
+
+                workspace.SplitFirstBBox.Should().NotBeNull();
+                workspace.SplitSecondBBox.Should().NotBeNull();
+                workspace.SplitDraftBoxes.Should().HaveCount(2);
+                workspace.CanConfirmSplit.Should().BeTrue();
+                workspace.ActiveTool.Should().Be(PdfWorkspaceTool.Select);
+
+                Button zoomIn = dialog.GetVisualDescendants().OfType<Button>()
+                    .Single(button => AutomationProperties.GetName(button) == "放大拆分画布");
+                zoomIn.Focus();
+                dialog.MouseDown(zoomIn.TranslatePoint(new Point(10, 10), dialog)!.Value, MouseButton.Left);
+                dialog.MouseUp(zoomIn.TranslatePoint(new Point(10, 10), dialog)!.Value, MouseButton.Left);
+                scale.ScaleX.Should().BeGreaterThan(1);
+                workspace.Zoom.Should().Be(workspaceZoom);
+                return true;
+            }
+            finally
+            {
+                dialog.Close();
+                owner.Close();
+            }
+        }, CancellationToken.None);
+    }
+
+    private static void Draw(Window window, Control canvas, Point start, Point end)
+    {
+        Point windowStart = canvas.TranslatePoint(start, window)!.Value;
+        Point windowEnd = canvas.TranslatePoint(end, window)!.Value;
+        window.MouseMove(windowStart);
+        window.MouseDown(windowStart, MouseButton.Left);
+        window.MouseMove(windowEnd, RawInputModifiers.LeftMouseButton);
+        window.MouseUp(windowEnd, MouseButton.Left);
     }
 
     private static void SetProperty(object target, string name, object value)

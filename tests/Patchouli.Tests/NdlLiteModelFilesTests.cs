@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Ocr.Engines.NdlLite;
 
 namespace Patchouli.Tests;
 

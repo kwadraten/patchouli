@@ -244,14 +244,14 @@ public sealed class McpOcrProtocolIndependentTests
     }
 
     [Fact]
-    public async Task Surface_keeps_seven_tools_and_publishes_flat_fields()
+    public async Task Surface_keeps_six_tools_and_publishes_flat_fields()
     {
         Harness harness = new();
         using JsonDocument list =
             JsonDocument.Parse(
                 await harness.Handler.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"));
         JsonElement tools = list.RootElement.GetProperty("result").GetProperty("tools");
-        tools.GetArrayLength().Should().Be(7);
+        tools.GetArrayLength().Should().Be(6);
         JsonElement send = tools.EnumerateArray()
             .Single(value => value.GetProperty("name").GetString() == "patchouli.send");
         send.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(value => value.GetString())
@@ -316,7 +316,7 @@ public sealed class McpOcrProtocolIndependentTests
                     TaskId, TaskUri + "status", "queued", "rapidocr", "preset-fixture",
                     "33333333-3333-3333-3333-333333333333")));
             };
-            string[] tools = ["find", "fetch", "put", "cite", "send", "add", "view"];
+            string[] tools = ["find", "fetch", "put", "cite", "send", "add"];
             McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
             {
                 ToolOverrides =

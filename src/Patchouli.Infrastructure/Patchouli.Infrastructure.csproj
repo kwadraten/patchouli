@@ -12,12 +12,14 @@
   </ItemGroup>
 
   <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <BuiltInExtensionSchemaOutput>$([MSBuild]::NormalizePath('$(MSBuildProjectExtensionsPath)', '$(Configuration)', '$(TargetFramework)', 'extension-schemas', 'BuiltInExtensionSchemas.json'))</BuiltInExtensionSchemaOutput>
     <BuiltInExtensionSchemaGeneratorProject>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '..', '..', 'scripts', 'Patchouli.ExtensionSchemas', 'Patchouli.ExtensionSchemas.csproj'))</BuiltInExtensionSchemaGeneratorProject>
     <BuiltInExtensionSchemaGeneratorRemoveProperties>RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun</BuiltInExtensionSchemaGeneratorRemoveProperties>
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Csl\Styles\*.csl" />
     <EmbeddedResource Include="$(BuiltInExtensionSchemaOutput)"
                        LogicalName="Patchouli.Infrastructure.Extensions.BuiltInExtensionSchemas.json" />
     <None Include="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"
@@ -87,20 +89,6 @@
                         LogicalName="Patchouli.Infrastructure.Extensions.Compiled.%(_BuiltInExtensionArchive.Filename).zip" />
     </ItemGroup>
   </Target>
-  <Target Name="EmbedNativeOcrSupportAssembly" BeforeTargets="AssignTargetPaths"
-          DependsOnTargets="ResolveProjectReferences">
-    <MSBuild Projects="$(MSBuildProjectDirectory)\..\Patchouli.Ocr.Engines\Patchouli.Ocr.Engines.csproj"
-             Targets="GetTargetPath"
-             Properties="Configuration=$(Configuration);TargetFramework=net10.0"
-             RemoveProperties="RuntimeIdentifier;RuntimeIdentifiers;SelfContained;PublishAot;PublishSingleFile;PublishTrimmed;PublishReadyToRun"
-             BuildInParallel="false">
-      <Output TaskParameter="TargetOutputs" ItemName="_NativeOcrSupportAssemblyPath" />
-    </MSBuild>
-    <ItemGroup>
-      <EmbeddedResource Include="@(_NativeOcrSupportAssemblyPath)"
-                        LogicalName="Patchouli.Infrastructure.Ocr.Extensions.Patchouli.Ocr.Engines.dll" />
-    </ItemGroup>
-  </Target>
   <Target Name="CopyBuiltInExtensionToolchainStamp" AfterTargets="Build"
           DependsOnTargets="GenerateBuiltInExtensionSchemas">
     <Copy SourceFiles="$([System.IO.Path]::GetDirectoryName('$(BuiltInExtensionSchemaOutput)'))\ExtensionToolchain.json"
@@ -126,36 +114,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="migrations\*.sql" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-  <ItemGroup>
-    <!-- The ONNX algorithm sources compile only into the standalone Patchouli.Ocr.Engines
-         support assembly; the adapters and model download services stay here and reach the
-         internals through InternalsVisibleTo. -->
-    <Compile Remove="Ocr\NdlLite\NdlLiteCharsetParser.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteClassNames.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteDetector.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteLayoutOrderer.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteModelFiles.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteOcrPipeline.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteReadingOrderSolver.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteRecognitionCascade.cs" />
-    <Compile Remove="Ocr\NdlLite\NdlLiteRecognizer.cs" />
-    <Compile Remove="Ocr\NdlKoten\NdlKotenCharsetParser.cs" />
-    <Compile Remove="Ocr\NdlKoten\NdlKotenClassNames.cs" />
-    <Compile Remove="Ocr\NdlKoten\NdlKotenModelFiles.cs" />
-    <Compile Remove="Ocr\NdlKoten\NdlKotenOcrPipeline.cs" />
-    <Compile Remove="Ocr\NdlKoten\ParseqRecognizer.cs" />
-    <Compile Remove="Ocr\NdlKoten\ReadingOrderSolver.cs" />
-    <Compile Remove="Ocr\NdlKoten\RtmdetDetector.cs" />
-    <Compile Remove="Ocr\RapidOcr\DbPostProcess.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrClassifier.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrDetector.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrGeometry.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrImage.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrModelFiles.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrParameters.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrPipeline.cs" />
-    <Compile Remove="Ocr\RapidOcr\RapidOcrRecognizer.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Ocr\Extensions\Support.fsx"

@@ -20,6 +20,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
 {
     private PdfWorkspaceViewModel? _workspace;
     private bool _workspaceEventsSubscribed;
+    private BoxOperationDialog? _boxOperationDialog;
     private PdfBBoxViewModel? _draggedBBox;
     private Point _dragStart;
     private double _dragLeft;
@@ -195,6 +196,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _isChapterDragging = false;
         if (!ReferenceEquals(_workspace, DataContext))
         {
+            _boxOperationDialog?.Close();
+            _boxOperationDialog = null;
             _bookReadingImages?.Dispose();
             _bookReadingImages = null;
             BookReadingView.ImageSource = null;
@@ -225,7 +228,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _workspace.BookReadingStarted += OnBookReadingStarted;
         _workspace.BookReadingPageReady += OnBookReadingPageReady;
         _workspace.BookReadingAnchorRequested += OnBookReadingAnchorRequested;
-        _workspace.PropertyChanged += OnBookReadingPropertyChanged;
+        _workspace.PropertyChanged += OnWorkspacePropertyChanged;
         _workspaceEventsSubscribed = true;
     }
 
@@ -279,7 +282,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _workspace.BookReadingStarted -= OnBookReadingStarted;
         _workspace.BookReadingPageReady -= OnBookReadingPageReady;
         _workspace.BookReadingAnchorRequested -= OnBookReadingAnchorRequested;
-        _workspace.PropertyChanged -= OnBookReadingPropertyChanged;
+        _workspace.PropertyChanged -= OnWorkspacePropertyChanged;
         _workspaceEventsSubscribed = false;
     }
 
@@ -361,6 +364,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _needsReadingReplay = false;
 
         TryApplyBookReadingAnchor();
+        SynchronizeBoxOperationDialog();
     }
 
     public void OnTabDeactivated()
@@ -387,6 +391,8 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         _isClosed = true;
         _isTabActive = false;
         UnsubscribeWorkspaceEvents();
+        _boxOperationDialog?.Close();
+        _boxOperationDialog = null;
         ReadingView.IsActive = false;
         TranslationReadingView.IsActive = false;
         BookReadingView.IsActive = false;
@@ -1226,7 +1232,7 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         return page < 0 ? 0 : page;
     }
 
-    private void OnBookReadingPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private void OnWorkspacePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_workspace is null)
         {
@@ -1254,6 +1260,13 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
             return;
         }
 
+        if (e.PropertyName is nameof(PdfWorkspaceViewModel.IsSplitPending) or
+            nameof(PdfWorkspaceViewModel.IsMergePending) or
+            nameof(PdfWorkspaceViewModel.IsPickingContinuationSource))
+        {
+            SynchronizeBoxOperationDialog();
+        }
+
         switch (e.PropertyName)
         {
             case nameof(PdfWorkspaceViewModel.IsBookReadingMode):
@@ -1273,6 +1286,38 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
             case nameof(PdfWorkspaceViewModel.BookReadingCompareMode):
                 ApplyTranslationCompareVisibility();
                 break;
+        }
+    }
+
+    private void SynchronizeBoxOperationDialog()
+    {
+        if (_workspace is null || _isClosed || !_isTabActive)
+        {
+            return;
+        }
+
+        bool hasPendingOperation = _workspace.IsSplitPending || _workspace.IsMergePending ||
+                                   _workspace.IsPickingContinuationSource;
+        if (!hasPendingOperation)
+        {
+            _boxOperationDialog?.Close();
+            return;
+        }
+
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
+        if (_boxOperationDialog is null)
+        {
+            _boxOperationDialog = new BoxOperationDialog { DataContext = _workspace };
+            _boxOperationDialog.Closed += (_, _) => _boxOperationDialog = null;
+        }
+
+        if (!_boxOperationDialog.IsVisible)
+        {
+            _boxOperationDialog.Show(owner);
         }
     }
 

@@ -3,7 +3,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:vm="using:Patchouli.UI.ViewModels"
-             xmlns:search="using:Patchouli.Core.Search"
              x:DataType="vm:SearchEvidenceViewModel">
   <UserControl.Styles>
     <Style Selector="Button.EvidenceAction">
@@ -16,300 +15,118 @@
       <Setter Property="Height" Value="24" />
     </Style>
   </UserControl.Styles>
-  <Grid RowDefinitions="Auto,*">
-    <StackPanel Grid.Row="0" Margin="32,24,32,12" Spacing="8">
-      <StackPanel Spacing="4">
-        <TextBlock Text="搜索结果" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <StackPanel Orientation="Horizontal" Spacing="12">
-          <TextBlock Text="{Binding Query, StringFormat='查询：\{0\}'}" FontSize="13"
-                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <TextBlock Text="{Binding ModeDisplay, StringFormat='模式：\{0\}'}" FontSize="13"
-                     Foreground="{DynamicResource PrimaryBrush}" />
-        </StackPanel>
-      </StackPanel>
-
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <Button Command="{Binding ToggleAdvancedSearchCommand}"
-                HorizontalAlignment="Left" Height="26" Padding="10,0" FontSize="12">
-          <StackPanel Orientation="Horizontal" Spacing="4">
-            <TextBlock Text="{Binding AdvancedSearchToggleText}" FontSize="12" VerticalAlignment="Center" />
-            <lucide:Lucide Icon="ChevronDown" Width="11" Height="11"
-                           StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
-                           IsVisible="{Binding !IsAdvancedSearchOpen}" />
-            <lucide:Lucide Icon="ChevronUp" Width="11" Height="11"
-                           StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
-                           IsVisible="{Binding IsAdvancedSearchOpen}" />
-          </StackPanel>
-        </Button>
-        <Button Command="{Binding ToggleAllHitsExpandedCommand}"
-                HorizontalAlignment="Left" Height="26" Padding="10,0" FontSize="12"
-                IsVisible="{Binding IsFullTextMode}">
-          <TextBlock Text="{Binding ToggleAllHitsExpandedText}" FontSize="12" VerticalAlignment="Center" />
-        </Button>
-      </StackPanel>
-      <ProgressBar IsIndeterminate="True" Height="3" IsVisible="{Binding IsSearching}" />
-    </StackPanel>
-
-    <Grid Grid.Row="1" Margin="32,0,32,24">
-      <Grid RowDefinitions="Auto,*">
-        <Border Classes="Card" Grid.Row="0" IsVisible="{Binding IsAdvancedSearchOpen}" Margin="0,0,0,10">
-          <StackPanel Spacing="8">
-            <ItemsControl ItemsSource="{Binding FilterRows}">
+  <Grid>
+    <DataGrid x:Name="FullTextGrid" AutomationProperties.Name="全文搜索结果" ItemsSource="{Binding FullTextResults}"
+              RowDetailsVisibilityMode="Collapsed"
+              SelectionMode="Single" CanUserReorderColumns="False" CanUserResizeColumns="True"
+              CanUserSortColumns="False" IsReadOnly="True" GridLinesVisibility="Horizontal"
+              Loaded="OnFullTextGridLoaded"
+              RowBackground="Transparent" BorderThickness="0"
+              Background="{DynamicResource SurfaceContainerLowestBrush}">
+      <DataGrid.ContextMenu>
+        <ContextMenu>
+          <MenuItem Header="{Binding ToggleAllHitsExpandedText}" Command="{Binding ToggleAllHitsExpandedCommand}"
+                    IsEnabled="{Binding HasResults}" />
+        </ContextMenu>
+      </DataGrid.ContextMenu>
+      <DataGrid.RowDetailsTemplate>
+        <DataTemplate x:DataType="vm:SearchHitItemViewModel">
+          <!-- ProDataGrid reconciles auto-sized details against arranged bounds during row
+               recycling. Size the root from its content so mixed-height
+               expanded rows cannot feed stale arranged heights back into layout. -->
+          <Border Background="{DynamicResource SurfaceContainerLowBrush}" Padding="28,4,8,6"
+                  Height="{Binding DetailsContainerHeight}">
+            <ItemsControl ItemsSource="{Binding Snippets}">
               <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:SearchFilterRowViewModel">
-                  <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,0,6">
-                    <ComboBox ItemsSource="{x:Static vm:SearchFilterKeyOption.All}" SelectedItem="{Binding Key}"
-                              Width="130" FontSize="12">
-                      <ComboBox.ItemTemplate>
-                        <DataTemplate x:DataType="vm:SearchFilterKeyOption">
-                          <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
-                        </DataTemplate>
-                      </ComboBox.ItemTemplate>
-                    </ComboBox>
-                    <TextBox Text="{Binding Value}" Width="260" FontSize="12"
-                             PlaceholderText="{Binding PlaceholderText}"
-                             IsVisible="{Binding IsTextKey}" VerticalContentAlignment="Center" />
-                    <ComboBox ItemsSource="{Binding AvailableValues}" SelectedValue="{Binding Value}"
-                              SelectedValueBinding="{Binding Value}" Width="200" FontSize="12"
-                              IsVisible="{Binding IsChoiceKey}">
-                      <ComboBox.ItemTemplate>
-                        <DataTemplate x:DataType="search:SearchFilterOption">
-                          <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
-                        </DataTemplate>
-                      </ComboBox.ItemTemplate>
-                    </ComboBox>
-                    <Button Command="{Binding RemoveCommand}" ToolTip.Tip="移除筛选"
-                            Background="Transparent" BorderThickness="0" Width="26" Height="26"
-                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
-                            IsVisible="{Binding CanRemove}">
-                      <lucide:Lucide Icon="Trash2" Width="13" Height="13"
+                <DataTemplate x:DataType="vm:SearchHitSnippetViewModel">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8" Margin="0,2">
+                    <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4"
+                            Padding="8,2" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding BadgeText}" FontSize="11" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Border>
+                    <Grid Grid.Column="1" ColumnDefinitions="*,Auto,*" ToolTip.Tip="{Binding Unit.Text}">
+                      <Grid.ContextMenu>
+                        <ContextMenu>
+                          <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceUriClick" />
+                          <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
+                          <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
+                        </ContextMenu>
+                      </Grid.ContextMenu>
+                      <TextBlock Text="{Binding Prefix}" VerticalAlignment="Center" HorizontalAlignment="Right"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="1" Text="{Binding Hit}" FontWeight="Bold"
+                                 VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="{Binding Suffix}" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                    <Button Grid.Column="2" Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceUriClick"
+                            ToolTip.Tip="复制证据引用">
+                      <lucide:Lucide Icon="Copy" Width="12" Height="12"
                                      StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                     </Button>
-                  </StackPanel>
+                    <Button Grid.Column="3" Classes="EvidenceAction" Command="{Binding JumpCommand}"
+                            ToolTip.Tip="跳转到 PDF 位置">
+                      <lucide:Lucide Icon="ChevronRight" Width="13" Height="13"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    </Button>
+                  </Grid>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <StackPanel Orientation="Horizontal" Spacing="12">
-              <Button Command="{Binding AddFilterRowCommand}" Height="26" Padding="10,0" FontSize="12">
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <lucide:Lucide Icon="Plus" Width="12" Height="12"
-                                 StrokeBrush="{DynamicResource OnPrimaryBrush}" />
-                  <TextBlock Text="添加筛选" FontSize="12" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <TextBlock Text="多个筛选按 AND 组合，并同时作用于题录筛选与全文搜索；关键词行即搜索词。"
-                         FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                         VerticalAlignment="Center" />
-            </StackPanel>
-          </StackPanel>
-        </Border>
-
-        <TextBlock Grid.Row="1" Text="没有命中结果。" FontSize="13"
-                   Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Top"
-                   IsVisible="{Binding HasNoResults}" />
-
-        <DataGrid Grid.Row="1" x:Name="BibliographicGrid" ItemsSource="{Binding BibliographicResults}"
-                  IsVisible="{Binding IsBibliographicMode}"
-                  SelectionMode="Single" CanUserReorderColumns="False" CanUserResizeColumns="True"
-                  CanUserSortColumns="False" IsReadOnly="True" GridLinesVisibility="Horizontal"
-                  Loaded="OnBibliographicGridLoaded"
-                  RowBackground="Transparent" BorderThickness="0"
-                  Background="{DynamicResource SurfaceContainerLowestBrush}">
-          <!-- Commands live on MainWindowViewModel.Shell (shared with the library page), so the
-               code-behind supplies the shell from the window DataContext and syncs its selection
-               imperatively on right-click. -->
-          <DataGrid.ContextMenu>
-            <ContextMenu x:Name="BibliographicContextMenu" x:CompileBindings="False">
-              <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
-                        IsEnabled="{Binding IsSingleSelectionOrNone}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="合并条目" Command="{Binding MergeSelectedItemsCommand}"
-                        IsEnabled="{Binding CanMergeSelectedItems}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="检测重复题录"
-                        Command="{Binding DetectDuplicatesCommand}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="获取所选题录元数据"
-                        Command="{Binding LookupMetadataBatchCommand}"
-                        IsEnabled="{Binding HasBatchSelection}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="取消批量获取元数据"
-                        Command="{Binding CancelMetadataBatchCommand}"
-                        IsVisible="{Binding IsMetadataBatchBusy}" />
-              <MenuItem Header="文献加工" IsVisible="{Binding Sidebar.IsActiveSelected}">
-                <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
-                          IsVisible="{Binding Sidebar.IsActiveSelected}" />
-                <MenuItem Header="全文翻译" Command="{Binding StartFullTranslationCommand}" />
-              </MenuItem>
-              <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
-                        IsEnabled="{Binding HasCollections}" ItemsSource="{Binding CollectionContextItems}"
-                        x:CompileBindings="False">
-                <MenuItem.ItemTemplate>
-                  <DataTemplate x:DataType="vm:CollectionListItemViewModel">
-                    <TextBlock Text="{Binding Name}" />
-                  </DataTemplate>
-                </MenuItem.ItemTemplate>
-                <MenuItem.Styles>
-                  <Style Selector="MenuItem MenuItem">
-                    <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
-                    <Setter Property="IsChecked" Value="{Binding ContainsSelection}" />
-                  </Style>
-                </MenuItem.Styles>
-              </MenuItem>
-              <MenuItem Header="从当前集合移除"
-                        Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}"
-                        IsVisible="{Binding HasSelectedCollectionFilter}" />
-              <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
-                        Command="{Binding CopyCslBibliographyDescriptor}"
-                        ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="{Binding ExportItemDescriptor.Label}"
-                        Command="{Binding ExportItemDescriptor}"
-                        ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
-                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
-              <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
-                        IsVisible="{Binding Sidebar.IsTrashSelected}" />
-              <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
-                        IsVisible="{Binding Sidebar.IsTrashSelected}" />
-            </ContextMenu>
-          </DataGrid.ContextMenu>
-          <DataGrid.Columns>
-            <DataGridTextColumn Header="题录类型" Tag="ItemType"
-                                Binding="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
-                                IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
-            <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Year}"
-                                IsVisible="{Binding ShowYearColumn}" Width="60" />
-            <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Authors}"
-                                IsVisible="{Binding ShowAuthorColumn}" Width="120" />
-            <DataGridTextColumn Header="标题" Tag="Title" Binding="{Binding Title}"
-                                IsVisible="{Binding ShowTitleColumn}" Width="*" />
-            <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding SourceText}"
-                                IsVisible="{Binding ShowSourceColumn}" Width="150" />
-            <DataGridTemplateColumn Header="OCR/索引状态" Tag="Status" IsVisible="{Binding ShowStatusColumn}" Width="120">
-              <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate x:CompileBindings="false">
-                  <TextBlock Text="{Binding OcrIndexStateLabel}" ToolTip.Tip="{Binding OcrIndexStateDetail}"
-                             VerticalAlignment="Center" />
-                </DataTemplate>
-              </DataGridTemplateColumn.CellTemplate>
-            </DataGridTemplateColumn>
-            <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding PageCountDisplay}"
-                                IsVisible="{Binding ShowPagesColumn}" Width="80" />
-            <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding SourcePath}"
-                                IsVisible="{Binding ShowFileColumn}" Width="150" />
-          </DataGrid.Columns>
-        </DataGrid>
-
-        <DataGrid Grid.Row="1" x:Name="FullTextGrid" ItemsSource="{Binding FullTextResults}"
-                  IsVisible="{Binding IsFullTextMode}"
-                  RowDetailsVisibilityMode="Collapsed"
-                  SelectionMode="Single" CanUserReorderColumns="False" CanUserResizeColumns="True"
-                  CanUserSortColumns="False" IsReadOnly="True" GridLinesVisibility="Horizontal"
-                  Loaded="OnFullTextGridLoaded"
-                  RowBackground="Transparent" BorderThickness="0"
-                  Background="{DynamicResource SurfaceContainerLowestBrush}">
-          <DataGrid.RowDetailsTemplate>
+          </Border>
+        </DataTemplate>
+      </DataGrid.RowDetailsTemplate>
+      <DataGrid.Columns>
+        <DataGridTemplateColumn Header="标题" Tag="Title" Width="*">
+          <DataGridTemplateColumn.CellTemplate>
             <DataTemplate x:DataType="vm:SearchHitItemViewModel">
-              <!-- ProDataGrid reconciles auto-sized details against arranged bounds during row
-                   recycling. Give the root a fixed height (viewport plus padding) so mixed-height
-                   expanded rows cannot feed stale arranged heights back into layout. -->
-              <Border Background="{DynamicResource SurfaceContainerLowBrush}" Padding="28,4,8,6"
-                      Height="{Binding DetailsContainerHeight}">
-                <ScrollViewer Height="{Binding DetailsHeight}" VerticalScrollBarVisibility="Auto">
-                  <ItemsControl ItemsSource="{Binding Snippets}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:SearchHitSnippetViewModel">
-                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8" Margin="0,2">
-                          <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4"
-                                  Padding="8,2" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding BadgeText}" FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                          </Border>
-                          <Grid Grid.Column="1" ColumnDefinitions="*,Auto,*" ToolTip.Tip="{Binding Unit.Text}">
-                            <Grid.ContextMenu>
-                              <ContextMenu>
-                                <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceUriClick" />
-                                <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
-                                <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
-                              </ContextMenu>
-                            </Grid.ContextMenu>
-                            <TextBlock Text="{Binding Prefix}" VerticalAlignment="Center" HorizontalAlignment="Right"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock Grid.Column="1" Text="{Binding Hit}" FontWeight="Bold"
-                                       VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="2" Text="{Binding Suffix}" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                       TextTrimming="CharacterEllipsis" />
-                          </Grid>
-                          <Button Grid.Column="2" Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceUriClick"
-                                  ToolTip.Tip="复制证据引用">
-                            <lucide:Lucide Icon="Copy" Width="12" Height="12"
-                                           StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                          </Button>
-                          <Button Grid.Column="3" Classes="EvidenceAction" Command="{Binding JumpCommand}"
-                                  ToolTip.Tip="跳转到 PDF 位置">
-                            <lucide:Lucide Icon="ChevronRight" Width="13" Height="13"
-                                           StrokeBrush="{DynamicResource PrimaryBrush}" />
-                          </Button>
-                        </Grid>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </ScrollViewer>
-              </Border>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Classes="EvidenceAction" Command="{Binding ToggleExpandedCommand}"
+                        IsVisible="{Binding HasSnippets}" ToolTip.Tip="展开/收起命中片段">
+                  <Panel>
+                    <lucide:Lucide Icon="ChevronRight" Width="12" Height="12"
+                                   StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                                   IsVisible="{Binding !IsExpanded}" />
+                    <lucide:Lucide Icon="ChevronDown" Width="12" Height="12"
+                                   StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                                   IsVisible="{Binding IsExpanded}" />
+                  </Panel>
+                </Button>
+                <TextBlock Text="{Binding Item.Title}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Item.Title}" />
+              </StackPanel>
             </DataTemplate>
-          </DataGrid.RowDetailsTemplate>
-          <DataGrid.Columns>
-            <DataGridTemplateColumn Header="标题" Tag="Title" Width="*">
-              <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate x:DataType="vm:SearchHitItemViewModel">
-                  <StackPanel Orientation="Horizontal" Spacing="4">
-                    <Button Classes="EvidenceAction" Command="{Binding ToggleExpandedCommand}"
-                            IsVisible="{Binding HasSnippets}" ToolTip.Tip="展开/收起命中片段">
-                      <Panel>
-                        <lucide:Lucide Icon="ChevronRight" Width="12" Height="12"
-                                       StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
-                                       IsVisible="{Binding !IsExpanded}" />
-                        <lucide:Lucide Icon="ChevronDown" Width="12" Height="12"
-                                       StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
-                                       IsVisible="{Binding IsExpanded}" />
-                      </Panel>
-                    </Button>
-                    <TextBlock Text="{Binding Item.Title}" VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Item.Title}" />
-                  </StackPanel>
-                </DataTemplate>
-              </DataGridTemplateColumn.CellTemplate>
-            </DataGridTemplateColumn>
-            <DataGridTextColumn Header="题录类型" Tag="ItemType"
-                                Binding="{Binding Item.ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
-                                IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
-            <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Item.Year}"
-                                IsVisible="{Binding ShowYearColumn}" Width="60" />
-            <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Item.Authors}"
-                                IsVisible="{Binding ShowAuthorColumn}" Width="120" />
-            <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding Item.SourceText}"
-                                IsVisible="{Binding ShowSourceColumn}" Width="150" />
-            <DataGridTemplateColumn Header="OCR/索引状态" Tag="Status" IsVisible="{Binding ShowStatusColumn}" Width="120">
-              <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate x:DataType="vm:SearchHitItemViewModel">
-                  <TextBlock Text="{Binding Item.OcrIndexStateLabel}" ToolTip.Tip="{Binding Item.OcrIndexStateDetail}"
-                             VerticalAlignment="Center" />
-                </DataTemplate>
-              </DataGridTemplateColumn.CellTemplate>
-            </DataGridTemplateColumn>
-            <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding Item.PageCountDisplay}"
-                                IsVisible="{Binding ShowPagesColumn}" Width="80" />
-            <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding Item.SourcePath}"
-                                IsVisible="{Binding ShowFileColumn}" Width="150" />
-          </DataGrid.Columns>
-        </DataGrid>
-      </Grid>
-    </Grid>
+          </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+        <DataGridTextColumn Header="题录类型" Tag="ItemType"
+                            Binding="{Binding Item.ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
+                            IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
+        <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Item.Year}"
+                            IsVisible="{Binding ShowYearColumn}" Width="60" />
+        <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Item.Authors}"
+                            IsVisible="{Binding ShowAuthorColumn}" Width="120" />
+        <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding Item.SourceText}"
+                            IsVisible="{Binding ShowSourceColumn}" Width="150" />
+        <DataGridTemplateColumn Header="OCR/索引状态" Tag="Status" IsVisible="{Binding ShowStatusColumn}" Width="120">
+          <DataGridTemplateColumn.CellTemplate>
+            <DataTemplate x:DataType="vm:SearchHitItemViewModel">
+              <TextBlock Text="{Binding Item.OcrIndexStateLabel}" ToolTip.Tip="{Binding Item.OcrIndexStateDetail}"
+                         VerticalAlignment="Center" />
+            </DataTemplate>
+          </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+        <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding Item.PageCountDisplay}"
+                            IsVisible="{Binding ShowPagesColumn}" Width="80" />
+        <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding Item.SourcePath}"
+                            IsVisible="{Binding ShowFileColumn}" Width="150" />
+      </DataGrid.Columns>
+    </DataGrid>
+    <TextBlock Text="没有命中结果。" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"
+               Foreground="{DynamicResource OnSurfaceVariantBrush}" IsHitTestVisible="False"
+               IsVisible="{Binding HasNoResults}" />
+    <ProgressBar IsIndeterminate="True" Height="2" VerticalAlignment="Top" IsVisible="{Binding IsSearching}" />
   </Grid>
 </UserControl>

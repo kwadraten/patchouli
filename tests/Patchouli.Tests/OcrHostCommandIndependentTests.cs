@@ -593,7 +593,7 @@ public sealed class OcrHostCommandIndependentTests
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
-        McpServerHost server = new(context.Services, (_, _, _) => { });
+        McpServerHost server = new(context.Services.CreateMcpServerHostDependencies(), (_, _, _) => { });
         await server.StartAsync(new McpServerSettings(port, "127.0.0.1", false, [], false, null,
             [new McpToolOverride("patchouli.send", true)], DateTimeOffset.UtcNow)
         {
@@ -624,7 +624,7 @@ public sealed class OcrHostCommandIndependentTests
                 new McpDomainPermission("runs/translation", "send", true)
             ]
         };
-        McpServerHost server = new(context.Services, (_, _, _) => { });
+        McpServerHost server = new(context.Services.CreateMcpServerHostDependencies(), (_, _, _) => { });
         await server.StartAsync(settings);
         try
         {

@@ -2,6 +2,7 @@ using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;

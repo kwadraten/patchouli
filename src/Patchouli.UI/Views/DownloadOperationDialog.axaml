@@ -1,0 +1,59 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        x:Class="Patchouli.UI.Views.DownloadOperationDialog"
+        x:DataType="vm:DownloadOperationDialogViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/AppIcon.ico"
+        Width="560" MinWidth="360" MinHeight="200"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}"
+        Closing="OnClosing">
+  <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
+    <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontSize="13"
+               Foreground="{DynamicResource OnSurfaceBrush}" />
+    <ProgressBar Grid.Row="1" Height="8" Minimum="0" Maximum="100"
+                 Value="{Binding ProgressValue}"
+                 IsIndeterminate="{Binding IsIndeterminate}" />
+    <Button Grid.Row="2" Content="{Binding DetailsToggleText}" Command="{Binding ToggleDetailsCommand}"
+            IsVisible="{Binding HasFiles}" HorizontalAlignment="Left" />
+    <ScrollViewer Grid.Row="3" MaxHeight="260" VerticalScrollBarVisibility="Auto"
+                  IsVisible="{Binding IsDetailsVisible}">
+      <ItemsControl ItemsSource="{Binding Files}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:DownloadFileRowViewModel">
+            <Grid Margin="0,0,0,10" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+              <StackPanel>
+                <TextBlock Text="{Binding RelativePath}" TextWrapping="Wrap" FontSize="13"
+                           Foreground="{DynamicResource OnSurfaceBrush}" />
+                <TextBlock Text="{Binding BytesText}" FontSize="12"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                <TextBlock Text="{Binding StateText}" FontSize="12"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="{Binding ErrorMessage}" FontSize="12"
+                           IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                           Foreground="{DynamicResource ErrorBrush}" />
+              </StackPanel>
+              <ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Height="6" Margin="0,4,0,0"
+                           Minimum="0" Maximum="100"
+                           Value="{Binding ProgressValue}"
+                           IsIndeterminate="{Binding IsIndeterminate}" />
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="后台下载" Command="{Binding BackgroundCommand}"
+              IsVisible="{Binding IsRunning}" />
+      <Button Content="取消下载" Command="{Binding CancelCommand}" Classes="Danger"
+              IsVisible="{Binding IsRunning}" />
+      <Button Content="关闭" Command="{Binding CloseCommand}" Classes="Primary"
+              IsVisible="{Binding !IsRunning}" IsDefault="True" />
+    </StackPanel>
+  </Grid>
+</Window>

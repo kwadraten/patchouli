@@ -27,7 +27,8 @@ public sealed class ExtensionCreationDialogTests(AvaloniaSharedSessionFixture he
         await headless.Session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             ExtensionCreationViewModel model = main.Settings.CreateExtensionDraft(kind);
@@ -75,7 +76,8 @@ public sealed class ExtensionCreationDialogTests(AvaloniaSharedSessionFixture he
         await headless.Session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             ExtensionCreationViewModel model = main.Settings.CreateExtensionDraft(ExtensionKind.Translation);
@@ -111,7 +113,8 @@ public sealed class ExtensionCreationDialogTests(AvaloniaSharedSessionFixture he
         await headless.Session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
-            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
             using ExtensionSettingsViewModel editor = main.Settings.CreateExtensionEditor();

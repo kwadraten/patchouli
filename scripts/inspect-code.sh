@@ -134,7 +134,8 @@ blocking_rule_ids='[
   "AsyncVoidLambda",
   "EmptyGeneralCatchClause",
   "PossibleMultipleEnumeration",
-  "ObjectDisposed"
+  "ObjectDisposed",
+  "SYSLIB1054"
 ]'
 
 blocking_count="$(jq --argjson ids "$blocking_rule_ids" '

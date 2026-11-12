@@ -1,6 +1,6 @@
 using FluentAssertions;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Ocr.Engines.NdlLite;
 using SkiaSharp;
 
 namespace Patchouli.Tests;

@@ -34,5 +34,7 @@ public enum WorkspaceTabKind
     // Value 8 belonged to the retired standalone CSL manager, and value 6 to the retired chat tab.
     About = 9,
     Changelog,
-    Agent = 11
+    Agent = 11,
+    PluginView = 12,
+    ExtensionManager
 }

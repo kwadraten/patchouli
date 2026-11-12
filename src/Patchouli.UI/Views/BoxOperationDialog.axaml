@@ -1,0 +1,220 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        xmlns:vm="using:Patchouli.UI.ViewModels"
+        x:Class="Patchouli.UI.Views.BoxOperationDialog"
+        x:DataType="vm:PdfWorkspaceViewModel"
+        Title="边界框操作"
+        Icon="/Assets/AppIcon.ico"
+        Width="1180" Height="780"
+        MinWidth="900" MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+  <Window.Styles>
+    <Style Selector="Button.IconButton">
+      <Setter Property="Width" Value="30" />
+      <Setter Property="Height" Value="30" />
+      <Setter Property="Padding" Value="6" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="Button.IconButton:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighestBrush}" />
+    </Style>
+    <Style Selector="Border.SplitCanvasBox">
+      <Setter Property="BorderThickness" Value="1.5" />
+      <Setter Property="Background" Value="#10FFFFFF" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+    </Style>
+    <Style Selector="Border.SplitCanvasBox.selected">
+      <Setter Property="BorderThickness" Value="3" />
+      <Setter Property="Background" Value="#22FFFFFF" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.SplitDraftBox">
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="BorderBrush" Value="DarkOrange" />
+      <Setter Property="Background" Value="#33FF8C00" />
+    </Style>
+    <Style Selector="Border.SplitResultCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="12" />
+    </Style>
+  </Window.Styles>
+  <Border Padding="16">
+    <Grid>
+      <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12" IsVisible="{Binding IsSplitPending}">
+        <StackPanel Spacing="4">
+          <TextBlock Text="拆分边界框" FontWeight="SemiBold" FontSize="16" />
+          <TextBlock Text="{Binding SplitStepText}" TextWrapping="Wrap" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnDefinitions="3*,2*" ColumnSpacing="14">
+          <Grid RowDefinitions="*,Auto" RowSpacing="8">
+            <Border Background="{DynamicResource SurfaceContainerHighestBrush}"
+                    BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                    CornerRadius="6" ClipToBounds="True">
+              <ScrollViewer x:Name="SplitScrollViewer" HorizontalScrollBarVisibility="Auto"
+                            VerticalScrollBarVisibility="Auto"
+                            PointerPressed="OnSplitScrollPointerPressed"
+                            PointerMoved="OnSplitScrollPointerMoved"
+                            PointerReleased="OnSplitScrollPointerReleased"
+                            SizeChanged="OnSplitViewportSizeChanged">
+                <LayoutTransformControl x:Name="SplitLayoutTransform" HorizontalAlignment="Left"
+                                        VerticalAlignment="Top" Margin="24">
+                  <LayoutTransformControl.LayoutTransform>
+                    <ScaleTransform ScaleX="1" ScaleY="1" />
+                  </LayoutTransformControl.LayoutTransform>
+                  <Border Background="White" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                          BorderThickness="1" BoxShadow="0 3 12 #22000000">
+                    <Grid x:Name="SplitPageLayer" Width="{Binding ActualWidthPixels}"
+                          Height="{Binding ActualHeightPixels}">
+                      <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}"
+                             Height="{Binding ActualHeightPixels}" Stretch="None"
+                             IsVisible="{Binding HasImage}" IsHitTestVisible="False" />
+                      <ItemsControl ItemsSource="{Binding BoundingBoxes}"
+                                    Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                                    IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                            <Setter Property="ZIndex" Value="{Binding ZIndex}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                            <Border Classes="SplitCanvasBox" Classes.selected="{Binding IsSelected}"
+                                    Width="{Binding Width}" Height="{Binding Height}" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                      <Border x:Name="SplitDrawingSurface" Background="Transparent"
+                              Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                              IsVisible="{Binding HasImage}"
+                              PointerPressed="OnSplitCanvasPointerPressed"
+                              PointerMoved="OnSplitCanvasPointerMoved"
+                              PointerReleased="OnSplitCanvasPointerReleased" />
+                      <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                              IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                        <Border Classes="SplitDraftBox" Canvas.Left="{Binding SelectionLeft}"
+                                Canvas.Top="{Binding SelectionTop}" Width="{Binding SelectionWidth}"
+                                Height="{Binding SelectionHeight}" IsVisible="{Binding SelectionVisible}" />
+                      </Canvas>
+                      <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
+                                    Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                                    IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                        <ItemsControl.ItemContainerTheme>
+                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
+                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                          </ControlTheme>
+                        </ItemsControl.ItemContainerTheme>
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <Canvas />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
+                            <Border Classes="SplitDraftBox" Width="{Binding Width}" Height="{Binding Height}">
+                              <TextBlock Text="{Binding Label}" FontSize="12" FontWeight="Bold"
+                                         Foreground="DarkOrange" Margin="4,2" />
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </Grid>
+                  </Border>
+                </LayoutTransformControl>
+              </ScrollViewer>
+            </Border>
+            <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="6">
+              <Button Classes="IconButton" Click="OnSplitZoomOut" ToolTip.Tip="缩小"
+                      AutomationProperties.Name="缩小拆分画布">
+                <lucide:Lucide Icon="ZoomOut" Width="16" Height="16" />
+              </Button>
+              <Button Grid.Column="1" Classes="IconButton" Click="OnSplitZoomIn" ToolTip.Tip="放大"
+                      AutomationProperties.Name="放大拆分画布">
+                <lucide:Lucide Icon="ZoomIn" Width="16" Height="16" />
+              </Button>
+              <TextBlock Grid.Column="2" x:Name="SplitZoomText" Text="100%" FontSize="12"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         VerticalAlignment="Center" Margin="4,0" />
+              <Button Grid.Column="3" Classes="IconButton" Click="OnCenterSplitSource"
+                      ToolTip.Tip="将待拆分边界框置于中央" AutomationProperties.Name="居中待拆分边界框">
+                <lucide:Lucide Icon="Focus" Width="16" Height="16" />
+              </Button>
+            </Grid>
+          </Grid>
+
+          <Grid Grid.Column="1" RowDefinitions="*,*" RowSpacing="12">
+            <Border Classes="SplitResultCard">
+              <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                <TextBlock Text="边界框 1" FontWeight="SemiBold" FontSize="13" />
+                <TextBox Grid.Row="1" Text="{Binding SplitFirstText}" AcceptsReturn="True"
+                         TextWrapping="Wrap" PlaceholderText="框出第一个区域后检查内容"
+                         VerticalContentAlignment="Top" />
+              </Grid>
+            </Border>
+            <Border Grid.Row="1" Classes="SplitResultCard">
+              <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                <TextBlock Text="边界框 2" FontWeight="SemiBold" FontSize="13" />
+                <TextBox Grid.Row="1" Text="{Binding SplitSecondText}" AcceptsReturn="True"
+                         TextWrapping="Wrap" PlaceholderText="框出第二个区域后检查内容"
+                         VerticalContentAlignment="Top" />
+              </Grid>
+            </Border>
+          </Grid>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+          <Button Content="放弃拆分" Command="{Binding CancelSplitCommand}" />
+          <Button Content="确认拆分" Command="{Binding ConfirmSplitCommand}"
+                  IsEnabled="{Binding CanConfirmSplit}" Classes="Primary" />
+        </StackPanel>
+      </Grid>
+
+      <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12" IsVisible="{Binding IsMergePending}">
+        <TextBlock Text="确认合并内容" FontWeight="SemiBold" FontSize="14" />
+        <TextBox Grid.Row="1" Text="{Binding MergeText}" AcceptsReturn="True" TextWrapping="Wrap"
+                 PlaceholderText="合并结果内容（必填）" />
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+          <Button Content="取消合并" Command="{Binding CancelMergeCommand}" />
+          <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}" Classes="Primary" />
+        </StackPanel>
+      </Grid>
+
+      <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12" IsVisible="{Binding IsPickingContinuationSource}">
+        <TextBlock Text="选择接续源框" FontSize="14" FontWeight="SemiBold" />
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding ContinuationSourceCandidates}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:ContinuationSourceCandidate">
+                <Button Content="{Binding Display}" Command="{Binding ChooseCommand}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                        Background="Transparent" FontSize="12" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+        <Button Grid.Row="2" Content="取消" Command="{Binding CancelContinuationPickCommand}"
+                HorizontalAlignment="Right" />
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

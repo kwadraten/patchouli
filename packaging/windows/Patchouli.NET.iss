@@ -42,6 +42,7 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -49,6 +50,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 Name: "addtopath"; Description: "Add patchouli-cli to the user PATH"; GroupDescription: "Command line tool:"; Flags: unchecked
+Name: "registerprotocol"; Description: "处理 patchouli:// 文献虚拟链接"; GroupDescription: "系统集成："
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\patchouli"; ValueType: string; ValueName: "PatchouliProtocolOwner"; ValueData: "net.patchouli.app"; Tasks: registerprotocol; Check: ShouldRegisterProtocol
+Root: HKCU; Subkey: "Software\Classes\patchouli"; ValueType: string; ValueData: "URL:Patchouli Literature Link"; Tasks: registerprotocol; Check: ShouldRegisterProtocol
+Root: HKCU; Subkey: "Software\Classes\patchouli"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: registerprotocol; Check: ShouldRegisterProtocol
+Root: HKCU; Subkey: "Software\Classes\patchouli\DefaultIcon"; ValueType: string; ValueData: """{app}\{#AppExeName}"",0"; Tasks: registerprotocol; Check: ShouldRegisterProtocol
+Root: HKCU; Subkey: "Software\Classes\patchouli\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" --open-uri ""%1"""; Tasks: registerprotocol; Check: ShouldRegisterProtocol
 
 ; Wipe the migrations folder on upgrade so removed SQL files cannot survive side-by-side installs.
 [InstallDelete]
@@ -68,6 +77,27 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function ShouldRegisterProtocol: Boolean;
+var
+  Disabled: Cardinal;
+  Owner: string;
+begin
+  Result := not (RegQueryDWordValue(HKCU, 'Software\Patchouli.NET', 'ProtocolRegistrationDisabled', Disabled) and (Disabled = 1));
+  if RegKeyExists(HKCU, 'Software\Classes\patchouli') then
+    Result := Result and RegQueryStringValue(HKCU, 'Software\Classes\patchouli', 'PatchouliProtocolOwner', Owner) and (Owner = 'net.patchouli.app');
+end;
+
+procedure RemoveProtocolRegistration;
+var
+  Owner, Command: string;
+begin
+  if RegQueryStringValue(HKCU, 'Software\Classes\patchouli', 'PatchouliProtocolOwner', Owner) and
+     (Owner = 'net.patchouli.app') and
+     RegQueryStringValue(HKCU, 'Software\Classes\patchouli\shell\open\command', '', Command) and
+     (CompareText(Command, ExpandConstant('"{app}\{#AppExeName}" --open-uri "%1"')) = 0) then
+    RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\patchouli');
+end;
+
 procedure SetPathEntry(AddPath, MigrateLegacy: Boolean);
 var
   PathValue, Entry, LegacyEntry, NewPath, Part, Remainder: string;
@@ -117,5 +147,8 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
+  begin
+    RemoveProtocolRegistration;
     SetPathEntry(False, False);
+  end;
 end;

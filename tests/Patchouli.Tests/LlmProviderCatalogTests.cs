@@ -1,5 +1,4 @@
 using FluentAssertions;
-using LlmTornado.Code;
 using Patchouli.Llm;
 
 namespace Patchouli.Tests;
@@ -7,27 +6,47 @@ namespace Patchouli.Tests;
 public sealed class LlmProviderCatalogTests
 {
     [Fact]
-    public void Catalog_covers_every_llmtornado_provider()
+    public void Catalog_projects_the_modelsdev_snapshot_exactly()
     {
-        LLmProviders[] missing = LlmProviderCatalog.SelectableVendors
-            .Where(vendor => LlmProviderCatalog.ByVendor(vendor) is null)
-            .ToArray();
+        IReadOnlyList<string> libraryIds = FSharp.ModelsDev.Catalog.SnapshotCatalog.Default.ProviderIds;
 
-        missing.Should().BeEmpty(
-            "every provider LlmTornado can talk to must be selectable in settings (D3); add a catalog entry " +
-            "for each new LLmProviders value");
-        LlmProviderCatalog.All.Select(entry => entry.Vendor).Distinct().Should()
-            .HaveCount(LlmProviderCatalog.SelectableVendors.Count);
-        LlmProviderCatalog.ByVendor(LLmProviders.OpenAi)!.ProviderId.Should().Be("openai");
-        LlmSubscriptionCatalog.All.Should()
-            .OnlyContain(subscription => LlmProviderCatalog.Find(subscription.ProviderId) != null);
+        LlmProviderCatalog.ProviderIds.Should().Equal(libraryIds,
+            "the selectable list is owned entirely by the library snapshot");
+        LlmProviderCatalog.All.Select(entry => entry.ProviderId).Should().Equal(libraryIds);
+
+        foreach (string providerId in libraryIds)
+        {
+            FSharp.ModelsDev.Catalog.SnapshotCatalog.Default
+                .TryGetProvider(providerId, out FSharp.ModelsDev.Catalog.ProviderDefinition definition)
+                .Should().BeTrue();
+            LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(providerId)!;
+            entry.DisplayName.Should().Be(definition.Name, providerId);
+            entry.Protocol.Should().Be(definition.ProtocolId, providerId);
+            entry.DefaultBaseUrl.Should().Be(definition.BaseUrl ?? "", providerId);
+        }
     }
 
     [Fact]
-    public void Catalog_excludes_enum_sentinels()
+    public void Selectable_catalog_contains_no_host_only_ids()
     {
-        LlmProviderCatalog.All.Should().NotContain(entry => entry.Vendor == LLmProviders.Unknown);
-        LlmProviderCatalog.All.Should().NotContain(entry => entry.Vendor == LLmProviders.Length);
+        LlmProviderCatalog.All.Select(entry => entry.ProviderId).Should()
+            .NotContain([
+                "azure-openai", "openai-subscription", "custom", "blablador", "litellm",
+                "typesafe", "voyage"
+            ]);
+        LlmProviderCatalog.FallbackAll.Select(entry => entry.ProviderId).Should()
+            .Contain(["azure-openai", "openai-subscription", "custom"]);
+    }
+
+    [Fact]
+    public void Retired_host_ids_stay_resolvable_for_persisted_state_but_are_not_selectable()
+    {
+        LlmProviderCatalog.Find("azure-openai")!.IsAzure.Should().BeTrue();
+        LlmProviderCatalog.Find("azure-openai")!.DefaultBaseUrl.Should()
+            .Be("https://{resource}.openai.azure.com/openai/deployments/{deployment}");
+        LlmProviderCatalog.Find("openai-subscription")!.Protocol.Should().Be("codex-responses");
+        LlmProviderCatalog.Find("custom")!.Protocol.Should().Be("openai-chat");
+        LlmProviderCatalog.Find("custom")!.DefaultBaseUrl.Should().BeEmpty();
     }
 
     [Fact]
@@ -44,27 +63,46 @@ public sealed class LlmProviderCatalogTests
     }
 
     [Fact]
-    public void Azure_entry_is_the_only_one_asking_for_subscription_and_deployment()
+    public void Only_the_azure_fallback_entry_asks_for_subscription_and_deployment()
     {
-        LlmProviderCatalog.All.Where(entry => entry.IsAzure).Select(entry => entry.ProviderId)
-            .Should().Equal("azure-openai");
-        LlmProviderCatalog.All.Where(entry => entry.RequiresDeployment).Select(entry => entry.ProviderId)
+        LlmProviderCatalog.All.Where(entry => entry.IsAzure).Should().BeEmpty();
+        LlmProviderCatalog.FallbackAll.Where(entry => entry.IsAzure).Select(entry => entry.ProviderId)
             .Should().Equal("azure-openai");
     }
 
     [Fact]
-    public void Only_the_openai_compatible_custom_provider_needs_a_user_supplied_endpoint()
+    public void Protocol_support_is_explicit_and_unknown_protocols_are_not_transport_ready()
     {
-        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All.Where(item => !item.RequiresBaseUrl))
-        {
-            entry.DefaultBaseUrl.Should().NotBeNullOrWhiteSpace(
-                $"'{entry.ProviderId}' has a usable default endpoint; only the custom provider may start empty");
-        }
+        LlmProviderCatalog.IsSupportedApiProtocol("openai-chat").Should().BeTrue();
+        LlmProviderCatalog.IsSupportedApiProtocol("anthropic-messages").Should().BeTrue();
+        LlmProviderCatalog.IsSupportedApiProtocol("gemini").Should().BeTrue();
+        LlmProviderCatalog.IsSupportedApiProtocol("unknown").Should().BeFalse();
+        LlmProviderCatalog.IsSupportedApiProtocol("vertex-gemini").Should().BeFalse();
+        LlmProviderCatalog.IsSupportedApiProtocol("codex-responses").Should().BeFalse();
+        LlmProviderCatalog.IsSupportedProtocol("codex-responses").Should().BeTrue(
+            "the codex protocol only works through the subscription sign-in path");
+        LlmProviderCatalog.All.Where(entry => entry.Protocol == "unknown").Should()
+            .OnlyContain(entry => !entry.IsSupportedProtocol);
+    }
 
-        LlmProviderCatalog.All.Where(entry => entry.RequiresBaseUrl).Select(entry => entry.ProviderId)
-            .Should().Equal("custom");
-        LlmProviderCatalog.Find("custom")!.DefaultBaseUrl.Should().BeEmpty();
-        LlmProviderCatalog.Find("custom")!.Vendor.Should().Be(LLmProviders.Custom);
+    [Fact]
+    public void Subscription_catalog_entries_resolve_to_the_fallback_catalog()
+    {
+        LlmSubscriptionCatalog.All.Should()
+            .OnlyContain(subscription => LlmProviderCatalog.Find(subscription.ProviderId) != null);
+        LlmSubscriptionCatalog.All.Should()
+            .OnlyContain(subscription =>
+                !LlmProviderCatalog.All.Any(entry => entry.ProviderId == subscription.ProviderId));
+    }
+
+    [Fact]
+    public void Entry_flags_track_the_definition_data_across_library_and_fallback_entries()
+    {
+        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All.Concat(LlmProviderCatalog.FallbackAll))
+        {
+            entry.IsAzure.Should().Be(entry.RequiresSubscription || entry.RequiresDeployment);
+            entry.RequiresBaseUrl.Should().Be(string.IsNullOrWhiteSpace(entry.DefaultBaseUrl));
+        }
     }
 
     [Fact]
@@ -76,6 +114,8 @@ public sealed class LlmProviderCatalogTests
             .Be(LlmAppSettings.DefaultProviderId);
         LlmProviderCatalog.Resolve("anthropic", LlmAppSettings.DefaultProviderId).ProviderId.Should()
             .Be("anthropic");
+        LlmProviderCatalog.Resolve("azure-openai", LlmAppSettings.DefaultProviderId).ProviderId.Should()
+            .Be("azure-openai", "persisted legacy ids still resolve");
         LlmProviderCatalog.Find("  ").Should().BeNull();
         LlmProviderCatalog.Find(null).Should().BeNull();
     }

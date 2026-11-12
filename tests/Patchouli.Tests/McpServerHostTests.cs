@@ -16,7 +16,7 @@ public sealed class McpServerHostTests
     public async Task Start_transitions_to_running_and_stop_transitions_to_stopped()
     {
         await using HostContext context = await HostContext.CreateAsync();
-        McpServerHost host = new(context.Services, (_, _, _) => { });
+        McpServerHost host = new(context.Services.CreateMcpServerHostDependencies(), (_, _, _) => { });
         List<McpServerHostStatus> statuses = new();
         object sync = new();
         host.StatusChanged += (_, eventArgs) =>
@@ -60,7 +60,7 @@ public sealed class McpServerHostTests
     public async Task Stop_finishes_with_connected_sse_client()
     {
         await using HostContext context = await HostContext.CreateAsync();
-        await using McpServerHost host = new(context.Services, (_, _, _) => { });
+        await using McpServerHost host = new(context.Services.CreateMcpServerHostDependencies(), (_, _, _) => { });
         McpServerSettings settings = new(
             GetFreeTcpPort(), "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
         await host.StartAsync(settings);
@@ -93,7 +93,7 @@ public sealed class McpServerHostTests
         await using HostContext context = await HostContext.CreateAsync();
         List<McpServerHostExceptionEventArgs> exceptions = new();
         object sync = new();
-        McpServerHost host = new(context.Services, (_, _, _) => { });
+        McpServerHost host = new(context.Services.CreateMcpServerHostDependencies(), (_, _, _) => { });
         host.ExceptionReported += (_, eventArgs) =>
         {
             lock (sync)

@@ -29,6 +29,16 @@ public sealed record McpBrowseDocumentRow(
     string OcrIndexStatus = "no_ocr",
     bool Citable = false);
 
+/// <summary>
+/// Lean per-instance row used to project an item's related VFS directories
+/// (<c>texts/</c>, <c>images/</c>, <c>translations/</c>) into the item YAML without a
+/// separate browse round-trip.
+/// </summary>
+public sealed record McpItemDocumentLink(
+    DocumentInstanceId DocumentInstanceId,
+    string? Title,
+    bool IsPrimary);
+
 public sealed record McpTextResourceProjection(
     DocumentInstanceId DocumentInstanceId,
     ItemId? ItemId,

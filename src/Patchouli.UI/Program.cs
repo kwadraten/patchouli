@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Threading;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Host.Composition;
 using Patchouli.Host.Lifecycle;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI;
 
@@ -11,7 +13,8 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Contains("--headless", StringComparer.Ordinal))
+        if (!args.Contains("--open-uri", StringComparer.Ordinal) &&
+            args.Contains("--headless", StringComparer.Ordinal))
         {
             try
             {
@@ -48,6 +51,17 @@ internal static class Program
             eventArgs.Handled = false;
         };
 
+        string? startupUri;
+        try
+        {
+            startupUri = DesktopUriActivation.FromArguments(args);
+        }
+        catch (ArgumentException exception)
+        {
+            sink.Report(exception, "protocol-activation", "parse-startup-uri");
+            return 2;
+        }
+
         DesktopInstanceCoordinator coordinator;
         try
         {
@@ -63,7 +77,9 @@ internal static class Program
         {
             try
             {
-                bool notified = coordinator.NotifyPrimaryAsync().GetAwaiter().GetResult();
+                bool notified = (startupUri is null
+                    ? coordinator.NotifyPrimaryAsync()
+                    : coordinator.NotifyPrimaryUriAsync(startupUri)).GetAwaiter().GetResult();
                 if (notified)
                 {
                     return 0;
@@ -99,7 +115,7 @@ internal static class Program
 
         try
         {
-            BuildAvaloniaApp(coordinator).StartWithClassicDesktopLifetime(args);
+            BuildAvaloniaApp(coordinator, startupUri).StartWithClassicDesktopLifetime(args);
             return 0;
         }
         catch (Exception exception)
@@ -118,9 +134,9 @@ internal static class Program
         return BuildAvaloniaApp(null);
     }
 
-    internal static AppBuilder BuildAvaloniaApp(IDesktopInstanceCoordinator? coordinator)
+    internal static AppBuilder BuildAvaloniaApp(IDesktopInstanceCoordinator? coordinator, string? startupUri = null)
     {
-        return AppBuilder.Configure(() => new App { Coordinator = coordinator })
+        return AppBuilder.Configure(() => new App { Coordinator = coordinator, StartupUri = startupUri })
             .UsePlatformDetect()
             .LogToTrace();
     }

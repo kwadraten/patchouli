@@ -19,7 +19,10 @@ namespace Patchouli.Infrastructure.Rendering;
 /// clipping. Coordinate convention: PDFium applies the page /Rotate at render time, so
 /// the pixel buffer is the displayed page and normalized bboxes — which the layout
 /// pipeline stores in displayed orientation — map directly onto it, exactly like the
-/// existing OCR region crops.
+/// existing OCR region crops. On top of that source orientation the page's persisted
+/// user_rotation quarter-turn rotates the returned pixels; the reported crop range
+/// and any drawn box outlines are expressed in that rotated display basis while
+/// stored boxes keep the unrotated document basis.
 /// </summary>
 public sealed class PageImageViewService : IPageImageViewService
 {
@@ -398,8 +401,18 @@ public sealed class PageImageViewService : IPageImageViewService
 
         // The crop range is reported in page-normalized coordinates so the geometry is
         // reproducible regardless of the render DPI; the annotation mapping uses the
-        // same range to place box outlines onto the output pixels.
+        // same range to place box outlines onto the output pixels. With a persisted user
+        // rotation the pixels, the reported range and the box geometry all move into the
+        // rotated display basis; the source crop itself stays in the unrotated basis.
         NormalizedBBox cropRange = PixelRectToNormalized(rect, lease.WidthPixels, lease.HeightPixels);
+        int rotation = page.UserRotation;
+        NormalizedBBox displayCropRange = OcrImageRotation.RotateIntoImageBasis(cropRange, rotation);
+        IReadOnlyList<NumberedBox> displayBoxes = rotation == 0
+            ? numberedBoxes
+            : numberedBoxes.Select(box => box with
+            {
+                BBox = OcrImageRotation.RotateIntoImageBasis(box.BBox, rotation)
+            }).ToArray();
         byte[] png;
         int outWidth;
         int outHeight;
@@ -407,7 +420,7 @@ public sealed class PageImageViewService : IPageImageViewService
         try
         {
             (png, outWidth, outHeight, drawnBoxes) =
-                CropLeaseToPng(lease, rect, request.MaxEdge, numberedBoxes, cropRange);
+                CropLeaseToPng(lease, rect, request.MaxEdge, displayBoxes, displayCropRange, rotation);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.page-image-view", "crop"))
@@ -433,7 +446,8 @@ public sealed class PageImageViewService : IPageImageViewService
             "image/png",
             outWidth,
             outHeight,
-            cropRange,
+            displayCropRange,
+            rotation,
             0,
             usedRevision?.ToString() ?? string.Empty,
             png,
@@ -461,8 +475,9 @@ public sealed class PageImageViewService : IPageImageViewService
         PdfPagePixelBufferLease lease,
         RegionPixelRect rect,
         int maxEdge,
-        IReadOnlyList<NumberedBox> numberedBoxes,
-        NormalizedBBox cropRange)
+        IReadOnlyList<NumberedBox> displayBoxes,
+        NormalizedBBox displayCropRange,
+        int rotationDegrees)
     {
         using SKBitmap source = new(lease.WidthPixels, lease.HeightPixels, SKColorType.Bgra8888, SKAlphaType.Premul);
         source.SetPixels(lease.PixelAddress);
@@ -495,10 +510,23 @@ public sealed class PageImageViewService : IPageImageViewService
             final = scaled;
         }
 
-        IReadOnlyList<NumberedBox> drawnBoxes = [];
-        if (numberedBoxes.Count > 0)
+        // User rotation lands after the (cheaper) downscale: the rotated bitmap is what the
+        // workbench displays, and the annotation pass draws upright labels onto it.
+        if (rotationDegrees != 0)
         {
-            drawnBoxes = DrawNumberedBoxes(final, cropRange, numberedBoxes);
+            SKBitmap rotated = OcrImageRotation.RotateToBitmap(final, rotationDegrees);
+            if (!ReferenceEquals(final, crop))
+            {
+                final.Dispose();
+            }
+
+            final = rotated;
+        }
+
+        IReadOnlyList<NumberedBox> drawnBoxes = [];
+        if (displayBoxes.Count > 0)
+        {
+            drawnBoxes = DrawNumberedBoxes(final, displayCropRange, displayBoxes);
         }
 
         try

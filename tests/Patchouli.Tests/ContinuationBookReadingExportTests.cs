@@ -268,7 +268,7 @@ public sealed class ContinuationBookReadingExportTests(AvaloniaSharedSessionFixt
         DocumentBoxId b = DocumentBoxId.New();
         DocumentBoxId c = DocumentBoxId.New();
         Page[] pages = pageIds.Select((id, index) => new Page(id, document, index, null, null, null, 0,
-            "page", null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)).ToArray();
+            0, "page", null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)).ToArray();
         DocumentBox[] pageOneBoxes =
         [
             Box(a, pageIds[0], document, revisions[0], "A", b),
@@ -345,7 +345,7 @@ public sealed class ContinuationBookReadingExportTests(AvaloniaSharedSessionFixt
         DocumentBoxId[] chain = [DocumentBoxId.New(), DocumentBoxId.New(), DocumentBoxId.New()];
         DocumentBoxId[] independent = [DocumentBoxId.New(), DocumentBoxId.New(), DocumentBoxId.New()];
         Page[] pages = pageIds.Select((pageId, index) => new Page(pageId, document, index, null, null, null, 0,
-            "page", null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)).ToArray();
+            0, "page", null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)).ToArray();
         List<DocumentBox[]> boxesPerPage = [];
         CompiledMarkdown[] compiledByPage = new CompiledMarkdown[pages.Length];
         for (int index = 0; index < pages.Length; index++)

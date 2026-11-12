@@ -71,7 +71,8 @@ $blockingRuleIds = @(
     'AsyncVoidLambda',
     'EmptyGeneralCatchClause',
     'PossibleMultipleEnumeration',
-    'ObjectDisposed'
+    'ObjectDisposed',
+    'SYSLIB1054'
 )
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 $results = @($report.runs | ForEach-Object { $_.results })

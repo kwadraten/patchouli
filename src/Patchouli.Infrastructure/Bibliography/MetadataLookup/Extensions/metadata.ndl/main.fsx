@@ -108,7 +108,7 @@ let lookup (identifier: NormalizedIdentifier) (settings: Settings)
 }
 
 /// <summary>Ndl metadata extension.</summary>
-/// <patchouli-extension id="metadata.ndl" kind="metadata" version="1.1.0" host-api="patchouli.extensions/4">
+/// <patchouli-extension id="metadata.ndl" kind="metadata" version="1.1.1" host-api="patchouli.extensions/4">
 ///   <name>Ndl</name>
 /// </patchouli-extension>
 let extension =

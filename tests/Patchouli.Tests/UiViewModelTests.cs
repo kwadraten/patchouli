@@ -386,14 +386,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 imported.Success.Should().BeTrue(imported.ErrorMessage);
                 await vm.Shell.RefreshItemsAsync();
 
-                vm.SearchEvidence.Query =
+                vm.ToolbarSearchQuery =
                     $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-2.xml";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
                 vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
 
-                vm.SearchEvidence.Query =
+                vm.ToolbarSearchQuery =
                     $"[URI navigation](patchouli://items/{imported.CreatedItemId}.yml)";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
@@ -458,7 +458,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
-            .Where(entry => entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
+            .Where(entry =>
+                entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
             .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
@@ -1704,7 +1705,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         shellXaml.Should().Contain("RunToolbarSearchCommand");
         shellXaml.Should().Contain("ToolbarSearchQuery");
-        searchXaml.Should().Contain("搜索结果");
+        shellXaml.Should().Contain("ToolbarSearchFilterPopup");
+        searchXaml.Should().Contain("FullTextGrid");
+        searchXaml.Should().NotContain("FilterRows");
     }
 
     [Fact]
@@ -3844,7 +3847,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     }
 
     [Fact]
-    public async Task Mcp_add_and_view_domain_grants_survive_save_and_reload()
+    public async Task Mcp_add_and_images_fetch_domain_grants_survive_save_and_reload()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-domain-permissions-{Guid.NewGuid():N}.sqlite");
         try
@@ -3856,9 +3859,12 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await mcp.LoadAsync();
 
             int addIndex = McpPermissionPolicy.Verbs.ToList().IndexOf("add");
-            int viewIndex = McpPermissionPolicy.Verbs.ToList().IndexOf("view");
+            int fetchIndex = McpPermissionPolicy.Verbs.ToList().IndexOf("fetch");
+            // Fresh migrated settings deny images fetch by default: view was never
+            // explicitly allowed, so migration must not expand access.
+            mcp.PermissionRows.Single(row => row.Domain == "images").Cells[fetchIndex].Enabled.Should().BeFalse();
             mcp.PermissionRows.Single(row => row.Domain == "items").Cells[addIndex].Enabled = true;
-            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[viewIndex].Enabled = true;
+            mcp.PermissionRows.Single(row => row.Domain == "images").Cells[fetchIndex].Enabled = true;
 
             await mcp.SaveAsync();
 
@@ -3871,16 +3877,11 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 McpPermissionPolicy.Allows(loaded.Value, "add", uri).Should().Be(domain == "items");
             }
 
-            foreach (string domain in McpPermissionPolicy.Domains.Where(domain =>
-                         McpPermissionPolicy.Supports(domain, "view")))
-            {
-                string uri = domain == "/" ? "patchouli://" : $"patchouli://{domain}/";
-                McpPermissionPolicy.Allows(loaded.Value, "view", uri).Should().Be(domain == "texts");
-            }
+            McpPermissionPolicy.Allows(loaded.Value, "fetch", "patchouli://images/").Should().BeTrue();
 
             await mcp.LoadAsync();
             mcp.PermissionRows.Single(row => row.Domain == "items").Cells[addIndex].Enabled.Should().BeTrue();
-            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[viewIndex].Enabled.Should().BeTrue();
+            mcp.PermissionRows.Single(row => row.Domain == "images").Cells[fetchIndex].Enabled.Should().BeTrue();
         }
         finally
         {
@@ -4427,7 +4428,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             Calls.Add("region");
             return Task.FromResult(Result<OcrRun>.Success(Run));
@@ -4474,14 +4475,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
             IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
-            IProgress<OcrTaskStageProgress>? progress = null, int rotationDegrees = 0)
+            IProgress<OcrTaskStageProgress>? progress = null, int? rotationDegrees = null)
         {
             throw new NotSupportedException();
         }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default, int rotationDegrees = 0)
+            CancellationToken cancellationToken = default, int? rotationDegrees = null)
         {
             throw new NotSupportedException();
         }

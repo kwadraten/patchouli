@@ -191,6 +191,10 @@ public static partial class UiColorPalettes
             : (darkOnPrimary ? g[11] : InverseOnSurfaceHex);
 
         onPrimary = EnsureReadableButtonText(onPrimary, a[8]);
+
+        // PrimaryColor (step 11) is much darker than PrimaryContainerColor (step 9): light text is
+        // preferred there for every scale, including the bright ones that take dark text on step 9.
+        string onPrimaryStrong = EnsureReadableButtonText(isDark ? g[11] : InverseOnSurfaceHex, a[10]);
         string inverseSurface = isDark ? a[1] : a[11];
         string inverseOnSurface = isDark ? g[11] : InverseOnSurfaceHex;
         string error = isDark ? red[10] : ErrorHex;
@@ -212,6 +216,7 @@ public static partial class UiColorPalettes
             ["PrimaryColor"] = a[10],
             ["PrimaryContainerColor"] = a[8],
             ["OnPrimaryColor"] = onPrimary,
+            ["OnPrimaryStrongColor"] = onPrimaryStrong,
             ["TertiaryColor"] = a[2],
             ["SelectionColor"] = a[4],
             ["InverseSurfaceColor"] = inverseSurface,

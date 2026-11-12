@@ -347,9 +347,13 @@ type private ExtensionLoadContext(artifactDirectory: string) =
     let defaultAssemblies = Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase)
     let managedDependencies = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     let nativeDependencies = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    // Path helpers report null only when the input is null, but the declared nullability of the
+    // return type varies across .NET reference packs; keeping ofObj behind a | null parameter
+    // compiles under both annotation generations.
+    let pathOption (value: string | null) = Option.ofObj value
     do
         for frameworkReference in RuntimeFrameworkReferences.paths() do
-            match Path.GetFileNameWithoutExtension(frameworkReference) |> Option.ofObj with
+            match pathOption (Path.GetFileNameWithoutExtension frameworkReference) with
             | Some simpleName when not (String.IsNullOrWhiteSpace simpleName) -> sharedNames.Add(simpleName) |> ignore
             | _ -> ()
         for assembly in
@@ -370,9 +374,9 @@ type private ExtensionLoadContext(artifactDirectory: string) =
             | None -> ()
         if Directory.Exists artifactDirectory then
             for path in Directory.EnumerateFiles(artifactDirectory, "*", SearchOption.AllDirectories) |> Seq.sort do
-                let extension = Path.GetExtension(path) |> Option.ofObj |> Option.defaultValue "" |> fun value -> value.ToLowerInvariant()
-                let fileName = Path.GetFileName(path) |> Option.ofObj |> Option.defaultValue ""
-                let simpleName = Path.GetFileNameWithoutExtension(path) |> Option.ofObj |> Option.defaultValue ""
+                let extension = pathOption (Path.GetExtension path) |> Option.defaultValue "" |> fun value -> value.ToLowerInvariant()
+                let fileName = pathOption (Path.GetFileName path) |> Option.defaultValue ""
+                let simpleName = pathOption (Path.GetFileNameWithoutExtension path) |> Option.defaultValue ""
                 if extension = ".dll" && not (String.IsNullOrWhiteSpace simpleName) then
                     managedDependencies.TryAdd(simpleName, Path.GetFullPath path) |> ignore
                 if extension = ".dll" || extension = ".so" || extension = ".dylib" then
@@ -397,8 +401,8 @@ type private ExtensionLoadContext(artifactDirectory: string) =
                     | true, assembly -> assembly
                     | _ -> null
     override this.LoadUnmanagedDll(name: string) =
-        let fileName = Path.GetFileName(name) |> Option.ofObj |> Option.defaultValue name
-        let withoutExtension = Path.GetFileNameWithoutExtension(fileName) |> Option.ofObj |> Option.defaultValue fileName
+        let fileName = pathOption (Path.GetFileName name) |> Option.defaultValue name
+        let withoutExtension = pathOption (Path.GetFileNameWithoutExtension fileName) |> Option.defaultValue fileName
         match nativeDependencies.TryGetValue name with
         | true, path -> this.LoadUnmanagedDllFromPath path
         | _ ->

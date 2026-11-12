@@ -34,7 +34,7 @@ public sealed record OcrRunExecutionRequest
         NormalizedBBox? regionBBox = null,
         bool workingDraft = false,
         IOcrEngineLease? engineLease = null,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
         DocumentInstanceId = documentInstanceId;
@@ -71,9 +71,11 @@ public sealed record OcrRunExecutionRequest
     /// <summary>
     /// The frozen clockwise onscreen quarter turn (0/90/180/270) accepted with the request.
     /// Providers receive pixels rotated by this amount; every accepted region parameter stays
-    /// in the unrotated document basis and provider geometry is mapped back into it.
+    /// in the unrotated document basis and provider geometry is mapped back into it. Null means
+    /// the request declares no uniform rotation — each page runs with its own persisted
+    /// user rotation instead.
     /// </summary>
-    public int RotationDegrees { get; }
+    public int? RotationDegrees { get; }
 }
 
 /// <summary>

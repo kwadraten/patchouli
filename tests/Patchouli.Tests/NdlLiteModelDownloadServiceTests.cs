@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Ocr.Engines.NdlLite;
 
 namespace Patchouli.Tests;
 

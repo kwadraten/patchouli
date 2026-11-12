@@ -18,7 +18,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
 
     public async Task<Result<PhysicalPageOcrResult>> RunPageEditAsync(OcrPresetId presetId,
         PageEditSessionId sessionId, CancellationToken cancellationToken = default,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         if (_trees is not IDocumentTreeEditor editor)
         {
@@ -107,7 +107,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
     }
 
     private async Task<Result<IReadOnlyList<DocumentBox>>> RecognizeWorkingBoxesAsync(PageEditSession session,
-        OcrPresetId presetId, DocumentBox? logicalPage, List<OcrRunId> runIds, int rotationDegrees,
+        OcrPresetId presetId, DocumentBox? logicalPage, List<OcrRunId> runIds, int? rotationDegrees,
         CancellationToken cancellationToken)
     {
         Result<OcrRun> run = logicalPage is null
@@ -163,7 +163,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         PageId pageId,
         IReadOnlyList<LogicalPageOcrTarget> targets,
         CancellationToken cancellationToken = default,
-        int rotationDegrees = 0)
+        int? rotationDegrees = null)
     {
         if (targets.Count == 0 || targets.Select(target => target.LogicalPageBoxId).Distinct().Count() != targets.Count)
         {

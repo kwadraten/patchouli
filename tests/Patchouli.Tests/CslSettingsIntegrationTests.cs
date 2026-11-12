@@ -133,10 +133,11 @@ public sealed class CslSettingsIntegrationTests
                 offset.Should().BeGreaterThan(0);
                 CslCatalogStyleViewModel firstResult = styles.RemoteStyles[0];
                 await main.Settings.SelectSectionAsync("csl_installed");
-                await styles.InstalledStyles[0].SetDefaultCommand.ExecuteAsync();
+                CslStyleViewModel sample = styles.InstalledStyles.Single(style => style.StyleId == "sample-0");
+                await sample.SetDefaultCommand.ExecuteAsync();
                 (await services.CslStore.GetSettingsAsync()).Value.DefaultStyleId.Should().Be("sample-0");
-                await styles.InstalledStyles[0].RemoveCommand.ExecuteAsync();
-                styles.InstalledStyles.Should().HaveCount(7);
+                await sample.RemoveCommand.ExecuteAsync();
+                styles.InstalledStyles.Should().HaveCount(8);
                 firstResult.IsInstalled.Should().BeFalse();
                 (await services.CslStore.GetSettingsAsync()).Value.DefaultStyleId.Should().BeNull();
                 await main.Settings.SelectSectionAsync("csl_online");

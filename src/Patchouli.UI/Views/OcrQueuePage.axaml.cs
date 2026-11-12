@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Patchouli.UI.Controls;
 using Patchouli.UI.ViewModels;
 
@@ -71,5 +72,24 @@ public sealed partial class OcrQueuePage : UserControl, IWorkspaceTabPage
         _observed?.StopObserving();
         _observed = target;
         _observed?.StartObserving();
+    }
+
+    private void OnShowErrorsClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: OcrQueueTaskViewModel row } &&
+            DataContext is OcrQueueViewModel queue)
+        {
+            queue.ShowErrorsAsync(row).Observe(nameof(OcrQueuePage), "show-task-errors");
+        }
+    }
+
+    private void OnShowDownloadDetailsClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: OcrQueueTaskViewModel row } &&
+            DataContext is OcrQueueViewModel queue)
+        {
+            queue.ShowDownloadDetailsAsync(row).Observe(nameof(OcrQueuePage),
+                "show-download-details");
+        }
     }
 }

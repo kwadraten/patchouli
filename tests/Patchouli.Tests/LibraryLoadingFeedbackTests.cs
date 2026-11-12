@@ -148,6 +148,51 @@ public sealed class LibraryLoadingFeedbackTests(AvaloniaSharedSessionFixture hea
     }
 
     [Fact]
+    public async Task Filter_switches_keep_sidebar_catalog_instances_and_only_reload_the_page()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile file = new();
+            await using MainWindowViewModel main = new(settingsPath: file.Path)
+                { RuntimeDatabasePath = file.CreateDatabasePath("filter-catalog") };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            main.Shell.ObserveLibraryRevisions(null);
+            ItemMetadata tagged = (await services.Items.CreateItemAsync("book", "Tagged")).Value;
+            ItemMetadata untagged = (await services.Items.CreateItemAsync("book", "Untagged")).Value;
+            Collection group = (await services.Collections.CreateCollectionAsync("Group")).Value;
+            await services.Collections.AddItemsAsync(group.CollectionId, [tagged.ItemId, untagged.ItemId]);
+            await services.Tags.AddTagsToItemsAsync([tagged.ItemId], ["chosen"]);
+            await main.Shell.RefreshItemsAsync();
+
+            CollectionListItemViewModel collection = main.Shell.Sidebar.Collections.Single();
+            TagListItemViewModel tag = main.Shell.Sidebar.Tags.Single(item => item.Name == "chosen");
+            main.Shell.Sidebar.SelectedCollection = collection;
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            while (main.Shell.IsRefreshingItems)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+
+            main.Shell.Sidebar.SelectedCollection.Should().BeSameAs(collection);
+            main.Shell.Sidebar.Collections.Single().Should().BeSameAs(collection);
+            main.Shell.Sidebar.Tags.Single(item => item.Name == "chosen").Should().BeSameAs(tag);
+            main.Shell.Sidebar.ToggleTagSelection(tag);
+            while (main.Shell.IsRefreshingItems)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+
+            main.Shell.Items.Should().ContainSingle().Which.Title.Should().Be("Tagged");
+            main.Shell.Sidebar.Collections.Single().Should().BeSameAs(collection);
+            main.Shell.Sidebar.Tags.Single(item => item.Name == "chosen").Should().BeSameAs(tag);
+            await main.ShutdownAsync();
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Failed_refresh_releases_the_loading_overlay()
     {
         HeadlessUnitTestSession session = headless.Session;

@@ -400,9 +400,10 @@ public sealed class Issue28McpEnumerationTests
             string tempRoot = Path.Combine(Path.GetTempPath(), $"patchouli-issue28-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempRoot);
             string databasePath = Path.Combine(tempRoot, "runtime.sqlite");
-            string extensionRootPath = Path.Combine(tempRoot, "extension-runtime");
+            string extensionRootPath = Path.Combine(tempRoot, "data", "extensions");
             if (extensionRootAsFile)
             {
+                Directory.CreateDirectory(Path.GetDirectoryName(extensionRootPath)!);
                 await File.WriteAllTextAsync(extensionRootPath, "not-a-directory");
             }
 
@@ -418,7 +419,8 @@ public sealed class Issue28McpEnumerationTests
                 }
             };
             HostServices services =
-                await HostServices.CreateAsync(databasePath, settings, Path.Combine(tempRoot, "appsettings.json"));
+                await HostServices.CreateAsync(databasePath, settings, Path.Combine(tempRoot, "appsettings.json"),
+                    appPaths: new TestAppPaths(tempRoot));
             Result<Core.Library.LibraryMetadata> create =
                 await services.Library.CreateLibraryAsync("Issue 28 Test");
             create.IsSuccess.Should().BeTrue(create.ErrorMessage);

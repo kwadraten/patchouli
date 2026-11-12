@@ -744,9 +744,9 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         {
             overrides.Add(new McpToolOverride(toolName, false, "Disabled in Patchouli settings."));
         }
-        else if (toolName is "patchouli.add" or "patchouli.view")
+        else if (toolName is "patchouli.add")
         {
-            // The settings reader adds a deny for these tools when their override is absent.
+            // The settings reader adds a deny for this tool when its override is absent.
             // Keep an explicit allow marker so a user can opt in globally and survive reload.
             overrides.Add(new McpToolOverride(toolName, true, null));
         }
@@ -835,7 +835,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         permissions.Add(new McpDomainPermission(domain, verb, enabled));
         List<McpToolOverride> overrides = _settings.ToolOverrides
             .Where(value => verb == "send" || value.ToolName != toolName).ToList();
-        if (verb is "add" or "view")
+        if (verb is "add")
         {
             // Preserve the user's opt-in across the legacy migration on the next load. The
             // per-domain deny rows above continue to restrict the other domains.
@@ -902,7 +902,6 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         "patchouli.fetch",
         "patchouli.put",
         "patchouli.add",
-        "patchouli.view",
         "patchouli.cite",
         "patchouli.send"
     ];

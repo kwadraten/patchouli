@@ -250,7 +250,7 @@ public interface IRealPathResolver
     string Resolve(string path);
 }
 
-public sealed class PlatformRealPathResolver : IRealPathResolver
+public sealed partial class PlatformRealPathResolver : IRealPathResolver
 {
     public static PlatformRealPathResolver Instance { get; } = new();
 
@@ -306,9 +306,9 @@ public sealed class PlatformRealPathResolver : IRealPathResolver
         }
     }
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern IntPtr realpath([MarshalAs(UnmanagedType.LPUTF8Str)] string path, IntPtr resolvedPath);
+    [LibraryImport("libc", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static partial IntPtr realpath(string path, IntPtr resolvedPath);
 
-    [DllImport("libc")]
-    private static extern void free(IntPtr pointer);
+    [LibraryImport("libc")]
+    private static partial void free(IntPtr pointer);
 }

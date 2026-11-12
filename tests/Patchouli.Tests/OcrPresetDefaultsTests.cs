@@ -144,7 +144,7 @@ public sealed class OcrPresetDefaultsTests
                     DefaultStagingRoot = Path.Combine(root, "staging"),
                     LogDirectory = Path.Combine(root, "logs")
                 }
-            }, Path.Combine(root, "settings.json"));
+            }, Path.Combine(root, "settings.json"), appPaths: new TestAppPaths(root));
             (await services.Library.CreateLibraryAsync("OCR defaults")).IsSuccess.Should().BeTrue();
             return new Context(root, services);
         }

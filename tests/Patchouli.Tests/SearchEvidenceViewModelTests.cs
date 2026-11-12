@@ -33,119 +33,106 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Mode_switch_preserves_query_text_and_filter_rows()
+    public void Mode_switch_preserves_toolbar_query_and_filter_rows()
     {
         MainWindowViewModel vm = CreateMainWindow();
-        vm.SearchEvidence.Query = "保持这段文字";
-        vm.SearchEvidence.AddFilterRow();
-        vm.SearchEvidence.FilterRows[1].Key = SearchFilterKeyOption.For("item_type");
-        vm.SearchEvidence.FilterRows[1].Value = "book";
+        vm.ToolbarSearchQuery = "保持这段文字";
+        SearchFilterRowViewModel row = vm.SearchFilters.FilterRows.Should().ContainSingle().Which;
+        row.Key = SearchFilterKeyOption.For("item_type");
+        row.Value = "book";
 
-        vm.SearchEvidence.SelectedMode = vm.SearchEvidence.ModeOptions[0];
+        vm.SelectToolbarSearchModeCommand.Execute(vm.ToolbarSearchModeOptions[0]);
 
-        vm.SearchEvidence.Mode.Should().Be(SearchMode.Bibliographic);
-        vm.SearchEvidence.Query.Should().Be("保持这段文字");
-        vm.SearchEvidence.FilterRows.Should().HaveCount(2);
-        vm.SearchEvidence.FilterRows[1].Value.Should().Be("book");
+        vm.ToolbarSearchMode.Mode.Should().Be(SearchMode.Bibliographic);
+        vm.ToolbarSearchQuery.Should().Be("保持这段文字");
+        vm.SearchFilters.FilterRows.Should().ContainSingle().Which.Value.Should().Be("book");
     }
 
     [Fact]
-    public void Filter_rows_build_anded_bibliographic_search_and_skip_empty_values()
+    public void Filter_rows_build_structured_filters_and_skip_empty_values()
     {
         MainWindowViewModel vm = CreateMainWindow();
-        vm.SearchEvidence.Query = "量子";
-        vm.SearchEvidence.AddFilterRow();
-        vm.SearchEvidence.AddFilterRow();
-        vm.SearchEvidence.AddFilterRow();
-        vm.SearchEvidence.FilterRows[1].Key = SearchFilterKeyOption.For("item_type");
-        vm.SearchEvidence.FilterRows[1].Value = "article-journal";
-        vm.SearchEvidence.FilterRows[2].Key = SearchFilterKeyOption.For("author");
-        vm.SearchEvidence.FilterRows[2].Value = "LeCun";
-        // Third row stays empty and must be skipped.
+        SearchFiltersViewModel filters = vm.SearchFilters;
+        filters.AddFilterRowCommand.Execute(null);
+        filters.AddFilterRowCommand.Execute(null);
+        filters.FilterRows[0].Key = SearchFilterKeyOption.For("item_type");
+        filters.FilterRows[0].Value = "article-journal";
+        filters.FilterRows[1].Key = SearchFilterKeyOption.For("author");
+        filters.FilterRows[1].Value = "LeCun";
 
-        BibliographicItemSearch request = vm.SearchEvidence.BuildBibliographicSearch();
-
-        request.Query.Should().Be("量子");
-        request.Filters.Select(filter => (filter.Key, filter.Value)).Should().Equal(
+        filters.BuildFilters().Select(filter => (filter.Key, filter.Value)).Should().Equal(
             (BibliographicSearchFilterKeys.ItemType, "article-journal"),
             (BibliographicSearchFilterKeys.Author, "LeCun"));
     }
 
     [Fact]
-    public void Filter_row_remove_updates_the_collection()
+    public void Every_filter_row_can_be_removed_including_the_default_title_row()
     {
         MainWindowViewModel vm = CreateMainWindow();
-        vm.SearchEvidence.AddFilterRow();
-        vm.SearchEvidence.AddFilterRow();
-        SearchFilterRowViewModel row = vm.SearchEvidence.FilterRows[1];
+        SearchFiltersViewModel filters = vm.SearchFilters;
+        SearchFilterRowViewModel row = filters.FilterRows.Should().ContainSingle().Which;
+        row.Key.Key.Should().Be(BibliographicSearchFilterKeys.Title);
 
-        vm.SearchEvidence.RemoveFilterRow(row);
+        row.RemoveCommand.Execute(null);
 
-        vm.SearchEvidence.FilterRows.Should().HaveCount(2);
-        vm.SearchEvidence.FilterRows.Should().NotContain(row);
-        vm.SearchEvidence.HasFilterRows.Should().BeTrue();
+        filters.FilterRows.Should().BeEmpty();
+        filters.BuildFilters().Should().BeEmpty();
     }
 
     [Fact]
-    public void Keyword_row_is_present_by_default_and_cannot_be_removed()
+    public void Sidebar_selection_projects_read_only_rows_and_removal_clears_sidebar_filters()
     {
         MainWindowViewModel vm = CreateMainWindow();
+        LibrarySidebarViewModel sidebar = vm.Shell.Sidebar;
+        Core.Bibliography.Collection collection = new(
+            CollectionId.New(), LibraryId.New(), "Reading list", 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        sidebar.LoadCollections([collection]);
+        sidebar.LoadTags([
+            new Core.Bibliography.TagInfo("alpha", 1),
+            new Core.Bibliography.TagInfo("beta", 1)
+        ], 1, []);
+        SearchFiltersViewModel filters = vm.SearchFilters;
 
-        SearchFilterRowViewModel row = vm.SearchEvidence.FilterRows.Should().ContainSingle().Which;
+        sidebar.SelectedCollection = sidebar.Collections.Single();
+        sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "alpha"));
+        sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "beta"));
 
-        row.IsKeyword.Should().BeTrue();
-        row.CanRemove.Should().BeFalse();
-        row.Key.Label.Should().Be("关键词");
-        row.ToFilter().Should().BeNull();
-    }
+        SearchFilterRowViewModel[] linkedRows = filters.FilterRows.Where(row => row.IsSidebarLinked).ToArray();
+        linkedRows.Should().HaveCount(3);
+        linkedRows[0].Key.Label.Should().Be("集合");
+        linkedRows[0].DisplayValue.Should().Be("Reading list");
+        linkedRows[0].IsReadOnly.Should().BeTrue();
+        linkedRows[0].IsChoiceKey.Should().BeFalse();
+        linkedRows[0].ToFilter().Should().BeNull("the existing sidebar query pipeline applies linked conditions");
+        linkedRows[1].Key.Label.Should().Be("标签（精确）");
+        linkedRows[1].IsTextKey.Should().BeFalse();
+        linkedRows.Select(row => row.DisplayValue).Should().Contain(["alpha", "beta"]);
+        filters.HasActiveFilters.Should().BeTrue();
+        filters.BuildFilters().Should().BeEmpty();
 
-    [Fact]
-    public void Keyword_row_value_syncs_with_query_in_both_directions()
-    {
-        MainWindowViewModel vm = CreateMainWindow();
-        SearchFilterRowViewModel row = vm.SearchEvidence.FilterRows[0];
+        SearchFilterRowViewModel alpha = linkedRows.Single(row => row.DisplayValue == "alpha");
+        alpha.RemoveCommand.Execute(null);
+        sidebar.GetSelectedTagNames().Should().NotContain("alpha");
+        filters.FilterRows.Should().NotContain(alpha);
 
-        List<string> searchPropertyChanges = new();
-        List<string> rowPropertyChanges = new();
-        vm.SearchEvidence.PropertyChanged += (_, e) => searchPropertyChanges.Add(e.PropertyName!);
-        row.PropertyChanged += (_, e) => rowPropertyChanges.Add(e.PropertyName!);
+        linkedRows[0].RemoveCommand.Execute(null);
+        sidebar.SelectedCollection.Should().BeNull();
+        filters.FilterRows.Where(row => row.IsSidebarLinked).Should().ContainSingle()
+            .Which.DisplayValue.Should().Be("beta");
 
-        vm.SearchEvidence.Query = "双向同步";
-        row.Value.Should().Be("双向同步");
-        searchPropertyChanges.Should().Contain(nameof(SearchEvidenceViewModel.Query));
-        rowPropertyChanges.Should().Contain(nameof(SearchFilterRowViewModel.Value));
+        filters.FilterRows.Single(row => row.DisplayValue == "beta").RemoveCommand.Execute(null);
+        sidebar.GetSelectedTagNames().Should().BeEmpty();
+        filters.HasActiveFilters.Should().BeFalse();
 
-        searchPropertyChanges.Clear();
-        rowPropertyChanges.Clear();
-
-        row.Value = "从行到查询";
-        vm.SearchEvidence.Query.Should().Be("从行到查询");
-        searchPropertyChanges.Should().Contain(nameof(SearchEvidenceViewModel.Query));
-        rowPropertyChanges.Should().Contain(nameof(SearchFilterRowViewModel.Value));
-    }
-
-    [Fact]
-    public void Keyword_row_is_skipped_when_building_bibliographic_filters()
-    {
-        MainWindowViewModel vm = CreateMainWindow();
-        vm.SearchEvidence.Query = "量子";
-
-        BibliographicItemSearch request = vm.SearchEvidence.BuildBibliographicSearch();
-
-        request.Query.Should().Be("量子");
-        request.Filters.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void Advanced_search_toggle_flips_open_state_and_keeps_label()
-    {
-        MainWindowViewModel vm = CreateMainWindow();
-
-        vm.SearchEvidence.AdvancedSearchToggleText.Should().Be("高级搜索");
-        vm.SearchEvidence.ToggleAdvancedSearchCommand.Execute(null);
-
-        vm.SearchEvidence.IsAdvancedSearchOpen.Should().BeTrue();
-        vm.SearchEvidence.AdvancedSearchToggleText.Should().Be("高级搜索");
+        TagListItemViewModel noTag = sidebar.Tags.Single(tag => tag.IsNoTagEntry);
+        sidebar.ToggleTagSelection(noTag);
+        SearchFilterRowViewModel noTagRow = filters.FilterRows.Single(row => row.IsSidebarLinked);
+        noTagRow.DisplayValue.Should().Be("无标签");
+        noTagRow.ToFilter().Should().BeNull();
+        filters.HasActiveFilters.Should().BeTrue();
+        noTagRow.RemoveCommand.Execute(null);
+        sidebar.IsNoTagSelected.Should().BeFalse();
+        filters.HasActiveFilters.Should().BeFalse();
     }
 
     [Fact]
@@ -163,28 +150,17 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Funnel_button_opens_search_tab_and_expands_the_advanced_form_without_running_search()
-    {
-        MainWindowViewModel vm = CreateMainWindow();
-
-        await vm.OpenAdvancedSearchCommand.ExecuteAsync();
-
-        vm.ActiveTab.Should().NotBeNull();
-        vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.SearchResults);
-        vm.SearchEvidence.IsAdvancedSearchOpen.Should().BeTrue();
-        vm.SearchEvidence.HasResults.Should().BeFalse();
-    }
-
-    [Fact]
     public async Task Toolbar_search_command_opens_search_results_tab()
     {
         MainWindowViewModel vm = CreateMainWindow();
-        vm.SearchEvidence.Query = "任意关键词";
+        vm.ToolbarSearchMode = vm.ToolbarSearchModeOptions[1];
+        vm.ToolbarSearchQuery = "任意关键词";
 
         await vm.RunToolbarSearchCommand.ExecuteAsync();
 
         vm.ActiveTab.Should().NotBeNull();
         vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.SearchResults);
+        vm.ActiveTab.Title.Should().Be("全文搜索结果");
     }
 
     [Fact]
@@ -243,18 +219,30 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Toggle_command_flips_the_hit_row_expansion_state()
+    public void Csl_export_menu_items_are_not_exposed()
+    {
+        string mainWindowXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI",
+            "MainWindow.axaml"));
+        string libraryPageXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI",
+            "Views", "LibraryPage.axaml"));
+
+        mainWindowXaml.Should().NotContain("ExportItemDescriptor");
+        libraryPageXaml.Should().NotContain("ExportItemDescriptor");
+    }
+
+    [Fact]
+    public void Hit_rows_expand_by_default_and_toggle_command_flips_the_expansion_state()
     {
         SearchMatchedUnitViewModel unit = CreateUnit("unit-expand", "命中片段文本");
         SearchHitSnippetViewModel snippet = new(unit, "命中", _ => Task.CompletedTask);
         LibraryItemViewModel item = CreateItem("item-expand", "题录标题");
         SearchHitItemViewModel hit = SearchHitItemViewModel.HitItem(item, [snippet]);
 
-        hit.IsExpanded.Should().BeFalse();
-        hit.ToggleExpandedCommand.Execute(null);
         hit.IsExpanded.Should().BeTrue();
         hit.ToggleExpandedCommand.Execute(null);
         hit.IsExpanded.Should().BeFalse();
+        hit.ToggleExpandedCommand.Execute(null);
+        hit.IsExpanded.Should().BeTrue();
     }
 
     [Fact]
@@ -266,13 +254,6 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
         vm.SearchEvidence.FullTextResults.Add(first);
         vm.SearchEvidence.FullTextResults.Add(second);
 
-        vm.SearchEvidence.AreAllHitsExpanded.Should().BeFalse();
-        vm.SearchEvidence.ToggleAllHitsExpandedText.Should().Be("全部展开");
-
-        vm.SearchEvidence.ToggleAllHitsExpandedCommand.Execute(null);
-
-        first.IsExpanded.Should().BeTrue();
-        second.IsExpanded.Should().BeTrue();
         vm.SearchEvidence.AreAllHitsExpanded.Should().BeTrue();
         vm.SearchEvidence.ToggleAllHitsExpandedText.Should().Be("全部收起");
 
@@ -282,6 +263,13 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
         second.IsExpanded.Should().BeFalse();
         vm.SearchEvidence.AreAllHitsExpanded.Should().BeFalse();
         vm.SearchEvidence.ToggleAllHitsExpandedText.Should().Be("全部展开");
+
+        vm.SearchEvidence.ToggleAllHitsExpandedCommand.Execute(null);
+
+        first.IsExpanded.Should().BeTrue();
+        second.IsExpanded.Should().BeTrue();
+        vm.SearchEvidence.AreAllHitsExpanded.Should().BeTrue();
+        vm.SearchEvidence.ToggleAllHitsExpandedText.Should().Be("全部收起");
     }
 
     [Fact]
@@ -293,6 +281,9 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
         vm.SearchEvidence.FullTextResults.Add(first);
         vm.SearchEvidence.FullTextResults.Add(second);
 
+        vm.SearchEvidence.AreAllHitsExpanded.Should().BeTrue();
+        first.IsExpanded = false;
+        second.IsExpanded = false;
         first.IsExpanded = true;
         vm.SearchEvidence.AreAllHitsExpanded.Should().BeFalse();
         vm.SearchEvidence.ToggleAllHitsExpandedText.Should().Be("全部展开");

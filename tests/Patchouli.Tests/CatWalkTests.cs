@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reactive.Concurrency;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Media;
 using FluentAssertions;
@@ -160,6 +161,81 @@ public sealed class CatWalkTests
 
         CatStatusIndicator.FormatStatusText(false, null, null)
             .Should().Be("空闲：无后台活动");
+    }
+
+    [Fact]
+    public void MainWindow_status_bar_cat_opens_task_queue()
+    {
+        System.Xml.Linq.XDocument document = System.Xml.Linq.XDocument.Load(
+            TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        System.Xml.Linq.XNamespace ui = "https://github.com/avaloniaui";
+        System.Xml.Linq.XNamespace controls = "using:Patchouli.UI.Controls";
+        System.Xml.Linq.XElement indicator = document.Descendants(controls + "CatStatusIndicator").Single();
+        System.Xml.Linq.XElement button = indicator.Parent!;
+
+        button.Name.Should().Be(ui + "Button");
+        button.Attribute("Classes")!.Value.Should().Be("statusBar");
+        button.Attribute("Command")!.Value.Should().Be("{Binding OpenOcrQueueCommand}");
+        indicator.Attribute("IsBusy")!.Value.Should().Be("{Binding IsActivityBusy}");
+        indicator.Attribute("ActivitySummary")!.Value.Should().Be("{Binding ActivitySummary}");
+        indicator.Attribute("SleepReason")!.Value.Should().Be("{Binding ActivityReason}");
+        indicator.Attribute("StatusText")!.Value.Should().Be("{Binding ActivityDescription}");
+    }
+
+    [Fact]
+    public async Task MainWindow_status_bar_cat_click_preserves_activity_animation_and_reuses_queue_tab()
+    {
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            using HostActivityTracker tracker = new();
+            MainWindowViewModel main = new(
+                settingsPath: settings.Path,
+                activityTracker: tracker,
+                uiScheduler: ImmediateScheduler.Instance);
+            MainWindow window = new(main);
+            try
+            {
+                window.Show();
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                CatStatusIndicator indicator = window.FindControl<CatStatusIndicator>("CatIndicator")!;
+                Button button = indicator.Parent.Should()
+                    .BeOfType<Button>().Subject;
+                Point point = button.TranslatePoint(
+                    new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), window)!.Value;
+
+                using (IActivityScope scope = tracker.BeginScope("OCR", HostActivityKind.Ocr, "Page 1/10"))
+                {
+                    Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+                    indicator.IsBusy.Should().BeTrue();
+                    indicator.IsTimerRunning.Should().BeTrue();
+
+                    window.MouseDown(point, Avalonia.Input.MouseButton.Left);
+                    window.MouseUp(point, Avalonia.Input.MouseButton.Left);
+                    Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+                    main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.OcrQueue);
+                    WorkspaceTabViewModel queueTab = main.ActiveTab;
+
+                    await main.ShowLibraryCommand.ExecuteAsync();
+                    main.ActiveTab.Should().NotBeSameAs(queueTab);
+                    window.MouseDown(point, Avalonia.Input.MouseButton.Left);
+                    window.MouseUp(point, Avalonia.Input.MouseButton.Left);
+                    Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+                    main.ActiveTab.Should().BeSameAs(queueTab);
+                    main.OpenTabs.Count(tab => tab.Kind == WorkspaceTabKind.OcrQueue).Should().Be(1);
+                    indicator.IsBusy.Should().BeTrue();
+                    indicator.IsTimerRunning.Should().BeTrue();
+                }
+            }
+            finally
+            {
+                window.Close();
+                await main.ShutdownAsync();
+            }
+        }, CancellationToken.None);
     }
 
     [Fact]

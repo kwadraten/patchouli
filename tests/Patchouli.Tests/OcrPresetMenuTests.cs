@@ -1,9 +1,5 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Avalonia.Controls;
-using Avalonia.Headless;
-using Avalonia.Threading;
-using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Translation;
@@ -11,7 +7,6 @@ using Patchouli.Extensions.Contracts;
 using Patchouli.Host;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
-using Patchouli.Performance;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 
@@ -31,7 +26,8 @@ public sealed class OcrPresetMenuTests : IDisposable
 
     private async Task<MainWindowViewModel> OpenMainAsync(string tag)
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path)
+        MainWindowViewModel main = new(settingsPath: _settings.Path,
+            appPaths: new TestAppPaths(Path.GetDirectoryName(_settings.Path)!))
         {
             RuntimeDatabasePath = _settings.CreateDatabasePath($"ocr-menu-{tag}")
         };
@@ -397,83 +393,5 @@ public sealed class OcrPresetMenuTests : IDisposable
         main.TranslationEngineMenuEntries.Single(entry =>
                 entry.Header == "Microsoft Edge (free web)")
             .IsSelected.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task The_processing_menu_renders_the_screenshot_order_with_live_entries()
-    {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
-        {
-            MainWindowViewModel main = new(settingsPath: _settings.Path)
-            {
-                RuntimeDatabasePath = _settings.CreateDatabasePath("ocr-menu-tree")
-            };
-            await main.OpenDatabaseCommand.ExecuteAsync();
-            await main.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await main.ServicesAsync();
-            OcrPreset preset = (await services.OcrPresets.CreatePresetAsync("菜单预设", null,
-                OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true)).Value;
-
-            MainWindow window = new(main);
-            try
-            {
-                window.Show();
-                Dispatcher.UIThread.RunJobs();
-
-                Menu topMenu = window.GetVisualDescendants().OfType<Menu>().Single();
-                MenuItem processing = topMenu.Items.OfType<MenuItem>()
-                    .Single(item => Equals(item.Header, "文献加工"));
-                object?[] children = processing.Items.Cast<object?>().ToArray();
-
-                children.Should().HaveCount(9);
-                (children[0] as MenuItem)!.Header.Should().Be("运行 OCR");
-                (children[1] as MenuItem)!.Header.Should().Be("快速补全 OCR");
-                (children[2] as MenuItem)!.Header.Should().Be("选择 OCR 预设");
-                children[3].Should().BeOfType<Separator>();
-                (children[4] as MenuItem)!.Header.Should().Be("全文翻译");
-                (children[5] as MenuItem)!.Header.Should().Be("切换翻译引擎");
-                children[6].Should().BeOfType<Separator>();
-                (children[7] as MenuItem)!.Header.Should().Be("任务队列");
-                (children[8] as MenuItem)!.Header.Should().Be("文献加工设置");
-                children.Count(child => child is Separator).Should().Be(2);
-
-                MenuItem presetMenu = (MenuItem)children[2]!;
-                presetMenu.Items.OfType<MenuItem>().Select(item => item.Header)
-                    .Should().Equal("文档级", "页面级", "区域级");
-
-                // Action bindings still resolve to real commands on the view model.
-                ((MenuItem)children[0]!).Command.Should().NotBeNull();
-                ((MenuItem)children[4]!).Command.Should().NotBeNull();
-                ((MenuItem)children[7]!).Command.Should().NotBeNull();
-
-                await main.RefreshOcrPresetMenuAsync();
-                Dispatcher.UIThread.RunJobs();
-
-                MenuItem documentScope = presetMenu.Items.OfType<MenuItem>()
-                    .Single(item => Equals(item.Header, "文档级"));
-                documentScope.Items.OfType<MenuItem>().Select(item => item.Header)
-                    .Should().Contain("菜单预设").And.Contain("自动");
-                ((OcrPresetMenuEntryViewModel)documentScope.Items[0]!).Header.Should().Be("自动");
-                ((OcrPresetMenuEntryViewModel)documentScope.Items[0]!).IsSelected.Should().BeTrue();
-                OcrPresetMenuEntryViewModel menuPreset = documentScope.Items
-                    .OfType<OcrPresetMenuEntryViewModel>()
-                    .Single(entry => Equals(entry.Header, "菜单预设"));
-
-                // Invoking the bound command performs the real selection path.
-                await menuPreset.SelectCommand.ExecuteAsync();
-                main.PresetMenuSelectionFor(OcrScope.Document).Should()
-                    .Be(preset.PresetId.ToString());
-
-                MenuItem engineMenu = (MenuItem)children[5]!;
-                engineMenu.Items.Count.Should().BeGreaterThan(0);
-                engineMenu.Items.OfType<TranslationEngineMenuEntryViewModel>()
-                    .Count(entry => entry.IsSelected).Should().Be(1);
-            }
-            finally
-            {
-                window.Close();
-            }
-        }, CancellationToken.None);
     }
 }

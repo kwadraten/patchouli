@@ -58,6 +58,7 @@ using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Downloads;
 using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
@@ -91,6 +92,9 @@ public sealed class HostServices
     private readonly Dictionary<string, long> _appliedSettingsCommitSequences =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly bool _ownsPluginApi;
+    private readonly bool _ownsPluginStore;
+
     private long _metadataLookupApplyGeneration;
     private Task _metadataLookupApplyTask = Task.CompletedTask;
     private Task? _shutdownTask;
@@ -108,6 +112,8 @@ public sealed class HostServices
     private readonly HttpClient _layoutModelHttpClient;
     private readonly HttpClient _updateApiHttpClient;
     private readonly HttpClient _updateDownloadHttpClient;
+    private readonly HttpClient _pluginCatalogHttpClient;
+    private readonly HttpClient _pluginDownloadHttpClient;
     private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -124,6 +130,8 @@ public sealed class HostServices
         _layoutModelHttpClient = httpClients.CreateClient(HostHttpPurpose.LayoutModel);
         _updateApiHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateApi);
         _updateDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateDownload);
+        _pluginCatalogHttpClient = httpClients.CreateClient(HostHttpPurpose.PluginCatalog);
+        _pluginDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.PluginDownload);
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -142,7 +150,9 @@ public sealed class HostServices
         AppStorageLocations storagePaths = (appPaths ?? new PlatformAppPaths()).Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(storagePaths);
         ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor);
-        LayoutModelDownload = new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath);
+        DownloadTasks = new DownloadTaskService();
+        LayoutModelDownload =
+            new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath, DownloadTasks);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = infrastructure?.Clock ?? new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
@@ -219,13 +229,15 @@ public sealed class HostServices
         OcrAdapters = adapterRegistry;
         _ndlKotenModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlKotenModel);
         NdlKotenModelDownload =
-            new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory);
+            new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory,
+                DownloadTasks);
         _ndlLiteModelHttpClient = httpClients.CreateClient(HostHttpPurpose.NdlLiteModel);
         NdlLiteModelDownload =
-            new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory);
+            new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory, DownloadTasks);
         _rapidOcrModelHttpClient = httpClients.CreateClient(HostHttpPurpose.RapidOcrModel);
         RapidOcrModelDownload =
-            new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory);
+            new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory,
+                DownloadTasks);
         HostPdfServices pdf = infrastructure?.Pdf ?? HostPdfServices.CreateDefault();
         PdfPreviewRenderer = pdf.PreviewRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdf.Renderer, Clock,
@@ -245,7 +257,8 @@ public sealed class HostServices
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
         TranslationExtensions = new TranslationExtensionCatalog(
-            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(runtimeDatabasePath))!, "extension-runtime"),
+            DeviceExtensionRuntimeMigration.MigrateRuntime(runtimeDatabasePath, storagePaths.DataDirectory,
+                _logger),
             () => LlmSettings, ExtensionResources);
         LayoutRecognition = new LayoutRecognitionService(TranslationExtensions, ExtensionFiles);
         ExtensionResources.BindLayoutRecognition(LayoutRecognition);
@@ -257,9 +270,11 @@ public sealed class HostServices
             RecognizeBuiltInOcrRegionAsync, ExtensionFiles);
         OcrEngineRuntime = ocrEngineRuntime;
         // Preset pickers and execution share the runtime registration maps.
+        OcrPresetCompositionService presetComposition = new(ocrEngineRuntime, TranslationExtensions,
+            ExtensionFiles, () => LlmSettings, OcrStorage, settings.MinerU);
         OcrDefaults = new OcrPresetDefaults(OcrPresets, OcrStorage, () => LlmSettings,
-            ocrEngineRuntime, (engineId, token) => new OcrPresetCompositionService(this, StartupSettings.MinerU)
-                .CaptureVersionAsync(engineId, null, cancellationToken: token));
+            ocrEngineRuntime, (engineId, token) =>
+                presetComposition.CaptureVersionAsync(engineId, null, cancellationToken: token));
         OcrEngineLeaseRegistry ocrEngineLeases = new(ocrEngineRuntime, OcrPresets.GetPresetVersionAsync);
         IOcrEngine pageOcrEngine = ocrComposition?.PageOcrEngine ?? new UnavailableOcrEngine();
         _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
@@ -319,6 +334,33 @@ public sealed class HostServices
             LibraryRevisions);
         ChapterScanner = new ChapterScanService(Pages, DocumentTrees, DocumentMarkdown, Markdown);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
+        PluginFiles = new Plugins.PluginManagedFileService(
+            Path.Combine(storagePaths.DataDirectory, "models", "plugins"), _pluginDownloadHttpClient);
+        Plugins = infrastructure?.PluginApi ?? new Plugins.HostPluginApi(
+            Host.Plugins.PluginRegistry.RegistryPath(storagePaths.DataDirectory),
+            reportException: (exception, operation) =>
+                _reportUnexpectedException(exception, "plugins", operation),
+            managedFiles: PluginFiles);
+        _ownsPluginApi = infrastructure?.PluginApi is null;
+        ManagedFileInventory = new ManagedFileInventoryService(TranslationExtensions,
+            ExtensionFiles, OcrStorage, Plugins as Plugins.IPluginManagedDefinitionSource, PluginFiles);
+        PluginStore = infrastructure?.PluginStore ?? new Plugins.PluginStore(_pluginCatalogHttpClient,
+            _pluginDownloadHttpClient, new Plugins.PluginStoreOptions
+            {
+                DataDirectory = storagePaths.DataDirectory
+            }, downloads: DownloadTasks, registryChanged: pluginId => Task.Run(() =>
+            {
+                if (Plugins is Plugins.HostPluginApi liveApi)
+                {
+                    liveApi.RefreshRegistry();
+                }
+                else
+                {
+                    _ = Plugins.Mounts;
+                }
+            }), extensionActivator: (package, token) => TranslationExtensions.ActivateAsync(package, token),
+            extensionInstalledVersions: ReadInstalledExtensionVersionsAsync);
+        _ownsPluginStore = infrastructure?.PluginStore is null;
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache, PageTranslations, DocumentPageMaps);
@@ -348,7 +390,8 @@ public sealed class HostServices
             ocrCommands: OcrCommands,
             translationRuns: new McpHostTranslationRunsApi(TranslationRuns),
             metadataRuns: new McpHostMetadataRunsApi(MetadataRuns),
-            implementationCatalog: McpImplementationCatalog);
+            implementationCatalog: McpImplementationCatalog,
+            pluginApi: Plugins);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -417,6 +460,18 @@ public sealed class HostServices
 
     /// <summary>Live LLM settings shared by OCR and translation without rebuilding the Library host.</summary>
     public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
+
+    public McpServerHostDependencies CreateMcpServerHostDependencies()
+    {
+        return new McpServerHostDependencies(McpSettings, BlockingOperations,
+            new HostServicesMcpServerInstanceFactory(this));
+    }
+
+    public OcrPresetCompositionService CreateOcrPresetCompositionService(MinerUAppSettings? minerUSettings = null)
+    {
+        return new OcrPresetCompositionService(OcrEngineRuntime, TranslationExtensions, ExtensionFiles,
+            () => LlmSettings, OcrStorage, minerUSettings);
+    }
 
     public void UpdateLlmSettings(LlmAppSettings settings)
     {
@@ -489,6 +544,7 @@ public sealed class HostServices
     public OcrPresetDefaults OcrDefaults { get; }
     public OcrPresetSelectionService OcrSelections { get; }
     public ExtensionManagedFileService ExtensionFiles { get; }
+    public DownloadTaskService DownloadTasks { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
@@ -531,6 +587,28 @@ public sealed class HostServices
     public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
     public McpCommandService McpCommands { get; }
+
+    /// <summary>
+    /// The device plugin mount surface behind the shared MCP find/fetch/send/view commands.
+    /// Empty when no enabled registry records exist; plugin processes start lazily.
+    /// </summary>
+    public IMcpPluginApi Plugins { get; }
+
+    /// <summary>
+    /// Confirmed-download service for plugin-declared managed files ([[files]]). The UI bridge
+    /// assigns <see cref="Plugins.PluginManagedFileService.Interaction"/>; nothing prompts or
+    /// downloads without an explicit UI call — process launch only injects destination args.
+    /// </summary>
+    public Plugins.PluginManagedFileService PluginFiles { get; }
+
+    /// <summary>
+    /// Unified managed-file inventory: merges FSX extension declaration groups and plugin
+    /// <c>[[files]]</c> declaration groups by canonical directory for Local Files management.
+    /// </summary>
+    public ManagedFileInventoryService ManagedFileInventory { get; }
+
+    public Plugins.IPluginStore PluginStore { get; }
+
     public ICliPathService CliPath { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
@@ -869,6 +947,13 @@ public sealed class HostServices
             {
                 startupProgress?.Report(StartupStage.ApplyingMigrations);
                 await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+                Result builtInStyles = await ((CslStyleStore)services.CslStore)
+                    .EnsureBuiltInStylesAsync(CancellationToken.None);
+                if (builtInStyles.IsFailure)
+                {
+                    throw new InvalidOperationException(builtInStyles.ErrorMessage);
+                }
+
                 if (runtimeHostLease is not null)
                 {
                     try
@@ -1028,7 +1113,19 @@ public sealed class HostServices
         }
 
         await metadataSettings.ConfigureAwait(false);
+        if (_ownsPluginApi && Plugins is IAsyncDisposable pluginApi)
+        {
+            await pluginApi.DisposeAsync(); // Stops supervised plugin child processes.
+        }
+
+        if (_ownsPluginStore && PluginStore is IDisposable pluginStore)
+        {
+            pluginStore.Dispose();
+        }
+
+        DownloadTasks.Dispose();
         ExtensionFiles.Dispose(); // Close admission and cancel desktop prompts/direct downloads.
+        PluginFiles.Dispose(); // Same admission close for confirmed plugin managed-file downloads.
         IOcrQueueScheduler ocrQueue = ((QueuedOcrRunCoordinator)Ocr).Queue;
         if (ocrQueue is IAsyncDisposable ownedOcrQueue)
         {
@@ -1048,7 +1145,9 @@ public sealed class HostServices
 
         await LibraryRevisionMonitor.DisposeAsync();
         await TranslationExtensions.DisposeAsync();
+        await DownloadTasks.DisposeAsync();
         await ExtensionFiles.DisposeAsync();
+        await PluginFiles.DisposeAsync();
 
         // Page rendering owns the reusable PDFium document sessions for interactive viewing.
         // Every render consumer has stopped above, so disposing it now closes every open
@@ -1064,6 +1163,8 @@ public sealed class HostServices
         _layoutModelHttpClient.Dispose();
         _updateApiHttpClient.Dispose();
         _updateDownloadHttpClient.Dispose();
+        _pluginCatalogHttpClient.Dispose();
+        _pluginDownloadHttpClient.Dispose();
         ConnectionFactory.ClearPools();
     }
 
@@ -1099,5 +1200,34 @@ public sealed class HostServices
                         recognized.Value.HeadingLevel,
                         Confidence: recognized.Value.Confidence))
             ]);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadInstalledExtensionVersionsAsync(
+        CancellationToken cancellationToken)
+    {
+        Dictionary<string, string> versions = new(StringComparer.Ordinal);
+        IExtensionManager manager = TranslationExtensions.Manager;
+        HashSet<string> ids = new(TranslationExtensions.ListWorkingPackages(), StringComparer.Ordinal);
+        foreach (ExtensionGenerationInfo generation in manager.List())
+        {
+            ids.Add(generation.Id);
+        }
+
+        foreach (string id in ids)
+        {
+            try
+            {
+                ExtensionPackageSnapshot source = await manager.ReadSourceAsync(id, cancellationToken)
+                    .ConfigureAwait(false);
+                versions[id] = ExtensionEntryMetadata.Parse(source).Version;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                  or ExtensionMetadataException)
+            {
+                // A package being rewritten mid-enumeration simply reports no version.
+            }
+        }
+
+        return versions;
     }
 }

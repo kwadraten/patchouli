@@ -30,9 +30,7 @@
       <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
         <Button Content="OCR 预填" Command="{Binding RunPendingOcrPrefillCommand}" />
         <Button Content="取消" Click="OnCancelClicked" />
-        <Button Content="插入草稿" Click="OnInsertClicked"
-                Background="{DynamicResource PrimaryBrush}"
-                Foreground="{DynamicResource OnPrimaryBrush}" />
+        <Button Content="插入草稿" Click="OnInsertClicked" Classes="Primary" />
       </StackPanel>
     </StackPanel>
   </Border>

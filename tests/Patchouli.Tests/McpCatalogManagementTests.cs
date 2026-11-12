@@ -221,6 +221,32 @@ public sealed class McpCatalogManagementTests
     }
 
     [Fact]
+    public async Task Unknown_tag_error_names_the_tag_and_suggests_the_closest_existing_tag()
+    {
+        await using Library library = await Library.CreateAsync();
+        JsonObject catalog = await library.ReadAsync("library.yml");
+        catalog["tags"] = new JsonArray(
+            new JsonObject { ["tag"] = "江戸時代" },
+            new JsonObject { ["tag"] = "Case Tag" });
+        (await library.Commands.PutAsync(new McpPutRequest("library.yml", McpYamlCodec.Encode(catalog)))).IsSuccess
+            .Should().BeTrue();
+        ItemMetadata item = (await library.Items.CreateItemAsync("book", "Tagged")).Value;
+        JsonObject yaml = await library.ReadAsync(McpResourceUris.ItemUri(item.ItemId));
+        yaml["extensions"]!["patchouli"]!["tags"] = new JsonArray("江户时代", "case tag", "Totally different");
+        McpCommandResult<McpPutMeta, McpPutResult> rejected =
+            await library.Commands.PutAsync(new McpPutRequest(McpResourceUris.ItemUri(item.ItemId),
+                McpYamlCodec.Encode(yaml)));
+
+        rejected.IsSuccess.Should().BeFalse();
+        rejected.Error!.Detail.Should()
+            .Contain("'江户时代' (did you mean '江戸時代'?)")
+            .And.Contain("'case tag' (did you mean 'Case Tag'?)")
+            .And.Contain("'Totally different'")
+            .And.NotContain("'Totally different' (did you mean");
+        (await library.Items.GetItemAsync(item.ItemId)).Value.TagsJson.Should().Be("[]");
+    }
+
+    [Fact]
     public async Task Hidden_categories_and_omitted_membership_are_preserved()
     {
         await using Library library = await Library.CreateAsync();

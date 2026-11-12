@@ -103,12 +103,14 @@ public static class SearchPageAwareness
             WorkspaceTabKind.PdfWorkspace => "PDF 工作台",
             WorkspaceTabKind.Settings => "设置",
             WorkspaceTabKind.SyncCenter => "同步中心",
-            WorkspaceTabKind.SearchResults => "搜索结果",
+            WorkspaceTabKind.SearchResults => "全文搜索结果",
             WorkspaceTabKind.OcrQueue => "任务队列",
             WorkspaceTabKind.ItemEditor => "题录编辑器",
             WorkspaceTabKind.About => "关于",
             WorkspaceTabKind.Changelog => "更新日志",
             WorkspaceTabKind.Agent => "Agent 集成",
+            WorkspaceTabKind.PluginView => "插件视图",
+            WorkspaceTabKind.ExtensionManager => "插件与扩展管理",
             _ => kind.ToString()
         };
     }

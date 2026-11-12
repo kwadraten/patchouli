@@ -110,8 +110,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ExcludeFromDerivedGeneration] public ObservableCollection<string> TranslationModelOptions { get; } = [];
 
-    // A selector can clear its item while loading or refreshing the available providers.
-    // That UI state must not overwrite the configured default or schedule a save.
     [ExcludeFromDerivedGeneration]
     public LlmSelectionOption? SelectedChatProvider
     {
@@ -149,7 +147,8 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return "未选择 Provider";
         }
 
-        string name = Providers.FirstOrDefault(row => row.ProviderId == providerId)?.DisplayName ?? providerId;
+        string name = Providers.FirstOrDefault(row => row.ProviderId == providerId)?.DisplayName ??
+                      LlmProviderCatalog.Find(providerId)?.DisplayName ?? providerId;
         return $"{name}（未就绪）";
     }
 
@@ -280,6 +279,20 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ObservableProperty] public partial string ChatModel { get; set; } = "";
 
+    [ExcludeFromDerivedGeneration]
+    public string? SelectedChatModel
+    {
+        get => ChatModelOptions.Contains(ChatModel) ? ChatModel : null;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && !IsWaitingForDraftSync() &&
+                !string.Equals(value, ChatModel, StringComparison.Ordinal))
+            {
+                ChatModel = value;
+            }
+        }
+    }
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(OcrProviderPlaceholder))]
     public partial string OcrProviderId { get; set; } = "";
@@ -389,7 +402,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        // Unsaved drafts stay in memory when switching sections; only clean sections re-sync (D4).
         if (!IsDirty)
         {
             SyncFromPersisted();
@@ -433,7 +445,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
-        // Secrets go to the credential store exactly once, before the non-secret settings are written.
         foreach (LlmProviderSettingsRowViewModel row in Providers)
         {
             if (!await StoreProviderSecretAsync(row))
@@ -506,13 +517,51 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     private void BuildProviders()
     {
         Providers.Clear();
-        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All)
+        foreach (LlmProviderAppSettings record in _current.Providers)
         {
-            LlmProviderSettingsRowViewModel row = new(entry, OnProviderRowChanged, OnRemoveApiKeyAsync,
-                OnSubscriptionActionAsync);
-            row.RemoveConnectionCommand = new AsyncCommand(() => RemoveConnectionAsync(row));
-            Providers.Add(row);
+            if (!record.IsImplicitlyEmpty())
+            {
+                Providers.Add(CreateRow(record));
+            }
         }
+    }
+
+    private LlmProviderSettingsRowViewModel CreateRow(LlmProviderAppSettings settings)
+    {
+        LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(settings.ProviderId) ??
+                                        new LlmProviderCatalogEntry(settings.ProviderId.Trim(),
+                                            string.IsNullOrWhiteSpace(settings.DisplayName)
+                                                ? settings.ProviderId.Trim()
+                                                : settings.DisplayName.Trim(), "", "");
+        LlmProviderSettingsRowViewModel row = new(entry, OnProviderRowChanged, OnRemoveApiKeyAsync,
+            OnSubscriptionActionAsync);
+        row.RemoveConnectionCommand = new AsyncCommand(() => RemoveConnectionAsync(row));
+        row.SyncFromSettings(settings);
+        return row;
+    }
+
+    private LlmProviderSettingsRowViewModel GetOrCreateRow(LlmProviderAppSettings settings)
+    {
+        return Providers.FirstOrDefault(row =>
+                   string.Equals(row.ProviderId, settings.ProviderId, StringComparison.OrdinalIgnoreCase)) ??
+               InsertRowOrdered(CreateRow(settings));
+    }
+
+    private LlmProviderSettingsRowViewModel InsertRowOrdered(LlmProviderSettingsRowViewModel row)
+    {
+        int order = LlmProviderCatalog.CatalogOrder(row.ProviderId);
+        int index = Providers.Count;
+        for (int current = 0; current < Providers.Count; current++)
+        {
+            if (LlmProviderCatalog.CatalogOrder(Providers[current].ProviderId) > order)
+            {
+                index = current;
+                break;
+            }
+        }
+
+        Providers.Insert(index, row);
+        return row;
     }
 
     private async Task RemoveConnectionAsync(LlmProviderSettingsRowViewModel row)
@@ -534,60 +583,72 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             }
         }
 
-        LlmProviderAppSettings defaults = LlmAppSettings.Default().FindProvider(row.ProviderId)!;
-        row.SyncFromSettings(defaults);
-        _current = _current.WithProvider(defaults);
+        _current = _current.WithoutProvider(row.ProviderId);
         if (_addingProviderId == row.ProviderId)
         {
             _addingProviderId = null;
         }
 
+        Providers.Remove(row);
         RefreshProviderLists();
         MarkDirty("已移除连接，等待自动保存");
     }
 
     private void AddProvider()
     {
-        if (HasPendingProvider || SelectedProviderToAdd is null)
+        if (HasPendingProvider || SelectedProviderToAdd is null ||
+            LlmProviderCatalog.Find(SelectedProviderToAdd.ProviderId) is not { } entry)
         {
             return;
         }
 
-        _addingProviderId = SelectedProviderToAdd.ProviderId;
-        LlmProviderSettingsRowViewModel row = Providers.Single(item => item.ProviderId == _addingProviderId);
-        row.IsAdded = true;
-        _current = _current.WithProvider(row.ToSettings());
+        _addingProviderId = entry.ProviderId;
+        LlmProviderAppSettings settings = LlmProviderAppSettings.FromCatalog(entry) with { IsAdded = true };
+        _current = _current.WithProvider(settings);
+        GetOrCreateRow(settings);
         RefreshProviderLists();
         MarkDirty("已添加连接，等待自动保存");
     }
 
     private void CancelAddProvider()
     {
-        LlmProviderSettingsRowViewModel? row = Providers.FirstOrDefault(item => item.ProviderId == _addingProviderId);
-        if (row is not null)
+        string? pendingProviderId = _addingProviderId;
+        _addingProviderId = null;
+        LlmProviderSettingsRowViewModel? row = Providers.FirstOrDefault(item =>
+            string.Equals(item.ProviderId, pendingProviderId, StringComparison.OrdinalIgnoreCase));
+        LlmProviderAppSettings? persisted = _persisted.FindProvider(pendingProviderId);
+        _current = persisted is null
+            ? _current.WithoutProvider(pendingProviderId ?? "")
+            : _current.WithProvider(persisted);
+        if (persisted is not null)
         {
-            LlmProviderAppSettings settings = _persisted.FindProvider(row.ProviderId) ??
-                                              LlmProviderAppSettings.FromCatalog(row.Entry);
-            row.SyncFromSettings(settings);
-            _current = _current.WithProvider(settings);
+            row?.SyncFromSettings(persisted);
+        }
+        else if (row is not null && !row.HasCredential)
+        {
+            Providers.Remove(row);
+        }
+        else if (row is not null)
+        {
+            row.SyncFromSettings(LlmProviderAppSettings.FromCatalog(row.Entry));
         }
 
-        _addingProviderId = null;
         RefreshProviderLists();
         RefreshDirtyState();
     }
 
     private void RefreshProviderLists()
     {
-        SynchronizeCollection(VisibleProviders,
-            Providers.Where(IsProviderVisible));
+        SynchronizeCollection(VisibleProviders, Providers);
         Dictionary<string, LlmSelectionOption> existing =
             AvailableProviderOptions.ToDictionary(option => option.ProviderId);
         string? selectedId = SelectedProviderToAdd?.ProviderId;
         SynchronizeCollection(AvailableProviderOptions,
-            Providers.Where(row => !IsProviderVisible(row))
-                .Select(row => existing.GetValueOrDefault(row.ProviderId) ??
-                               new LlmSelectionOption(row.ProviderId, row.DisplayName)));
+            LlmProviderCatalog.All
+                .Where(entry => Providers.All(row =>
+                    !string.Equals(row.ProviderId, entry.ProviderId, StringComparison.OrdinalIgnoreCase)))
+                .Select(entry => existing.GetValueOrDefault(entry.ProviderId) ??
+                                 new LlmSelectionOption(entry.ProviderId, entry.DisplayName)));
         SelectedProviderToAdd = AvailableProviderOptions.FirstOrDefault(option => option.ProviderId == selectedId) ??
                                 AvailableProviderOptions.FirstOrDefault();
         Raise(nameof(HasPendingProvider));
@@ -597,14 +658,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         BuildSelectionOptions();
     }
 
-    private bool IsProviderVisible(LlmProviderSettingsRowViewModel row)
-    {
-        LlmProviderAppSettings defaults = LlmAppSettings.Default().FindProvider(row.ProviderId)!;
-        return row.IsAdded || row.HasCredential || row.ProviderId == _addingProviderId ||
-               row.ToSettings() != defaults;
-    }
-
-    // Preserve existing controls and keyboard focus while the auto-save pipeline refreshes readiness.
     private static void SynchronizeCollection<T>(ObservableCollection<T> collection, IEnumerable<T> desired)
     {
         T[] items = desired.ToArray();
@@ -643,7 +696,11 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             _addingProviderId ??= row.ProviderId;
         }
 
-        _current = _current.WithProvider(row.ToSettings());
+        LlmProviderAppSettings draft = row.ToSettings();
+        _current = draft == LlmProviderAppSettings.FromCatalog(row.Entry) &&
+                   _persisted.FindProvider(row.ProviderId) is null
+            ? _current.WithoutProvider(row.ProviderId)
+            : _current.WithProvider(draft);
         row.ApplyReadiness(LlmProviderReadiness.Evaluate(row.Entry, row.ToSettings(), row.HasCredential));
         BuildSelectionOptions();
         MarkDirty("有未保存的更改");
@@ -822,7 +879,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return false;
         }
 
-        // Record the accepted baseline without replacing a newer edit made during the write.
         row.AcceptStoredSecret(secret);
         _main.NotifyLlmCredentialsChanged();
         return true;
@@ -858,11 +914,25 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        Dictionary<string, LlmProviderReadiness> byProviderId = readiness
-            .ToDictionary(item => item.ProviderId, StringComparer.OrdinalIgnoreCase);
+        foreach (LlmProviderReadiness item in readiness)
+        {
+            LlmProviderSettingsRowViewModel? row = Providers.FirstOrDefault(existing =>
+                string.Equals(existing.ProviderId, item.ProviderId, StringComparison.OrdinalIgnoreCase));
+            if (row is null && item.HasCredential)
+            {
+                LlmProviderAppSettings record = _current.FindProvider(item.ProviderId) ??
+                                                LlmProviderAppSettings.FromCatalog(
+                                                    LlmProviderCatalog.Find(item.ProviderId) ??
+                                                    new LlmProviderCatalogEntry(item.ProviderId,
+                                                        item.DisplayName, "", ""));
+                row = InsertRowOrdered(CreateRow(record));
+            }
+
+            row?.ApplyReadiness(item);
+        }
+
         foreach (LlmProviderSettingsRowViewModel row in Providers.ToArray())
         {
-            row.ApplyReadiness(byProviderId.GetValueOrDefault(row.ProviderId));
             if (!row.IsSubscription)
             {
                 string providerId = row.ProviderId;
@@ -876,6 +946,16 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                 }
 
                 row.LoadStoredSecret(savedSecret.IsSuccess ? savedSecret.Value : "");
+            }
+        }
+
+        foreach (LlmProviderSettingsRowViewModel row in Providers.ToArray())
+        {
+            LlmProviderAppSettings? record = _current.FindProvider(row.ProviderId);
+            if ((record is null || record.IsImplicitlyEmpty()) && !row.HasCredential &&
+                !string.Equals(row.ProviderId, _addingProviderId, StringComparison.OrdinalIgnoreCase))
+            {
+                Providers.Remove(row);
             }
         }
 
@@ -895,10 +975,30 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         {
             _current = _persisted;
 
-            foreach (LlmProviderSettingsRowViewModel row in Providers)
+            foreach (LlmProviderAppSettings record in _persisted.Providers)
             {
-                row.SyncFromSettings(_persisted.FindProvider(row.ProviderId) ??
-                                     LlmProviderAppSettings.FromCatalog(row.Entry));
+                if (!record.IsImplicitlyEmpty())
+                {
+                    GetOrCreateRow(record).SyncFromSettings(record);
+                }
+            }
+
+            foreach (LlmProviderSettingsRowViewModel row in Providers.ToArray())
+            {
+                LlmProviderAppSettings? record = _persisted.FindProvider(row.ProviderId);
+                if (record is not null && !record.IsImplicitlyEmpty())
+                {
+                    continue;
+                }
+
+                if (row.HasCredential)
+                {
+                    row.SyncFromSettings(record ?? LlmProviderAppSettings.FromCatalog(row.Entry));
+                }
+                else
+                {
+                    Providers.Remove(row);
+                }
             }
 
             RefreshProviderLists();
@@ -971,6 +1071,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     private void RebuildChatModelOptions()
     {
         FillModelOptions(ChatModelOptions, ChatProviderId, ChatModel);
+        Raise(nameof(SelectedChatModel));
     }
 
     private void RebuildOcrModelOptions()
@@ -1199,31 +1300,41 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         RefreshTranslationValidationState();
     }
 
-    /// <summary>Model ids already known for the provider: its configured model plus a blank row so a model
-    /// typed by hand is accepted by the editable combo box.</summary>
     private void FillModelOptions(ObservableCollection<string> options, string providerId, string selectedModel)
     {
-        options.Clear();
-        options.Add("");
+        List<string> desired = [""];
         LlmProviderAppSettings? row = _current.FindProvider(providerId);
         if (row is not null && !string.IsNullOrWhiteSpace(row.Model))
         {
-            options.Add(row.Model.Trim());
+            desired.Add(row.Model.Trim());
         }
 
         LlmProviderSettingsRowViewModel? providerRow =
-            Providers.FirstOrDefault(provider => provider.ProviderId == providerId);
-        if (providerRow?.IsSubscription == true)
+            Providers.FirstOrDefault(provider =>
+                string.Equals(provider.ProviderId, providerId, StringComparison.OrdinalIgnoreCase));
+        IEnumerable<string> suggestions = providerRow?.IsSubscription == true
+            ? providerRow.SubscriptionModels
+            : LlmModelCatalog.Shared.GetModelIds(providerId);
+        HashSet<string> known = new(desired, StringComparer.Ordinal);
+        foreach (string model in suggestions.Where(model => known.Add(model)))
         {
-            foreach (string model in providerRow.SubscriptionModels.Where(model => !options.Contains(model)))
-            {
-                options.Add(model);
-            }
+            desired.Add(model);
         }
 
-        if (!string.IsNullOrWhiteSpace(selectedModel) && !options.Contains(selectedModel.Trim()))
+        if (!string.IsNullOrWhiteSpace(selectedModel) && known.Add(selectedModel.Trim()))
         {
-            options.Add(selectedModel.Trim());
+            desired.Add(selectedModel.Trim());
+        }
+
+        bool wasSyncing = _syncingDraft;
+        _syncingDraft = true;
+        try
+        {
+            SynchronizeCollection(options, desired);
+        }
+        finally
+        {
+            _syncingDraft = wasSyncing;
         }
     }
 
@@ -1334,6 +1445,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
         _current = _current with { ChatModel = value ?? "" };
         MarkDirty("有未保存的更改");
+        Raise(nameof(SelectedChatModel));
         RebuildTranslationModelOptions();
     }
 
@@ -1657,15 +1769,11 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     public partial string Model { get; set; } = "";
 
     [ObservableProperty]
-    public partial int ContextWindowTokens { get; set; } = LlmProviderAppSettings.DefaultContextWindowTokens;
-
-    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsSubscription))]
     [NotifyPropertyChangedFor(nameof(CredentialStatusText))]
     [NotifyPropertyChangedFor(nameof(SelectedAuthenticationOption))]
     public partial string AuthenticationMode { get; set; } = LlmAuthenticationModes.ApiKey;
 
-    /// <summary>Only an actual supported selection may change authentication and reset its model.</summary>
     [ExcludeFromDerivedGeneration]
     public LlmSelectionOption? SelectedAuthenticationOption
     {
@@ -1679,7 +1787,6 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
         }
     }
 
-    /// <summary>Selection changes from inactive or rebuilding controls must not erase the configured model.</summary>
     [ExcludeFromDerivedGeneration]
     public string? SelectedSubscriptionModel
     {
@@ -1756,8 +1863,10 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     internal LlmProviderAppSettings ToSettings()
     {
         return new LlmProviderAppSettings(ProviderId, DisplayName, BaseUrl.Trim(), Model.Trim(),
-                Subscription.Trim(), Deployment.Trim(), ApiVersion.Trim(), AuthenticationMode)
-            { ContextWindowTokens = Math.Max(4096, ContextWindowTokens), IsAdded = IsAdded };
+            Subscription.Trim(), Deployment.Trim(), ApiVersion.Trim(), AuthenticationMode)
+        {
+            IsAdded = IsAdded
+        };
     }
 
     internal bool IsAdded { get; set; }
@@ -1769,7 +1878,6 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
         {
             IsAdded = settings.IsAdded;
             Model = settings.Model;
-            ContextWindowTokens = settings.ContextWindowTokens;
             BaseUrl = settings.BaseUrl;
             ApiKeyInput = _storedApiKey;
             Subscription = settings.Subscription;
@@ -1814,7 +1922,6 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
         Raise(nameof(CredentialStatusText));
     }
 
-    /// <summary>Accepts the saved baseline while retaining any newer input.</summary>
     internal void AcceptStoredSecret(string storedSecret)
     {
         _syncingDraft = true;
@@ -1848,11 +1955,6 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     }
 
     partial void OnModelChanged(string value)
-    {
-        NotifyDraftChanged();
-    }
-
-    partial void OnContextWindowTokensChanged(int value)
     {
         NotifyDraftChanged();
     }

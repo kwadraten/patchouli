@@ -473,8 +473,8 @@
                 <StackPanel Spacing="10">
                   <TextBlock Text="Agent 资源访问权限" ToolTip.Tip="修改后对后续 MCP/CLI 调用生效；MCP 服务需重新加载。" Classes="CardTitle" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="608" Spacing="4">
-                      <Grid ColumnDefinitions="160,64,64,64,64,64,64,64">
+                    <StackPanel MinWidth="544" Spacing="4">
+                      <Grid ColumnDefinitions="160,64,64,64,64,64,64">
                         <TextBlock Text="VFS 域" />
                         <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
@@ -482,12 +482,11 @@
                         <TextBlock Grid.Column="4" Text="cite" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
                         <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="7" Text="view" HorizontalAlignment="Center" />
                       </Grid>
                       <ItemsControl ItemsSource="{Binding PermissionRows}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
-                            <Grid ColumnDefinitions="160,448" RowDefinitions="Auto,Auto" Margin="0,3">
+                            <Grid ColumnDefinitions="160,384" RowDefinitions="Auto,Auto" Margin="0,3">
                               <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
                                 <ToggleButton IsVisible="{Binding HasChildren}" IsChecked="{Binding IsExpanded}"
@@ -508,7 +507,7 @@
                               <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
                                 <ItemsControl.ItemsPanel>
                                   <ItemsPanelTemplate>
-                                    <UniformGrid Columns="7" />
+                                    <UniformGrid Columns="6" />
                                   </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
@@ -531,7 +530,7 @@
                                             IsVisible="{Binding IsExpanded}">
                                 <ItemsControl.ItemTemplate>
                                   <DataTemplate DataType="settings:RunSendPermissionViewModel">
-                                    <Grid ColumnDefinitions="160,64,64,64,64,64,64,64" Margin="0,3">
+                                    <Grid ColumnDefinitions="160,64,64,64,64,64,64" Margin="0,3">
                                       <TextBlock Text="{Binding Domain}" Margin="16,0,0,0" VerticalAlignment="Center" />
                                       <ToggleSwitch Grid.Column="5" IsChecked="{Binding Enabled}"
                                                     HorizontalAlignment="Center"
@@ -820,6 +819,7 @@
                     <TextBlock Grid.Column="2" Text="模型" VerticalAlignment="Center" />
                     <ComboBox Grid.Column="3" IsEditable="True"
                               ItemsSource="{Binding ChatModelOptions}"
+                              SelectedItem="{Binding SelectedChatModel}"
                               Text="{Binding ChatModel}" HorizontalAlignment="Stretch" />
                   </Grid>
                 </StackPanel>
@@ -888,39 +888,21 @@
                                     SelectedItem="{Binding SelectedSubscriptionModel}"
                                     PlaceholderText="登录后选择订阅账号可用的模型" HorizontalAlignment="Stretch" />
                         </StackPanel>
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8"
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="8"
                               RowSpacing="8" IsVisible="{Binding !IsSubscription}">
-                          <TextBlock Grid.Row="0" Grid.Column="0" Text="Model" VerticalAlignment="Center" />
-                          <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Model}"
-                                   PlaceholderText="{Binding ModelWatermark}" />
-
-                          <TextBlock Grid.Row="1" Grid.Column="0" Text="Base URL" VerticalAlignment="Center" />
-                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding BaseUrl}"
+                          <TextBlock Grid.Row="0" Grid.Column="0" Text="Base URL" VerticalAlignment="Center" />
+                          <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding BaseUrl}"
                                    PlaceholderText="{Binding DefaultBaseUrl}" />
 
-                          <TextBlock Grid.Row="2" Grid.Column="0" Text="API key" VerticalAlignment="Center" />
-                          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ApiKeyInput}" PasswordChar="•"
+                          <TextBlock Grid.Row="1" Grid.Column="0" Text="API key" VerticalAlignment="Center" />
+                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ApiKeyInput}" PasswordChar="•"
                                    PlaceholderText="{Binding ApiKeyPlaceholder}" />
                         </Grid>
-                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                          <TextBlock Text="上下文总长度（tokens）" ToolTip.Tip="达到上下文容量的 80% 时压缩历史，原始记录仍可读取。"
-                                     VerticalAlignment="Center" />
-                          <NumericUpDown Grid.Column="1" Value="{Binding ContextWindowTokens}"
-                                         Minimum="4096" Maximum="10000000" Increment="1024"
-                                         FormatString="0" HorizontalAlignment="Stretch" />
-                        </Grid>
-                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                           <TextBlock Text="{Binding DiagnosticText}" FontSize="11" VerticalAlignment="Center"
                                      Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                      TextWrapping="Wrap" />
                           <Button Grid.Column="1" Classes="Danger"
-                                  Command="{Binding RemoveApiKeyCommand}"
-                                  IsVisible="{Binding !IsSubscription}"
-                                  IsEnabled="{Binding HasCredential}" ToolTip.Tip="移除凭据"
-                                  AutomationProperties.Name="移除凭据">
-                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                          </Button>
-                          <Button Grid.Column="2" Classes="Danger"
                                   Command="{Binding RemoveConnectionCommand}" ToolTip.Tip="移除连接"
                                   AutomationProperties.Name="移除连接">
                             <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
@@ -1126,7 +1108,7 @@
           <!-- Local File Management -->
           <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <TextBlock Text="管理 OCR 模型文件与运行时产生的临时文件。删除的模型可重新下载。"
+              <TextBlock Text="管理 OCR 模型、扩展与插件文件及运行时产生的临时文件。删除的文件可重新下载。"
                          FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
               <Border Classes="Card">
@@ -1152,7 +1134,7 @@
                                          Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                             </StackPanel>
                           </StackPanel>
-                          <Button Grid.Column="1" Content="下载模型" Command="{Binding DownloadCommand}"
+                          <Button Grid.Column="1" Content="下载" Command="{Binding DownloadCommand}"
                                   IsVisible="{Binding CanDownload}" Padding="12,4" />
                           <Button Grid.Column="2" Content="打开目录" Command="{Binding OpenCommand}" Padding="12,4" />
                           <Button Grid.Column="3" Command="{Binding ClearCommand}" Classes="Danger"
@@ -1167,14 +1149,9 @@
                 </StackPanel>
               </Border>
 
-              <Border Classes="Card" IsVisible="{Binding IsDownloading}">
-                <StackPanel Spacing="8">
-                  <TextBlock Text="下载进度" Classes="CardTitle" />
-                  <ProgressBar Value="{Binding DownloadProgress}" Minimum="0" Maximum="1" />
-                  <TextBlock Text="{Binding Status}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                </StackPanel>
-              </Border>
+              <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             </StackPanel>
           </DataTemplate>
 
@@ -1521,6 +1498,25 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+          <DataTemplate DataType="settings:VirtualLinkSettingsViewModel">
+            <StackPanel Classes="SettingsContent" AutomationProperties.Name="文献虚拟链接解析">
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Content="在系统中注册 patchouli:// 协议"
+                                IsChecked="{Binding RegisterProtocol, Mode=TwoWay}"
+                                IsEnabled="{Binding CanChangeRegistration}"
+                                ToolTip.Tip="从其他应用打开文献虚拟链接，唤起 Patchouli 并定位资源。" />
+                  <TextBlock Text="{Binding RegistrationStatus}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+              <Border Classes="Card">
+                <ToggleSwitch Content="搜索栏解析文献虚拟链接"
+                              IsChecked="{Binding ParseLinksInSearchBar, Mode=TwoWay}"
+                              ToolTip.Tip="在搜索栏输入 patchouli:// 链接时直接定位资源；关闭后按普通文本搜索。" />
               </Border>
             </StackPanel>
           </DataTemplate>

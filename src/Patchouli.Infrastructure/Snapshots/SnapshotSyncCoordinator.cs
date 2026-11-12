@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;

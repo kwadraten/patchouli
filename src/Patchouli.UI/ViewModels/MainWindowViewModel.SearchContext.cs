@@ -117,18 +117,6 @@ public sealed partial class MainWindowViewModel
         return Disposable.Create(() => _toolbarSearchContextSuppressions--);
     }
 
-    private static SearchModeOption ToolbarOptionFor(SearchMode mode)
-    {
-        return SearchPageAwareness.ModeOptions.FirstOrDefault(option => option.Mode == mode)
-               ?? SearchPageAwareness.ModeOptions[1];
-    }
-
-    private static SearchModeOption EvidenceOptionFor(SearchMode mode)
-    {
-        return SearchEvidenceViewModel.AvailableModeOptions.FirstOrDefault(option => option.Mode == mode)
-               ?? SearchEvidenceViewModel.AvailableModeOptions[1];
-    }
-
     private static bool ModeMapsEqual(Dictionary<string, string>? first, Dictionary<string, string>? second)
     {
         if (ReferenceEquals(first, second))
@@ -155,7 +143,7 @@ public sealed partial class MainWindowViewModel
 
     /// <summary>
     /// Document-scoped search (全书全文检索): resolves the context item, opens its PDF workspace,
-    /// switches the sidebar to 全书搜索 and runs the query there. The global 搜索结果 tab is
+    /// switches the sidebar to 全书搜索 and runs the query there. The global 全文搜索结果 tab is
     /// deliberately not opened for document searches.
     /// </summary>
     private async Task RunToolbarDocumentSearchAsync()

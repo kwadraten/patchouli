@@ -59,6 +59,7 @@
           <!-- 进度条 + 百分比 -->
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="6"
+                         IsIndeterminate="{Binding IsDownloadIndeterminate}"
                          VerticalAlignment="Center" />
             <TextBlock Grid.Column="1" Text="{Binding ProgressPercentText}" FontSize="12" MinWidth="36"
                        TextAlignment="Right" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
@@ -69,8 +70,13 @@
             <StackPanel Spacing="2">
               <TextBlock Text="{Binding StageText}" FontSize="12"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-              <TextBlock Text="{Binding ErrorText}" FontSize="12" Foreground="{DynamicResource ErrorBrush}"
-                         TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+              <Button Content="{Binding ErrorCountText}" FontSize="12"
+                      Foreground="{DynamicResource ErrorBrush}" Padding="8,2" MinHeight="24"
+                      HorizontalAlignment="Left" IsVisible="{Binding HasError}"
+                      AutomationProperties.Name="查看任务错误" Click="OnShowErrorsClick" />
+              <Button Content="下载详情" FontSize="12" Padding="8,2" MinHeight="24"
+                      HorizontalAlignment="Left" IsVisible="{Binding HasDownloadDetails}"
+                      AutomationProperties.Name="查看下载详情" Click="OnShowDownloadDetailsClick" />
             </StackPanel>
             <TextBlock Grid.Column="1" Text="{Binding MetaText}" FontSize="11"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Top" />
@@ -91,13 +97,13 @@
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
             <Button Content="刷新" Command="{Binding RefreshCommand}" Height="32" />
-            <Button Content="启动任务" Classes="Primary" Command="{Binding StartCommand}" Height="32"
+            <Button Content="启动加工任务" Classes="Primary" Command="{Binding StartCommand}" Height="32"
                     IsVisible="{Binding IsQueueStopped}" />
-            <Button Content="停止任务" Command="{Binding StopCommand}" Height="32"
+            <Button Content="停止加工任务" Command="{Binding StopCommand}" Height="32"
                     IsVisible="{Binding IsQueueRunning}" />
-            <Button Content="暂停全部任务" Command="{Binding PauseGlobalCommand}" Height="32"
+            <Button Content="暂停加工任务" Command="{Binding PauseGlobalCommand}" Height="32"
                     IsVisible="{Binding IsGloballyResumed}" />
-            <Button Content="恢复全部任务" Command="{Binding ResumeGlobalCommand}" Height="32"
+            <Button Content="恢复加工任务" Command="{Binding ResumeGlobalCommand}" Height="32"
                     IsVisible="{Binding IsGloballyPaused}" />
             <Button Content="清空已完成" Command="{Binding ClearFinishedCommand}" Height="32"
                     IsEnabled="{Binding HasFinishedTasks}" />

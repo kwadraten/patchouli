@@ -23,6 +23,15 @@ public interface IPageService
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Persists the page's user-applied clockwise quarter turn (0/90/180/270): the
+    /// orientation the workbench displays and interactive OCR/image reads honor.
+    /// </summary>
+    Task<Result<Page>> UpdateUserRotationAsync(
+        PageId pageId,
+        int userRotation,
+        CancellationToken cancellationToken = default);
+
     Task<Result<Page>> GetPageAsync(
         PageId pageId,
         CancellationToken cancellationToken = default);

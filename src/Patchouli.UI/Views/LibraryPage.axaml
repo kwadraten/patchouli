@@ -294,10 +294,6 @@
                       Command="{Binding CopyCslBibliographyDescriptor}"
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="{Binding ExportItemDescriptor.Label}"
-                      Command="{Binding ExportItemDescriptor}"
-                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
-                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}" Command="{Binding ExportBiblatexDescriptor}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}" Command="{Binding CopyBiblatexDescriptor}"

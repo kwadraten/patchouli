@@ -87,7 +87,7 @@ public sealed class ContinuationIssue29IndependentTests
         MinerUContentListDocument document = new(
             [new MinerUContentListPage(1, 1000, 1000, blocks, discarded)],
             MinerUContinuationSemantics.Explicit);
-        Page page = new(PageId.New(), DocumentInstanceId.New(), 0, null, 1000, 1000, 0,
+        Page page = new(PageId.New(), DocumentInstanceId.New(), 0, null, 1000, 1000, 0, 0,
             "normalized", null, null, "test", null, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
 
         OcrDocumentTreeCandidate candidate =
@@ -401,7 +401,8 @@ public sealed class ContinuationIssue29IndependentTests
         Directory.CreateDirectory(directory);
         foreach (string file in Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql"))
         {
-            if (!Path.GetFileName(file).StartsWith(filePrefix, StringComparison.Ordinal))
+            if (!Path.GetFileName(file).StartsWith(filePrefix, StringComparison.Ordinal) &&
+                !Path.GetFileName(file).StartsWith("060_", StringComparison.Ordinal))
             {
                 File.Copy(file, Path.Combine(directory, Path.GetFileName(file)));
             }

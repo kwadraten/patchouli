@@ -65,6 +65,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         AppearanceSettings = new AppearanceSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
+        VirtualLinkSettings = new VirtualLinkSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         LayoutModelCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.LayoutRecognition);
         OcrEngineCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.Ocr);
@@ -90,7 +91,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         ISettingsSection[] sections =
         [
-            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
+            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, VirtualLinkSettings, OcrProviderSettings,
             OcrEngineCatalog, OcrTextLayerCatalog, LayoutModelCatalog,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
@@ -133,6 +134,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("csl_cayw", "Cite As You Write", CaywSettings),
             new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
+            new SettingsSectionEntryViewModel("virtual_links", "文献虚拟链接解析", VirtualLinkSettings),
             new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
             new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
         ];
@@ -163,7 +165,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
                 OcrTextLayerCatalog),
             new SettingsSectionEntryViewModel("translation", "文献翻译",
                 new TranslationDefaultsViewModel(LlmSettings)));
-        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"));
+        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"), Entry("virtual_links"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"), Entry("csl_cayw"));
         SettingsSectionGroupViewModel search = new(Entry("search_rewrite"),
@@ -223,6 +225,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public AppearanceSettingsViewModel AppearanceSettings { get; }
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
+    public VirtualLinkSettingsViewModel VirtualLinkSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public OcrComponentCatalogSettingsViewModel LayoutModelCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrEngineCatalog { get; }

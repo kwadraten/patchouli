@@ -3,7 +3,7 @@ using System.Net;
 namespace Patchouli.Llm;
 
 /// <summary>
-/// Maps a transport exception or HTTP status onto <see cref="LlmFailureCodes"/>. Shared by the LlmTornado
+/// Maps a transport exception or HTTP status onto <see cref="LlmFailureCodes"/>. Shared by the ModelsDev
 /// transport and by <see cref="LlmChatClient"/>, so a failure keeps the same classification no matter where
 /// it surfaces. Retry decisions read the classification only, never provider text.
 /// </summary>
@@ -54,9 +54,16 @@ public static class LlmFailureMapper
         ArgumentNullException.ThrowIfNull(exception);
         return exception switch
         {
-            Newtonsoft.Json.JsonException or System.Text.Json.JsonException => LlmFailureCodes.InvalidModelOutput,
+            System.Text.Json.JsonException => LlmFailureCodes.InvalidModelOutput,
+            FSharp.ModelsDev.AiException { StatusCode: { } status } ai =>
+                FromStatusCode((HttpStatusCode)status, ai.Message),
+            FSharp.ModelsDev.AiException { InnerException: { } inner } => FromException(inner),
+            FSharp.ModelsDev.AiException ai when IsContextLengthExceeded(ai.Message) =>
+                LlmFailureCodes.ContextLengthExceeded,
+            FSharp.ModelsDev.AiException ai when ai.Message.StartsWith("Decode error:", StringComparison.Ordinal) =>
+                LlmFailureCodes.InvalidModelOutput,
+            OperationCanceledException => LlmFailureCodes.NetworkTimeout,
             TimeoutException => LlmFailureCodes.NetworkTimeout,
-            TaskCanceledException => LlmFailureCodes.NetworkTimeout,
             HttpRequestException httpException => FromStatusCode(httpException.StatusCode ??
                                                                  HttpStatusCode.ServiceUnavailable,
                 httpException.Message),

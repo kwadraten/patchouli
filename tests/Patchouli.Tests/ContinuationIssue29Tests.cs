@@ -877,7 +877,8 @@ public sealed class ContinuationIssue29Tests
         Directory.CreateDirectory(directory);
         foreach (string file in Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql"))
         {
-            if (!Path.GetFileName(file).StartsWith(filePrefix, StringComparison.Ordinal))
+            if (!Path.GetFileName(file).StartsWith(filePrefix, StringComparison.Ordinal) &&
+                !Path.GetFileName(file).StartsWith("060_", StringComparison.Ordinal))
             {
                 File.Copy(file, Path.Combine(directory, Path.GetFileName(file)));
             }

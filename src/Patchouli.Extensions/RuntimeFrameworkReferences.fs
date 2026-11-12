@@ -11,6 +11,11 @@ open System.Text
 /// Compiler references come from the running framework manifest, including self-contained deployments.
 /// Application dependencies in TPA are deliberately excluded.
 module internal RuntimeFrameworkReferences =
+    // Path helpers report null only when the input is null, but the declared nullability of the
+    // return type varies across .NET reference packs; keeping the assertion behind a | null
+    // parameter compiles under both annotation generations.
+    let private nonNullString (value: string | null) = nonNull value
+
     let private references = lazy (
         let runtimeDirectory =
             Path.GetDirectoryName(typeof<obj>.Assembly.Location)
@@ -24,7 +29,7 @@ module internal RuntimeFrameworkReferences =
         | _ -> ()
         manifests.Add(Path.Combine(runtimeDirectory, "Microsoft.NETCore.App.deps.json")) |> ignore
         match Assembly.GetEntryAssembly() |> Option.ofObj with
-        | Some entry -> manifests.Add(Path.ChangeExtension(entry.Location, ".deps.json") |> nonNull) |> ignore
+        | Some entry -> manifests.Add(nonNullString (Path.ChangeExtension(entry.Location, ".deps.json"))) |> ignore
         | None -> ()
         let names = HashSet<string>(StringComparer.OrdinalIgnoreCase)
         for manifest in manifests do
@@ -40,7 +45,7 @@ module internal RuntimeFrameworkReferences =
                                 | true, assets ->
                                     for asset in assets.EnumerateObject() do
                                         if asset.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) then
-                                            names.Add(Path.GetFileName(asset.Name) |> nonNull) |> ignore
+                                            names.Add(nonNullString (Path.GetFileName asset.Name)) |> ignore
                                 | _ -> ()
                 | _ -> ()
         if names.Count = 0 then
@@ -193,7 +198,7 @@ module internal RuntimeFrameworkReferences =
 
     let private packageVersion packageName =
         let entry = Assembly.GetEntryAssembly() |> Option.ofObj |> Option.defaultWith (fun () -> invalidOp "The extension schema tool entry assembly is unavailable.")
-        let depsPath = Path.ChangeExtension(entry.Location, ".deps.json") |> nonNull
+        let depsPath = nonNullString (Path.ChangeExtension(entry.Location, ".deps.json"))
         if not (File.Exists depsPath) then invalidOp "The extension schema tool dependency manifest is unavailable."
         use document = JsonDocument.Parse(File.ReadAllText depsPath)
         let mutable libraries = Unchecked.defaultof<JsonElement>

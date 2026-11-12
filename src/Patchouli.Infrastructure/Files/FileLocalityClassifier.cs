@@ -15,7 +15,7 @@ namespace Patchouli.Infrastructure.Files;
 /// Path-name heuristics are intentionally not used.
 /// </para>
 /// </summary>
-public static class FileLocalityClassifier
+public static partial class FileLocalityClassifier
 {
     public static FileLocalityAssessment Assess(string path)
     {
@@ -126,7 +126,7 @@ public static class FileLocalityClassifier
                             IsCloudReparseTag(reparseTag);
 
         // 3) Cloud Files API placeholder state
-        int placeholderState = NativeMethods.TryGetPlaceholderStateFromFindData(ref findData);
+        int placeholderState = NativeMethods.TryGetPlaceholderStateFromFindData(in findData);
         if (placeholderState == NativeMethods.CfPlaceholderStateInvalid ||
             placeholderState == NativeMethods.CfPlaceholderStateNoStates)
         {
@@ -294,7 +294,7 @@ public static class FileLocalityClassifier
         return false;
     }
 
-    private static class NativeMethods
+    private static partial class NativeMethods
     {
         public const uint InvalidFileAttributes = 0xFFFFFFFF;
 
@@ -326,43 +326,44 @@ public static class FileLocalityClassifier
 
         private static readonly IntPtr InvalidHandleValue = new(-1);
 
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        public struct Win32FindData
+        [StructLayout(LayoutKind.Sequential)]
+        public unsafe struct Win32FindData
         {
             public uint FileAttributes;
-            public long CreationTime;
-            public long LastAccessTime;
-            public long LastWriteTime;
+
+            // A native FILETIME is two DWORDs, with 4-byte alignment even on 64-bit Windows.
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
             public uint FileSizeHigh;
             public uint FileSizeLow;
             public uint Reserved0;
             public uint Reserved1;
 
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string FileName;
-
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)]
-            public string AlternateFileName;
+            public fixed ushort FileName[260];
+            public fixed ushort AlternateFileName[14];
         }
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern IntPtr FindFirstFileW(string lpFileName, out Win32FindData lpFindFileData);
+        [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+        private static unsafe partial IntPtr FindFirstFileW(string lpFileName, Win32FindData* lpFindFileData);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool FindClose(IntPtr hFindFile);
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool FindClose(IntPtr hFindFile);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern uint GetFileAttributesW(string lpFileName);
+        [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+        public static partial uint GetFileAttributesW(string lpFileName);
 
-        [DllImport("cldapi.dll", CharSet = CharSet.Unicode, EntryPoint = "CfGetPlaceholderStateFromAttributeTag")]
-        private static extern int CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
+        [LibraryImport("cldapi.dll")]
+        private static partial int CfGetPlaceholderStateFromAttributeTag(uint fileAttributes, uint reparseTag);
 
-        [DllImport("cldapi.dll", CharSet = CharSet.Unicode, EntryPoint = "CfGetPlaceholderStateFromFindData")]
-        private static extern int CfGetPlaceholderStateFromFindData(ref Win32FindData findData);
+        [LibraryImport("cldapi.dll")]
+        private static unsafe partial int CfGetPlaceholderStateFromFindData(Win32FindData* findData);
 
-        public static bool TryFindFirst(string path, out Win32FindData data)
+        public static unsafe bool TryFindFirst(string path, out Win32FindData data)
         {
-            IntPtr handle = FindFirstFileW(path, out data);
+            Win32FindData result = default;
+            IntPtr handle = FindFirstFileW(path, &result);
             if (handle == InvalidHandleValue || handle == IntPtr.Zero)
             {
                 data = default;
@@ -370,6 +371,7 @@ public static class FileLocalityClassifier
             }
 
             FindClose(handle);
+            data = result;
             return data.FileAttributes != InvalidFileAttributes;
         }
 
@@ -389,11 +391,14 @@ public static class FileLocalityClassifier
             }
         }
 
-        public static int TryGetPlaceholderStateFromFindData(ref Win32FindData findData)
+        public static unsafe int TryGetPlaceholderStateFromFindData(in Win32FindData findData)
         {
             try
             {
-                return CfGetPlaceholderStateFromFindData(ref findData);
+                fixed (Win32FindData* pointer = &findData)
+                {
+                    return CfGetPlaceholderStateFromFindData(pointer);
+                }
             }
             catch (DllNotFoundException)
             {

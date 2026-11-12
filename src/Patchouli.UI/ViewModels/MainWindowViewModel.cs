@@ -102,9 +102,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private readonly string? _settingsPath;
     private readonly HostOcrCompositionOptions? _ocrComposition;
     private readonly IAppPaths? _hostAppPaths;
+    private readonly HostInfrastructureOptions? _hostInfrastructure;
     private int _libraryGeneration;
     private bool _queryRewriteEnabledPersisted = true;
-    private bool _synchronizingToolbarSearch;
+    private SearchFiltersViewModel? _searchFilters;
     private SettingsViewModel? _settingsViewModel;
     private LibraryViewModel? _libraryViewModel;
     private BibliographyViewModel? _bibliographyViewModel;
@@ -112,6 +113,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private OcrQueueViewModel? _ocrQueueViewModel;
     private SearchEvidenceViewModel? _searchEvidenceViewModel;
     private AgentWorkspaceViewModel? _agentWorkspace;
+    private ExtensionManagerViewModel? _extensionManagerViewModel;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -384,8 +386,33 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AgentWorkspaceViewModel AgentWorkspace =>
         _agentWorkspace ??= CreateWithActivityTracker(() => new AgentWorkspaceViewModel(this));
 
+    /// <summary>
+    /// The cached 插件与扩展管理 page — kept alive across tab closes so a reopen reuses the
+    /// loaded catalog state and refreshes in place.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public ExtensionManagerViewModel ExtensionManager =>
+        _extensionManagerViewModel ??= CreateWithActivityTracker(() => new ExtensionManagerViewModel(this));
+
     [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchPageAwareness.ModeOptions;
+
+    [ExcludeFromDerivedGeneration]
+    public SearchFiltersViewModel SearchFilters
+    {
+        get
+        {
+            if (_searchFilters is null)
+            {
+                _searchFilters = new SearchFiltersViewModel(this);
+                Register(_searchFilters);
+            }
+
+            return _searchFilters;
+        }
+    }
+
+    [ObservableProperty] public partial bool IsToolbarSearchFilterOpen { get; set; }
 
     [ObservableProperty] public partial string ToolbarSearchQuery { get; set; } = "";
 
@@ -415,22 +442,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ToolbarSearchMode = mode;
     }
 
-    partial void OnToolbarSearchQueryChanged(string value)
-    {
-        if (!_synchronizingToolbarSearch && _searchEvidenceViewModel is { } search)
-        {
-            search.Query = value;
-        }
-    }
-
     partial void OnToolbarSearchModeChanged(SearchModeOption value)
     {
-        // DocumentFullText is toolbar-only and never reaches the shared evidence VM, which only
-        // handles the two library-wide modes.
-        if (!_synchronizingToolbarSearch && value.Mode != SearchMode.DocumentFullText &&
-            _searchEvidenceViewModel is { } search)
+        if (value.Mode == SearchMode.DocumentFullText)
         {
-            search.SelectedMode = EvidenceOptionFor(value.Mode);
+            IsToolbarSearchFilterOpen = false;
         }
     }
 
@@ -459,10 +475,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand ShowLibraryCommand { get; }
     public AsyncCommand ShowReadingCommand { get; }
     public AsyncCommand RunToolbarSearchCommand { get; }
-    public AsyncCommand OpenAdvancedSearchCommand { get; }
+    public AsyncCommand LoadToolbarSearchFiltersCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
+    public AsyncCommand OpenExtensionManagerCommand { get; }
     public AsyncCommand OpenProcessingSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand OpenAgentTabCommand { get; }
@@ -796,7 +813,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
         IHostActivityTracker? activityTracker = null,
-        HostOcrCompositionOptions? ocrComposition = null, IAppPaths? appPaths = null)
+        HostOcrCompositionOptions? ocrComposition = null, IAppPaths? appPaths = null,
+        HostInfrastructureOptions? infrastructure = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
@@ -809,6 +827,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settingsPath = settingsPath;
         _ocrComposition = ocrComposition;
         _hostAppPaths = appPaths;
+        _hostInfrastructure = infrastructure;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
         _settingsStore = settingsStore ?? new AppSettingsStore(settingsPath, _settings);
@@ -1072,11 +1091,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ShowLibraryCommand = new AsyncCommand(ShowLibraryAsync);
         ShowReadingCommand = new AsyncCommand(ShowReadingAsync);
         RunToolbarSearchCommand = new AsyncCommand(RunToolbarSearchAsync);
-        OpenAdvancedSearchCommand = new AsyncCommand(OpenAdvancedSearchAsync);
+        LoadToolbarSearchFiltersCommand = new AsyncCommand(() => SearchFilters.LoadOptionsAsync());
         OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("appearance"));
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenProcessingSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("import"));
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
+        OpenExtensionManagerCommand = new AsyncCommand(OpenExtensionManagerAsync);
+        SeedExtensionMenuEntries();
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
         OpenAgentTabCommand = new AsyncCommand(OpenAgentTabAsync);
         OpenOtherLibraryCommand = new AsyncCommand(OpenOtherLibraryAsync);
@@ -1204,48 +1225,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     {
         SearchEvidenceViewModel search =
             CreateWithActivityTracker(() => new SearchEvidenceViewModel(this));
-        _synchronizingToolbarSearch = true;
-        try
-        {
-            search.Query = ToolbarSearchQuery;
-            search.SelectedMode = !IsToolbarSearchPageAware && ToolbarSearchMode.Mode != SearchMode.DocumentFullText
-                ? EvidenceOptionFor(ToolbarSearchMode.Mode)
-                : SearchEvidenceViewModel.AvailableModeOptions[1];
-        }
-        finally
-        {
-            _synchronizingToolbarSearch = false;
-        }
-
-        PropertyChangedEventHandler handler = (_, args) =>
-        {
-            bool queryChanged = args.PropertyName is null or nameof(SearchEvidenceViewModel.Query);
-            bool modeChanged = args.PropertyName is null or nameof(SearchEvidenceViewModel.SelectedMode);
-            if (!queryChanged && !modeChanged)
-            {
-                return;
-            }
-
-            _synchronizingToolbarSearch = true;
-            try
-            {
-                if (queryChanged)
-                {
-                    ToolbarSearchQuery = search.Query;
-                }
-
-                if (modeChanged)
-                {
-                    ToolbarSearchMode = ToolbarOptionFor(search.SelectedMode.Mode);
-                }
-            }
-            finally
-            {
-                _synchronizingToolbarSearch = false;
-            }
-        };
-        search.PropertyChanged += handler;
-        Register(Disposable.Create(() => search.PropertyChanged -= handler));
         Register(search);
         return search;
     }
@@ -1499,8 +1478,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private void AttachHostServices(HostServices services)
     {
         OcrManagedFileDialogs.EnsureAttached(this, services);
+        PluginManagedFileDialogs.EnsureAttached(this, services);
         services.ObserveSettingsStore(_settingsStore);
-        McpServerHost mcpHost = new(services, ReportUnexpectedException);
+        McpServerHost mcpHost = new(services.CreateMcpServerHostDependencies(), ReportUnexpectedException);
         _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
         mcpSubs.Add(Observable.FromEventPattern<McpServerHostStatusChangedEventArgs>(
@@ -1699,12 +1679,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         if (changeSet.CollectionIds.Count > 0)
         {
-            // Collection catalog changes reach already-open advanced searches and editors through
+            // Collection catalog changes reach the search filter panel and editors through
             // the same committed change-set flow: options/catalogs reload in place while staged
             // editor selections are preserved.
-            if (_searchEvidenceViewModel is { } search)
+            if (_searchFilters is { } filters)
             {
-                await search.ReloadFilterOptionsAsync();
+                await filters.ReloadOptionsAsync();
             }
 
             foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
@@ -2225,6 +2205,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private async Task ShutdownLibraryCoreAsync()
     {
         Interlocked.Exchange(ref _librarySwitchInProgress, 1);
+        CloseAllPluginViewWindows();
         await Shell.CancelAndDrainItemPurgeAsync();
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())
@@ -2390,6 +2371,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Interlocked.Increment(ref _libraryGeneration);
         Raise(nameof(LibraryGeneration));
         DetachLibraryChangeNotifications();
+        IsToolbarSearchFilterOpen = false;
+        _searchFilters?.DetachLibraryContext();
         _searchEvidenceViewModel?.DetachLibraryContext();
         _ocrQueueViewModel?.DetachLibraryContext();
         _snapshot?.DetachLibraryContext();
@@ -2511,7 +2494,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             startupProgress: CreateStartupStageProgress(),
             activityTracker: _activityTracker,
             runtimeHostLease: _runtimeHostLease,
-            ocrComposition: _ocrComposition, appPaths: _hostAppPaths);
+            ocrComposition: _ocrComposition, appPaths: _hostAppPaths, infrastructure: _hostInfrastructure);
     }
 
     private async Task StopHostServicesAsync()
@@ -3059,6 +3042,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<AgentMcpConfigDialogViewModel, AgentMcpConfigDialog>();
         service.Register<UpdateAvailableDialogViewModel, UpdateAvailableDialog>();
         service.Register<InfoDialogViewModel, InfoDialog>();
+        service.Register<TaskQueueErrorsDialogViewModel, TaskQueueErrorsDialog>();
+        service.Register<DownloadOperationDialogViewModel, DownloadOperationDialog>();
         return service;
     }
 
@@ -3220,6 +3205,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await AgentWorkspace.RefreshAsync(false);
     }
 
+    /// <summary>Opens the standalone 插件与扩展管理 page and refreshes both inventories.</summary>
+    public async Task OpenExtensionManagerAsync()
+    {
+        await ActivateTabAsync(WorkspaceTabKind.ExtensionManager, "ExtensionManager", "插件与扩展管理",
+            "Puzzle", true, () => ExtensionManager);
+        await ExtensionManager.LoadAsync();
+    }
+
     private async Task OpenOtherLibraryAsync()
     {
         if (HasDirtySettings)
@@ -3276,17 +3269,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task RunToolbarSearchAsync()
     {
-        PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(ToolbarSearchQuery);
-        if (navigation.HasProtocolPrefix)
+        IsToolbarSearchFilterOpen = false;
+        if (_settings.Ui.ParseVirtualLinksInSearchBar)
         {
-            if (navigation.Target is null)
+            PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(ToolbarSearchQuery);
+            if (navigation.HasProtocolPrefix)
             {
-                ReportError(navigation.ErrorMessage ?? "无法解析 Patchouli URI。");
+                if (navigation.Target is null)
+                {
+                    ReportError(navigation.ErrorMessage ?? "无法解析 Patchouli URI。");
+                    return;
+                }
+
+                await NavigateToPatchouliUriAsync(navigation.Target);
                 return;
             }
-
-            await NavigateToPatchouliUriAsync(navigation.Target);
-            return;
         }
 
         if (ToolbarSearchMode.Mode == SearchMode.DocumentFullText)
@@ -3295,30 +3292,36 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        SearchEvidenceViewModel search = SearchEvidence;
-        search.Query = ToolbarSearchQuery;
-        search.SelectedMode = EvidenceOptionFor(ToolbarSearchMode.Mode);
-        using (EnterToolbarSearchContextSuppression())
+        string query = ToolbarSearchQuery.Trim();
+        int libraryGeneration = LibraryGeneration;
+        if (IsToolbarBibliographicSearch)
         {
-            await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search",
-                true,
-                () => search);
+            BibliographicItemSearch request = new(query, SearchFilters.BuildFilters());
+            using (EnterToolbarSearchContextSuppression())
+            {
+                await ShowLibraryAsync();
+            }
+
+            if (ActiveTab?.Kind == WorkspaceTabKind.Library && LibraryGeneration == libraryGeneration)
+            {
+                await Shell.ApplyMetadataSearchAsync(request);
+            }
+
+            return;
         }
 
-        await search.SearchCommand.ExecuteAsync();
-    }
-
-    private async Task OpenAdvancedSearchAsync()
-    {
         SearchEvidenceViewModel search = SearchEvidence;
         using (EnterToolbarSearchContextSuppression())
         {
-            await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search",
-                true,
-                () => search);
+            await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "全文搜索结果", "Search",
+                true, () => search);
         }
 
-        await search.OpenAdvancedSearchCommand.ExecuteAsync();
+        if (ActiveTab?.Content == search && LibraryGeneration == libraryGeneration)
+        {
+            search.Query = query;
+            await search.SearchCommand.ExecuteAsync();
+        }
     }
 
     public async Task NavigateToSearchHitAsync(string versionedUri)
@@ -3356,18 +3359,31 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task NavigateToItemUriAsync(PatchouliNavigationTarget target)
     {
-        await Shell.RefreshItemsAsync();
-        LibraryItemViewModel? item = Shell.Items.FirstOrDefault(candidate =>
-            string.Equals(candidate.ItemId, target.ResourceId, StringComparison.OrdinalIgnoreCase));
-        if (item is null)
+        HostServices services = await ServicesAsync();
+        int generation = LibraryGeneration;
+        ItemId itemId = ItemId.Parse(target.ResourceId);
+        Result<IReadOnlyList<LibraryItemRow>> rows =
+            await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync([itemId]));
+        if (!IsCurrentLibraryContext(services, generation))
         {
-            ReportError($"题录不存在：{target.CanonicalUri}");
             return;
         }
 
-        Shell.SelectedItem = item;
-        await EditItemByIdAsync(item.ItemId);
-        Report($"已打开题录：{item.Title}");
+        if (rows.IsFailure || rows.Value.Count == 0)
+        {
+            ReportError(rows.ErrorMessage ?? $"题录不存在：{target.CanonicalUri}");
+            return;
+        }
+
+        LibraryItemViewModel? visibleItem = Shell.Items.FirstOrDefault(candidate =>
+            string.Equals(candidate.ItemId, target.ResourceId, StringComparison.OrdinalIgnoreCase));
+        if (visibleItem is not null)
+        {
+            Shell.SelectedItem = visibleItem;
+        }
+
+        await EditItemByIdAsync(target.ResourceId);
+        Report($"已打开题录：{rows.Value[0].Title}");
     }
 
     private async Task NavigateToTextUriAsync(PatchouliNavigationTarget target)

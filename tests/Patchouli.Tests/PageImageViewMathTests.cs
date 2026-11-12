@@ -161,7 +161,7 @@ public sealed class PageImageViewMathTests
             PageId.New(),
             DocumentInstanceId.New(),
             0, "1", width, height,
-            0, "pdfium", width, height, "v1", null,
+            0, 0, "pdfium", width, height, "v1", null,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
     }
 }

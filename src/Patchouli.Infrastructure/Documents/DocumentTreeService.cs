@@ -1475,6 +1475,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             DocumentTreeRevision revision = row.ToRevision();
             List<DocumentBox> boxes = (await GetBoxesAsync(connection, transaction, revision.TreeRevisionId))
                 .ToList();
+            DocumentBox[] originalBoxes = boxes.ToArray();
             int index = boxes.FindIndex(box => box.BoxId == boxId);
             if (index < 0)
             {
@@ -1568,7 +1569,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     validation.Conflicts);
             }
 
-            await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, boxes);
+            await ApplyWorkingBoxChangesAsync(connection, transaction, revision.TreeRevisionId, originalBoxes, boxes);
             _compiledMarkdownCache?.Invalidate(revision.TreeRevisionId);
             return Result<DocumentBox>.Success(boxes[index]);
         }, cancellationToken);
@@ -1948,6 +1949,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             DocumentTreeRevision revision = row.ToRevision();
             List<DocumentBox> boxes = (await GetBoxesAsync(connection, transaction, revision.TreeRevisionId)).ToList();
+            DocumentBox[] originalBoxes = boxes.ToArray();
             if (guard is not null)
             {
                 string? guardError = await guard(connection, transaction, revision, boxes);
@@ -1969,7 +1971,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 return Result<T>.Failure(validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
             }
 
-            await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, boxes);
+            await ApplyWorkingBoxChangesAsync(connection, transaction, revision.TreeRevisionId, originalBoxes, boxes);
 
             // Working drafts keep a stable revision id while boxes are replaced in place, so the
             // compiled-markdown cache (keyed by revision id) must drop this revision's entries.
@@ -2444,6 +2446,94 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             await InsertBoxesAsync(connection, transaction, chunk);
         }
+    }
+
+    private static async Task ApplyWorkingBoxChangesAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevisionId revisionId,
+        IReadOnlyList<DocumentBox> original,
+        IReadOnlyList<DocumentBox> updated)
+    {
+        Dictionary<DocumentBoxId, DocumentBox> oldById = original.ToDictionary(box => box.BoxId);
+        Dictionary<DocumentBoxId, DocumentBox> newById = updated.ToDictionary(box => box.BoxId);
+        DocumentBox[] changed = updated.Where(box =>
+            oldById.TryGetValue(box.BoxId, out DocumentBox? old) && !SameStoredBox(old, box)).ToArray();
+        string[] removedIds = original.Where(box => !newById.ContainsKey(box.BoxId))
+            .Select(box => box.BoxId.ToString()).ToArray();
+        string[] changedPredecessorIds = changed.Where(box =>
+                oldById[box.BoxId].NextSiblingBoxId is not null &&
+                oldById[box.BoxId].NextSiblingBoxId != box.NextSiblingBoxId)
+            .Select(box => box.BoxId.ToString()).ToArray();
+
+        foreach (string[] ids in changedPredecessorIds.Chunk(BoxWriteBatchSize))
+        {
+            await connection.ExecuteAsync(
+                "update document_boxes set next_sibling_box_id = null where tree_revision_id = @RevisionId and box_id in @Ids;",
+                new { RevisionId = revisionId.ToString(), Ids = ids }, transaction);
+        }
+
+        foreach (string[] ids in removedIds.Chunk(BoxWriteBatchSize))
+        {
+            await connection.ExecuteAsync(
+                "delete from document_boxes where tree_revision_id = @RevisionId and box_id in @Ids;",
+                new { RevisionId = revisionId.ToString(), Ids = ids }, transaction);
+        }
+
+        await connection.ExecuteAsync(
+            """
+            update document_boxes set
+                parent_box_id = @ParentBoxId, next_sibling_box_id = @NextSiblingBoxId,
+                box_type = @BoxType, sub_type = @SubType,
+                bbox_x = @BBoxX, bbox_y = @BBoxY, bbox_width = @BBoxWidth, bbox_height = @BBoxHeight,
+                payload_json = @PayloadJson, heading_level = @HeadingLevel,
+                code_language = @CodeLanguage, confidence = @Confidence,
+                suppressed = @Suppressed, continues_from_box_id = @ContinuesFromBoxId,
+                continuation_state = @ContinuationState
+            where tree_revision_id = @TreeRevisionId and box_id = @BoxId;
+            """,
+            changed.Select(box => new
+            {
+                TreeRevisionId = revisionId.ToString(),
+                BoxId = box.BoxId.ToString(),
+                ParentBoxId = box.ParentBoxId?.ToString(),
+                NextSiblingBoxId = box.NextSiblingBoxId?.ToString(),
+                box.BoxType,
+                SubType = StorageText.NormalizeInvalidCodePoints(box.SubType),
+                BBoxX = box.BBox.X,
+                BBoxY = box.BBox.Y,
+                BBoxWidth = box.BBox.Width,
+                BBoxHeight = box.BBox.Height,
+                PayloadJson = DocumentBoxPayloadSerializer.Serialize(box.Payload),
+                box.HeadingLevel,
+                CodeLanguage = StorageText.NormalizeInvalidCodePoints(box.CodeLanguage),
+                box.Confidence,
+                Suppressed = box.Suppressed ? 1 : 0,
+                ContinuesFromBoxId = box.ContinuesFromBoxId?.ToString(),
+                ContinuationState = StorageText.NormalizeInvalidCodePoints(box.ContinuationState)
+            }), transaction);
+
+        foreach (DocumentBox[] chunk in updated.Where(box => !oldById.ContainsKey(box.BoxId)).Chunk(BoxWriteBatchSize))
+        {
+            await InsertBoxesAsync(connection, transaction, chunk);
+        }
+    }
+
+    private static bool SameStoredBox(DocumentBox old, DocumentBox updated)
+    {
+        return old.ParentBoxId == updated.ParentBoxId &&
+               old.NextSiblingBoxId == updated.NextSiblingBoxId &&
+               old.BoxType == updated.BoxType &&
+               old.SubType == updated.SubType &&
+               old.BBox.Equals(updated.BBox) &&
+               DocumentBoxPayloadSerializer.Serialize(old.Payload) ==
+               DocumentBoxPayloadSerializer.Serialize(updated.Payload) &&
+               old.HeadingLevel == updated.HeadingLevel &&
+               old.CodeLanguage == updated.CodeLanguage &&
+               old.Confidence == updated.Confidence &&
+               old.Suppressed == updated.Suppressed &&
+               old.ContinuesFromBoxId == updated.ContinuesFromBoxId &&
+               old.ContinuationState == updated.ContinuationState;
     }
 
     private static Task InsertBoxesAsync(

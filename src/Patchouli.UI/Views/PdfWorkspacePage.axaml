@@ -5,6 +5,7 @@
              xmlns:reading="using:Patchouli.Reading"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:views="using:Patchouli.UI.Views"
+             xmlns:controls="using:Patchouli.UI.Controls"
              x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
     <ControlTheme x:Key="ChapterExpanderTheme" TargetType="ToggleButton">
@@ -93,7 +94,7 @@
     </Style>
     <Style Selector="Button.PageBadge">
       <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryStrongBrush}" />
       <Setter Property="CornerRadius" Value="7" />
       <Setter Property="Padding" Value="5,1" />
       <Setter Property="BorderThickness" Value="0" />
@@ -102,7 +103,7 @@
     </Style>
     <Style Selector="Button.PageBadge:pointerover">
       <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
     </Style>
     <Style Selector="Border.BBox.selected">
       <Setter Property="BorderThickness" Value="4" />
@@ -466,7 +467,7 @@
                       <Border Background="Transparent"
                               Width="{Binding ActualWidthPixels}"
                               Height="{Binding ActualHeightPixels}"
-                              IsVisible="{Binding HasImage}"
+                              IsVisible="{Binding !IsSplitPending}"
                               IsHitTestVisible="{Binding IsRectToolActive}"
                               PointerPressed="OnCanvasPointerPressed"
                               PointerMoved="OnCanvasPointerMoved"
@@ -474,7 +475,7 @@
 
                       <!-- Selection Drawing Preview -->
                       <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
-                              IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                              IsVisible="{Binding !IsSplitPending}" IsHitTestVisible="False">
                         <Border Classes="BBox draft"
                                 BorderBrush="DarkOrange"
                                 Canvas.Left="{Binding SelectionLeft}"
@@ -483,35 +484,6 @@
                                 Height="{Binding SelectionHeight}"
                                 IsVisible="{Binding SelectionVisible}" />
                       </Canvas>
-
-                      <!-- Split Draft Boxes Overlay -->
-                      <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
-                                    Width="{Binding ActualWidthPixels}"
-                                    Height="{Binding ActualHeightPixels}"
-                                    IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                        <ItemsControl.ItemContainerTheme>
-                          <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
-                            <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                          </ControlTheme>
-                        </ItemsControl.ItemContainerTheme>
-                        <ItemsControl.ItemsPanel>
-                          <ItemsPanelTemplate>
-                            <Canvas />
-                          </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
-                            <Border Classes="BBox draft"
-                                    BorderBrush="DarkOrange"
-                                    Width="{Binding Width}"
-                                    Height="{Binding Height}">
-                              <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="Bold"
-                                         Foreground="DarkOrange" />
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
                     </Grid>
                   </LayoutTransformControl>
 
@@ -566,43 +538,7 @@
       <!-- Right: Sidebar Viewer/Editor -->
       <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
         <Grid RowDefinitions="Auto,Auto,*">
-          <!-- Split wizard -->
-          <Border Classes="WizardCard" Grid.RowSpan="3" IsVisible="{Binding IsSplitPending}">
-            <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8">
-              <TextBlock Text="拆分边界框" FontWeight="SemiBold" FontSize="14" />
-              <TextBlock Grid.Row="1" Text="{Binding SplitStepText}" TextWrapping="Wrap" FontSize="12"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="8">
-                <TextBox Text="{Binding SplitFirstText}" AcceptsReturn="True" TextWrapping="Wrap"
-                         PlaceholderText="第一个边界框内容" />
-                <TextBox Grid.Column="1" Text="{Binding SplitSecondText}" AcceptsReturn="True" TextWrapping="Wrap"
-                         PlaceholderText="第二个边界框内容" />
-              </Grid>
-              <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="取消拆分" Command="{Binding CancelSplitCommand}" />
-                <Button Content="确认拆分" Command="{Binding ConfirmSplitCommand}"
-                        IsEnabled="{Binding CanConfirmSplit}"
-                        Background="{DynamicResource PrimaryBrush}"
-                        Foreground="{DynamicResource OnPrimaryBrush}" />
-              </StackPanel>
-            </Grid>
-          </Border>
-          <!-- Merge wizard -->
-          <Border Grid.Row="1" Classes="WizardCard" IsVisible="{Binding IsMergePending}">
-            <StackPanel Spacing="8">
-              <TextBlock Text="确认合并内容" FontWeight="SemiBold" FontSize="14" />
-              <TextBox Text="{Binding MergeText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100"
-                       PlaceholderText="合并结果内容（必填）" />
-              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="取消合并" Command="{Binding CancelMergeCommand}" />
-                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}"
-                        Background="{DynamicResource PrimaryBrush}"
-                        Foreground="{DynamicResource OnPrimaryBrush}" />
-              </StackPanel>
-            </StackPanel>
-          </Border>
-
-          <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
+          <Grid Grid.Row="2">
             <!-- View mode: tabbed sidebar — page content (read-only Markdown preview) or version history -->
             <Grid RowDefinitions="Auto,*" IsVisible="{Binding IsNavigationSidebarVisible}">
               <Border Classes="SidebarHeader">
@@ -619,6 +555,19 @@
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
                           <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <MenuItem Header="插件视图" ItemsSource="{Binding PluginSidebarMenuEntries}"
+                                    IsVisible="{Binding !HasNoPluginSidebarViews}" x:CompileBindings="False">
+                            <MenuItem.ItemTemplate>
+                              <DataTemplate x:DataType="vm:PluginViewMenuEntry">
+                                <TextBlock Text="{Binding Title}" />
+                              </DataTemplate>
+                            </MenuItem.ItemTemplate>
+                            <MenuItem.Styles>
+                              <Style Selector="MenuItem MenuItem">
+                                <Setter Property="Command" Value="{Binding ActivateCommand}" />
+                              </Style>
+                            </MenuItem.Styles>
+                          </MenuItem>
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
@@ -905,11 +854,28 @@
                                    IsVisible="{Binding HasNoBookSearchResults}" />
                   </Grid>
                 </Grid>
+
+                <!-- Tab: plugin web view (placement pdf-sidebar) -->
+                <Grid IsVisible="{Binding IsPluginTabActive}">
+                  <controls:PluginWebViewHost Session="{Binding ActivePluginSession}" />
+                  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"
+                              IsVisible="{Binding ActivePluginSession.ErrorText, Converter={x:Static ObjectConverters.IsNotNull}, FallbackValue={x:Null}}">
+                    <lucide:Lucide Icon="Puzzle" Width="28" Height="28" HorizontalAlignment="Center"
+                                   StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.4" />
+                    <TextBlock Text="{Binding ActivePluginSession.ErrorText, FallbackValue={x:Null}}"
+                               FontSize="13" TextWrapping="Wrap"
+                               MaxWidth="280" TextAlignment="Center"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                  <ProgressBar IsIndeterminate="True" Width="140" HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               IsVisible="{Binding ActivePluginSession.IsLoading, FallbackValue=False}" />
+                </Grid>
               </Grid>
             </Grid>
 
             <!-- Edit mode: Box tree -->
-            <Grid RowDefinitions="Auto,*,Auto,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
+            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsBoxSidebarVisible}">
               <Border Classes="SidebarHeader">
                 <Grid ColumnDefinitions="Auto,*" Height="32">
                   <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
@@ -924,6 +890,19 @@
                           <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                           <MenuItem Header="章节" Command="{Binding ShowChaptersTabCommand}" />
                           <MenuItem Header="全书搜索" Command="{Binding ShowSearchTabCommand}" />
+                          <MenuItem Header="插件视图" ItemsSource="{Binding PluginSidebarMenuEntries}"
+                                    IsVisible="{Binding !HasNoPluginSidebarViews}" x:CompileBindings="False">
+                            <MenuItem.ItemTemplate>
+                              <DataTemplate x:DataType="vm:PluginViewMenuEntry">
+                                <TextBlock Text="{Binding Title}" />
+                              </DataTemplate>
+                            </MenuItem.ItemTemplate>
+                            <MenuItem.Styles>
+                              <Style Selector="MenuItem MenuItem">
+                                <Setter Property="Command" Value="{Binding ActivateCommand}" />
+                              </Style>
+                            </MenuItem.Styles>
+                          </MenuItem>
                           <Separator />
                           <MenuItem Header="编辑页面" Command="{Binding ShowBoxEditorTabCommand}" />
                         </MenuFlyout>
@@ -992,35 +971,12 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                            IsVisible="{Binding HasNoBoundingBoxes}" />
               </Grid>
-              <!-- 接续源框挑选面板：候选为全书同类型合法框（含跨页），选择只写关系不搬文字。 -->
               <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
-                      Padding="14,10" IsVisible="{Binding IsPickingContinuationSource}">
-                <StackPanel Spacing="6">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="选择接续源框" FontSize="12" FontWeight="Bold"
-                               VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Content="取消" Command="{Binding CancelContinuationPickCommand}"
-                            Background="Transparent" FontSize="12" />
-                  </Grid>
-                  <ItemsControl ItemsSource="{Binding ContinuationSourceCandidates}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:ContinuationSourceCandidate">
-                        <Button Content="{Binding Display}" Command="{Binding ChooseCommand}"
-                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
-                                Background="Transparent" FontSize="12" />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
-              <Border Grid.Row="3" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
                       Padding="14,10">
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                   <Button Content="放弃更改" Command="{Binding CancelEditModeCommand}"
                           Foreground="{DynamicResource ErrorBrush}" Background="Transparent" />
-                  <Button Command="{Binding SaveAndExitCommand}"
-                          Background="{DynamicResource PrimaryBrush}"
-                          Foreground="{DynamicResource OnPrimaryBrush}">
+                  <Button Command="{Binding SaveAndExitCommand}" Classes="Primary">
                     <StackPanel Orientation="Horizontal" Spacing="4">
                       <lucide:Lucide Icon="Save" Width="14" Height="14" />
                       <TextBlock Text="保存并退出" FontSize="12" />
@@ -1066,8 +1022,7 @@
                       SelectedItem="{Binding SelectedReadingContentMode, Mode=TwoWay}" MinWidth="100"
                       ToolTip.Tip="原文、译文或双语阅读" />
           </StackPanel>
-          <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}"
-                  Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
+          <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}" Classes="Primary"
                   VerticalAlignment="Center"
                   ToolTip.Tip="退出阅读模式，返回 PDF 查看模式">
             <StackPanel Orientation="Horizontal" Spacing="4">

@@ -9,7 +9,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
-using Patchouli.Infrastructure.Ocr.RapidOcr;
+using Patchouli.Ocr.Engines.RapidOcr;
 using Patchouli.Ocr;
 using Patchouli.UI;
 using SkiaSharp;

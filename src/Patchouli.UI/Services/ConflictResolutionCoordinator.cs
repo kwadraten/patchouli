@@ -1,4 +1,5 @@
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels.Dialogs;
 

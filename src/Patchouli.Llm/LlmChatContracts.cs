@@ -163,7 +163,7 @@ public sealed record LlmTransportResult(
 }
 
 /// <summary>
-/// One provider call. This is the seam between Patchouli's invariants and LlmTornado: the client builds a
+/// One provider call. This is the seam between Patchouli's invariants and the provider SDK: the client builds a
 /// request, the transport performs it. Implementations must not mutate the request.
 /// </summary>
 public interface ILlmChatTransport

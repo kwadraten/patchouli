@@ -19,7 +19,7 @@ Before exploring, read these when they exist:
 - `.agents/issue-tracker.md` for issue-driven product work; there is no dedicated PRD document.
 - `.agents/protocols/` for normative protocol and contract specifications: `.agents/protocols/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations; `extension-contracts.md` and `extension-validation.md` for the FSX extension contract and its verification evidence; `ocr-normalization.md` for OCR content semantics.
 - `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
-- `.agents/skills/patchouli/` is the single Agent Skill Patchouli distributes to external agents (issue #23). It is the source of truth for user-facing usage guidance, including FSX extension authoring (`references/EXTENDING.md`). Repository contracts under `.agents/` stay normative for implementation; the skill states only delivered behaviour and must not describe planned Plugin VFS or Action projection as available.
+- `.agents/skills/patchouli/` is the single Agent Skill Patchouli distributes to external agents (issue #23). It is the source of truth for user-facing usage guidance, including FSX extension authoring (`references/EXTENDING.md`). Repository contracts under `.agents/` stay normative for implementation; the skill states only delivered behaviour, including the static Plugin find/fetch/send surface plus declared `[[ui.views]]` view descriptors and their desktop containers, and must not describe planned capabilities as available.
 
 If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do not suggest creating them upfront unless the current task is explicitly about domain modeling, architecture documentation, or recording a decision.
 
@@ -51,6 +51,17 @@ If the concept is not in the glossary yet, treat that as a signal: either avoid 
 
 If output contradicts an existing ADR under `.agents/adr/`, surface it explicitly rather than silently overriding it.
 
+## Virtual link settings
+
+Settings → AI集成 → 文献虚拟链接解析 contains independent system-registration and toolbar-parsing
+switches. Windows registration is current-user `Software/Classes/patchouli`, quotes both the UI
+executable and `%1`, and carries the `net.patchouli.app` ownership marker shared with Inno Setup.
+Manual cancellation records a device-local opt-out so upgrades do not re-register it. Uninstall
+removes only an association still owned by that installation. Other platforms currently display
+registration as unavailable. Toolbar parsing defaults on (`Ui.ParseVirtualLinksInSearchBar`) and
+is independent of in-app links and external protocol activation. `open_uri` forwarding follows
+[ADR 0029](adr/0029-ui-single-instance-and-local-activation.md).
+
 ## Runtime host layer
 
 `src/Patchouli.Host` is the shared runtime composition layer used by both the desktop UI
@@ -74,6 +85,42 @@ If output contradicts an existing ADR under `.agents/adr/`, surface it explicitl
   `Caching/LibraryRevisionMonitor` merges local change scopes and refreshes affected items.
   Unknown or skipped revisions and external writes force a full refresh; failures retry without
   treating an unrefreshed cache as current.
+- **Plugin mounts** — `Patchouli.Host/Plugins` owns `patchouli-plugin.toml` manifest validation
+  (including `[[ui.views]]` and root `[[files]]` declarations), the device-local registry
+  `allowed_verbs` grant, community store install/rollback, the stdio MCP gateway, and the
+  host-synthesized `plugin.yml`/README/endpoint, `views/{view-id}` and `files/{path}`
+  descriptors. `PluginManagedFileService` provisions declared `files/` under
+  `models/plugins/{id}/` — downloads happen only after a desktop confirmation
+  (`IPluginManagedFileInteraction`), verify declared `bytes`/`sha256`, install atomically
+  under a per-file named lock, and never leak local paths into MCP payloads; the plugin
+  process learns destinations through injected `--patchouli-managed-files`/
+  `--patchouli-managed-file` launch args and startup never triggers a download. Declared views open
+  `Avalonia.Controls.WebView` surfaces in the desktop UI — a retained PluginView workspace tab,
+  a non-modal popup window, or a pdf-sidebar tab in the PDF workspace right sidebar — with
+  host-injected `window.patchouli.theme` (all views) and `window.patchouli.page` (pdf-sidebar)
+  context. View HTML is fetched through the plugin's declared `fetch` node, never read from
+  package files or cached, and no host objects or tokens cross into the page; an offline,
+  disabled or unauthorized plugin shows an explicit unavailable state. Boundaries are in
+  [ADR 0056](adr/0056-plugin-webview-containers.md).
+  All managed-file lifecycle (verification, confirmed transfer, per-destination
+  cross-process lock, single-flight ensure, draining) is implemented once in
+  `Patchouli.Host/ManagedFiles/ManagedFileService`; `ExtensionManagedFileService` and
+  `PluginManagedFileService` are thin facades retaining declaration-specific policy only
+  (scope/condition/custom-override and validated-manifest destination rules). Settings local
+  files are served by `ManagedFileInventoryService`, which merges extension and plugin
+  declaration groups by canonical destination and executes confirmed downloads through each
+  owner's engine; `HostPluginApi.ManagedFileDefinitions()` snapshots mounted declarations
+  without starting plugin processes.
+- **Plugin uninstall** — `IPluginStore.UninstallAsync` removes only managed community installs:
+  it accepts records pointing at the canonical `plugins/{id}/{version}/patchouli-plugin.toml`,
+  persists a disabled record first, then invokes the `registryChanged` callback (wired to
+  `HostPluginApi.RefreshRegistry`) so the live process stops before files are deleted, deletes
+  retained versions before the registered one, and unregisters last. Package selection refuses
+  dev/external records, traversal ids, and reparse points; unknown siblings and plugin data
+  outside the version directories survive. A failed cleanup leaves the disabled record so the
+  store row (which derives `InstalledVersion` from the canonical path even without a loadable
+  manifest) keeps offering uninstall for retry. The UI additionally closes the plugin's tab,
+  window and sidebar view surfaces on uninstall, including after a partial cleanup failure.
 
 Rule: runtime logic belongs in `Patchouli.Host`, not in ViewModels. ViewModels subscribe to the
 host's services and marshal events to the UI dispatcher; they never own watchers, timers, server
@@ -186,6 +233,20 @@ The queue binds actual Runs to their task/attempt before model progress, carries
 preset version for legacy tasks once known, and rejects foreign/stale attempt callbacks.
 Progress projection uses only explicit Run associations, including legitimate shared-Run
 adoption/index retries, and does not infer ownership from DocumentInstance identity.
+
+Download tasks: each HostServices owns a volatile DownloadTaskService whose queue rows cover
+extension/plugin managed model assets plus plugin-store, Agent, updater packages and CSL style
+installs. Patchouli.Core.Downloads defines the shared structured per-file byte/state contract;
+manifest-declared bytes and hashes stay authoritative with Content-Length only as progress
+fallback, and unknown lengths render indeterminate. The dedicated download dialog closes to the
+background without cancelling the worker — completion is always really awaited — and the queue
+reopens the same task for details; the generic ModalOperationRunner remains modal and
+non-detachable for destructive operations. Installer-type workflows (plugin store, Agent,
+updater, CSL) register with canRetry false since retrying cannot reproduce their typed
+side-effect callbacks, and the updater keeps its explicit install confirmation. Metadata,
+catalog, and API calls are excluded from download rows, and MinerU result archives remain part
+of OCR task processing rather than managed downloads.
+
 Ephemeral region recognition has a facade-owned background boundary; interactive callers keep
 the existing modal policy, capture/apply UI state with context guards, and drain real work on
 teardown rather than treating cancellation as completion. This does not establish that all

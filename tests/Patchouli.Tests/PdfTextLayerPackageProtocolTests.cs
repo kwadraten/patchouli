@@ -104,13 +104,15 @@ public class PdfTextLayerPackageProtocolTests
         Assert.Equal(expectedProviderId, definition.ProviderId);
     }
 
-    [Theory]
-    [MemberData(nameof(PackageIds))]
-    public void Package_fsx_carries_the_bundled_GapTree_Mit_notice(string packageId)
+    [Fact]
+    public void GapTree_port_source_carries_the_Mit_notice()
     {
-        // Every package ships lib/Patchouli.Ocr.Engines.dll (which contains the GapTree
-        // port), so the MIT notice travels as a comment in each self-contained main.fsx.
-        string source = SourceOf(packageId);
+        // Packages are source-only and share Patchouli.Ocr.Engines with the host, so the
+        // GapTree port's MIT notice travels with the ported analyzer source itself.
+        string path = TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.Ocr.Engines", "PdfText", "GapTreeTextLayerAnalyzer.cs");
+        Assert.True(File.Exists(path), $"GapTree port source is missing: {path}");
+        string source = File.ReadAllText(path);
         Assert.Contains("MIT License", source);
         Assert.Contains("hiroi-sora", source);
     }

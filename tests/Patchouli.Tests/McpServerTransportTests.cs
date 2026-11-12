@@ -158,7 +158,7 @@ public sealed class McpServerTransportTests
         JsonElement[] tools = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
         tools.Select(tool => tool.GetProperty("name").GetString()).Should().BeEquivalentTo(
             "patchouli.find", "patchouli.fetch", "patchouli.put", "patchouli.add",
-            "patchouli.view", "patchouli.cite", "patchouli.send");
+            "patchouli.cite", "patchouli.send");
 
         JsonElement find = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.find");
         JsonElement findProps = find.GetProperty("inputSchema").GetProperty("properties");
@@ -240,15 +240,16 @@ public sealed class McpServerTransportTests
         meta.GetProperty("library_revision").GetString().Should().Be("lib:1");
         meta.GetProperty("outcome").GetString().Should().Be("success");
         meta.GetProperty("summary").GetString().Should().NotBeNullOrWhiteSpace();
-        meta.GetProperty("domain_total").GetInt32().Should().Be(6);
-        meta.GetProperty("shown_total").GetInt32().Should().Be(6);
+        meta.GetProperty("domain_total").GetInt32().Should().Be(7);
+        meta.GetProperty("shown_total").GetInt32().Should().Be(7);
         JsonElement[] entries = envelope.RootElement.GetProperty("entries").EnumerateArray().ToArray();
-        entries.Should().HaveCount(6);
+        entries.Should().HaveCount(7);
         entries.Select(e => e.GetProperty("uri").GetString())
-            .Should().BeEquivalentTo("patchouli://items/", "patchouli://texts/", "patchouli://translations/",
+            .Should().BeEquivalentTo("patchouli://items/", "patchouli://texts/", "patchouli://images/",
+                "patchouli://translations/",
                 "patchouli://csl-styles/", "patchouli://runs/",
                 "patchouli://library.yml");
-        entries.Count(e => e.GetProperty("type").GetString() == "directory").Should().Be(5);
+        entries.Count(e => e.GetProperty("type").GetString() == "directory").Should().Be(6);
         entries.Count(e => e.GetProperty("type").GetString() == "file").Should().Be(1);
         envelope.RootElement.GetProperty("continuation").ValueKind.Should().Be(JsonValueKind.Null);
         ToolIsError(response).Should().BeFalse();

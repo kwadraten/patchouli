@@ -173,6 +173,31 @@ public sealed class LibraryItemQueryServiceTests
     }
 
     [Fact]
+    public async Task Ocr_text_flag_ignores_suppressed_boxes_and_checks_all_current_pages()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata item = (await context.Items.CreateItemAsync("book", "Two pages")).Value;
+        DocumentInstance document = (await context.Documents.AttachDocumentInstanceAsync(
+            item.ItemId, null, DocumentInstanceType.PrimaryScan, makePrimary: true)).Value;
+        Page first = (await context.Pages.CreatePageAsync(document.DocumentInstanceId, 0, "1", null,
+            null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null)).Value;
+        Page second = (await context.Pages.CreatePageAsync(document.DocumentInstanceId, 1, "2", null,
+            null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null)).Value;
+        (await context.Query.ListRowsAsync(1, null)).Value.Rows.Single().PrimaryDocumentOcrIndexState.Value
+            .Should().Be(PrimaryDocumentOcrIndexState.NoOcr);
+        await BoxTreeTestData.CommitTextAsync(context.Database.ConnectionFactory, context.Clock,
+            document.DocumentInstanceId, first.PageId, "hidden text", suppressed: true);
+
+        LibraryItemRow afterFirst = (await context.Query.ListRowsAsync(1, null)).Value.Rows.Single();
+        afterFirst.HasOcrText.Should().BeFalse();
+        afterFirst.PrimaryDocumentOcrIndexState.Value.Should().Be(PrimaryDocumentOcrIndexState.OcrNotIndexed);
+        await BoxTreeTestData.CommitTextAsync(context.Database.ConnectionFactory, context.Clock,
+            document.DocumentInstanceId, second.PageId, "visible text");
+
+        (await context.Query.ListRowsAsync(1, null)).Value.Rows.Single().HasOcrText.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Keyset_pages_cover_every_item_without_overlap_or_duplicates()
     {
         await using TestContext context = await CreateContextAsync();
@@ -208,6 +233,109 @@ public sealed class LibraryItemQueryServiceTests
         seen.Should().HaveCount(5);
         pages.Should().BeGreaterThan(1);
         seen.Distinct().Should().HaveCount(seen.Count);
+    }
+
+    [Fact]
+    public async Task Metadata_collection_and_tag_filters_page_only_matching_active_items()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata first = (await context.Items.CreateItemAsync("book", "First member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata second = (await context.Items.CreateItemAsync("book", "Second member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata third = (await context.Items.CreateItemAsync("book", "Third member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata wrongTag = (await context.Items.CreateItemAsync("book", "Member without tag")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata trashed = (await context.Items.CreateItemAsync("book", "Trashed member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata wrongType = (await context.Items.CreateItemAsync("article-journal", "Journal member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata wrongQuery = (await context.Items.CreateItemAsync("book", "Other title")).Value;
+        for (int index = 0; index < 12; index++)
+        {
+            context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+            await context.Items.CreateItemAsync("book", $"Unrelated newer item {index}");
+        }
+
+        LibraryIdentityService library = new(context.Database.ConnectionFactory, context.Clock);
+        CollectionService collections = new(context.Database.ConnectionFactory, library, context.Clock);
+        Collection group = (await collections.CreateCollectionAsync("Small group")).Value;
+        Collection empty = (await collections.CreateCollectionAsync("Empty group")).Value;
+        (await collections.AddItemsAsync(group.CollectionId,
+            [
+                first.ItemId, second.ItemId, third.ItemId, wrongTag.ItemId, trashed.ItemId, wrongType.ItemId,
+                wrongQuery.ItemId
+            ]))
+            .IsSuccess.Should().BeTrue();
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection =
+                     context.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "update items set tags_json = '[\"target\"]' where item_id in @Ids;",
+                new
+                {
+                    Ids = new[]
+                        {
+                            first.ItemId, second.ItemId, third.ItemId, trashed.ItemId, wrongType.ItemId,
+                            wrongQuery.ItemId
+                        }
+                        .Select(static id => id.ToString()).ToArray()
+                });
+        }
+
+        (await context.Items.DeleteItemAsync(trashed.ItemId)).IsSuccess.Should().BeTrue();
+        BibliographicItemSearch search = new("member", [new BibliographicSearchFilter("item_type", "book")]);
+        LibraryItemPage page = (await context.Query.ListRowsAsync(
+            2, null, ["target"], group.CollectionId, search: search)).Value;
+        page.Rows.Select(row => row.ItemId).Should().Equal(third.ItemId, second.ItemId);
+        page.HasMore.Should().BeTrue();
+        page.NextCursor.Should().NotBeNull();
+
+        LibraryItemPage next = (await context.Query.ListRowsAsync(
+            2, page.NextCursor, ["target"], group.CollectionId, search: search)).Value;
+        next.Rows.Select(row => row.ItemId).Should().Equal(first.ItemId);
+        next.HasMore.Should().BeFalse();
+        (await context.Query.ListRowsAsync(2, null, requiredCollection: empty.CollectionId))
+            .Value.Rows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Untagged_filter_pages_after_membership_and_excludes_trashed_items()
+    {
+        await using TestContext context = await CreateContextAsync();
+        ItemMetadata first = (await context.Items.CreateItemAsync("book", "First untagged")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata second = (await context.Items.CreateItemAsync("book", "Second untagged")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata tagged = (await context.Items.CreateItemAsync("book", "Tagged member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata trashed = (await context.Items.CreateItemAsync("book", "Trashed untagged")).Value;
+        LibraryIdentityService library = new(context.Database.ConnectionFactory, context.Clock);
+        CollectionService collections = new(context.Database.ConnectionFactory, library, context.Clock);
+        Collection group = (await collections.CreateCollectionAsync("Untagged group")).Value;
+        (await collections.AddItemsAsync(group.CollectionId,
+            [first.ItemId, second.ItemId, tagged.ItemId, trashed.ItemId])).IsSuccess.Should().BeTrue();
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection =
+                     context.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "update items set tags_json = '[\"tag\"]' where item_id = @Id;",
+                new { Id = tagged.ItemId.ToString() });
+        }
+
+        (await context.Items.DeleteItemAsync(trashed.ItemId)).IsSuccess.Should().BeTrue();
+        LibraryItemPage page = (await context.Query.ListRowsAsync(
+            1, null, requiredCollection: group.CollectionId, untaggedOnly: true)).Value;
+        page.Rows.Select(row => row.ItemId).Should().Equal(second.ItemId);
+        page.HasMore.Should().BeTrue();
+        LibraryItemPage next = (await context.Query.ListRowsAsync(
+            1, page.NextCursor, requiredCollection: group.CollectionId, untaggedOnly: true)).Value;
+        next.Rows.Select(row => row.ItemId).Should().Equal(first.ItemId);
+        next.HasMore.Should().BeFalse();
+        (await context.Query.CountUntaggedItemsAsync()).Value.Should().Be(2);
     }
 
     [Fact]

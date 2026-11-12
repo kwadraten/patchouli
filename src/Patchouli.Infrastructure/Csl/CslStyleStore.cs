@@ -42,6 +42,33 @@ public sealed class CslStyleStore : ICslStyleStore
         Directory.CreateDirectory(_installedRoot);
     }
 
+    public async Task<Result> EnsureBuiltInStylesAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (CslCatalogStyle definition in BuiltInCslStyles.Definitions)
+        {
+            string content = BuiltInCslStyles.GetContent(definition.StyleId);
+            Result<CslStyle> current = await GetStyleAsync(definition.StyleId, cancellationToken);
+            if (current.IsSuccess && current.Value.SourceKind == definition.SourceKind &&
+                current.Value.ContentHash == ComputeHash(content))
+            {
+                continue;
+            }
+
+            if (current.IsFailure && current.ErrorCode != AppErrorCodes.NotFound)
+            {
+                return Result.Failure(current.ErrorCode!, current.ErrorMessage!);
+            }
+
+            Result<CslStyle> installed = await InstallStyleAsync(definition, content, cancellationToken);
+            if (installed.IsFailure)
+            {
+                return Result.Failure(installed.ErrorCode!, installed.ErrorMessage!);
+            }
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result<IReadOnlyList<CslStyle>>> ListInstalledStylesAsync(
         CancellationToken cancellationToken = default)
     {
@@ -409,14 +436,16 @@ public sealed class CslStyleStore : ICslStyleStore
 
             Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
                 connection, transaction, metadata.StyleId, cancellationToken);
-            if (revision.IsFailure)
+            bool missingInitialLibrary = metadata.SourceKind == "built-in" &&
+                                         revision.ErrorCode == AppErrorCodes.InvalidState;
+            if (revision.IsFailure && !missingInitialLibrary)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<CslStyle>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
             }
 
             await transaction.CommitAsync(cancellationToken);
-            PublishRevision(revision.Value);
+            PublishRevision(missingInitialLibrary ? null : revision.Value);
 
             await TryCompleteInstallOperationAsync(
                 installOperationId,

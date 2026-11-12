@@ -62,5 +62,7 @@ This does not change its managed workspace mapping. Existing user files at the f
 - Status inspection does not create directories. User and managed files are device-local and are
   not Library snapshot content.
 
-Plugin VFS and Action projection are not part of this Skill contract. See the Skill's own guidance
-for delivered user behavior; repository protocol documents remain normative for implementation.
+The Skill exposes the delivered static Plugin find/fetch/send surface plus declared `[[ui.views]]`
+view descriptors and their desktop WebView containers; it does not promote planned managed files,
+library grants or URI resolution. See the Skill's own
+guidance for delivered user behavior; repository protocol documents remain normative for implementation.

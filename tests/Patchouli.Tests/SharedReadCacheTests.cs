@@ -1,6 +1,6 @@
 using FluentAssertions;
 using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Mcp;
+using Patchouli.Infrastructure.Caching;
 
 namespace Patchouli.Tests;
 

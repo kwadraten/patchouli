@@ -41,32 +41,41 @@
       <Border Grid.Row="1" IsVisible="{Binding Workspace.HasCandidate}" Padding="10" CornerRadius="6"
               BorderThickness="1"
               BorderBrush="{DynamicResource OutlineVariantBrush}">
-        <StackPanel Spacing="6">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
           <TextBlock Text="局部 OCR 候选（接受后覆盖类型与内容）" FontWeight="SemiBold"
                      FontSize="12" />
-          <TextBlock Text="原内容" FontSize="11"
-                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <TextBlock Text="{Binding Workspace.LocalOcrSourceText}" TextWrapping="Wrap"
-                     FontSize="12" MaxHeight="80" />
-          <TextBlock Text="识别内容" FontSize="11"
-                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <ItemsControl ItemsSource="{Binding Workspace.CandidateBoxes}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                  <TextBlock Text="{Binding BoxType}" FontWeight="SemiBold"
-                             FontSize="12" />
-                  <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap"
-                             FontSize="12" />
-                </Grid>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
-          <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+          <ScrollViewer x:Name="LocalOcrCandidateScrollViewer" Grid.Row="1" MaxHeight="360"
+                        VerticalScrollBarVisibility="Auto">
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+              <StackPanel x:Name="LocalOcrSourceColumn" Spacing="6">
+                <TextBlock Text="原内容" FontSize="11"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="{Binding Workspace.LocalOcrSourceText}" TextWrapping="Wrap"
+                           FontSize="12" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="6">
+                <TextBlock Text="识别内容" FontSize="11"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <ItemsControl ItemsSource="{Binding Workspace.CandidateBoxes}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                        <TextBlock Text="{Binding BoxType}" FontWeight="SemiBold"
+                                   FontSize="12" />
+                        <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap"
+                                   FontSize="12" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Grid>
+          </ScrollViewer>
+          <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
             <Button Content="拒绝" Command="{Binding Workspace.RejectLocalOcrCommand}" />
             <Button Content="接受" Click="OnAcceptClicked" />
           </StackPanel>
-        </StackPanel>
+        </Grid>
       </Border>
       <StackPanel Grid.Row="2" Spacing="8">
         <ComboBox ItemsSource="{Binding Workspace.EditableBoxTypeOptions}"
@@ -125,9 +134,7 @@
       </Grid>
       <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
         <Button Content="关闭" Click="OnCloseClicked" />
-        <Button x:Name="SaveButton" Content="保存" Click="OnSaveClicked"
-                Background="{DynamicResource PrimaryBrush}"
-                Foreground="{DynamicResource OnPrimaryBrush}" />
+        <Button x:Name="SaveButton" Content="保存" Click="OnSaveClicked" Classes="Primary" />
       </StackPanel>
     </Grid>
   </Border>

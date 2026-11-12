@@ -54,8 +54,9 @@ public static class McpVfsAddress
         string[] parts = resourcePath.Split('/');
         if (!path.Contains('?') && !path.EndsWith('/') &&
             ((parts.Length == 1 &&
-              parts[0] is "items" or "texts" or "translations" or "csl-styles" or "runs") ||
-             (parts.Length == 2 && parts[0] is "texts" or "translations" && Guid.TryParseExact(parts[1], "D", out _))))
+              parts[0] is "items" or "texts" or "translations" or "images" or "csl-styles" or "runs") ||
+             (parts.Length == 2 && parts[0] is "texts" or "translations" or "images" &&
+              Guid.TryParseExact(parts[1], "D", out _))))
         {
             path += "/";
         }

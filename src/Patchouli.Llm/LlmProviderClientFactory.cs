@@ -15,7 +15,8 @@ public sealed record LlmProviderRuntimeSettings(
     string AuthenticationMode = LlmAuthenticationModes.ApiKey,
     Core.Credentials.ICredentialStore? CredentialStore = null)
 {
-    public int ContextWindowTokens { get; init; } = LlmProviderAppSettings.DefaultContextWindowTokens;
+    /// <summary>The selected model's context capacity from the ModelsDev catalog.</summary>
+    public int ContextWindowTokens => LlmModelCatalog.ResolveContextWindow(ProviderId, Model);
 
     /// <summary>Catalog provider id.</summary>
     public string ProviderId => CatalogEntry.ProviderId;
@@ -45,6 +46,10 @@ public sealed record LlmProviderReadiness(
         string baseUrl = settings is null ? "" : settings.BaseUrl.Trim();
         bool hasModel = !string.IsNullOrWhiteSpace(model);
         bool subscription = settings?.AuthenticationMode == LlmAuthenticationModes.Subscription;
+        bool supported = subscription
+            ? LlmSubscriptionCatalog.Find(entry.ProviderId) is not null &&
+              entry.Protocol == "codex-responses"
+            : LlmProviderCatalog.IsSupportedApiProtocol(entry.Protocol);
         bool hasEndpoint = subscription
             ? LlmSubscriptionCatalog.Find(entry.ProviderId) is not null
             : !string.IsNullOrWhiteSpace(baseUrl) || !string.IsNullOrWhiteSpace(entry.DefaultBaseUrl);
@@ -52,10 +57,10 @@ public sealed record LlmProviderReadiness(
                              (settings is not null &&
                               !string.IsNullOrWhiteSpace(settings.Subscription) &&
                               !string.IsNullOrWhiteSpace(settings.Deployment));
-        bool configured = hasCredential && hasModel && hasEndpoint && azureComplete;
+        bool configured = hasCredential && supported && hasEndpoint && azureComplete;
         string diagnostic = configured
             ? "Ready."
-            : BuildDiagnostic(entry.ProviderId, hasCredential, hasModel, hasEndpoint, azureComplete);
+            : BuildDiagnostic(entry, hasCredential, supported, hasEndpoint, azureComplete);
         if (subscription)
         {
             diagnostic = diagnostic.Replace("API key", "subscription login", StringComparison.Ordinal);
@@ -65,7 +70,7 @@ public sealed record LlmProviderReadiness(
             diagnostic, !subscription);
     }
 
-    private static string BuildDiagnostic(string providerId, bool hasCredential, bool hasModel,
+    private static string BuildDiagnostic(LlmProviderCatalogEntry entry, bool hasCredential, bool supported,
         bool hasEndpoint, bool azureComplete)
     {
         List<string> missing = [];
@@ -74,12 +79,12 @@ public sealed record LlmProviderReadiness(
             missing.Add("API key");
         }
 
-        if (!hasModel)
+        if (!supported)
         {
-            missing.Add("model");
+            missing.Add($"an implemented transport ('{entry.Protocol}' is an unsupported protocol)");
         }
 
-        if (!hasEndpoint)
+        if (supported && !hasEndpoint)
         {
             missing.Add("base URL");
         }
@@ -91,7 +96,7 @@ public sealed record LlmProviderReadiness(
 
         return missing.Count == 0
             ? "Ready."
-            : $"Provider '{providerId}' is missing {string.Join(", ", missing)}.";
+            : $"Provider '{entry.ProviderId}' is missing {string.Join(", ", missing)}.";
     }
 }
 
@@ -102,7 +107,7 @@ public sealed record LlmProviderReadiness(
 /// </summary>
 public static class LlmProviderClientFactory
 {
-    // LlmTornado's default OpenAI-compatible REST api-version segment.
+    // Default OpenAI-compatible REST API version segment.
     private const string DefaultOpenAiApiVersion = "v1";
 
     /// <summary>Azure OpenAI default REST api-version.</summary>
@@ -168,8 +173,13 @@ public static class LlmProviderClientFactory
 
             return Core.Results.Result<LlmProviderRuntimeSettings>.Success(
                 new LlmProviderRuntimeSettings(entry, "", "", model, "", "", "",
-                        LlmAuthenticationModes.Subscription, credentialStore)
-                    { ContextWindowTokens = providerSettings.ContextWindowTokens });
+                    LlmAuthenticationModes.Subscription, credentialStore));
+        }
+
+        if (!LlmProviderCatalog.IsSupportedApiProtocol(entry.Protocol))
+        {
+            return Failure(LlmFailureCodes.BadEndpointConfig,
+                $"Provider '{entry.ProviderId}' uses unsupported protocol '{entry.Protocol}'.");
         }
 
         string subscription = providerSettings?.Subscription.Trim() ?? "";
@@ -221,16 +231,12 @@ public static class LlmProviderClientFactory
 
         return Core.Results.Result<LlmProviderRuntimeSettings>.Success(
             new LlmProviderRuntimeSettings(entry, apiKey, resolvedBaseUrl, model, subscription, deployment,
-                providerSettings?.ApiVersion.Trim() ?? "")
-            {
-                ContextWindowTokens = providerSettings?.ContextWindowTokens ??
-                                      LlmProviderAppSettings.DefaultContextWindowTokens
-            });
+                providerSettings?.ApiVersion.Trim() ?? ""));
     }
 
     /// <summary>
     /// Computes the endpoint. A base URL carrying <c>{0}</c> (api-version) or <c>{1}</c> (endpoint) is passed
-    /// through verbatim as <c>TornadoApi.ApiUrlFormat</c>; anything else is treated as a host or root prefix
+    /// through verbatim to the transport; anything else is treated as a host or root prefix
     /// and completed with the OpenAI-compatible route.
     /// </summary>
     public static string ResolveBaseUrl(LlmProviderCatalogEntry entry, string? baseUrl, string subscription,
@@ -255,7 +261,27 @@ public static class LlmProviderClientFactory
         }
 
         string trimmed = effective.TrimEnd('/');
-        return $"{trimmed}/{{0}}/{{1}}";
+        return HasVersionSegment(trimmed) ? $"{trimmed}/{{1}}" : $"{trimmed}/{{0}}/{{1}}";
+    }
+
+    private static bool HasVersionSegment(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
+        {
+            return false;
+        }
+
+        foreach (string segment in uri.AbsolutePath.Split('/',
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (System.Text.RegularExpressions.Regex.IsMatch(segment, "^v\\d+[a-z]*$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The api-version segment used when the provider does not specify one.</summary>
@@ -285,10 +311,36 @@ public static class LlmProviderClientFactory
                 .ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        return LlmProviderCatalog.All
-            .Select(entry => LlmProviderReadiness.Evaluate(entry, settings.FindProvider(entry.ProviderId),
-                stored.Contains(settings.FindProvider(entry.ProviderId)?.CredentialProviderId ?? entry.ProviderId)))
-            .ToArray();
+        List<LlmProviderReadiness> readiness = [];
+        HashSet<string> evaluated = new(StringComparer.OrdinalIgnoreCase);
+        foreach (LlmProviderCatalogEntry entry in LlmProviderCatalog.All.Concat(LlmProviderCatalog.FallbackAll))
+        {
+            LlmProviderAppSettings? record = settings.FindProvider(entry.ProviderId);
+            string credentialId = record?.CredentialProviderId ??
+                                  (LlmSubscriptionCatalog.Find(entry.ProviderId) is not null
+                                      ? LlmSubscriptionCatalog.CredentialProviderId(entry.ProviderId)
+                                      : entry.ProviderId);
+            readiness.Add(LlmProviderReadiness.Evaluate(entry, record, stored.Contains(credentialId)));
+            evaluated.Add(entry.ProviderId);
+        }
+
+        foreach (LlmProviderAppSettings record in settings.Providers)
+        {
+            if (!evaluated.Add(record.ProviderId.Trim()))
+            {
+                continue;
+            }
+
+            LlmProviderCatalogEntry entry = LlmProviderCatalog.Find(record.ProviderId) ??
+                                            new LlmProviderCatalogEntry(record.ProviderId,
+                                                string.IsNullOrWhiteSpace(record.DisplayName)
+                                                    ? record.ProviderId
+                                                    : record.DisplayName.Trim(), "", "");
+            readiness.Add(LlmProviderReadiness.Evaluate(entry, record,
+                stored.Contains(record.CredentialProviderId)));
+        }
+
+        return readiness;
     }
 
     private static Core.Results.Result<LlmProviderRuntimeSettings> Failure(string errorCode,
@@ -298,42 +350,12 @@ public static class LlmProviderClientFactory
     }
 }
 
-/// <summary>
-/// Builds the LlmTornado client for resolved provider settings. Kept separate from
-/// <see cref="LlmChatClient"/> so history and cache invariants are testable without a network stack.
-/// </summary>
+/// <summary>Creates the provider transport while keeping callers independent of the SDK.</summary>
 public static class LlmClientFactory
 {
-    /// <summary>Creates a Tornado API configured for exactly one provider.</summary>
-    public static LlmTornado.TornadoApi CreateApi(LlmProviderRuntimeSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(settings);
-        if (settings.AuthenticationMode == LlmAuthenticationModes.Subscription)
-        {
-            throw new ArgumentException("Use the subscription transport for subscription credentials.",
-                nameof(settings));
-        }
-
-        LlmTornado.TornadoApi api = new(
-            new LlmTornado.Code.ProviderAuthentication(settings.CatalogEntry.Vendor, settings.ApiKey))
-        {
-            ApiUrlFormat = settings.BaseUrl,
-            ApiVersion = LlmProviderClientFactory.ResolveApiVersion(settings)
-        };
-        return api;
-    }
-
-    /// <summary>Creates a transport over the provider settings.</summary>
     public static ILlmChatTransport CreateTransport(LlmProviderRuntimeSettings settings)
     {
-        if (settings.AuthenticationMode == LlmAuthenticationModes.Subscription)
-        {
-            return new LlmTornadoSubscriptionTransport(settings.CredentialStore ??
-                                                       throw new ArgumentException(
-                                                           "Subscription transport requires a credential store.",
-                                                           nameof(settings)));
-        }
-
-        return new LlmTornadoChatTransport(CreateApi(settings));
+        ArgumentNullException.ThrowIfNull(settings);
+        return new LlmModelsDevTransport(settings);
     }
 }

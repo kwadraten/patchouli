@@ -30,7 +30,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
     private readonly Subject<Unit> _searchRequests = new();
     private int _activeSearchId;
     private bool _suppressHitExpansionChanged;
-    private BibliographicSearchFilterOptions? _filterOptions;
 
     public string DocumentInstanceId { get; set; } = "";
     [ObservableProperty] public partial string UnitId { get; private set; } = "";
@@ -41,10 +40,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
     [ObservableProperty] public partial string AffectedScopesSummary { get; private set; } = "";
     [ObservableProperty] public partial string EstimatedTotalText { get; private set; } = "";
     public ObservableCollection<string> SearchUnits { get; } = new();
-    public ObservableCollection<LibraryItemViewModel> BibliographicResults { get; } = new();
-    [ObservableProperty] public partial bool HasBibliographicResults { get; private set; }
-    public ObservableCollection<SearchFilterRowViewModel> FilterRows { get; } = new();
-    [ObservableProperty] public partial bool HasFilterRows { get; private set; }
     public ObservableCollection<SearchHitItemViewModel> FullTextResults { get; } = new();
 
     [ObservableProperty] public partial bool HasResults { get; private set; }
@@ -64,20 +59,9 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
     public AsyncCommand SearchCommand { get; }
     public AsyncCommand MarkdownCommand { get; }
     public AsyncCommand CopyMarkdownCommand { get; }
-    public AsyncCommand ToggleAdvancedSearchCommand { get; }
-    public AsyncCommand OpenAdvancedSearchCommand { get; }
-    public RelayCommand AddFilterRowCommand { get; }
     public RelayCommand ToggleAllHitsExpandedCommand { get; }
 
     [ObservableProperty] public partial bool IsSearching { get; private set; }
-
-    public static IReadOnlyList<SearchModeOption> AvailableModeOptions { get; } =
-    [
-        new(SearchMode.Bibliographic, "元数据筛选", "在书库题录元数据范围内筛选"),
-        new(SearchMode.FullText, "全文搜索", "在 OCR 全文索引中检索")
-    ];
-
-    public IReadOnlyList<SearchModeOption> ModeOptions => AvailableModeOptions;
 
     public SearchEvidenceViewModel(MainWindowViewModel m)
         : this(
@@ -103,7 +87,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
         Register(_searchRequests);
 
-        SelectedMode = ModeOptions[1];
         RebuildCommand = new AsyncCommand(async () =>
         {
             HostServices s = await _main.ServicesAsync();
@@ -148,20 +131,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
             await _main.LogOperationAsync("copy_evidence_markdown", Output);
         });
-        ToggleAdvancedSearchCommand = new AsyncCommand(async () =>
-        {
-            IsAdvancedSearchOpen = !IsAdvancedSearchOpen;
-            if (IsAdvancedSearchOpen)
-            {
-                await EnsureFilterOptionsAsync();
-            }
-        });
-        OpenAdvancedSearchCommand = new AsyncCommand(async () =>
-        {
-            IsAdvancedSearchOpen = true;
-            await EnsureFilterOptionsAsync();
-        });
-        AddFilterRowCommand = new RelayCommand(_ => AddFilterRow());
         ToggleAllHitsExpandedCommand = new RelayCommand(_ => SetAllHitsExpanded(!AreAllHitsExpanded));
 
         Register(ReactiveUiFlow.SubscribeLatest(
@@ -177,24 +146,8 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
                 h => PropertyChanged += h,
                 h => PropertyChanged -= h);
 
-        IObservable<Unit> modeChanged = propertyChanges
-            .Where(e => e.EventArgs.PropertyName is nameof(SelectedMode) or nameof(IsBibliographicMode))
-            .Select(_ => Unit.Default);
-
-        IObservable<Unit> queryChanged = propertyChanges
-            .Where(e => e.EventArgs.PropertyName == nameof(Query))
-            .Select(_ => Unit.Default);
-
-        IObservable<Unit> bibliographicRowsChanged = Observable
-            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
-                h => BibliographicResults.CollectionChanged += h,
-                h => BibliographicResults.CollectionChanged -= h)
-            .Select(_ => Unit.Default);
-
-        IObservable<Unit> filterRowsChanged = Observable
-            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
-                h => FilterRows.CollectionChanged += h,
-                h => FilterRows.CollectionChanged -= h)
+        IObservable<Unit> searchStateChanged = propertyChanges
+            .Where(e => e.EventArgs.PropertyName is nameof(Query) or nameof(IsSearching))
             .Select(_ => Unit.Default);
 
         IObservable<EventPattern<NotifyCollectionChangedEventArgs>> fullTextCollectionChanges = Observable
@@ -204,35 +157,15 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
         IObservable<Unit> fullTextRowsChanged = fullTextCollectionChanges.Select(_ => Unit.Default);
 
-        bibliographicRowsChanged
-            .Select(_ => BibliographicResults.Count > 0)
-            .BindOutput(this, has => HasBibliographicResults = has, ImmediateScheduler.Instance, null, true,
-                BibliographicResults.Count > 0);
-
-        filterRowsChanged
-            .Select(_ => FilterRows.Count > 0)
-            .BindOutput(this, has => HasFilterRows = has, ImmediateScheduler.Instance, null, true,
-                FilterRows.Count > 0);
-
-        IObservable<Unit> resultsTrigger = Observable.Merge(
-            bibliographicRowsChanged,
-            fullTextRowsChanged,
-            modeChanged);
-
-        resultsTrigger
-            .Select(_ => IsBibliographicMode ? BibliographicResults.Count > 0 : FullTextResults.Count > 0)
+        fullTextRowsChanged
+            .Select(_ => FullTextResults.Count > 0)
             .BindOutput(this, has => HasResults = has, ImmediateScheduler.Instance, null, true,
-                IsBibliographicMode ? BibliographicResults.Count > 0 : FullTextResults.Count > 0);
+                FullTextResults.Count > 0);
 
-        Observable.Merge(resultsTrigger, queryChanged)
-            .Select(_ =>
-            {
-                bool hasResults = IsBibliographicMode ? BibliographicResults.Count > 0 : FullTextResults.Count > 0;
-                return !hasResults && !string.IsNullOrWhiteSpace(Query);
-            })
+        Observable.Merge(fullTextRowsChanged, searchStateChanged)
+            .Select(_ => FullTextResults.Count == 0 && !IsSearching && !string.IsNullOrWhiteSpace(Query))
             .BindOutput(this, no => HasNoResults = no, ImmediateScheduler.Instance, null, true,
-                !(IsBibliographicMode ? BibliographicResults.Count > 0 : FullTextResults.Count > 0) &&
-                !string.IsNullOrWhiteSpace(Query));
+                FullTextResults.Count == 0 && !IsSearching && !string.IsNullOrWhiteSpace(Query));
 
         IObservable<SearchHitItemViewModel?> hitChanges = fullTextCollectionChanges
             .Select(_ =>
@@ -277,127 +210,9 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
                     HitExpansionChanged?.Invoke(item);
                 }
             }));
-
-        FilterRows.Add(new SearchFilterRowViewModel(this, SearchFilterKeyOption.All[0]));
     }
 
     [ObservableProperty] public partial string Query { get; set; } = "";
-
-    partial void OnQueryChanged(string value)
-    {
-        foreach (SearchFilterRowViewModel row in FilterRows)
-        {
-            row.RefreshValueFromQuery();
-        }
-    }
-
-    [ObservableProperty] public partial SearchModeOption SelectedMode { get; set; } = null!;
-
-    public SearchMode Mode => SelectedMode.Mode;
-    public string ModeDisplay => SelectedMode.Label;
-    public bool IsBibliographicMode => Mode == SearchMode.Bibliographic;
-    public bool IsFullTextMode => Mode == SearchMode.FullText;
-
-    [ObservableProperty] public partial bool IsAdvancedSearchOpen { get; private set; }
-
-    partial void OnIsAdvancedSearchOpenChanged(bool value)
-    {
-        Raise(nameof(AdvancedSearchToggleText));
-    }
-
-    public string AdvancedSearchToggleText => "高级搜索";
-
-    public void AddFilterRow()
-    {
-        FilterRows.Add(new SearchFilterRowViewModel(this));
-    }
-
-    public void RemoveFilterRow(SearchFilterRowViewModel row)
-    {
-        FilterRows.Remove(row);
-    }
-
-    public IReadOnlyList<SearchFilterOption> FilterOptionsFor(string key)
-    {
-        BibliographicSearchFilterOptions? options = _filterOptions;
-        if (options is null)
-        {
-            return Array.Empty<SearchFilterOption>();
-        }
-
-        return key switch
-        {
-            BibliographicSearchFilterKeys.ItemType => options.ItemTypes,
-            BibliographicSearchFilterKeys.ItemStatus => options.ItemStatuses,
-            BibliographicSearchFilterKeys.PrimaryDocumentOcrIndexStatus => options.OcrIndexStatuses,
-            BibliographicSearchFilterKeys.CollectionId => options.Collections,
-            BibliographicSearchFilterKeys.Citable =>
-            [
-                new SearchFilterOption("true", "可引用"),
-                new SearchFilterOption("false", "不可引用")
-            ],
-            _ => Array.Empty<SearchFilterOption>()
-        };
-    }
-
-    public async Task EnsureFilterOptionsAsync()
-    {
-        if (_filterOptions is not null)
-        {
-            return;
-        }
-
-        await LoadFilterOptionsAsync();
-    }
-
-    /// <summary>
-    /// Re-reads the filter option catalogs after a committed Library change so an open advanced
-    /// search observes collection create/rename/dissolve without a tab reload. A no-op until the
-    /// options were first requested, so the reload stays cheap and lazy.
-    /// </summary>
-    public async Task ReloadFilterOptionsAsync()
-    {
-        if (_filterOptions is null)
-        {
-            return;
-        }
-
-        await LoadFilterOptionsAsync();
-    }
-
-    private async Task LoadFilterOptionsAsync()
-    {
-        HostServices services = await _main.ServicesAsync();
-        Result<BibliographicSearchFilterOptions> options = await services.LibraryItems.GetSearchFilterOptionsAsync();
-        if (options.IsFailure)
-        {
-            _main.Report($"筛选选项加载失败：{options.ErrorMessage}");
-            return;
-        }
-
-        _filterOptions = options.Value;
-        foreach (SearchFilterRowViewModel row in FilterRows)
-        {
-            row.RefreshAvailableValues();
-        }
-    }
-
-    public BibliographicItemSearch BuildBibliographicSearch()
-    {
-        List<BibliographicSearchFilter> filters = new();
-        foreach (SearchFilterRowViewModel row in FilterRows)
-        {
-            BibliographicSearchFilter? filter = row.ToFilter();
-            if (filter is not null)
-            {
-                filters.Add(filter);
-            }
-        }
-
-        return new BibliographicItemSearch(
-            string.IsNullOrWhiteSpace(Query) ? null : Query.Trim(),
-            filters);
-    }
 
     [ExcludeFromDerivedGeneration] public bool ShowItemTypeColumn => GetColumnVisibility("ItemType");
     [ExcludeFromDerivedGeneration] public bool ShowYearColumn => GetColumnVisibility("Year");
@@ -555,19 +370,19 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         using IActivityScope activity =
             _main.ActivityTracker.BeginScope("搜索", HostActivityKind.UiCommand, "查询与投影结果");
         int searchId = Interlocked.Increment(ref _activeSearchId);
-        HostServices services = await _main.ServicesAsync();
         int libraryGeneration = _main.LibraryGeneration;
+        SearchRequest request = new(Query.Trim()) { ItemFilters = _main.SearchFilters.BuildFilters() };
+        HostServices services = await _main.ServicesAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
         IsSearching = true;
         try
         {
-            if (IsBibliographicMode)
-            {
-                await SearchBibliographicAsync(services, libraryGeneration, cancellationToken);
-            }
-            else
-            {
-                await SearchFullTextAsync(services, libraryGeneration, cancellationToken);
-            }
+            await SearchFullTextAsync(services, libraryGeneration, request, cancellationToken);
         }
         finally
         {
@@ -625,96 +440,15 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         }
     }
 
-    private async Task SearchBibliographicAsync(
-        HostServices services,
-        int libraryGeneration,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        BibliographicItemSearch request = BuildBibliographicSearch();
-        if (request.Query is null && request.Filters.Count == 0)
-        {
-            await RunOnUiThreadAsync(() =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-                {
-                    return;
-                }
-
-                ClearResults();
-                Output = "";
-                RaiseResultProperties();
-                _main.Report("请输入搜索词或添加筛选条件。");
-            }, cancellationToken);
-            return;
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        Result<IReadOnlyList<LibraryItemRow>> result = await Task.Run(() =>
-            services.LibraryItems.SearchRowsAsync(request, cancellationToken), cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (result.IsFailure)
-        {
-            await RunOnUiThreadAsync(() =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-                {
-                    return;
-                }
-
-                ClearResults();
-                IndexStatus = "";
-                AffectedScopesSummary = "";
-                EstimatedTotalText = "";
-                Output = $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
-                RaiseResultProperties();
-                _main.Report(Output);
-            }, cancellationToken);
-            return;
-        }
-
-        List<LibraryItemViewModel> items = new();
-        foreach (LibraryItemRow row in result.Value)
-        {
-            items.Add(CreateItemViewModel(row));
-        }
-
-        await RunOnUiThreadAsync(() =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
-            {
-                return;
-            }
-
-            BibliographicResults.Clear();
-            foreach (LibraryItemViewModel item in items)
-            {
-                BibliographicResults.Add(item);
-            }
-
-            UnitId = "";
-            VersionedUri = "";
-            IndexStatus = "";
-            AffectedScopesSummary = "";
-            EstimatedTotalText = $"{result.Value.Count} 条题录";
-            Output = "";
-            RaiseColumnVisibility();
-            RaiseResultProperties();
-            _main.Report($"筛选完成：{result.Value.Count} 条题录。");
-        }, cancellationToken);
-    }
-
     private async Task SearchFullTextAsync(
         HostServices services,
         int libraryGeneration,
+        SearchRequest request,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(Query))
+        string query = request.Query;
+        if (query.Length == 0)
         {
             await RunOnUiThreadAsync(() =>
             {
@@ -732,25 +466,8 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             return;
         }
 
-        List<BibliographicSearchFilter> itemFilters = new();
-        foreach (SearchFilterRowViewModel row in FilterRows)
-        {
-            if (row.IsKeyword)
-            {
-                continue;
-            }
-
-            BibliographicSearchFilter? filter = row.ToFilter();
-            if (filter is not null)
-            {
-                itemFilters.Add(filter);
-            }
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        Result<SearchResultPage> r = await Task.Run(() => services.Search.SearchLibraryAsync(
-            new SearchRequest(Query) { ItemFilters = itemFilters }, cancellationToken), cancellationToken);
+        Result<SearchResultPage> r = await Task.Run(
+            () => services.Search.SearchLibraryAsync(request, cancellationToken), cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (r.IsFailure)
@@ -806,7 +523,7 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
                         page.PageIndex,
                         unit.BoxId,
                         unit.TreeRevisionId);
-                    snippets.Add(new SearchHitSnippetViewModel(unitVm, Query, JumpToHitAsync));
+                    snippets.Add(new SearchHitSnippetViewModel(unitVm, query, JumpToHitAsync));
                     firstMatchedUnit ??= unit.UnitId.ToString();
                 }
             }
@@ -854,6 +571,7 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
     {
         Interlocked.Increment(ref _activeSearchId);
         IsSearching = false;
+        Query = "";
         ClearResults();
         Output = "";
         IndexStatus = "";
@@ -917,7 +635,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     private void ClearResults()
     {
-        BibliographicResults.Clear();
         SearchUnits.Clear();
         FullTextResults.Clear();
         UnitId = "";
@@ -929,7 +646,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     private void RaiseResultProperties()
     {
-        Raise(nameof(BibliographicResults));
         Raise(nameof(FullTextResults));
     }
 }

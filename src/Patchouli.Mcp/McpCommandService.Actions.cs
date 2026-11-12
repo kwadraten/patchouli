@@ -43,6 +43,11 @@ public sealed partial class McpCommandService
         }
 
         Result<McpUriParseResult> address = McpResourceUris.Parse(request.Endpoint);
+        if (address.IsSuccess && IsPluginKind(address.Value.Kind))
+        {
+            return await SendPluginAsync(request, address.Value, revision, action, cancellationToken);
+        }
+
         if (address.IsFailure || address.Value.Kind != McpUriKind.RunEndpoint || string.IsNullOrWhiteSpace(action))
         {
             return Fail(McpErrorCode.InvalidArgument,
@@ -91,6 +96,91 @@ public sealed partial class McpCommandService
                 new McpActionSendMeta(await CurrentLibraryRevisionAsync(cancellationToken), action, outcome.Value.State,
                     endpoint),
                 [new McpActionSendResult(outcome.Value.State, outcome.Value.Result, outcome.Value.RunUri)]);
+        return McpCommandResult<McpActionSendMeta, McpActionSendResult>.Ok(envelope);
+    }
+
+    /// <summary>
+    /// Plugin control-endpoint send. The endpoint URI must be a declared
+    /// <c>patchouli://plugin/{id}/{endpoint}</c> path and the target must be the same plugin's
+    /// mount root; the device registry allowed_verbs grant and the normal send switch/domain
+    /// denials both apply before the message reaches the plugin.
+    /// </summary>
+    private async Task<McpCommandResult<McpActionSendMeta, McpActionSendResult>> SendPluginAsync(
+        McpActionSendRequest request, McpUriParseResult endpoint, string revision, string action,
+        CancellationToken cancellationToken)
+    {
+        McpCommandResult<McpActionSendMeta, McpActionSendResult> Fail(McpErrorCode code, string detail)
+        {
+            return ActionFailure(revision, endpoint.CanonicalUri, action, code, detail);
+        }
+
+        if (_pluginApi is null)
+        {
+            return Fail(McpErrorCode.Unavailable, "Plugin mounts are unavailable on this host.");
+        }
+
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "send requires endpoint/action/target/args; use plugin/<plugin-id>/<endpoint> <action> plugin/<plugin-id>/.");
+        }
+
+        if (endpoint.Kind != McpUriKind.PluginResource || string.IsNullOrWhiteSpace(endpoint.PluginPath))
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                "Plugin send requires a declared endpoint URI: patchouli://plugin/<plugin-id>/<endpoint>.");
+        }
+
+        string pluginId = endpoint.PluginId!;
+        if (_pluginApi.FindMount(pluginId) is null)
+        {
+            return Fail(McpErrorCode.NotFound, $"Plugin '{pluginId}' is not registered or is disabled.");
+        }
+
+        McpServerSettings? permissions = await PermissionSettingsAsync(cancellationToken);
+        if (permissions is not null && !McpPermissionPolicy.Allows(permissions, "send", endpoint.CanonicalUri))
+        {
+            return Fail(McpErrorCode.PermissionDenied, "Endpoint send permission is required.");
+        }
+
+        if (!_pluginApi.AllowsVerb(pluginId, "send"))
+        {
+            return Fail(McpErrorCode.PermissionDenied,
+                "send is not in this plugin's allowed_verbs registry grant.");
+        }
+
+        if (!_pluginApi.IsEndpoint(pluginId, endpoint.PluginPath!))
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                $"'{endpoint.PluginPath}' is not a declared control endpoint of plugin '{pluginId}'.");
+        }
+
+        if (request.RequestId is not null &&
+            (string.IsNullOrWhiteSpace(request.RequestId) || request.RequestId.Trim().Length > 256))
+        {
+            return Fail(McpErrorCode.InvalidArgument, "request_id must contain 1 through 256 non-blank characters.");
+        }
+
+        Result<McpUriParseResult> target = McpResourceUris.Parse(request.Target);
+        if (target.IsFailure || target.Value.Kind != McpUriKind.Plugin ||
+            !string.Equals(target.Value.PluginId, pluginId, StringComparison.Ordinal))
+        {
+            return Fail(McpErrorCode.InvalidArgument,
+                $"Plugin send target must be the plugin mount root: {McpResourceUris.PluginRootUri(pluginId)}.");
+        }
+
+        Result<McpPluginSendOutcome> outcome = await _pluginApi.SendAsync(pluginId, endpoint.PluginPath!,
+            action, request.Args, request.RequestId?.Trim(), cancellationToken);
+        if (outcome.IsFailure)
+        {
+            return Fail(ToPluginError(outcome.ErrorCode), outcome.ErrorMessage ?? "Plugin send failed.");
+        }
+
+        McpEnvelope<McpActionSendMeta, McpActionSendResult> envelope =
+            McpEnvelope<McpActionSendMeta, McpActionSendResult>.Create(
+                new McpActionSendMeta(await CurrentLibraryRevisionAsync(cancellationToken), action,
+                    outcome.Value.State, endpoint.CanonicalUri),
+                [new McpActionSendResult(outcome.Value.State, outcome.Value.Result, null)]);
         return McpCommandResult<McpActionSendMeta, McpActionSendResult>.Ok(envelope);
     }
 

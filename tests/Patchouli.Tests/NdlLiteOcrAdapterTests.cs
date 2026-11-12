@@ -2,6 +2,7 @@ using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Ocr.Engines.NdlLite;
 using Patchouli.Ocr;
 using SkiaSharp;
 

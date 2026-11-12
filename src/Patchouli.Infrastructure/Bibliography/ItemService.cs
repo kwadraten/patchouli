@@ -317,10 +317,11 @@ public sealed class ItemService : IItemService
                 string[] knownTags = (await connection.QueryAsync<string>(
                     "select tag from library_tag_definitions where library_id = @LibraryId union select tag from item_tag_memberships where library_id = @LibraryId;",
                     new { LibraryId = updated.LibraryId.ToString() }, transaction)).ToArray();
-                if (requestedTags.Except(knownTags, StringComparer.Ordinal).Any())
+                string[] unknownTags = requestedTags.Except(knownTags, StringComparer.Ordinal).ToArray();
+                if (unknownTags.Length > 0)
                 {
                     return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound,
-                        "A tag does not exist. Create tags by editing library.yml before assigning them to items.");
+                        UnknownTagsMessage(unknownTags, knownTags));
                 }
 
                 // Removing the last membership must not implicitly delete its category.
@@ -1875,6 +1876,71 @@ public sealed class ItemService : IItemService
     private static string NormalizeIdentifierScheme(string scheme)
     {
         return BuiltInIdentifierSchemes.Normalize(scheme);
+    }
+
+    private static string UnknownTagsMessage(IReadOnlyList<string> unknownTags, IReadOnlyCollection<string> knownTags)
+    {
+        string listed = string.Join(", ", unknownTags.Select(tag =>
+            SuggestKnownTag(tag, knownTags) is { } suggestion
+                ? $"'{tag}' (did you mean '{suggestion}'?)"
+                : $"'{tag}'"));
+        return unknownTags.Count == 1
+            ? $"Tag {listed} does not exist. Create tags by editing library.yml before assigning them to items."
+            : $"Tags {listed} do not exist. Create tags by editing library.yml before assigning them to items.";
+    }
+
+    private static string? SuggestKnownTag(string missing, IReadOnlyCollection<string> knownTags)
+    {
+        string? best = null;
+        int bestDistance = int.MaxValue;
+        foreach (string known in knownTags)
+        {
+            if (string.Equals(known, missing, StringComparison.OrdinalIgnoreCase))
+            {
+                return known;
+            }
+
+            int distance = EditDistance(missing, known);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = known;
+            }
+        }
+
+        return best is not null && missing.Length >= 3 && bestDistance * 2 <= Math.Max(missing.Length, best.Length)
+            ? best
+            : null;
+    }
+
+    private static int EditDistance(string left, string right)
+    {
+        if (left.Length < right.Length)
+        {
+            (left, right) = (right, left);
+        }
+
+        int[] previous = new int[right.Length + 1];
+        int[] current = new int[right.Length + 1];
+        for (int column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (int row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+            for (int column = 1; column <= right.Length; column++)
+            {
+                current[column] = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + (left[row - 1] == right[column - 1] ? 0 : 1));
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[right.Length];
     }
 
     private static async Task InsertIdentifierAsync(

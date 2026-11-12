@@ -319,7 +319,7 @@ public sealed class SearchPerformanceAndHotspotRegressionTests
             await connection.OpenAsync();
             int currentVersion = await connection.ExecuteScalarAsync<int>(
                 "select cache_version from fts_cache_state where state_id = 1;");
-            currentVersion.Should().Be(SearchFtsCacheWriter.CurrentCacheVersion);
+            currentVersion.Should().Be(SearchTextAnalyzer.CurrentCacheVersion);
         }
 
         // Search on upgraded cache version 2: succeeds via indexed FTS

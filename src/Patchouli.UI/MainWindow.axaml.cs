@@ -6,6 +6,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Patchouli.UI.Controls;
 using Patchouli.Host.Composition;
+using Patchouli.Llm;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
@@ -21,6 +22,7 @@ public sealed partial class MainWindow : Window
     private bool _exitRequested;
     private Func<Task<bool>>? _beforeConfirmedExit;
     private bool _startupScheduled;
+    private Task _protocolNavigation = Task.CompletedTask;
     private CatStatusIndicator? _catIndicator;
     private DispatcherTimer? _geometryClampDebounce;
 
@@ -80,6 +82,27 @@ public sealed partial class MainWindow : Window
     public async Task ShowFirstRunIfNeededAsync(bool startMcpServer = true)
     {
         await _viewModel.RunStartupAsync(startMcpServer);
+    }
+
+    internal void OpenProtocolUri(string uri)
+    {
+        App.ActivateWindow(this);
+        _protocolNavigation = OpenProtocolUriAfterAsync(_protocolNavigation, uri);
+        _protocolNavigation.Observe("protocol-activation", "open-uri");
+    }
+
+    private async Task OpenProtocolUriAfterAsync(Task previous, string uri)
+    {
+        try
+        {
+            await previous;
+            await _viewModel.OpenProtocolUriAsync(uri);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "protocol-activation", "navigate-uri");
+            _viewModel.ReportError($"无法打开文献虚拟链接：{exception.Message}");
+        }
     }
 
     public void StartStartupAfterFirstFrame()
@@ -241,6 +264,8 @@ public sealed partial class MainWindow : Window
             Core.Results.Result skillMaintenance =
                 await _viewModel.AgentSkills.UpdateUserInstallationsAsync();
             await _viewModel.RunStartupAsync(false);
+            LlmModelCatalog.Shared.RefreshInBackgroundAsync(new PlatformAppPaths().Resolve().CacheDirectory)
+                .Observe("models-dev", "refresh");
             _viewModel.StartMcpServerInBackground();
             if (skillMaintenance.IsFailure)
             {
@@ -268,6 +293,21 @@ public sealed partial class MainWindow : Window
 
         e.Handled = true;
         _viewModel.RunToolbarSearchCommand.Execute(null);
+    }
+
+    private void OnToolbarSearchFilterOpened(object? sender, EventArgs e)
+    {
+        _viewModel.LoadToolbarSearchFiltersCommand.Execute(null);
+    }
+
+    private void OnToolbarSearchFilterKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && _viewModel.IsToolbarSearchFilterOpen)
+        {
+            e.Handled = true;
+            _viewModel.IsToolbarSearchFilterOpen = false;
+            ToolbarSearchFilterButton.Focus();
+        }
     }
 
     private void OnWindowDragOver(object? sender, DragEventArgs e)
@@ -342,6 +382,17 @@ public sealed partial class MainWindow : Window
 
         UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshOcrPresetMenuAsync, "ocr-preset-menu-refresh")
             .Observe("ui-event", "ocr-preset-menu-refresh");
+    }
+
+    private void OnExtensionMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, e.Source))
+        {
+            return;
+        }
+
+        UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshExtensionMenuAsync, "extension-menu-refresh")
+            .Observe("ui-event", "extension-menu-refresh");
     }
 
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

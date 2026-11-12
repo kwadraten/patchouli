@@ -17,12 +17,17 @@ type internal NugetSdkProbeResult =
 
 /// A deliberately small F# script NuGet SDK preflight, not a general SDK locator.
 module internal NugetResolverPreflight =
+    // Path helpers report null only when the input is null, but the declared nullability of the
+    // return type varies across .NET reference packs; keeping ofObj behind a | null parameter
+    // compiles under both annotation generations.
+    let private pathOption (value: string | null) = Option.ofObj value
+
     let candidatePaths(dotnetHostPath: string, runtimeHostPath: string, pathValue: string,
                        programW6432: string, programFiles: string, userProfile: string,
                        pathSeparator: char, isWindows: bool) =
         let executable = if isWindows then "dotnet.exe" else "dotnet"
         let isDotnetHost (path: string) =
-            let name = Path.GetFileName path |> Option.ofObj |> Option.defaultValue ""
+            let name = pathOption (Path.GetFileName path) |> Option.defaultValue ""
             String.Equals(name, executable, if isWindows then StringComparison.OrdinalIgnoreCase else StringComparison.Ordinal)
         let explicitHost = if String.IsNullOrWhiteSpace dotnetHostPath then [||] else [| dotnetHostPath.Trim().Trim('"') |]
         let runtimeHost =
@@ -62,7 +67,7 @@ module internal NugetResolverPreflight =
             |> parentAt 3
             |> Option.map (fun root -> Path.Combine(root, if OperatingSystem.IsWindows() then "dotnet.exe" else "dotnet"))
             |> Option.defaultValue ""
-        let processName = Path.GetFileNameWithoutExtension processPath |> Option.ofObj |> Option.defaultValue ""
+        let processName = pathOption (Path.GetFileNameWithoutExtension processPath) |> Option.defaultValue ""
         if String.Equals(processName, "dotnet", StringComparison.OrdinalIgnoreCase) then processPath else runtimeHost
 
     let private existingDotnetHosts() =

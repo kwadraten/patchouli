@@ -98,7 +98,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             """
             select page_id as PageId, document_instance_id as DocumentInstanceId, page_index as PageIndex,
                    page_label as PageLabel, width as Width, height as Height, rotation as Rotation,
-                   coordinate_basis as CoordinateBasis, basis_width as BasisWidth, basis_height as BasisHeight,
+                   user_rotation as UserRotation, coordinate_basis as CoordinateBasis, basis_width as BasisWidth, basis_height as BasisHeight,
                    renderer_basis_version as RendererBasisVersion, source_file_hash as SourceFileHash,
                    created_at as CreatedAt, updated_at as UpdatedAt
             from pages where document_instance_id = @Id order by page_index;
@@ -116,6 +116,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
         public double? Width { get; set; }
         public double? Height { get; set; }
         public int Rotation { get; set; }
+        public int UserRotation { get; set; }
         public string CoordinateBasis { get; set; } = string.Empty;
         public double? BasisWidth { get; set; }
         public double? BasisHeight { get; set; }
@@ -134,6 +135,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
                 Width,
                 Height,
                 Rotation,
+                UserRotation,
                 CoordinateBasis,
                 BasisWidth,
                 BasisHeight,

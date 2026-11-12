@@ -105,6 +105,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         PreviousPageCommand?.NotifyCanExecuteChanged();
         NextPageCommand?.NotifyCanExecuteChanged();
         UpdateChapterSelection();
+        PushPluginViewPageUri();
     }
 
     [ObservableProperty]
@@ -486,6 +487,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             SidebarTab.Translation => "翻译",
             SidebarTab.Chapters => "章节",
             SidebarTab.Search => "全书搜索",
+            SidebarTab.Plugin => ActivePluginView?.Title ?? "插件",
             _ => "页面内容"
         };
 
@@ -834,12 +836,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     public void OnPointerPressed(double x, double y)
     {
-        if (ActiveTool == PdfWorkspaceTool.Select)
+        if (SplitSource is null && ActiveTool == PdfWorkspaceTool.Select)
         {
             return;
         }
 
-        if (ActiveTool == PdfWorkspaceTool.CreateBox && !IsEditMode)
+        if (SplitSource is null && ActiveTool == PdfWorkspaceTool.CreateBox && !IsEditMode)
         {
             return;
         }
@@ -1258,7 +1260,6 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SplitSource = original;
         SplitFirstText = parts.Length > 1 ? parts[0] : text[..(text.Length / 2)];
         SplitSecondText = parts.Length > 1 ? string.Join("\n\n", parts.Skip(1)) : text[(text.Length / 2)..];
-        SetActiveTool(PdfWorkspaceTool.CreateBox);
         Status = SplitStepText;
         await Task.CompletedTask;
     }
@@ -2276,8 +2277,10 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _loadedDocumentInstanceId = TryGetDocumentInstanceId(out DocumentInstanceId openedId)
             ? openedId
             : null;
+        PushPluginViewPageUri();
         await RenderCurrentPageAsync();
         await EnsureChapterMapLoadedAsync();
+        await RefreshPluginSidebarViewsAsync();
     }
 
     public void Clear()
@@ -2305,6 +2308,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         CrossPageContinuationMarkers.Clear();
         _crossPageContinuationSources.Clear();
         _pages = [];
+        _currentPageId = null;
+        _pendingRotations.Clear();
+        ViewportRotationAngle = 0;
         PreviewBlocks.Clear();
         ResetTranslationState();
         ReadingScene = null;
@@ -2334,6 +2340,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _chapterMapSubscription = null;
         _chapterMapRevisions = null;
         _loadedDocumentInstanceId = null;
+        DeactivatePluginView();
+        PushPluginViewPageUri();
         Status = "选择题录后可预览 PDF。";
     }
 
@@ -2580,7 +2588,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             PageCount = pages.Value.Count;
-            _pages = pages.Value;
+            _pages = _pendingRotations.Count == 0
+                ? pages.Value
+                : pages.Value.Select(page => _pendingRotations.TryGetValue(page.PageId, out int pending)
+                    ? page with { UserRotation = pending }
+                    : page).ToArray();
             if (PageCount == 0)
             {
                 ClearSourceValidation();
@@ -2620,6 +2632,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             }
 
             using PdfPagePixelBufferLease raster = preview.Value;
+            ViewportRotationAngle = _pages[PageIndex].UserRotation;
             SwapPreviewImage(CreateBitmap(raster));
             WidthPixels = raster.WidthPixels;
             HeightPixels = raster.HeightPixels;
@@ -2648,6 +2661,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
                     _currentRevisionId = rev.Value.TreeRevisionId;
                     _liveCurrentRevisionId = rev.Value.TreeRevisionId;
                     IsViewingHistoricalRevision = false;
+                    PushPluginViewPageUri();
                     await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false, generation);
                 }
             }
@@ -4440,6 +4454,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SelectedBox = null;
         IsViewingHistoricalRevision = true;
         _currentRevisionId = revision.RevisionId;
+        PushPluginViewPageUri();
         await LoadBoxesIntoViewAsync(revision.RevisionId, false);
         Status = $"正在查看历史版本 {revision.RevisionId}（来源：{revision.Source}）。重新加载页面可返回当前版本。";
     }

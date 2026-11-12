@@ -1,9 +1,12 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Downloads;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 
@@ -20,8 +23,12 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
     private int _searchVersion;
     private CslCatalogSourceViewModel _selectedCatalogSource = null!;
 
-    public CslStyleManagerViewModel(MainWindowViewModel main)
+    private readonly Func<HttpClient> _httpClientFactory;
+
+    public CslStyleManagerViewModel(MainWindowViewModel main,
+        Func<HttpClient>? httpClientFactory = null)
     {
+        _httpClientFactory = httpClientFactory ?? (() => new HttpClient());
         _isConstructing = true;
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshAsync, () => SelectedCatalogSource is not null);
@@ -273,15 +280,130 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
+        int generation = _main.LibraryGeneration;
+        string relative = Uri.TryCreate(catalogStyle.SourceUrl, UriKind.Absolute, out Uri? styleUri)
+            ? Path.GetFileName(styleUri.AbsolutePath)
+            : "style.csl";
+        if (relative.Length == 0)
+        {
+            relative = "style.csl";
+        }
+
+        Result<CslStyle>? captured = null;
+        string? failureCode = null;
+        string? failureMessage = null;
         try
         {
-            using HttpClient client = new();
-            client.DefaultRequestHeaders.UserAgent.ParseAdd(
-                $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
-            string xml = await client.GetStringAsync(catalogStyle.SourceUrl);
-            HostServices services = await _main.ServicesAsync();
-            int generation = _main.LibraryGeneration;
-            Result<CslStyle> result = await Task.Run(() => services.CslStore.InstallStyleAsync(catalogStyle, xml));
+            DownloadTaskHandle handle = services.DownloadTasks.Start(
+                $"安装样式 {catalogStyle.DisplayName}", async (worker, token) =>
+                {
+                    IDownloadProgress? rich = worker as IDownloadProgress;
+                    DownloadFileProgress current = new(relative, "running", 0, null);
+
+                    void ReportFile(DownloadFileProgress value)
+                    {
+                        current = value;
+                        rich?.ReportFile(value);
+                    }
+
+                    ReportFile(current);
+                    try
+                    {
+                        using HttpClient client = _httpClientFactory();
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                            $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
+                        using HttpResponseMessage response = await client.GetAsync(
+                                catalogStyle.SourceUrl, HttpCompletionOption.ResponseHeadersRead, token)
+                            .ConfigureAwait(false);
+                        response.EnsureSuccessStatusCode();
+                        long? total = response.Content.Headers.ContentLength is > 0
+                            ? response.Content.Headers.ContentLength
+                            : null;
+                        ReportFile(new DownloadFileProgress(relative, "running", 0, total));
+                        using MemoryStream buffered = new();
+                        await using (Stream source = await response.Content
+                                         .ReadAsStreamAsync(token).ConfigureAwait(false))
+                        {
+                            byte[] chunk = new byte[81920];
+                            int read;
+                            while ((read = await source.ReadAsync(chunk, token)
+                                       .ConfigureAwait(false)) > 0)
+                            {
+                                await buffered.WriteAsync(chunk.AsMemory(0, read), token)
+                                    .ConfigureAwait(false);
+                                ReportFile(new DownloadFileProgress(relative, "running",
+                                    buffered.Length, total));
+                            }
+                        }
+
+                        if (total is { } declared && buffered.Length != declared)
+                        {
+                            failureMessage = $"样式下载不完整：{buffered.Length}/{declared} 字节。";
+                            rich?.ReportFile(current with
+                            {
+                                State = "failed", ErrorMessage = failureMessage
+                            });
+                            return Result.Failure("download_failed", failureMessage);
+                        }
+
+                        using ByteArrayContent decoded = new(buffered.ToArray());
+                        decoded.Headers.ContentType = response.Content.Headers.ContentType;
+                        string xml = await decoded.ReadAsStringAsync(token).ConfigureAwait(false);
+                        ReportFile(new DownloadFileProgress(relative, "verifying",
+                            buffered.Length, total));
+                        Result<CslLocalStyleInfo> parsed = CslStyleXmlParser.Parse(xml);
+                        if (parsed.IsFailure)
+                        {
+                            failureCode = parsed.ErrorCode;
+                            failureMessage = parsed.ErrorMessage;
+                            rich?.ReportFile(current with
+                            {
+                                State = "failed", ErrorMessage = parsed.ErrorMessage
+                            });
+                            return Result.Failure(parsed.ErrorCode!, parsed.ErrorMessage!);
+                        }
+
+                        Result<CslStyle> inner = await services.CslStore
+                            .InstallStyleAsync(catalogStyle, xml, token).ConfigureAwait(false);
+                        if (inner.IsSuccess)
+                        {
+                            captured = inner;
+                            rich?.ReportFile(current with { State = "succeeded" });
+                            return Result.Success();
+                        }
+
+                        failureCode = inner.ErrorCode;
+                        failureMessage = inner.ErrorMessage;
+                        rich?.ReportFile(current with
+                        {
+                            State = "failed", ErrorMessage = inner.ErrorMessage
+                        });
+                        return Result.Failure(inner.ErrorCode!, inner.ErrorMessage!);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        rich?.ReportFile(current with { State = "cancelled" });
+                        throw;
+                    }
+                    catch (Exception exception) when (exception is HttpRequestException
+                                                          or InvalidDataException)
+                    {
+                        failureMessage = exception.Message;
+                        rich?.ReportFile(current with
+                        {
+                            State = "failed", ErrorMessage = exception.Message
+                        });
+                        return Result.Failure("download_failed",
+                            $"样式下载失败：{exception.Message}");
+                    }
+                }, CancellationToken.None,
+                [new DownloadFileProgress(relative, "queued", 0, null)], false);
+            Result outcome = await new DownloadOperationRunner(_main.Dialogs)
+                .RunAsync($"安装样式 {catalogStyle.DisplayName}", services.DownloadTasks, handle);
+            Result<CslStyle> result = captured ?? Result<CslStyle>.Failure(
+                failureCode ?? outcome.ErrorCode ?? "install_failed",
+                failureMessage ?? outcome.ErrorMessage ?? "安装失败。");
             if (!_main.IsCurrentLibraryContext(services, generation))
             {
                 return;

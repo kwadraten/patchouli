@@ -159,8 +159,8 @@ public sealed class OcrQueueReactivityTests : IDisposable
                 Dispatcher.UIThread.RunJobs();
                 window.UpdateLayout();
                 Button[] buttons = page.GetVisualDescendants().OfType<Button>().ToArray();
-                buttons.Should().Contain(button => Equals(button.Content, "停止任务"));
-                buttons.Should().Contain(button => Equals(button.Content, "暂停全部任务"));
+                buttons.Should().Contain(button => Equals(button.Content, "停止加工任务"));
+                buttons.Should().Contain(button => Equals(button.Content, "暂停加工任务"));
                 buttons.Select(button => button.Content).OfType<Patchouli.Lucide.Avalonia.Lucide>().Should()
                     .Contain(icon => icon.Icon == "X");
                 page.GetVisualDescendants().OfType<TextBlock>().Should().NotContain(text =>

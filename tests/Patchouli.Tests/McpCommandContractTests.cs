@@ -75,13 +75,14 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(6);
-        envelope.Meta.DomainTotal.Should().Be(6);
-        envelope.Meta.FilteredTotal.Should().Be(6);
+        envelope.Meta.ShownTotal.Should().Be(7);
+        envelope.Meta.DomainTotal.Should().Be(7);
+        envelope.Meta.FilteredTotal.Should().Be(7);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().BeEquivalentTo(
             "patchouli://items/",
             "patchouli://texts/",
+            "patchouli://images/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
             "patchouli://runs/",
@@ -220,7 +221,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         JsonNode node = JsonSerializer.SerializeToNode(entry)!;
         node.AsObject().Select(pair => pair.Key).Should().Equal(
             "uri", "title", "type", "item_uri", "item_status", "document_status", "source_status",
-            "ocr_index_status", "citable");
+            "ocr_index_status", "citable", "image_uri");
+        entry.ImageUri.Should().StartWith("patchouli://images/").And.Contain("/page-");
     }
 
     [Fact]
@@ -418,6 +420,47 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         yaml["csl"]!["title"]!.GetValue<string>().Should().Be("Distributed Systems Notes");
         result.Envelope!.Continuation.Should().BeNull();
         result.Envelope.Message.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Fetch_item_yaml_embeds_document_directory_links()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        JsonObject yaml = (JsonObject)McpYamlCodec.Decode(result.Envelope!.Entries.Single().Content!);
+        JsonArray documents = (JsonArray)yaml["extensions"]!["patchouli"]!["documents"]!;
+        JsonObject entry = (JsonObject)documents.Should().ContainSingle().Subject!;
+        entry["uri"]!.GetValue<string>().Should().Be(McpResourceUris.DocumentUri(_library.DocumentA));
+        entry["title"]!.GetValue<string>().Should().Be("Distributed Systems Notes");
+        entry["primary"]!.GetValue<bool>().Should().BeTrue();
+        entry["images_uri"]!.GetValue<string>().Should()
+            .Be(McpResourceUris.ImagesDocumentUri(_library.DocumentA));
+        entry["translations_uri"]!.GetValue<string>().Should()
+            .Be(McpResourceUris.TranslationDocumentUri(_library.DocumentA));
+    }
+
+    [Fact]
+    public async Task Put_item_yaml_ignores_the_read_only_documents_block()
+    {
+        string uri = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpFetchMeta, McpFetchResult> before = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject root = (JsonObject)McpYamlCodec.Decode(before.Envelope!.Entries.Single().Content!);
+        root["csl"]!["title"] = "Links stay read-only";
+
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
+            new McpPutRequest(uri, McpYamlCodec.Encode(root)));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+
+        Result<McpItemMetadataResponse> item = await _library.Api.GetItemMetadataAsync(_library.BookA);
+        item.Value.Title.Should().Be("Links stay read-only");
+        McpCommandResult<McpFetchMeta, McpFetchResult> after = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        JsonObject saved = (JsonObject)McpYamlCodec.Decode(after.Envelope!.Entries.Single().Content!);
+        ((JsonArray)saved["extensions"]!["patchouli"]!["documents"]!).Should().ContainSingle(entry =>
+            entry!["uri"]!.GetValue<string>() == McpResourceUris.DocumentUri(_library.DocumentA));
     }
 
     [Fact]

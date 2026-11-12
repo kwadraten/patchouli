@@ -37,11 +37,12 @@
     <Setter Property="HorizontalContentAlignment" Value="Center" />
   </Style>
 
-  <!-- Primary Action Buttons (uses theme resources if available) -->
+  <!-- Primary Action Buttons: every solid-accent button shares this recipe —
+       PrimaryBrush (step 11) background with OnPrimaryStrongBrush text/icons. -->
   <Style Selector="Button.Primary">
     <Setter Property="Height" Value="32" />
-    <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
-    <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+    <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="Foreground" Value="{DynamicResource OnPrimaryStrongBrush}" />
     <Setter Property="VerticalContentAlignment" Value="Center" />
     <Setter Property="HorizontalContentAlignment" Value="Center" />
   </Style>

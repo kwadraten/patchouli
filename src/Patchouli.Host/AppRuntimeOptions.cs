@@ -355,7 +355,8 @@ public sealed record UiPreferences(
     bool LibraryGridSortDescending = false,
     string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide,
     string ThemeMode = UiPreferences.ThemeModeSystem,
-    Dictionary<string, string>? SearchPageModes = null)
+    Dictionary<string, string>? SearchPageModes = null,
+    bool ParseVirtualLinksInSearchBar = true)
 {
     public const double DefaultReadingFontSize = 14;
 
@@ -644,7 +645,8 @@ public sealed record PatchouliAppSettings(
                         ReadString(ui, "ReadingCompareMode", defaults.Ui.ReadingCompareMode)),
                     UiPreferences.NormalizeThemeMode(
                         ReadString(ui, "ThemeMode", defaults.Ui.ThemeMode)),
-                    ReadStringStringDict(ui, "SearchPageModes", defaults.Ui.SearchPageModes)))
+                    ReadStringStringDict(ui, "SearchPageModes", defaults.Ui.SearchPageModes),
+                    ReadBool(ui, "ParseVirtualLinksInSearchBar", defaults.Ui.ParseVirtualLinksInSearchBar)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -865,7 +867,8 @@ public sealed record PatchouliAppSettings(
                 Ui.LibraryGridSortDescending,
                 Ui.ReadingCompareMode,
                 Ui.ThemeMode,
-                Ui.SearchPageModes
+                Ui.SearchPageModes,
+                Ui.ParseVirtualLinksInSearchBar
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -1066,7 +1069,8 @@ public sealed record PatchouliAppSettings(
                     Ui.LibraryGridSortDescending,
                     Ui.ReadingCompareMode,
                     Ui.ThemeMode,
-                    Ui.SearchPageModes
+                    Ui.SearchPageModes,
+                    Ui.ParseVirtualLinksInSearchBar
                 });
             }
 
@@ -1488,8 +1492,6 @@ public sealed record PatchouliAppSettings(
                     ReadString(provider, "ApiVersion", ""),
                     ReadString(provider, "AuthenticationMode", LlmAuthenticationModes.ApiKey))
                 {
-                    ContextWindowTokens = ReadInt(provider, "ContextWindowTokens",
-                        LlmProviderAppSettings.DefaultContextWindowTokens),
                     IsAdded = ReadBool(provider, "IsAdded", false)
                 });
             }

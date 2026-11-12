@@ -24,7 +24,7 @@ public sealed record NativeFileMaterialization(
     string? FailureCode = null,
     string? FailureReason = null);
 
-public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
+public sealed partial class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
 {
     public ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path, CancellationToken cancellationToken)
     {
@@ -91,7 +91,7 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
     }
 
     [SupportedOSPlatform("windows")]
-    private static class WindowsCloudFileHydrator
+    private static partial class WindowsCloudFileHydrator
     {
         private const int BufferSize = 1024 * 1024;
         private const long CfEof = -1;
@@ -168,8 +168,8 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
             }
         }
 
-        [DllImport("cldapi.dll")]
-        private static extern int CfHydratePlaceholder(
+        [LibraryImport("cldapi.dll")]
+        private static partial int CfHydratePlaceholder(
             SafeFileHandle fileHandle,
             long startingOffset,
             long length,

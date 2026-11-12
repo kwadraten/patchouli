@@ -1,0 +1,30 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        x:Class="Patchouli.UI.Views.TaskQueueErrorsDialog"
+        x:DataType="vm:TaskQueueErrorsDialogViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/AppIcon.ico"
+        Width="640" Height="480" MinWidth="320" MinHeight="240"
+        MaxWidth="960" MaxHeight="800" SizeToContent="Manual"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+  <Grid Margin="20" RowDefinitions="*,Auto" RowSpacing="14">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <ItemsControl ItemsSource="{Binding Errors}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="x:String">
+            <Border Padding="12" Margin="0,0,0,10" CornerRadius="6"
+                    BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}">
+              <SelectableTextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="13"
+                                   Foreground="{DynamicResource OnSurfaceBrush}" />
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+    <Button Grid.Row="1" Content="关闭" Command="{Binding ConfirmCommand}" Classes="Primary"
+            HorizontalAlignment="Right" IsDefault="True" />
+  </Grid>
+</Window>

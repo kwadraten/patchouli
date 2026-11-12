@@ -55,7 +55,10 @@ public sealed record McpTextLongEntry(
     [property: JsonPropertyName("ocr_index_status")]
     string OcrIndexStatus,
     [property: JsonPropertyName("citable")]
-    bool Citable);
+    bool Citable,
+    [property: JsonPropertyName("image_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ImageUri = null);
 
 public sealed record McpStyleLongEntry(
     [property: JsonPropertyName("uri")] string Uri,
@@ -94,7 +97,10 @@ public sealed record McpTranslationPageEntry(
     [property: JsonPropertyName("translated_box_count")]
     int TranslatedBoxCount,
     [property: JsonPropertyName("total_box_count")]
-    int TotalBoxCount);
+    int TotalBoxCount,
+    [property: JsonPropertyName("image_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ImageUri = null);
 
 /// <summary>
 /// Long projection of the fixed <c>patchouli://library.yml</c> singleton. It carries only the
@@ -138,7 +144,51 @@ public sealed record McpFetchResult(
     McpTranslationStatusProjection? Translation = null,
     [property: JsonPropertyName("content_type")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ContentType = null);
+    string? ContentType = null,
+    [property: JsonPropertyName("image_uri")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ImageUri = null,
+    [property: JsonPropertyName("image")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    McpFetchImageMetadata? Image = null,
+    [property: JsonIgnore] byte[]? ImageBytes = null);
+
+/// <summary>
+/// Image metadata carried in the text content block of a fetch response for an
+/// <c>images/</c> URI. The base64 PNG itself travels in the native MCP image content
+/// block, never inside this text envelope. <see cref="McpFetchResult.ImageBytes"/>
+/// carries the image bytes for the transport; it is never serialized into the
+/// TOON/JSON envelope.
+/// </summary>
+public sealed record McpFetchImageMetadata(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("view_type")]
+    string ViewType,
+    [property: JsonPropertyName("mime_type")]
+    string MimeType,
+    [property: JsonPropertyName("width")] int Width,
+    [property: JsonPropertyName("height")] int Height,
+    [property: JsonPropertyName("crop")] IReadOnlyList<double> Crop,
+    /// <summary>
+    /// Clockwise quarter-turn (0/90/180/270) of the persisted user rotation applied to the
+    /// pixels; <see cref="Crop"/> and the drawn boxes live in that rotated display basis.
+    /// </summary>
+    [property: JsonPropertyName("rotation")]
+    int Rotation,
+    [property: JsonPropertyName("image_index")]
+    int ImageIndex,
+    [property: JsonPropertyName("boxes")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpImageBoxNumber>? Boxes = null);
+
+/// <summary>
+/// One numbered box overlay entry of a fetched image. <see cref="Index"/> is the
+/// sequence number drawn on the image (page XML document order); <see cref="BoxId"/>
+/// is the stable box identity that number stands for.
+/// </summary>
+public sealed record McpImageBoxNumber(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("box_id")] string BoxId);
 
 public sealed record McpCiteRequest(
     IReadOnlyList<string> Refs,
@@ -278,63 +328,6 @@ public sealed record McpAddResult(
     [property: JsonPropertyName("body_status")]
     string BodyStatus = "ingested",
     [property: JsonPropertyName("issues")] IReadOnlyList<McpAddIssue>? Issues = null);
-
-/// <summary>Issue #11: request to read one source image for text-image collation.</summary>
-/// <param name="Uri">Page, box/evidence or translation page/box URI.</param>
-/// <param name="Context">"page" (default) or "region".</param>
-/// <param name="MaxEdge">Longest-edge pixel cap; null selects the validated default.</param>
-/// <param name="Boxes">
-/// Issue #28: when true, the returned image outlines every box of the page with its
-/// sequence number (page XML document order), and the image metadata carries the
-/// number-to-box-id mapping.
-/// </param>
-public sealed record McpViewRequest(
-    string Uri,
-    string? Context = null,
-    int? MaxEdge = null,
-    bool Boxes = false);
-
-public sealed record McpViewMeta(
-    [property: JsonPropertyName("library_revision")]
-    string LibraryRevision) : McpResponseMeta;
-
-/// <summary>
-/// Issue #11: image metadata carried in the text content block of a view response.
-/// The base64 PNG itself travels in the native MCP image content block, never inside
-/// this text envelope.
-/// </summary>
-public sealed record McpViewImageMetadata(
-    [property: JsonPropertyName("uri")] string Uri,
-    [property: JsonPropertyName("view_type")]
-    string ViewType,
-    [property: JsonPropertyName("mime_type")]
-    string MimeType,
-    [property: JsonPropertyName("width")] int Width,
-    [property: JsonPropertyName("height")] int Height,
-    [property: JsonPropertyName("crop")] IReadOnlyList<double> Crop,
-    [property: JsonPropertyName("image_index")]
-    int ImageIndex,
-    [property: JsonPropertyName("boxes")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<McpViewBoxNumber>? Boxes = null);
-
-/// <summary>
-/// Issue #28: one numbered box overlay entry of a view response. <see cref="Index"/> is
-/// the sequence number drawn on the image (page XML document order); <see cref="BoxId"/>
-/// is the stable box identity that number stands for.
-/// </summary>
-public sealed record McpViewBoxNumber(
-    [property: JsonPropertyName("index")] int Index,
-    [property: JsonPropertyName("box_id")] string BoxId);
-
-/// <summary>
-/// Issue #11: the full outcome of a view command. The envelope carries the text
-/// metadata; <see cref="PngBytes"/> carries the image bytes for the native image
-/// content block (null when the command failed).
-/// </summary>
-public sealed record McpViewCommandResult(
-    McpCommandResult<McpViewMeta, McpViewImageMetadata> Result,
-    byte[]? PngBytes);
 
 public sealed record McpOcrResult(
     [property: JsonPropertyName("action")] string Action,

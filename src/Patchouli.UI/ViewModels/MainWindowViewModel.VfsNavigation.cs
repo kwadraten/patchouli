@@ -7,6 +7,20 @@ namespace Patchouli.UI.ViewModels;
 
 public sealed partial class MainWindowViewModel
 {
+    internal async Task OpenProtocolUriAsync(string uri)
+    {
+        if (!DesktopUriActivation.IsValid(uri))
+        {
+            ReportError("无法解析文献虚拟链接。");
+            return;
+        }
+
+        // Services are published before Library hydration finishes; wait for the whole startup.
+        await RunStartupAsync(false);
+        await ServicesAsync(false);
+        await NavigateToVfsUriAsync(uri);
+    }
+
     /// <summary>Opens canonical VFS links, whose physical page numbers are one-based.</summary>
     public async Task NavigateToVfsUriAsync(string uri)
     {
@@ -50,6 +64,9 @@ public sealed partial class MainWindowViewModel
             case McpUriKind.RunOcrStatus:
                 await OpenOcrQueueAsync();
                 return;
+            case McpUriKind.PluginResource when IsPluginViewPath(target.PluginPath, out string? viewId):
+                await OpenPluginViewAsync(target.PluginId!, viewId!);
+                return;
             case McpUriKind.Root:
             case McpUriKind.Library:
             case McpUriKind.ItemsScope:
@@ -63,5 +80,25 @@ public sealed partial class MainWindowViewModel
                 ReportError($"此 VFS 资源没有对应页面：{uri}");
                 return;
         }
+    }
+
+    /// <summary>Whether a plugin-relative path addresses exactly one declared view resource —
+    /// "views/{view-id}" at one level deep (bare "views" and deeper paths are unsupported).</summary>
+    private static bool IsPluginViewPath(string? path, out string? viewId)
+    {
+        viewId = null;
+        if (path is null || !path.StartsWith("views/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string id = path["views/".Length..];
+        if (id.Length == 0 || id.Contains('/', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        viewId = id;
+        return true;
     }
 }

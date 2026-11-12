@@ -1,4 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
@@ -13,6 +16,16 @@
     <ProjectReference Include="..\Patchouli.Llm\Patchouli.Llm.csproj" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
+  </ItemGroup>
+  <!-- Intended real TOML/JSON-Schema parsers for Plugins/. The interim strict in-repo
+       parsers (PluginToml, PluginJsonSchema) are fail-closed and used by default; enabling
+       this switch swaps to the real libraries once package restore is permitted. -->
+  <ItemGroup Condition="'$(PatchouliPluginRealParsers)' == 'true'">
+    <PackageReference Include="Tomlyn" />
+    <PackageReference Include="JsonSchema.Net" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NSec.Cryptography" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../.agents/skills/patchouli/**/*.md">

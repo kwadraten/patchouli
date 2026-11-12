@@ -6,14 +6,18 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Patchouli.Core.Agents;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Host.Agents;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Downloads;
 using Patchouli.Infrastructure.Agents;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -41,7 +45,8 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
     private bool _isConfirmingInstall;
     private long _editRevision;
 
-    public AgentIntegrationSettingsViewModel(MainWindowViewModel main, AgentSkillService? skills = null)
+    public AgentIntegrationSettingsViewModel(MainWindowViewModel main, AgentSkillService? skills = null,
+        AgentInstaller? installer = null)
     {
         _isConstructing = true;
         _main = main;
@@ -49,7 +54,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         _draft = main.AppOptions.Agents.Normalize();
         _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         Register(_httpClient);
-        _installer = new AgentInstaller(_httpClient);
+        _installer = installer ?? new AgentInstaller(_httpClient);
         foreach (AgentCatalogEntry entry in AgentCatalog.All)
         {
             AgentIntegrationRowViewModel row = new(this, entry);
@@ -294,9 +299,102 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         row.BeginInstall();
         try
         {
-            Progress<AgentInstallProgress> progress = new(row.ApplyInstallProgress);
+            HostServices hostServices = await _main.ServicesAsync();
+            int generation = _main.LibraryGeneration;
+            AgentInstallResult? installedResult = null;
+            string? failureCode = null;
+            string? failureMessage = null;
+            string archiveName = "agent-install";
+            if (Uri.TryCreate(offer.DownloadUrl, UriKind.Absolute, out Uri? offerUri) &&
+                Path.GetFileName(offerUri.AbsolutePath) is { Length: > 0 } name)
+            {
+                archiveName = name;
+            }
+
+            DownloadTaskHandle handle = hostServices.DownloadTasks.Start(
+                $"安装 {row.DisplayName}", async (worker, workerToken) =>
+                {
+                    IDownloadProgress? rich = worker as IDownloadProgress;
+                    DownloadFileProgress current = new(archiveName, "running", 0, null);
+
+                    void ReportFile(DownloadFileProgress value)
+                    {
+                        current = value;
+                        rich?.ReportFile(value);
+                    }
+
+                    ReportFile(current);
+                    Result<AgentInstallResult> inner;
+                    try
+                    {
+                        inner = await _installer.InstallAsync(offer,
+                            new SynchronousProgress<AgentInstallProgress>(value =>
+                            {
+                                if (_main.IsCurrentLibraryContext(hostServices, generation))
+                                {
+                                    Dispatcher.UIThread.Post(() =>
+                                    {
+                                        if (_main.IsCurrentLibraryContext(hostServices, generation))
+                                        {
+                                            row.ApplyInstallProgress(value);
+                                        }
+                                    });
+                                }
+
+                                ReportFile(value.Stage == AgentInstallStage.Downloading
+                                    ? new DownloadFileProgress(archiveName, "running",
+                                        value.BytesReceived, value.TotalBytes)
+                                    : current with
+                                    {
+                                        State = value.Stage is AgentInstallStage.Extracting
+                                            or AgentInstallStage.Activating
+                                            ? "verifying"
+                                            : value.Stage == AgentInstallStage.Completed
+                                                ? "succeeded"
+                                                : "running"
+                                    });
+                            }), workerToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        rich?.ReportFile(current with { State = "cancelled" });
+                        throw;
+                    }
+
+                    if (inner.IsSuccess)
+                    {
+                        installedResult = inner.Value;
+                        rich?.ReportFile(current with { State = "succeeded" });
+                        return Result.Success();
+                    }
+
+                    failureCode = inner.ErrorCode;
+                    failureMessage = inner.ErrorMessage;
+                    rich?.ReportFile(current with { State = "failed", ErrorMessage = inner.ErrorMessage });
+                    return Result.Failure(inner.ErrorCode!, inner.ErrorMessage!);
+                }, token,
+                [new DownloadFileProgress(archiveName, "queued", 0, null)], false);
+            Result outcome = await new DownloadOperationRunner(_main.Dialogs)
+                .RunAsync($"安装 {row.DisplayName}", hostServices.DownloadTasks, handle);
+            if (!_main.IsCurrentLibraryContext(hostServices, generation))
+            {
+                return;
+            }
+
+            if (outcome.ErrorCode == DownloadTaskService.CancelledErrorCode)
+            {
+                row.SetInstallCancelled();
+                Status = "安装已取消，临时文件已清理。";
+                LastError = null;
+                return;
+            }
+
             Result<AgentInstallResult> result =
-                await _installer.InstallAsync(offer, progress, token);
+                outcome.IsSuccess && installedResult is not null
+                    ? Result<AgentInstallResult>.Success(installedResult)
+                    : Result<AgentInstallResult>.Failure(
+                        failureCode ?? outcome.ErrorCode ?? "install_failed",
+                        failureMessage ?? outcome.ErrorMessage ?? "安装失败。");
             if (result.IsFailure)
             {
                 row.SetInstallFailure(result.ErrorMessage ?? "安装失败。");
@@ -316,10 +414,12 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
 
             try
             {
-                HostServices services = await _main.ServicesAsync();
                 AgentDetectionResult detection =
-                    await services.AgentDetection.DetectAsync(row.Entry, _draft, true, token);
-                row.ApplyDetection(detection);
+                    await hostServices.AgentDetection.DetectAsync(row.Entry, _draft, true, token);
+                if (_main.IsCurrentLibraryContext(hostServices, generation))
+                {
+                    row.ApplyDetection(detection);
+                }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {

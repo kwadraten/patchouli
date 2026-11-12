@@ -21,8 +21,8 @@ Adopt a decoupled three-tier boundary model for instance election, local process
 2. **Named Pipe for local process lifecycle and activation control**:
    - Fixed pipe name: `net.patchouli.app.ui.control.v1` configured with `PipeOptions.CurrentUserOnly` and `PipeOptions.Asynchronous`.
    - Minimal framing protocol using a 4-byte length prefix with a strict 1 KiB maximum payload.
-   - Semantics are restricted exclusively to `{ "version": 1, "command": "activate_ui", "request_id": "<guid>" }` and matching ACK `{ "version": 1, "request_id": "<guid>", "ok": true }`.
-   - The control channel is strictly scoped to window activation; it never accepts file paths, MCP calls, database operations, arbitrary commands, shutdown, or host takeover.
+   - Semantics allow `{ "version": 1, "command": "activate_ui", "request_id": "<guid>" }` and, since 2026-11-06, `open_uri` with an additional `uri` field containing a validated `patchouli://` resource address. Both use matching ACK `{ "version": 1, "request_id": "<guid>", "ok": true }`. Parameterless activation omits `uri` and remains wire-compatible.
+   - The control channel is scoped to window activation and UI navigation to existing virtual resources; it never accepts file paths, MCP calls, database operations, arbitrary commands, shutdown, or host takeover. An `activate_ui` message carrying a URI, an `open_uri` message without a valid Patchouli URI, unknown fields and oversized messages are rejected. Up to 32 pre-window links are retained in arrival order. UI navigation waits for Library startup and serializes requests.
    - Secondary processes retry connection for up to 2 seconds. A successful ACK results in a clean exit (code 0). Any connection, handshake, or ACK failure fails closed with exit code 1, guaranteeing that an unprotected second UI is never spawned.
 
 3. **MCP HTTP for domain data plane**:
@@ -40,7 +40,7 @@ This decision governs UI application process single-instance election only. It d
 
 ### Unix Named Pipe Caveat
 
-On Unix platforms (Linux and macOS), `PipeOptions.CurrentUserOnly` relies on filesystem permissions and standard Unix domain sockets / FIFOs, which can be affected by process umask configurations. Because the control pipe only accepts parameterless `activate_ui` requests, executes no arbitrary commands, and transfers no sensitive arguments or tokens, this trade-off is accepted for now.
+On Unix platforms (Linux and macOS), `PipeOptions.CurrentUserOnly` relies on filesystem permissions and standard Unix domain sockets / FIFOs, which can be affected by process umask configurations. The control pipe accepts only activation and validated Patchouli resource navigation, executes no arbitrary commands and transfers no credentials or host-local file paths; this trade-off is accepted for now.
 
 ## Headless lifecycle regression (2026-10-14)
 

@@ -48,6 +48,9 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         int limit,
         LibraryItemCursor? after,
         IReadOnlyList<string>? requiredTags = null,
+        CollectionId? requiredCollection = null,
+        bool untaggedOnly = false,
+        BibliographicItemSearch? search = null,
         CancellationToken cancellationToken = default)
     {
         if (limit <= 0)
@@ -56,8 +59,23 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 "Page limit must be a positive integer.");
         }
 
+        string filterSql = "";
+        Dictionary<string, object?>? filterParameters = null;
+        if (search is not null)
+        {
+            Result<IReadOnlyList<string>> rewrites = await RewriteSearchQueryAsync(search.Query, cancellationToken);
+            if (rewrites.IsFailure)
+            {
+                return Result<LibraryItemPage>.Failure(rewrites.ErrorCode!, rewrites.ErrorMessage!);
+            }
+
+            (filterSql, filterParameters) = BuildSearchFilter(search, rewrites.Value);
+        }
+
         (Result<IReadOnlyList<LibraryItemRow>> result, bool hasMore) =
-            await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken, requiredTags: requiredTags);
+            await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken,
+                requiredTags: requiredTags, requiredCollection: requiredCollection,
+                untaggedOnly: untaggedOnly, extraFilter: filterSql, extraParameters: filterParameters);
         if (result.IsFailure)
         {
             return Result<LibraryItemPage>.Failure(result.ErrorCode!, result.ErrorMessage!);
@@ -127,37 +145,49 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
         }
 
-        IReadOnlyList<string>? rewrittenQueries = null;
-        if (_rewriter is not null && !string.IsNullOrWhiteSpace(search.Query))
+        Result<IReadOnlyList<string>> rewrites = await RewriteSearchQueryAsync(search.Query, cancellationToken);
+        if (rewrites.IsFailure)
         {
-            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
-            await connection.OpenAsync(cancellationToken);
-            string? libraryText = await connection.ExecuteScalarAsync<string?>(
-                new CommandDefinition("select library_id from library_metadata limit 1;",
-                    cancellationToken: cancellationToken));
-            if (libraryText is not null)
-            {
-                LibraryId libraryId = LibraryId.Parse(libraryText);
-                if (await _rewriter.IsRewriteEnabledAsync(libraryId, cancellationToken))
-                {
-                    Result<SearchRewritePlan> plan = await _rewriter.BuildRewritePlanAsync(search.Query,
-                        new SearchRewriteOptions(libraryId), cancellationToken);
-                    if (plan.IsFailure)
-                    {
-                        return Result<IReadOnlyList<LibraryItemRow>>.Failure(plan.ErrorCode!, plan.ErrorMessage!);
-                    }
-
-                    rewrittenQueries = plan.Value.ExpandedQueries;
-                }
-            }
+            return Result<IReadOnlyList<LibraryItemRow>>.Failure(rewrites.ErrorCode!, rewrites.ErrorMessage!);
         }
 
-        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search, rewrittenQueries);
+        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search, rewrites.Value);
         int limit = Math.Clamp(search.Limit <= 0 ? 500 : search.Limit, 1, 1000);
         (Result<IReadOnlyList<LibraryItemRow>> result, _) = await QueryPageAsync(
             limit, null, QueryScope.Active, cancellationToken, extraFilter: filterSql,
             extraParameters: filterParameters);
         return result;
+    }
+
+    private async Task<Result<IReadOnlyList<string>>> RewriteSearchQueryAsync(
+        string? query, CancellationToken cancellationToken)
+    {
+        if (_rewriter is null || string.IsNullOrWhiteSpace(query))
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? libraryText = await connection.ExecuteScalarAsync<string?>(
+            new CommandDefinition("select library_id from library_metadata limit 1;",
+                cancellationToken: cancellationToken));
+        if (libraryText is null)
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        LibraryId libraryId = LibraryId.Parse(libraryText);
+        if (!await _rewriter.IsRewriteEnabledAsync(libraryId, cancellationToken))
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        Result<SearchRewritePlan> plan = await _rewriter.BuildRewritePlanAsync(query,
+            new SearchRewriteOptions(libraryId), cancellationToken);
+        return plan.IsSuccess
+            ? Result<IReadOnlyList<string>>.Success(plan.Value.ExpandedQueries)
+            : Result<IReadOnlyList<string>>.Failure(plan.ErrorCode!, plan.ErrorMessage!);
     }
 
     public async Task<Result<IReadOnlyList<LibraryItemRow>>> ResolveRowsByCitationKeysAsync(
@@ -480,9 +510,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 from items i
                 where i.deleted_at is null
                   and i.merged_into_item_id is null
-                  and (i.tags_json is null
-                       or not json_valid(i.tags_json)
-                       or json_array_length(i.tags_json) = 0);
+                  and not exists (select 1 from item_tag_memberships utm where utm.item_id = i.item_id);
                 """);
             return Result<int>.Success(count);
         }
@@ -612,6 +640,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         CancellationToken cancellationToken,
         IReadOnlyCollection<ItemId>? itemIds = null,
         IReadOnlyList<string>? requiredTags = null,
+        CollectionId? requiredCollection = null,
+        bool untaggedOnly = false,
         string extraFilter = "",
         Dictionary<string, object?>? extraParameters = null)
     {
@@ -629,6 +659,22 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 ? "and i.deleted_at is not null and i.merged_into_item_id is null"
                 : "and i.deleted_at is null and i.merged_into_item_id is null";
             string tagFilter = BuildTagFilter(requiredTags);
+            string collectionFilter = requiredCollection is null
+                ? ""
+                : """
+                  and i.item_id in (
+                      select ic.item_id
+                      from item_collections ic
+                      where ic.collection_id = @RequiredCollectionId
+                  )
+                  """;
+            string untaggedFilter = untaggedOnly
+                ? """
+                  and not exists (
+                      select 1 from item_tag_memberships utm where utm.item_id = i.item_id
+                  )
+                  """
+                : "";
             string keysetClause = after is null
                 ? ""
                 : "and (i.created_at, i.item_id) < (@AfterCreatedAt, @AfterItemId) ";
@@ -643,6 +689,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             parameters.Add("ItemIds", itemIds?.Select(static id => id.ToString()).ToArray());
             parameters.Add("RequiredTags", requiredTags?.ToArray());
             parameters.Add("RequiredTagCount", requiredTags?.Count ?? 0);
+            parameters.Add("RequiredCollectionId", requiredCollection?.ToString());
             if (extraParameters is not null)
             {
                 foreach (KeyValuePair<string, object?> pair in extraParameters)
@@ -653,7 +700,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
             IEnumerable<CoreRow> rows = await connection.QueryAsync<CoreRow>(
                 string.Format(CultureInfo.InvariantCulture, CoreRowSqlTemplate, itemIdFilter, lifecycleClause,
-                    tagFilter, extraFilter, keysetClause),
+                    tagFilter, extraFilter, keysetClause, collectionFilter, untaggedFilter),
                 parameters);
 
             CoreRow[] coreRows = rows.ToArray();
@@ -804,6 +851,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
           {4}
           {0}
           {2}
+          {5}
+          {6}
           {3}
         order by i.created_at desc, i.item_id desc
         limit @Limit;
@@ -852,27 +901,37 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
     private const string CurrentLayoutSql =
         """
-        select document_instance_id
-        from document_tree_revisions
-        where document_instance_id in @DocIds and status = 'committed' and is_current = 1;
+        select di.document_instance_id
+        from document_instances di
+        where di.document_instance_id in @DocIds
+          and exists (
+              select 1 from document_tree_revisions r
+              where r.document_instance_id = di.document_instance_id
+                and r.status = 'committed' and r.is_current = 1
+          );
         """;
 
     private const string OcrTextDocumentSql =
         """
-        select distinct r.document_instance_id
-        from document_tree_revisions r
-        join document_boxes b on b.tree_revision_id = r.tree_revision_id
-        where r.document_instance_id in @DocIds
-          and r.status = 'committed'
-          and r.is_current = 1
-          and b.suppressed = 0
-          and b.payload_json is not null
-          and json_valid(b.payload_json) = 1
-          and (
-              length(trim(coalesce(json_extract(b.payload_json, '$.markdown'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.latex'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.code'), ''))) > 0
-              or length(trim(coalesce(json_extract(b.payload_json, '$.description'), ''))) > 0
+        select di.document_instance_id
+        from document_instances di
+        where di.document_instance_id in @DocIds
+          and exists (
+              select 1
+              from document_tree_revisions r
+              join document_boxes b on b.tree_revision_id = r.tree_revision_id
+              where r.document_instance_id = di.document_instance_id
+                and r.status = 'committed'
+                and r.is_current = 1
+                and b.suppressed = 0
+                and b.payload_json is not null
+                and json_valid(b.payload_json) = 1
+                and (
+                    length(trim(coalesce(json_extract(b.payload_json, '$.markdown'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.latex'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.code'), ''))) > 0
+                    or length(trim(coalesce(json_extract(b.payload_json, '$.description'), ''))) > 0
+                )
           );
         """;
 

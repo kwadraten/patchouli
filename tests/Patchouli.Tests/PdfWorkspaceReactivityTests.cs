@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Reflection;
+using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Media;
+using Avalonia.Threading;
 using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
@@ -85,6 +88,51 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         workspace.Zoom.Should().BeApproximately(0.1, 0.0001);
         workspace.AdjustZoom(0.1);
         workspace.Zoom.Should().BeApproximately(0.2, 0.0001);
+    }
+
+    [Fact]
+    public async Task Pending_box_operation_opens_a_nonmodal_dialog_and_cancel_closes_it()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            using MainWindowViewModel main = CreateMainWindow();
+            using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+            UI.Views.PdfWorkspacePage page = new() { DataContext = workspace };
+            Window owner = new() { Width = 1200, Height = 800, Content = page };
+            owner.Show();
+            try
+            {
+                owner.UpdateLayout();
+                DocumentBox splitSource = new(
+                    DocumentTreeRevisionId.New(), DocumentBoxId.New(), DocumentInstanceId.New(), PageId.New(),
+                    null, null, DocumentBoxType.Text, null, new NormalizedBBox(0.1, 0.1, 0.3, 0.2),
+                    new TextBoxPayload("Split content"), null, null, null, false, null);
+
+                SetProperty(workspace, nameof(workspace.SplitSource), splitSource);
+                Dispatcher.UIThread.RunJobs();
+
+                UI.Views.BoxOperationDialog? dialog = (UI.Views.BoxOperationDialog?)typeof(
+                        UI.Views.PdfWorkspacePage)
+                    .GetField("_boxOperationDialog", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(page);
+                dialog.Should().NotBeNull();
+                dialog!.IsVisible.Should().BeTrue();
+                dialog.DataContext.Should().BeSameAs(workspace);
+                owner.IsEnabled.Should().BeTrue("the split dialog is non-modal and owns its drawing canvas");
+
+                workspace.CancelSplitCommand.Execute(null);
+                Dispatcher.UIThread.RunJobs();
+                workspace.IsSplitPending.Should().BeFalse();
+                dialog.IsVisible.Should().BeFalse();
+            }
+            finally
+            {
+                owner.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
     }
 
     private sealed class FakeClipboard : IClipboardService

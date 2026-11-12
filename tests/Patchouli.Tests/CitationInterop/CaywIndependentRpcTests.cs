@@ -211,7 +211,7 @@ public sealed class CaywIndependentRpcTests
 
             // Independent read-back: the real Rust helper parser (not the
             // exporter's own code) must be able to parse the classic output.
-            // The binary ships in the repo's tools/ build tree; when it is
+            // The binary ships in the repo's sidecar/ build tree; when it is
             // absent the structural assertions above still stand.
             string? helper = FindHelperBinary();
             if (helper is not null)
@@ -322,7 +322,7 @@ public sealed class CaywIndependentRpcTests
             if (File.Exists(Path.Combine(current.FullName, "Patchouli.sln")))
             {
                 string candidate = Path.Combine(
-                    current.FullName, "tools", "biblatex-helper", "target", "release", fileName);
+                    current.FullName, "sidecar", "biblatex-helper", "target", "release", fileName);
                 return File.Exists(candidate) ? candidate : null;
             }
 

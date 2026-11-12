@@ -10,10 +10,18 @@ public interface ILibraryItemQueryService
         IReadOnlyList<string>? requiredTags = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Membership predicates are pushed into the SQL so the keyset cursor and the page limit
+    /// apply to the filtered set; a small Collection in a large Library must not scan and
+    /// enrich the whole items table just to fill one page.
+    /// </summary>
     Task<Result<LibraryItemPage>> ListRowsAsync(
         int limit,
         LibraryItemCursor? after,
         IReadOnlyList<string>? requiredTags = null,
+        CollectionId? requiredCollection = null,
+        bool untaggedOnly = false,
+        BibliographicItemSearch? search = null,
         CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<LibraryItemRow>>> GetRowsByIdsAsync(

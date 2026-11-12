@@ -147,6 +147,18 @@ staging="$(mktemp -d "$root/.tmp/packaging/dmg.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app_dir" "$staging/Patchouli.NET.app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -volname "Patchouli.NET" -srcfolder "$staging" -ov -format UDZO "$dmg_path"
+# hdiutil create can transiently fail with "Resource busy" while DiskImages services settle or
+# a stale mount still holds the volume name; detach leftovers and retry briefly before failing.
+attempt=0
+until hdiutil create -volname "Patchouli.NET" -srcfolder "$staging" -ov -format UDZO "$dmg_path"; do
+  attempt=$((attempt + 1))
+  if (( attempt >= 5 )); then
+    echo "hdiutil create failed after $attempt attempts." >&2
+    exit 1
+  fi
+  hdiutil detach "/Volumes/Patchouli.NET" -force >/dev/null 2>&1 || true
+  rm -f "$dmg_path"
+  sleep 3
+done
 codesign --force --sign - "$dmg_path"
 echo "$dmg_path"

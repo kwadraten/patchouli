@@ -83,10 +83,12 @@ public sealed class OcrPermissionMigrationIndependentTests
         };
         McpServerSettings migrated = McpServerSettingsService.NormalizeLegacySettings(settings);
         migrated.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
-        migrated.DomainPermissions.Should().HaveCount(3);
+        migrated.DomainPermissions.Should().HaveCount(4);
         migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/ocr", "send", true));
         migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/translation", "send", true));
         migrated.DomainPermissions.Should().Contain(new McpDomainPermission("runs/metadata", "send", false));
+        // The enabled patchouli.view grant converts to an explicit images.fetch grant.
+        migrated.DomainPermissions.Should().Contain(new McpDomainPermission("images", "fetch", true));
         migrated.DomainPermissions.Should().NotContain(value => value.Domain == "runs" && value.Verb == "send");
     }
 }

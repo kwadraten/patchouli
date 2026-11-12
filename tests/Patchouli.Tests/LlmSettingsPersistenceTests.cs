@@ -57,7 +57,7 @@ public sealed class LlmSettingsPersistenceTests
             ChatModel = "claude-sonnet"
         };
         llm = llm.WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
-            "resource-a", "deployment-a", "2024-10-21") { ContextWindowTokens = 200000 });
+            "resource-a", "deployment-a", "2024-10-21"));
 
         (PatchouliAppSettings.Default() with { Llm = llm }).Save(file.Path).IsSuccess.Should().BeTrue();
 
@@ -69,9 +69,8 @@ public sealed class LlmSettingsPersistenceTests
         azure.Subscription.Should().Be("resource-a");
         azure.Deployment.Should().Be("deployment-a");
         azure.ApiVersion.Should().Be("2024-10-21");
-        azure.ContextWindowTokens.Should().Be(200000);
         loaded.Llm.Providers.Select(provider => provider.ProviderId).Should()
-            .Equal((IEnumerable<string>)LlmProviderCatalog.ProviderIds);
+            .Equal(new[] { "azure-openai" }, "only explicitly configured rows are stored");
     }
 
     [Fact]
@@ -90,7 +89,7 @@ public sealed class LlmSettingsPersistenceTests
         llm.GetProperty("ChatModel").GetString().Should().Be("configured-model");
         llm.TryGetProperty("TargetLanguage", out _).Should().BeFalse();
         llm.TryGetProperty("TranslationProviderId", out _).Should().BeFalse();
-        llm.GetProperty("Providers").GetArrayLength().Should().Be(LlmProviderCatalog.All.Count, "one row per provider");
+        llm.GetProperty("Providers").GetArrayLength().Should().Be(0, "no provider rows are invented");
     }
 
     [Fact]
@@ -132,9 +131,6 @@ public sealed class LlmSettingsPersistenceTests
         json.Should().NotContain("ApiKey");
         json.Should().NotContain("apiKey");
 
-        // The key belongs to the credential surface instead: the settings model has no property that could
-        // carry one, so the round trip above proves the boundary rather than relying on a scrubbing step.
-        // Numeric context token counts cannot carry credentials; credential-like text fields can.
         typeof(LlmProviderAppSettings).GetProperties().Where(property => property.PropertyType == typeof(string))
             .Select(property => property.Name)
             .Should().NotContain(name =>
@@ -156,7 +152,7 @@ public sealed class LlmSettingsPersistenceTests
 
             PatchouliAppSettings loaded = PatchouliAppSettings.Load(path);
 
-            loaded.Llm.Providers.Should().HaveCount(LlmProviderCatalog.All.Count, "one row per provider");
+            loaded.Llm.Providers.Should().BeEmpty("no provider rows exist until configured");
         }
         finally
         {
@@ -204,7 +200,8 @@ public sealed class LlmSettingsPersistenceTests
             llm.TryGetProperty("PendingWorkflowMigration", out _).Should().BeFalse();
             PatchouliAppSettings.Load(path).Llm.Translation.WindowRadius.Should()
                 .Be(TranslationSettings.MaxWindowRadius);
-            loaded.Llm.Providers.Should().HaveCount(LlmProviderCatalog.All.Count, "one row per provider");
+            loaded.Llm.Providers.Select(provider => provider.ProviderId).Should()
+                .Equal(new[] { "openai" }, "the configured row survives while the empty row is skipped at read");
         }
         finally
         {

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
 
@@ -8,7 +9,10 @@ namespace Patchouli.Infrastructure.Ocr;
 public sealed record LayoutModelFile(string ModelId, string DownloadUrl, long ExpectedBytes, string Sha256);
 
 /// <summary>Installs the evaluated exports into the same managed directories used by layout inference.</summary>
-public sealed class LayoutModelDownloadService(HttpClient httpClient, Func<string, string> resolveModelPath)
+public sealed class LayoutModelDownloadService(
+    HttpClient httpClient,
+    Func<string, string> resolveModelPath,
+    IDownloadTaskRunner? downloads = null)
 {
     public static LayoutModelFile Yolo { get; } = new(OcrLayoutModelIds.DocLayoutYolo,
         "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/ee7c3d744e5c47c58e267044ac825f95abe69653/doclayout_yolo_docstructbench_imgsz1024.onnx",
@@ -29,9 +33,33 @@ public sealed class LayoutModelDownloadService(HttpClient httpClient, Func<strin
         };
     }
 
-    internal async Task<Result> DownloadAsync(LayoutModelFile file, IProgress<double>? progress = null,
+    internal Task<Result> DownloadAsync(LayoutModelFile file, IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (downloads is { } runner)
+        {
+            return runner.RunAsync(file.ModelId,
+                (worker, token) => DownloadCoreAsync(file, worker ?? progress, token),
+                progress, cancellationToken,
+                [new DownloadFileProgress(file.ModelId, "queued", 0, file.ExpectedBytes)]);
+        }
+
+        return DownloadCoreAsync(file, progress, cancellationToken);
+    }
+
+    private async Task<Result> DownloadCoreAsync(LayoutModelFile file, IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        IDownloadProgress? rich = progress as IDownloadProgress;
+        DownloadFileProgress current = new(file.ModelId, "running", 0, file.ExpectedBytes);
+
+        void ReportFile(DownloadFileProgress value)
+        {
+            current = value;
+            rich?.ReportFile(value);
+        }
+
+        ReportFile(current);
         string target = resolveModelPath(file.ModelId);
         string temporary = target + $".{Guid.NewGuid():N}.tmp";
         try
@@ -41,6 +69,7 @@ public sealed class LayoutModelDownloadService(HttpClient httpClient, Func<strin
             if (await MatchesAsync(target, file, cancellationToken))
             {
                 progress?.Report(1);
+                ReportFile(current with { State = "succeeded", DownloadedBytes = file.ExpectedBytes });
                 return Result.Success();
             }
 
@@ -48,16 +77,20 @@ public sealed class LayoutModelDownloadService(HttpClient httpClient, Func<strin
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                return Result.Failure(AppErrorCodes.NetworkError,
+                Result failure = Result.Failure(AppErrorCodes.NetworkError,
                     $"Failed to download {file.ModelId}: HTTP {(int)response.StatusCode}.");
+                rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                return failure;
             }
 
+            long? total = file.ExpectedBytes > 0 ? file.ExpectedBytes
+                : response.Content.Headers.ContentLength is > 0 ? response.Content.Headers.ContentLength : null;
+            long downloaded = 0;
             await using (FileStream destination = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken)
                     .ConfigureAwait(false);
                 byte[] buffer = new byte[81920];
-                long downloaded = 0;
                 int read;
                 while ((read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
                 {
@@ -65,32 +98,43 @@ public sealed class LayoutModelDownloadService(HttpClient httpClient, Func<strin
                     downloaded += read;
                     if (downloaded > file.ExpectedBytes)
                     {
-                        return Result.Failure(AppErrorCodes.NetworkError,
+                        Result failure = Result.Failure(AppErrorCodes.NetworkError,
                             "Downloaded layout model exceeds the expected size.");
+                        rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                        return failure;
                     }
 
                     progress?.Report(Math.Min(.99, (double)downloaded / file.ExpectedBytes));
+                    ReportFile(new DownloadFileProgress(file.ModelId, "running", downloaded, total));
                 }
             }
 
+            ReportFile(new DownloadFileProgress(file.ModelId, "verifying", downloaded, total));
             if (!await MatchesAsync(temporary, file, cancellationToken))
             {
-                return Result.Failure(AppErrorCodes.NetworkError,
+                Result failure = Result.Failure(AppErrorCodes.NetworkError,
                     "Downloaded layout model failed size or SHA256 verification. Please retry.");
+                rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+                return failure;
             }
 
             File.Move(temporary, target, true);
             progress?.Report(1);
+            ReportFile(current with { State = "succeeded" });
             return Result.Success();
         }
         catch (OperationCanceledException)
         {
+            rich?.ReportFile(current with { State = "cancelled" });
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "ocr.layout-model-download"))
         {
-            return Result.Failure(AppErrorCodes.NetworkError, $"Layout model download failed: {exception.Message}");
+            Result failure = Result.Failure(AppErrorCodes.NetworkError,
+                $"Layout model download failed: {exception.Message}");
+            rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
+            return failure;
         }
         finally
         {

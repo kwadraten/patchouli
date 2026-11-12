@@ -26,21 +26,24 @@ public sealed record PhysicalPageOcrResult(
 public interface ILogicalPageOcrService
 {
     /// <param name="rotationDegrees">
-    /// Clockwise onscreen quarter turn (0/90/180/270): every provider run inside the edit
-    /// recognizes the rotated page/region image; persisted boxes stay in the unrotated
-    /// document basis.
+    /// Clockwise onscreen quarter turn (0/90/180/270) applied to every provider run inside the
+    /// edit; persisted boxes stay in the unrotated document basis. Null uses the page's
+    /// persisted user rotation.
     /// </param>
     Task<Result<PhysicalPageOcrResult>> RunPageEditAsync(OcrPresetId presetId, PageEditSessionId sessionId,
-        CancellationToken cancellationToken = default, int rotationDegrees = 0);
+        CancellationToken cancellationToken = default, int? rotationDegrees = null);
 
-    /// <param name="rotationDegrees">Clockwise onscreen quarter turn (0/90/180/270).</param>
+    /// <param name="rotationDegrees">
+    /// Clockwise onscreen quarter turn (0/90/180/270). Null uses the page's persisted user
+    /// rotation.
+    /// </param>
     Task<Result<LogicalPageOcrResult>> RunAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
         PageId pageId,
         IReadOnlyList<LogicalPageOcrTarget> targets,
         CancellationToken cancellationToken = default,
-        int rotationDegrees = 0);
+        int? rotationDegrees = null);
 
     Task<Result<PhysicalPageOcrResult>> RunPageAsync(
         DocumentInstanceId documentInstanceId,

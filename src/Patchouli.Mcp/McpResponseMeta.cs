@@ -30,7 +30,6 @@ internal static class McpResponseSummary
                                     : " Generated the deduplicated bibliography."),
             McpPutMeta => DescribePut(entries.OfType<McpPutResult>().Single()),
             McpAddMeta => DescribeAdd(entries.OfType<McpAddResult>().Single()),
-            McpViewMeta => "Returned the source image and its view metadata in the image content block.",
             McpActionSendMeta send => DescribeSend(send, entries.OfType<McpActionSendResult>().Single()),
             _ => "Completed the request."
         };

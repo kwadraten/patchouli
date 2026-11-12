@@ -233,7 +233,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                     JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? [])
                 : []
         };
-        return MigrateAddViewDefaults(settings);
+        return MigrateViewToImagesFetch(settings);
     }
 
     /// <summary>
@@ -244,18 +244,31 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     public static McpServerSettings NormalizeLegacySettings(McpServerSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return MigrateAddViewDefaults(settings);
+        return MigrateViewToImagesFetch(settings);
     }
 
     /// <summary>
     /// New send subdomains require explicit grants. Retired Agent/action permissions never
     /// promote to endpoint permissions; missing children are materialized as disabled.
+    /// The retired patchouli.view tool's grants convert to an explicit images.fetch entry:
+    /// a user who had explicitly enabled view (and had not denied texts view) keeps image
+    /// access through a durable explicit grant, not the implicit default-allow policy —
+    /// a default-allow grant would evaporate on the next save+reload, when the removed
+    /// view override makes the migration recompute the user as never-allowed and add a
+    /// denial. Everyone else gets an explicit images.fetch denial so migration never
+    /// expands access. The view tool override and view-verb entries are removed;
+    /// images/ has no translations mirror, so only the texts denial matters.
     /// </summary>
-    private static McpServerSettings MigrateAddViewDefaults(McpServerSettings settings)
+    private static McpServerSettings MigrateViewToImagesFetch(McpServerSettings settings)
     {
-        string[] newTools = ["patchouli.add", "patchouli.view"];
+        bool viewAllowed = settings.ToolOverrides.Any(value =>
+                               value.ToolName == "patchouli.view" && value.Enabled) &&
+                           !settings.DomainPermissions.Any(value =>
+                               value.Domain == "texts" && value.Verb == "view" && !value.Enabled);
+        string[] newTools = ["patchouli.add"];
         List<McpToolOverride> overrides = settings.ToolOverrides
-            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal))
+            .Where(value => !string.Equals(value.ToolName, "patchouli.ocr", StringComparison.Ordinal) &&
+                            !string.Equals(value.ToolName, "patchouli.view", StringComparison.Ordinal))
             .ToList();
         bool changed = overrides.Count != settings.ToolOverrides.Count;
         foreach (string tool in newTools)
@@ -275,6 +288,16 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             .ToList();
         if (permissions.Count != settings.DomainPermissions.Count)
         {
+            changed = true;
+        }
+
+        if (permissions.All(value => value.Domain != "images" || value.Verb != "fetch"))
+        {
+            // The converted grant must be explicit, not left to default-allow: once the
+            // view override is removed, a later migration recomputes viewAllowed from the
+            // absent override, so a default-allow grant would evaporate into an
+            // images.fetch denial on the next save+reload.
+            permissions.Add(new McpDomainPermission("images", "fetch", viewAllowed));
             changed = true;
         }
 

@@ -314,6 +314,9 @@ public sealed class TagSidebarViewModelTests
             int limit,
             LibraryItemCursor? after,
             IReadOnlyList<string>? requiredTags = null,
+            CollectionId? requiredCollection = null,
+            bool untaggedOnly = false,
+            BibliographicItemSearch? search = null,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<LibraryItemPage>.Success(

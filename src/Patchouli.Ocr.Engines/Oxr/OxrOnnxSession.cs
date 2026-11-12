@@ -6,7 +6,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
-using Patchouli.Infrastructure.Ocr.NdlKoten;
+using Patchouli.Ocr.Engines.NdlKoten;
 using Patchouli.Ocr.Engines.Vision;
 using SkiaSharp;
 
