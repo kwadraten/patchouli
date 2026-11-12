@@ -226,7 +226,10 @@ public sealed class PluginStore : IPluginStore, IDisposable
                     .Where(record => !ReferenceEquals(record, current)).ToList();
                 records.Add(new PluginRegistryEntry(
                     Path.Combine(finalDirectory, PluginManifestLoader.ManifestFileName), true,
-                    prepared.Value.DeclaredVerbs, "community", entry.Repository, entry.SourceRevision));
+                    prepared.Value.DeclaredVerbs, "community", entry.Repository, entry.SourceRevision)
+                {
+                    AllowedHostVerbs = prepared.Value.RequestedHostVerbs
+                });
                 PluginRegistry.Save(_registryPath, records);
                 await NotifyRegistryChangedAsync(pluginId);
                 return prepared;
@@ -458,6 +461,13 @@ public sealed class PluginStore : IPluginStore, IDisposable
                 {
                     return Failure<PluginDefinition>(AppErrorCodes.InvalidArgument,
                         "The rollback version changes requested verbs; install it as a new explicitly approved release.");
+                }
+
+                if (!current.AllowedHostVerbs.Order(StringComparer.Ordinal)
+                        .SequenceEqual(loaded.Value.RequestedHostVerbs.Order(StringComparer.Ordinal)))
+                {
+                    return Failure<PluginDefinition>(AppErrorCodes.InvalidArgument,
+                        "The rollback version changes requested host verbs; install it as a new explicitly approved release.");
                 }
 
                 Result handshake = await VerifyHandshakeAsync(loaded.Value, cancellationToken);

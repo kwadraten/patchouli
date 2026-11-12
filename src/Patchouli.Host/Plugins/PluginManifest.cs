@@ -87,6 +87,13 @@ public sealed record PluginDefinition(
 {
     public string RootUri => Patchouli.Mcp.McpResourceUris.PluginRootUri(Id);
 
+    /// <summary>
+    /// Host verbs this manifest requests the plugin be allowed to call (manifest
+    /// <c>[host] verbs</c>). The device registry must grant each one; an undeclared
+    /// or ungranted host verb is refused. Default deny: absent means no host verbs.
+    /// </summary>
+    public IReadOnlyList<string> RequestedHostVerbs { get; init; } = [];
+
     /// <summary>All verbs this manifest declares support for: node verbs plus send when endpoints exist and view when views exist.</summary>
     public IReadOnlyList<string> DeclaredVerbs { get; } =
         ComputeDeclaredVerbs(Nodes, Endpoints, Views);

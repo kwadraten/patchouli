@@ -9,7 +9,15 @@ public sealed record PluginRegistryEntry(
     IReadOnlyList<string> AllowedVerbs,
     string Source = "dev",
     string? SourceRepository = null,
-    string? SourceRevision = null);
+    string? SourceRevision = null)
+{
+    /// <summary>
+    /// Host verbs this device explicitly grants the plugin to call (reverse
+    /// direction). The effective grant is the intersection with the manifest's
+    /// requested host verbs; absent means no host verbs are granted.
+    /// </summary>
+    public IReadOnlyList<string> AllowedHostVerbs { get; init; } = [];
+}
 
 /// <summary>The parsed registry file plus per-record rejection diagnostics (never a grant).</summary>
 public sealed record PluginRegistrySnapshot(
@@ -28,6 +36,9 @@ public static class PluginRegistry
 
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
         { "find", "fetch", "send", "view" };
+
+    private static readonly HashSet<string> ValidHostVerbs = new(StringComparer.Ordinal)
+        { "find", "fetch", "put", "cite", "send", "add" };
 
     private const int MaxRegistryBytes = 64 * 1024;
 
@@ -104,6 +115,7 @@ public static class PluginRegistry
                 manifest_path = Path.GetFullPath(entry.ManifestPath),
                 enabled = entry.Enabled,
                 allowed_verbs = entry.AllowedVerbs.Distinct(StringComparer.Ordinal).ToArray(),
+                allowed_host_verbs = entry.AllowedHostVerbs.Distinct(StringComparer.Ordinal).ToArray(),
                 source = entry.Source,
                 source_repository = entry.SourceRepository,
                 source_revision = entry.SourceRevision
@@ -169,6 +181,27 @@ public static class PluginRegistry
             verbs = parsed.Distinct(StringComparer.Ordinal).ToArray();
         }
 
+        IReadOnlyList<string> hostVerbs = [];
+        if (record.TryGetProperty("allowed_host_verbs", out JsonElement hostVerbsValue) &&
+            hostVerbsValue.ValueKind == JsonValueKind.Array)
+        {
+            List<string> parsedHost = [];
+            foreach (JsonElement verb in hostVerbsValue.EnumerateArray())
+            {
+                if (verb.ValueKind == JsonValueKind.String && ValidHostVerbs.Contains(verb.GetString()!))
+                {
+                    parsedHost.Add(verb.GetString()!);
+                }
+                else
+                {
+                    Reject("allowed_host_verbs may only contain find/fetch/put/cite/send/add.");
+                    return null;
+                }
+            }
+
+            hostVerbs = parsedHost.Distinct(StringComparer.Ordinal).ToArray();
+        }
+
         string source = OptionalString(record, "source") ?? "dev";
         if (source is not ("dev" or "community"))
         {
@@ -183,7 +216,10 @@ public static class PluginRegistry
         }
 
         return new PluginRegistryEntry(Path.GetFullPath(manifestPath), enabled, verbs, source,
-            OptionalString(record, "source_repository"), OptionalString(record, "source_revision"));
+            OptionalString(record, "source_repository"), OptionalString(record, "source_revision"))
+        {
+            AllowedHostVerbs = hostVerbs
+        };
     }
 
     private static string? OptionalString(JsonElement record, string name)

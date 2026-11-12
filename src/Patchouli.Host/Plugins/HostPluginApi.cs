@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Mcp;
 
@@ -23,6 +24,8 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
     private DateTime _registryStamp = DateTime.MinValue;
     private IReadOnlyList<McpPluginMountInfo>? _mountsCache;
     private bool _disposed;
+    private Func<string, JsonElement, CancellationToken, Task<object>>? _reverseHostInvoker;
+    private Func<CancellationToken, Task<McpServerSettings>>? _reverseLiveSettings;
 
     /// <summary>Registry location override; production passes the device data root path.</summary>
     public HostPluginApi(string registryPath, IPluginProcessLauncher? launcher = null,
@@ -59,6 +62,21 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
     {
         PluginMount? mount = GetMount(pluginId);
         return mount is not null && mount.EffectiveVerbs.Contains(verb, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Wires the reverse host-verb path: the invoker runs a plugin-initiated host verb
+    /// through the shared MCP command surface, and the live settings supply the tool
+    /// switches. Called once by the composition root after the command service
+    /// exists; mounts started before this call have no reverse support until they
+    /// are restarted.
+    /// </summary>
+    internal void SetReverseHostInvoker(
+        Func<string, JsonElement, CancellationToken, Task<object>> invoker,
+        Func<CancellationToken, Task<McpServerSettings>> liveSettings)
+    {
+        _reverseHostInvoker = invoker;
+        _reverseLiveSettings = liveSettings;
     }
 
     public bool IsEndpoint(string pluginId, string relativePath)
@@ -871,7 +889,7 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
                 mount.Definition != definition)
             {
                 mount?.DisposeAsync().AsTask().Wait();
-                mount = new PluginMount(definition, entry, _managedFiles);
+                mount = new PluginMount(definition, entry, _managedFiles, this);
                 _mounts[definition.Id] = mount;
             }
 
@@ -907,24 +925,60 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
     {
         private readonly SemaphoreSlim _startGate = new(1, 1);
         private readonly PluginManagedFileService? _managedFiles;
+        private readonly HostPluginApi _owner;
         private Task<Result<PluginStdioClient>>? _startTask;
         private PluginStdioClient? _client;
         private string _stateName = "registered";
         private bool _disposed;
 
         public PluginMount(PluginDefinition definition, PluginRegistryEntry entry,
-            PluginManagedFileService? managedFiles)
+            PluginManagedFileService? managedFiles, HostPluginApi owner)
         {
             Definition = definition;
             _managedFiles = managedFiles;
+            _owner = owner;
             EffectiveVerbs = entry.AllowedVerbs
                 .Intersect(definition.DeclaredVerbs, StringComparer.Ordinal)
+                .ToArray();
+            EffectiveHostVerbs = entry.AllowedHostVerbs
+                .Intersect(definition.RequestedHostVerbs, StringComparer.Ordinal)
                 .ToArray();
         }
 
         public PluginDefinition Definition { get; }
         public string RootUri => Definition.RootUri;
         public IReadOnlyList<string> EffectiveVerbs { get; }
+
+        /// <summary>
+        /// Host verbs this mount may call: the registry grant intersected with the
+        /// manifest request, mirroring <see cref="EffectiveVerbs"/>. Default deny.
+        /// </summary>
+        public IReadOnlyList<string> EffectiveHostVerbs { get; }
+
+        /// <summary>
+        /// Reverse host-verb grant for this mount: the manifest must request the verb
+        /// AND the device registry must grant it. Returns false with the refusal
+        /// reason when the verb is undeclared or the grant is missing.
+        /// </summary>
+        internal bool TryCheckReverseGrant(string verb, out string refusal)
+        {
+            if (!Definition.RequestedHostVerbs.Contains(verb, StringComparer.Ordinal))
+            {
+                refusal = $"Plugin '{Definition.Id}' does not declare the host verb '{verb}' " +
+                          "in its manifest [host] verbs.";
+                return false;
+            }
+
+            if (!EffectiveHostVerbs.Contains(verb, StringComparer.Ordinal))
+            {
+                refusal = $"The device registry does not grant the host verb '{verb}' " +
+                          $"to plugin '{Definition.Id}'.";
+                return false;
+            }
+
+            refusal = string.Empty;
+            return true;
+        }
         public string StateName => _stateName;
 
         public async Task<Result<PluginStdioClient>> EnsureClientAsync(IPluginProcessLauncher launcher,
@@ -961,6 +1015,15 @@ public sealed class HostPluginApi : IMcpPluginApi, IPluginManagedDefinitionSourc
             try
             {
                 PluginStdioClient client = new(ProcessSpec(), launcher, options);
+                // Read the reverse wiring lazily: the composition root wires it after
+                // the command service exists, which may be after this mount was built.
+                if (_owner._reverseHostInvoker is { } invoker)
+                {
+                    client.ReverseHost = new PluginReverseHostDispatcher(Definition.Id,
+                        (_, verb) => TryCheckReverseGrant(verb, out string refusal) ? null : refusal,
+                        invoker, _owner._reverseLiveSettings, () => client.CurrentReverseDepth);
+                }
+
                 Result started = await client.StartAsync(CancellationToken.None);
                 if (started.IsFailure)
                 {

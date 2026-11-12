@@ -23,6 +23,14 @@ public sealed record PluginCatalogEntry(
     IReadOnlyList<string> RequestedVerbs,
     IReadOnlyList<PluginCatalogArtifact> Artifacts)
 {
+    /// <summary>
+    /// Host verbs the package asks the device to grant it (reverse direction).
+    /// Optional in the index; absent means the package requests no host verbs.
+    /// The installer rejects a package whose manifest requests different host
+    /// verbs than the signed index declares.
+    /// </summary>
+    public IReadOnlyList<string> RequestedHostVerbs { get; init; } = [];
+
     public PluginCatalogArtifact? ArtifactFor(string platform)
     {
         return Artifacts.FirstOrDefault(artifact => string.Equals(artifact.Platform, platform,
@@ -57,6 +65,9 @@ public static class PluginCatalogReader
 
     private static readonly HashSet<string> ValidVerbs = new(StringComparer.Ordinal)
         { "find", "fetch", "send", "view" };
+
+    private static readonly HashSet<string> ValidHostVerbs = new(StringComparer.Ordinal)
+        { "find", "fetch", "put", "cite", "send", "add" };
 
     public static Result<PluginCatalogIndex> Parse(ReadOnlySpan<byte> content)
     {
@@ -161,6 +172,18 @@ public static class PluginCatalogReader
             throw Error($"Plugin '{id}' requested_verbs must be unique find/fetch/send/view values.");
         }
 
+        IReadOnlyList<string> hostVerbs = [];
+        if (plugin.TryGetProperty("requested_host_verbs", out JsonElement hostVerbsValue))
+        {
+            hostVerbs = StringArray(hostVerbsValue, "requested_host_verbs");
+            if (hostVerbs.Any(verb => !ValidHostVerbs.Contains(verb)) ||
+                hostVerbs.Distinct(StringComparer.Ordinal).Count() != hostVerbs.Count)
+            {
+                throw Error(
+                    $"Plugin '{id}' requested_host_verbs must be unique find/fetch/put/cite/send/add values.");
+            }
+        }
+
         if (StringArray(Required(plugin, "library_grants"), "library_grants").Count != 0)
         {
             throw Error($"Plugin '{id}' requests library grants not supported by this host.");
@@ -205,7 +228,10 @@ public static class PluginCatalogReader
 
         return new PluginCatalogEntry(id, RequiredString(plugin, "name"),
             RequiredString(plugin, "description"), version, RequiredString(plugin, "license"), repository,
-            revision.ToLowerInvariant(), verbs, parsedArtifacts);
+            revision.ToLowerInvariant(), verbs, parsedArtifacts)
+        {
+            RequestedHostVerbs = hostVerbs
+        };
     }
 
     private static ExtensionCatalogEntry ParseExtension(JsonElement extension)

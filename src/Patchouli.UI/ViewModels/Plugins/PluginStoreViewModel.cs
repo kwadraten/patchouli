@@ -123,6 +123,7 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
                 $"{plugin.Name} {plugin.Version}\n" +
                 $"来源：{plugin.Repository}\n固定源码修订：{plugin.SourceRevision}\n" +
                 $"允许通过宿主调用：{string.Join("、", plugin.RequestedVerbs)}\n" +
+                $"插件可调用宿主动词：{(plugin.RequestedHostVerbs.Count == 0 ? "无" : string.Join("、", plugin.RequestedHostVerbs))}\n" +
                 "书库权限：无。\n\n" +
                 "插件以独立进程运行，但仍能访问当前用户可访问的文件和网络。索引签名与产物哈希用于验证来源和完整性，不是安全沙箱。",
                 update ? "更新" : "安装"));
@@ -345,7 +346,7 @@ public sealed class PluginStoreRowViewModel : ExtensionManagerRowViewModel
     public override string VersionText => $"版本 {Item.Catalog.Version} · {Item.Catalog.License}";
 
     public override string MetaText =>
-        $"来源：{Item.Catalog.Repository} · 宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 书库权限：无";
+        $"来源：{Item.Catalog.Repository} · 宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 宿主动词：{(Item.Catalog.RequestedHostVerbs.Count == 0 ? "无" : string.Join("、", Item.Catalog.RequestedHostVerbs))} · 书库权限：无";
 
     public override IReadOnlyList<string> Tags =>
         Item is { InstalledVersion: not null, IsManaged: false }
@@ -354,7 +355,7 @@ public sealed class PluginStoreRowViewModel : ExtensionManagerRowViewModel
 
     public string Id => Item.Catalog.Id;
     public string SourceText => $"来源：{Item.Catalog.Repository}";
-    public string PermissionsText => $"宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 书库权限：无";
+    public string PermissionsText => $"宿主调用：{string.Join("、", Item.Catalog.RequestedVerbs)} · 宿主动词：{(Item.Catalog.RequestedHostVerbs.Count == 0 ? "无" : string.Join("、", Item.Catalog.RequestedHostVerbs))} · 书库权限：无";
 
     public override bool ShowInstall => Item.UnavailableReason is null &&
                                         (Item.InstalledVersion is null || Item.UpdateAvailable);

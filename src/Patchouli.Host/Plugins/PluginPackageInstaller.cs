@@ -46,6 +46,13 @@ internal static class PluginPackageInstaller
                     "The downloaded package requests verbs different from the signed index.");
             }
 
+            if (!definition.RequestedHostVerbs.Order(StringComparer.Ordinal)
+                    .SequenceEqual(catalogEntry.RequestedHostVerbs.Order(StringComparer.Ordinal)))
+            {
+                return Result<PluginDefinition>.Failure(AppErrorCodes.ValidationFailed,
+                    "The downloaded package requests host verbs different from the signed index.");
+            }
+
             return loaded;
         }
         catch (OperationCanceledException)

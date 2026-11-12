@@ -53,6 +53,9 @@ public static class PluginManifestLoader
 
     private static readonly HashSet<string> NodeVerbs = new(StringComparer.Ordinal) { "find", "fetch" };
 
+    private static readonly HashSet<string> HostVerbs = new(StringComparer.Ordinal)
+        { "find", "fetch", "put", "cite", "send", "add" };
+
     private static readonly HashSet<string> ExecutionModes = new(StringComparer.Ordinal) { "sync" };
 
     public static Result<PluginDefinition> Load(string manifestPath)
@@ -149,9 +152,13 @@ public static class PluginManifestLoader
         VfsDeclaration vfs = ParseVfs(document, packageDirectory);
         IReadOnlyList<PluginViewDeclaration> views = ParseUiViews(document, vfs.Nodes);
         IReadOnlyList<PluginManagedFile> managedFiles = ParseManagedFiles(document);
+        IReadOnlyList<string> hostVerbs = ParseHostVerbs(document);
         return Result<PluginDefinition>.Success(new PluginDefinition(id, version, schema, hostApi,
             name, description, readmePath, packageDirectory, runtime, vfs.Nodes, vfs.Endpoints, views,
-            managedFiles));
+            managedFiles)
+        {
+            RequestedHostVerbs = hostVerbs
+        });
     }
 
     /// <summary>
@@ -367,6 +374,43 @@ public static class PluginManifestLoader
 
         IReadOnlyDictionary<string, object?> libraryTable = (IReadOnlyDictionary<string, object?>)library;
         return OptionalStringArray(libraryTable, "grants") ?? [];
+    }
+
+    /// <summary>
+    /// Parses the optional manifest-root <c>[host]</c> table: the host verbs this
+    /// plugin asks to call (<c>verbs = ["find", "fetch"]</c>). Unknown verbs and
+    /// duplicates fail the manifest; an absent table means the plugin requests no
+    /// host verbs. The request alone grants nothing — the device registry must grant
+    /// each verb explicitly.
+    /// </summary>
+    private static IReadOnlyList<string> ParseHostVerbs(IReadOnlyDictionary<string, object?> document)
+    {
+        if (!document.TryGetValue("host", out object? host) || host is null)
+        {
+            return [];
+        }
+
+        if (host is not IReadOnlyDictionary<string, object?> hostTable)
+        {
+            throw Fail("Manifest section '[host]' must be a table.");
+        }
+
+        IReadOnlyList<string> verbs = OptionalStringArray(hostTable, "verbs") ?? [];
+        foreach (string verb in verbs)
+        {
+            if (!HostVerbs.Contains(verb))
+            {
+                throw Fail(
+                    $"Manifest [host] verbs may only contain find/fetch/put/cite/send/add; '{verb}' is not a host verb.");
+            }
+        }
+
+        if (verbs.Distinct(StringComparer.Ordinal).Count() != verbs.Count)
+        {
+            throw Fail("Manifest [host] verbs must be unique.");
+        }
+
+        return verbs.ToArray();
     }
 
     private sealed record VfsDeclaration(
