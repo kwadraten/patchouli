@@ -54,8 +54,18 @@ public sealed record PluginStoreItem(
             ExtensionVersion.Parse(version).CompareTo(ExtensionVersion.Parse(InstalledVersion)) < 0);
 }
 
+public sealed record ExtensionStoreItem(
+    ExtensionCatalogEntry Catalog,
+    string? InstalledVersion)
+{
+    public bool UpdateAvailable => InstalledVersion is not null &&
+                                   ExtensionVersion.Parse(Catalog.Version).CompareTo(
+                                       ExtensionVersion.Parse(InstalledVersion)) > 0;
+}
+
 public sealed record PluginStoreSnapshot(
     IReadOnlyList<PluginStoreItem> Items,
+    IReadOnlyList<ExtensionStoreItem> Extensions,
     DateTimeOffset GeneratedAt,
     bool FromCache,
     string? Warning);
@@ -64,6 +74,8 @@ public interface IPluginStore
 {
     Task<Result<PluginStoreSnapshot>> RefreshAsync(bool force, CancellationToken cancellationToken = default);
     Task<Result<PluginDefinition>> InstallAsync(string pluginId, CancellationToken cancellationToken = default);
+
+    Task<Result> InstallExtensionAsync(string extensionId, CancellationToken cancellationToken = default);
     Task<Result> SetEnabledAsync(string pluginId, bool enabled, CancellationToken cancellationToken = default);
 
     Task<Result<PluginDefinition>> ActivateAsync(string pluginId, string version,

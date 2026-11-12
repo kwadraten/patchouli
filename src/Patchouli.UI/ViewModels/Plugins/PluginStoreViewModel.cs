@@ -24,6 +24,7 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
     }
 
     public ObservableCollection<PluginStoreRowViewModel> Plugins { get; } = [];
+    public ObservableCollection<ExtensionStoreRowViewModel> Extensions { get; } = [];
     public AsyncCommand RefreshCommand { get; }
     [ObservableProperty] public partial bool IsBusy { get; private set; }
     [ObservableProperty] public partial string CatalogStatus { get; private set; } = "";
@@ -34,6 +35,11 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
         foreach (PluginStoreRowViewModel plugin in Plugins)
         {
             plugin.NotifyBusyChanged();
+        }
+
+        foreach (ExtensionStoreRowViewModel extension in Extensions)
+        {
+            extension.NotifyBusyChanged();
         }
     }
 
@@ -83,12 +89,18 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
                 Plugins.Add(new PluginStoreRowViewModel(this, item));
             }
 
-            IsEmpty = Plugins.Count == 0;
+            Extensions.Clear();
+            foreach (ExtensionStoreItem item in result.Value.Extensions)
+            {
+                Extensions.Add(new ExtensionStoreRowViewModel(this, item));
+            }
+
+            IsEmpty = Plugins.Count == 0 && Extensions.Count == 0;
             LastError = null;
             SaveState = SettingsSaveState.Clean;
             string cacheStatus = result.Value.FromCache ? "已验证缓存" : "在线索引";
             CatalogStatus = $"{cacheStatus} · 索引时间 {result.Value.GeneratedAt.ToLocalTime():yyyy-MM-dd HH:mm}";
-            Status = result.Value.Warning ?? $"已加载 {Plugins.Count} 个插件。";
+            Status = result.Value.Warning ?? $"已加载 {Plugins.Count} 个插件、{Extensions.Count} 个扩展。";
         }
         catch (Exception exception)
         {
@@ -129,6 +141,30 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
                     ? Result.Success()
                     : Result.Failure(result.ErrorCode!, result.ErrorMessage!);
             }, update ? "插件更新失败" : "插件安装失败", $"已安装 {plugin.Name} {plugin.Version}。");
+    }
+
+    internal async Task InstallExtensionAsync(ExtensionStoreRowViewModel row,
+        CancellationToken cancellationToken)
+    {
+        ExtensionCatalogEntry extension = row.Item.Catalog;
+        bool update = row.Item.InstalledVersion is not null;
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(update ? "更新扩展？" : "安装扩展？",
+                $"{extension.Name} {extension.Version}\n" +
+                $"类型：{ExtensionManagerViewModel.KindLabel(extension.Kind)}\n" +
+                $"来源：{extension.Repository}\n固定源码修订：{extension.SourceRevision}\n" +
+                $"宿主 API：{extension.HostApi}\n\n" +
+                "扩展是编译后在宿主进程内运行的可信代码，能访问当前用户可访问的文件和网络。索引签名与产物哈希用于验证来源和完整性，不是安全沙箱。",
+                update ? "更新" : "安装"));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
+        await RunOperationAsync(row, services =>
+                services.PluginStore.InstallExtensionAsync(extension.Id, cancellationToken),
+            update ? "扩展更新失败" : "扩展安装失败",
+            $"已安装 {extension.Name} {extension.Version}。");
     }
 
     internal Task ToggleAsync(PluginStoreRowViewModel row, CancellationToken cancellationToken)
@@ -215,7 +251,7 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
         }
     }
 
-    private async Task RunOperationAsync(PluginStoreRowViewModel row,
+    private async Task RunOperationAsync(ExtensionManagerRowViewModel row,
         Func<HostServices, Task<Result>> operation, string failurePrefix, string successStatus)
     {
         if (IsBusy)
@@ -224,7 +260,7 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
         }
 
         IsBusy = true;
-        Status = $"正在处理 {row.Item.Catalog.Name}…";
+        Status = $"正在处理 {row.Name}…";
         try
         {
             HostServices services = await _main.ServicesAsync();
@@ -268,7 +304,13 @@ public sealed partial class PluginStoreViewModel : SettingsSectionViewModelBase
             Plugins.Add(new PluginStoreRowViewModel(this, item));
         }
 
-        IsEmpty = Plugins.Count == 0;
+        Extensions.Clear();
+        foreach (ExtensionStoreItem item in refreshed.Value.Extensions)
+        {
+            Extensions.Add(new ExtensionStoreRowViewModel(this, item));
+        }
+
+        IsEmpty = Plugins.Count == 0 && Extensions.Count == 0;
         Status = successStatus;
     }
 }
@@ -331,4 +373,53 @@ public sealed class PluginStoreRowViewModel : ExtensionManagerRowViewModel
     public override AsyncCommand InstallCommand { get; }
     public override AsyncCommand ToggleCommand { get; }
     public override AsyncCommand UninstallCommand { get; }
+}
+
+/// <summary>One community-extension card on the 插件与扩展管理 page.</summary>
+public sealed class ExtensionStoreRowViewModel : ExtensionManagerRowViewModel
+{
+    private readonly PluginStoreViewModel _owner;
+
+    internal ExtensionStoreRowViewModel(PluginStoreViewModel owner, ExtensionStoreItem item)
+    {
+        _owner = owner;
+        Item = item;
+        InstallCommand = new AsyncCommand(cancellationToken =>
+            owner.InstallExtensionAsync(this, cancellationToken));
+    }
+
+    internal ExtensionStoreItem Item { get; }
+    public override bool IsBusy => _owner.IsBusy;
+
+    internal void NotifyBusyChanged()
+    {
+        Raise(nameof(IsBusy));
+    }
+
+    public override ExtensionManagerRowCategory Category => ExtensionManagerRowCategory.Extension;
+    public override bool IsInstalled => Item.InstalledVersion is not null;
+    public override string Name => Item.Catalog.Name;
+    public override string Description => Item.Catalog.Description;
+    public override string IdText => Item.Catalog.Id;
+    public override string VersionText => $"版本 {Item.Catalog.Version}";
+
+    public override string MetaText =>
+        $"来源：{Item.Catalog.Repository} · 类型：{ExtensionManagerViewModel.KindLabel(Item.Catalog.Kind)} · 宿主 API：{Item.Catalog.HostApi}";
+
+    public override IReadOnlyList<string> Tags =>
+        ["扩展", "社区", ExtensionManagerViewModel.KindLabel(Item.Catalog.Kind)];
+
+    public override bool ShowInstall => Item.InstalledVersion is null || Item.UpdateAvailable;
+    public override string InstallText => Item.UpdateAvailable ? "更新" : "安装";
+    public override bool ShowToggle => false;
+    public override string ToggleText => "";
+    public override bool ShowUninstall => false;
+
+    public override string StatusText => Item.InstalledVersion is null
+        ? "尚未安装"
+        : $"{Item.InstalledVersion} · 已安装" + (Item.UpdateAvailable ? " · 有可用更新" : "");
+
+    public override AsyncCommand InstallCommand { get; }
+    public override AsyncCommand ToggleCommand { get; } = new(() => Task.CompletedTask);
+    public override AsyncCommand UninstallCommand { get; } = new(() => Task.CompletedTask);
 }

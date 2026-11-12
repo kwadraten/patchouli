@@ -6,6 +6,7 @@ using FluentAssertions;
 using NSec.Cryptography;
 using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
+using Patchouli.Extensions.Contracts;
 using Patchouli.Host.Downloads;
 using Patchouli.Host.Plugins;
 using Patchouli.Testing;
@@ -741,6 +742,217 @@ public sealed class PluginStoreTests
         uninstalled.IsSuccess.Should().BeTrue(uninstalled.ErrorMessage);
         Directory.Exists(Path.Combine(root, "plugins", PluginId)).Should().BeFalse();
         PluginRegistry.Load(PluginRegistry.RegistryPath(root), true).Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Signed_catalog_lists_extension_entries_with_their_installed_versions()
+    {
+        using SigningKey key = new();
+        FakeHttpHandler http = new();
+        SetExtensionRelease(http, key, "1.0.0", ExtensionPackage("1.0.0"));
+        string root = NewRoot();
+        using HttpClient catalogClient = new(http);
+        using HttpClient downloadClient = new(http);
+        Dictionary<string, string> installed = new(StringComparer.Ordinal)
+        {
+            [ExtensionId] = "0.9.0"
+        };
+        using PluginStore store = new(catalogClient, downloadClient, new PluginStoreOptions
+        {
+            DataDirectory = root,
+            IndexUrl = IndexUrl,
+            SignatureUrl = SignatureUrl,
+            PublicKeys = [key.PublicKey],
+            CurrentPlatform = "win-x64"
+        }, extensionInstalledVersions: _ =>
+            Task.FromResult<IReadOnlyDictionary<string, string>>(installed));
+
+        Result<PluginStoreSnapshot> snapshot = await store.RefreshAsync(true);
+
+        snapshot.IsSuccess.Should().BeTrue(snapshot.ErrorMessage);
+        ExtensionStoreItem item = snapshot.Value.Extensions.Should().ContainSingle().Subject;
+        item.Catalog.Id.Should().Be(ExtensionId);
+        item.Catalog.Kind.Should().Be(ExtensionKind.Metadata);
+        item.Catalog.HostApi.Should().Be("patchouli.extensions/4");
+        item.Catalog.Artifact.Sha256.Should().HaveLength(64);
+        item.InstalledVersion.Should().Be("0.9.0");
+        item.UpdateAvailable.Should().BeTrue("the index version is newer than the installed one");
+        snapshot.Value.Items.Should().BeEmpty("this index publishes no plugins");
+    }
+
+    [Fact]
+    public async Task Extension_install_downloads_verifies_and_activates_the_package()
+    {
+        using SigningKey key = new();
+        byte[] package = ExtensionPackage("1.0.0", true);
+        FakeHttpHandler http = new();
+        SetExtensionRelease(http, key, "1.0.0", package);
+        string root = NewRoot();
+        using HttpClient catalogClient = new(http);
+        using HttpClient downloadClient = new(http);
+        ExtensionPackageSnapshot? captured = null;
+        using PluginStore store = new(catalogClient, downloadClient, new PluginStoreOptions
+        {
+            DataDirectory = root,
+            IndexUrl = IndexUrl,
+            SignatureUrl = SignatureUrl,
+            PublicKeys = [key.PublicKey],
+            CurrentPlatform = "win-x64"
+        }, extensionActivator: (snapshot, _) =>
+        {
+            captured = snapshot;
+            return Task.FromResult(new ExtensionCheckResult(true, [], []));
+        });
+        (await store.RefreshAsync(true)).IsSuccess.Should().BeTrue();
+
+        Result installed = await store.InstallExtensionAsync(ExtensionId);
+
+        installed.IsSuccess.Should().BeTrue(installed.ErrorMessage);
+        captured.Should().NotBeNull();
+        captured!.Id.Should().Be(ExtensionId);
+        captured.Sources.Should().ContainKey("main.fsx");
+        captured.Sources["main.fsx"].Should().Contain("kwadraten-extension-marker");
+        captured.Sources.Should().ContainKey("Support.fsx");
+        captured.BinaryFiles.Should().ContainKey("lib/helper.dll");
+        string stagingRoot = Path.Combine(root, "plugins", ".staging");
+        (!Directory.Exists(stagingRoot) || !Directory.EnumerateFileSystemEntries(stagingRoot).Any())
+            .Should().BeTrue("extension staging is cleaned up after activation");
+    }
+
+    [Fact]
+    public async Task Extension_install_rejects_a_hash_mismatch_and_an_identity_mismatch()
+    {
+        using SigningKey key = new();
+        FakeHttpHandler http = new();
+        byte[] package = ExtensionPackage("1.0.0");
+        SetExtensionRelease(http, key, "1.0.0", package);
+        string root = NewRoot();
+        using HttpClient catalogClient = new(http);
+        using HttpClient downloadClient = new(http);
+        int activations = 0;
+        using PluginStore store = new(catalogClient, downloadClient, new PluginStoreOptions
+        {
+            DataDirectory = root,
+            IndexUrl = IndexUrl,
+            SignatureUrl = SignatureUrl,
+            PublicKeys = [key.PublicKey],
+            CurrentPlatform = "win-x64"
+        }, extensionActivator: (_, _) =>
+        {
+            activations++;
+            return Task.FromResult(new ExtensionCheckResult(true, [], []));
+        });
+        (await store.RefreshAsync(true)).IsSuccess.Should().BeTrue();
+
+        byte[] changed = package.ToArray();
+        changed[^1] ^= 1;
+        http.Routes[ExtensionArtifactUrl] = changed;
+        Result badHash = await store.InstallExtensionAsync(ExtensionId);
+        badHash.IsFailure.Should().BeTrue();
+        badHash.ErrorMessage.Should().Contain("SHA-256");
+        activations.Should().Be(0);
+
+        http.Routes[ExtensionArtifactUrl] = ExtensionPackage("9.9.9");
+        Result wrongVersion = await store.InstallExtensionAsync(ExtensionId);
+        wrongVersion.IsFailure.Should().BeTrue();
+        wrongVersion.ErrorMessage.Should().Contain("differs from the signed index");
+        activations.Should().Be(0);
+
+        (await store.InstallExtensionAsync("example.missing-extension")).ErrorCode.Should()
+            .Be(AppErrorCodes.NotFound);
+    }
+
+    [Fact]
+    public async Task Extension_install_reports_activation_diagnostics_when_the_package_fails()
+    {
+        using SigningKey key = new();
+        FakeHttpHandler http = new();
+        SetExtensionRelease(http, key, "1.0.0", ExtensionPackage("1.0.0"));
+        string root = NewRoot();
+        using HttpClient catalogClient = new(http);
+        using HttpClient downloadClient = new(http);
+        using PluginStore store = new(catalogClient, downloadClient, new PluginStoreOptions
+        {
+            DataDirectory = root,
+            IndexUrl = IndexUrl,
+            SignatureUrl = SignatureUrl,
+            PublicKeys = [key.PublicKey],
+            CurrentPlatform = "win-x64"
+        }, extensionActivator: (_, _) => Task.FromResult(new ExtensionCheckResult(false, [],
+        [
+            new ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "EXT9001", "compile exploded",
+                new ExtensionSourceLocation("main.fsx", 1, 0, 1, 1))
+        ])));
+
+        Result installed = await store.InstallExtensionAsync(ExtensionId);
+
+        installed.IsFailure.Should().BeTrue();
+        installed.ErrorMessage.Should().Contain("compile exploded");
+    }
+
+    private const string ExtensionId = "kwadraten.test-extension";
+    private const string ExtensionArtifactUrl = "https://example.test/extension.zip";
+
+    private static void SetExtensionRelease(FakeHttpHandler http, SigningKey key, string version,
+        byte[] package)
+    {
+        byte[] index = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schema = "patchouli.community.index/1",
+            generated_at = "2026-11-12T00:00:00Z",
+            plugins = Array.Empty<object>(),
+            extensions = new[]
+            {
+                new
+                {
+                    id = ExtensionId,
+                    name = "Test extension",
+                    description = "Community extension fixture",
+                    version,
+                    kind = "metadata",
+                    host_api = "patchouli.extensions/4",
+                    repository = "https://github.com/example/extensions",
+                    source_revision = new string('a', 40),
+                    artifact = new
+                    {
+                        url = ExtensionArtifactUrl,
+                        size = package.Length,
+                        sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(package))
+                            .ToLowerInvariant()
+                    }
+                }
+            }
+        });
+        http.Routes[IndexUrl] = index;
+        http.Routes[SignatureUrl] = Encoding.UTF8.GetBytes(key.Sign(index));
+        http.Routes[ExtensionArtifactUrl] = package;
+    }
+
+    private static byte[] ExtensionPackage(string version, bool includeSupport = false)
+    {
+        using MemoryStream output = new();
+        using (ZipArchive archive = new(output, ZipArchiveMode.Create, true))
+        {
+            Add(archive, "main.fsx", $$"""
+                                       // kwadraten-extension-marker
+                                       /// <summary>Test community extension.</summary>
+                                       /// <patchouli-extension id="kwadraten.test-extension" kind="metadata" version="{{version}}" host-api="patchouli.extensions/4">
+                                       ///   <name>Test extension</name>
+                                       /// </patchouli-extension>
+                                       let extension = 1
+                                       """);
+            if (includeSupport)
+            {
+                Add(archive, "Support.fsx", "let shared = 2");
+                ZipArchiveEntry binary = archive.CreateEntry("lib/helper.dll");
+                using (Stream stream = binary.Open())
+                {
+                    stream.Write([0x4D, 0x5A, 0x90, 0x00]);
+                }
+            }
+        }
+
+        return output.ToArray();
     }
 
     private static void WriteManifest(string directory, string pluginId, string version)

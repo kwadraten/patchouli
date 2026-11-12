@@ -538,10 +538,16 @@ public sealed class ExtensionManagerTests(AvaloniaSharedSessionFixture headless)
         {
             Refreshes++;
             return Task.FromResult(Result<PluginStoreSnapshot>.Success(
-                new PluginStoreSnapshot(_items, DateTimeOffset.UnixEpoch, false, null)));
+                new PluginStoreSnapshot(_items, [], DateTimeOffset.UnixEpoch, false, null)));
         }
 
         public Task<Result<PluginDefinition>> InstallAsync(string pluginId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Result> InstallExtensionAsync(string extensionId,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

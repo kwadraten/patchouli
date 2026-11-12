@@ -30,9 +30,26 @@ public sealed record PluginCatalogEntry(
     }
 }
 
+public sealed record ExtensionCatalogArtifact(
+    string Url,
+    long Size,
+    string Sha256);
+
+public sealed record ExtensionCatalogEntry(
+    string Id,
+    string Name,
+    string Description,
+    string Version,
+    ExtensionKind Kind,
+    string HostApi,
+    string Repository,
+    string SourceRevision,
+    ExtensionCatalogArtifact Artifact);
+
 public sealed record PluginCatalogIndex(
     DateTimeOffset GeneratedAt,
-    IReadOnlyList<PluginCatalogEntry> Plugins);
+    IReadOnlyList<PluginCatalogEntry> Plugins,
+    IReadOnlyList<ExtensionCatalogEntry> Extensions);
 
 public static class PluginCatalogReader
 {
@@ -83,7 +100,29 @@ public static class PluginCatalogReader
                 entries.Add(entry);
             }
 
-            return Result<PluginCatalogIndex>.Success(new PluginCatalogIndex(generatedAt, entries));
+            List<ExtensionCatalogEntry> extensions = [];
+            if (root.TryGetProperty("extensions", out JsonElement extensionList))
+            {
+                if (extensionList.ValueKind != JsonValueKind.Array)
+                {
+                    throw Error("The community index extensions value must be an array.");
+                }
+
+                HashSet<string> extensionIds = new(StringComparer.Ordinal);
+                foreach (JsonElement extension in extensionList.EnumerateArray())
+                {
+                    ExtensionCatalogEntry entry = ParseExtension(extension);
+                    if (!extensionIds.Add(entry.Id))
+                    {
+                        throw Error($"Duplicate extension id '{entry.Id}'.");
+                    }
+
+                    extensions.Add(entry);
+                }
+            }
+
+            return Result<PluginCatalogIndex>.Success(
+                new PluginCatalogIndex(generatedAt, entries, extensions));
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException or FormatException
                                               or OverflowException)
@@ -167,6 +206,66 @@ public static class PluginCatalogReader
         return new PluginCatalogEntry(id, RequiredString(plugin, "name"),
             RequiredString(plugin, "description"), version, RequiredString(plugin, "license"), repository,
             revision.ToLowerInvariant(), verbs, parsedArtifacts);
+    }
+
+    private static ExtensionCatalogEntry ParseExtension(JsonElement extension)
+    {
+        RequireObject(extension, "extension");
+        string id = RequiredString(extension, "id");
+        if (!System.Text.RegularExpressions.Regex.IsMatch(id,
+                "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            throw Error($"Extension id '{id}' is invalid.");
+        }
+
+        string version = RequiredString(extension, "version");
+        if (!ExtensionVersion.TryParse(version, out _))
+        {
+            throw Error($"Extension '{id}' has invalid SemVer '{version}'.");
+        }
+
+        ExtensionKind kind = RequiredString(extension, "kind") switch
+        {
+            "translation" => ExtensionKind.Translation,
+            "metadata" => ExtensionKind.Metadata,
+            "ocr" => ExtensionKind.Ocr,
+            "retrieval" => ExtensionKind.Retrieval,
+            "pdf-text-layer" => ExtensionKind.PdfTextLayer,
+            "layout-recognition" => ExtensionKind.LayoutRecognition,
+            _ => throw Error($"Extension '{id}' has an unsupported kind.")
+        };
+        string hostApi = RequiredString(extension, "host_api");
+        if (!ExtensionHostApi.IsSupported(hostApi))
+        {
+            throw Error($"Extension '{id}' targets an unsupported host API '{hostApi}'.");
+        }
+
+        string repository = HttpsUrl(RequiredString(extension, "repository"),
+            $"extension '{id}' repository");
+        string revision = RequiredString(extension, "source_revision");
+        if (revision.Length is not (40 or 64) || !revision.All(char.IsAsciiHexDigit))
+        {
+            throw Error($"Extension '{id}' has an invalid source revision.");
+        }
+
+        JsonElement artifact = Required(extension, "artifact");
+        RequireObject(artifact, "artifact");
+        string url = HttpsUrl(RequiredString(artifact, "url"), $"extension '{id}' artifact URL");
+        if (!Required(artifact, "size").TryGetInt64(out long size) || size <= 0)
+        {
+            throw Error($"Extension '{id}' artifact size must be positive.");
+        }
+
+        string sha256 = RequiredString(artifact, "sha256").ToLowerInvariant();
+        if (sha256.Length != 64 || !sha256.All(char.IsAsciiHexDigit))
+        {
+            throw Error($"Extension '{id}' artifact SHA-256 is invalid.");
+        }
+
+        return new ExtensionCatalogEntry(id, RequiredString(extension, "name"),
+            RequiredString(extension, "description"), version, kind, hostApi, repository,
+            revision.ToLowerInvariant(), new ExtensionCatalogArtifact(url, size, sha256));
     }
 
     private static bool IsPlatform(string value)

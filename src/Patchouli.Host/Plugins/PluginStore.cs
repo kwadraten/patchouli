@@ -23,11 +23,22 @@ public sealed class PluginStore : IPluginStore, IDisposable
     private readonly string _signatureCachePath;
     private readonly Func<string, Task>? _registryChanged;
     private readonly DownloadTaskService? _downloads;
+
+    private readonly Func<ExtensionPackageSnapshot, CancellationToken, Task<ExtensionCheckResult>>?
+        _extensionActivator;
+
+    private readonly Func<CancellationToken, Task<IReadOnlyDictionary<string, string>>>?
+        _extensionInstalledVersions;
+
     private PluginCatalogIndex? _lastIndex;
 
     public PluginStore(HttpClient catalogClient, HttpClient downloadClient, PluginStoreOptions options,
         IPluginProcessLauncher? launcher = null, PluginClientOptions? clientOptions = null,
-        Func<string, Task>? registryChanged = null, DownloadTaskService? downloads = null)
+        Func<string, Task>? registryChanged = null, DownloadTaskService? downloads = null,
+        Func<ExtensionPackageSnapshot, CancellationToken, Task<ExtensionCheckResult>>? extensionActivator =
+            null,
+        Func<CancellationToken, Task<IReadOnlyDictionary<string, string>>>? extensionInstalledVersions =
+            null)
     {
         _catalogClient = catalogClient;
         _downloadClient = downloadClient;
@@ -36,6 +47,8 @@ public sealed class PluginStore : IPluginStore, IDisposable
         _clientOptions = clientOptions ?? new PluginClientOptions();
         _registryChanged = registryChanged;
         _downloads = downloads;
+        _extensionActivator = extensionActivator;
+        _extensionInstalledVersions = extensionInstalledVersions;
         _pluginsRoot = Path.GetFullPath(Path.Combine(options.DataDirectory, "plugins"));
         _registryPath = PluginRegistry.RegistryPath(options.DataDirectory);
         _indexCachePath = Path.Combine(_pluginsRoot, "catalog", "index.json");
@@ -76,7 +89,8 @@ public sealed class PluginStore : IPluginStore, IDisposable
             if (cached.IsSuccess)
             {
                 _lastIndex = cached.Value;
-                return Result<PluginStoreSnapshot>.Success(Snapshot(cached.Value, true, null));
+                return Result<PluginStoreSnapshot>.Success(
+                    await SnapshotAsync(cached.Value, true, null, cancellationToken));
             }
         }
 
@@ -84,15 +98,17 @@ public sealed class PluginStore : IPluginStore, IDisposable
         if (remote.IsSuccess)
         {
             _lastIndex = remote.Value;
-            return Result<PluginStoreSnapshot>.Success(Snapshot(remote.Value, false, null));
+            return Result<PluginStoreSnapshot>.Success(
+                await SnapshotAsync(remote.Value, false, null, cancellationToken));
         }
 
         Result<PluginCatalogIndex> fallback = LoadCachedIndex();
         if (fallback.IsSuccess)
         {
             _lastIndex = fallback.Value;
-            return Result<PluginStoreSnapshot>.Success(Snapshot(fallback.Value, true,
-                $"The online index could not be refreshed; the last verified cache is shown. {remote.ErrorMessage}"));
+            return Result<PluginStoreSnapshot>.Success(await SnapshotAsync(fallback.Value, true,
+                $"The online index could not be refreshed; the last verified cache is shown. {remote.ErrorMessage}",
+                cancellationToken));
         }
 
         return Failure<PluginStoreSnapshot>(remote.ErrorCode ?? AppErrorCodes.ValidationFailed,
@@ -237,6 +253,172 @@ public sealed class PluginStore : IPluginStore, IDisposable
             }
 
             TryDelete(temporaryRoot);
+        }
+    }
+
+    public Task<Result> InstallExtensionAsync(string extensionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_downloads is not { } downloads)
+        {
+            return InstallExtensionCoreAsync(extensionId, null, cancellationToken);
+        }
+
+        Result? captured = null;
+        Task<Result> completion = downloads.Start($"安装扩展 {extensionId}", async (progress, token) =>
+        {
+            captured = await InstallExtensionCoreAsync(extensionId, progress, token)
+                .ConfigureAwait(false);
+            if (captured.IsSuccess)
+            {
+                return Result.Success();
+            }
+
+            return captured.ErrorCode == "cancelled" || token.IsCancellationRequested
+                ? Result.Failure(DownloadTaskService.CancelledErrorCode, captured.ErrorMessage!)
+                : Result.Failure(captured.ErrorCode!, captured.ErrorMessage!);
+        }, cancellationToken, canRetry: false).Completion;
+        return AwaitInstall(completion);
+
+        async Task<Result> AwaitInstall(Task<Result> pending)
+        {
+            Result outcome = await pending.ConfigureAwait(false);
+            return outcome.IsSuccess && captured is { } done
+                ? done
+                : captured ?? Result.Failure(
+                    outcome.ErrorCode == DownloadTaskService.CancelledErrorCode
+                        ? "cancelled"
+                        : outcome.ErrorCode ?? "install_failed",
+                    outcome.ErrorMessage ?? "The extension installation failed.");
+        }
+    }
+
+    private async Task<Result> InstallExtensionCoreAsync(string extensionId,
+        IProgress<double>? progress, CancellationToken cancellationToken)
+    {
+        string temporaryRoot = Path.Combine(_pluginsRoot, ".staging", Guid.NewGuid().ToString("N"));
+        string workDirectory = Path.Combine(temporaryRoot, "package");
+        try
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (_lastIndex is null)
+                {
+                    Result<PluginStoreSnapshot> loaded = await RefreshCoreAsync(false, cancellationToken);
+                    if (loaded.IsFailure)
+                    {
+                        return Result.Failure(loaded.ErrorCode!, loaded.ErrorMessage!);
+                    }
+                }
+
+                ExtensionCatalogEntry? entry =
+                    _lastIndex!.Extensions.FirstOrDefault(extension => extension.Id == extensionId);
+                if (entry is null)
+                {
+                    return Result.Failure(AppErrorCodes.NotFound,
+                        $"Extension '{extensionId}' is absent from the verified community index.");
+                }
+
+                if (_extensionActivator is null)
+                {
+                    return Result.Failure(AppErrorCodes.UnsupportedOperation,
+                        "This host is not configured to install community extensions.");
+                }
+
+                Directory.CreateDirectory(temporaryRoot);
+                Result downloaded = await PluginPackageInstaller.DownloadVerifiedAsync(_downloadClient,
+                    entry.Artifact.Url, entry.Artifact.Size, entry.Artifact.Sha256,
+                    Path.Combine(temporaryRoot, "package.zip"), cancellationToken, progress);
+                if (downloaded.IsFailure)
+                {
+                    return downloaded;
+                }
+
+                PluginPackageInstaller.ExtractArchive(Path.Combine(temporaryRoot, "package.zip"),
+                    workDirectory);
+                Result<ExtensionPackageSnapshot> prepared = ReadExtensionPackage(entry.Id, workDirectory);
+                if (prepared.IsFailure)
+                {
+                    return Result.Failure(prepared.ErrorCode!, prepared.ErrorMessage!);
+                }
+
+                ExtensionEntryMetadata metadata;
+                try
+                {
+                    metadata = ExtensionEntryMetadata.Parse(prepared.Value);
+                }
+                catch (ExtensionMetadataException exception)
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        $"The downloaded extension metadata is invalid: {exception.Message}");
+                }
+
+                if (metadata.Version != entry.Version || metadata.Kind != entry.Kind ||
+                    !string.Equals(metadata.HostApi, entry.HostApi, StringComparison.Ordinal))
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "The downloaded extension identity or version differs from the signed index.");
+                }
+
+                ExtensionCheckResult check =
+                    await _extensionActivator(prepared.Value, cancellationToken);
+                return check.Succeeded
+                    ? Result.Success()
+                    : Result.Failure(AppErrorCodes.ValidationFailed,
+                        "The extension package was downloaded and verified but failed to activate: " +
+                        string.Join("; ", check.Diagnostics.Select(diagnostic => diagnostic.Message)));
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return Result.Failure("cancelled", "The extension installation was cancelled.");
+        }
+        catch (Exception exception) when (IsExpected(exception))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, exception.Message);
+        }
+        finally
+        {
+            TryDelete(temporaryRoot);
+        }
+    }
+
+    private static Result<ExtensionPackageSnapshot> ReadExtensionPackage(string extensionId,
+        string packageDirectory)
+    {
+        try
+        {
+            Dictionary<string, string> sources = new(StringComparer.Ordinal);
+            Dictionary<string, ReadOnlyMemory<byte>> binaryFiles = new(StringComparer.Ordinal);
+            string root = Path.GetFullPath(packageDirectory);
+            foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                string relative = Path.GetRelativePath(root, file)
+                    .Replace(Path.DirectorySeparatorChar, '/')
+                    .Replace(Path.AltDirectorySeparatorChar, '/');
+                if (ExtensionPackageSnapshot.IsTextSourcePath(relative))
+                {
+                    sources[relative] = File.ReadAllText(file);
+                }
+                else
+                {
+                    binaryFiles[relative] = File.ReadAllBytes(file);
+                }
+            }
+
+            return Result<ExtensionPackageSnapshot>.Success(
+                new ExtensionPackageSnapshot(extensionId, sources, binaryFiles));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or ArgumentException)
+        {
+            return Result<ExtensionPackageSnapshot>.Failure(AppErrorCodes.ValidationFailed,
+                $"The downloaded extension package is invalid: {exception.Message}");
         }
     }
 
@@ -687,8 +869,13 @@ public sealed class PluginStore : IPluginStore, IDisposable
         }
     }
 
-    private PluginStoreSnapshot Snapshot(PluginCatalogIndex index, bool fromCache, string? warning)
+    private async Task<PluginStoreSnapshot> SnapshotAsync(PluginCatalogIndex index, bool fromCache,
+        string? warning, CancellationToken cancellationToken)
     {
+        IReadOnlyDictionary<string, string> installedExtensions =
+            _extensionInstalledVersions is null
+                ? new Dictionary<string, string>()
+                : await _extensionInstalledVersions(cancellationToken);
         PluginRegistrySnapshot registry = PluginRegistry.Load(_registryPath, true);
         List<PluginStoreItem> items = [];
         foreach (PluginCatalogEntry entry in index.Plugins.OrderBy(plugin => plugin.Name, StringComparer.Ordinal))
@@ -715,7 +902,14 @@ public sealed class PluginStore : IPluginStore, IDisposable
                     : null));
         }
 
-        return new PluginStoreSnapshot(items, index.GeneratedAt, fromCache, warning);
+        List<ExtensionStoreItem> extensions = index.Extensions
+            .OrderBy(extension => extension.Name, StringComparer.Ordinal)
+            .Select(extension => new ExtensionStoreItem(extension,
+                installedExtensions.TryGetValue(extension.Id, out string? installedVersion)
+                    ? installedVersion
+                    : null))
+            .ToList();
+        return new PluginStoreSnapshot(items, extensions, index.GeneratedAt, fromCache, warning);
     }
 
     private List<string> InstalledVersions(string pluginId)

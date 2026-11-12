@@ -55,6 +55,7 @@ public sealed partial class ExtensionManagerViewModel : ViewModelBase
         RefreshCommand = new AsyncCommand(RefreshAllAsync);
         PluginStore.PropertyChanged += OnPluginStorePropertyChanged;
         PluginStore.Plugins.CollectionChanged += (_, _) => RebuildVisibleRows();
+        PluginStore.Extensions.CollectionChanged += (_, _) => RebuildVisibleRows();
         InstallFilters =
         [
             Option("全部", () => SelectInstallFilter(ExtensionManagerInstallFilter.All), true),
@@ -223,6 +224,7 @@ public sealed partial class ExtensionManagerViewModel : ViewModelBase
     {
         List<ExtensionManagerRowViewModel> rows = PluginStore.Plugins
             .Cast<ExtensionManagerRowViewModel>()
+            .Concat(PluginStore.Extensions)
             .Concat(Extensions)
             .Where(Matches)
             .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)

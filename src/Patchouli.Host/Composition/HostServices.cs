@@ -358,7 +358,8 @@ public sealed class HostServices
                 {
                     _ = Plugins.Mounts;
                 }
-            }));
+            }), extensionActivator: (package, token) => TranslationExtensions.ActivateAsync(package, token),
+            extensionInstalledVersions: ReadInstalledExtensionVersionsAsync);
         _ownsPluginStore = infrastructure?.PluginStore is null;
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
@@ -1199,5 +1200,34 @@ public sealed class HostServices
                         recognized.Value.HeadingLevel,
                         Confidence: recognized.Value.Confidence))
             ]);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadInstalledExtensionVersionsAsync(
+        CancellationToken cancellationToken)
+    {
+        Dictionary<string, string> versions = new(StringComparer.Ordinal);
+        IExtensionManager manager = TranslationExtensions.Manager;
+        HashSet<string> ids = new(TranslationExtensions.ListWorkingPackages(), StringComparer.Ordinal);
+        foreach (ExtensionGenerationInfo generation in manager.List())
+        {
+            ids.Add(generation.Id);
+        }
+
+        foreach (string id in ids)
+        {
+            try
+            {
+                ExtensionPackageSnapshot source = await manager.ReadSourceAsync(id, cancellationToken)
+                    .ConfigureAwait(false);
+                versions[id] = ExtensionEntryMetadata.Parse(source).Version;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                  or ExtensionMetadataException)
+            {
+                // A package being rewritten mid-enumeration simply reports no version.
+            }
+        }
+
+        return versions;
     }
 }

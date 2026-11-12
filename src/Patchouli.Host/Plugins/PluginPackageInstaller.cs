@@ -17,14 +17,14 @@ internal static class PluginPackageInstaller
     {
         try
         {
-            Result downloaded = await DownloadAsync(client, artifact, archivePath, cancellationToken,
-                progress);
+            Result downloaded = await DownloadVerifiedAsync(client, artifact.Url, artifact.Size,
+                artifact.Sha256, archivePath, cancellationToken, progress);
             if (downloaded.IsFailure)
             {
                 return Result<PluginDefinition>.Failure(downloaded.ErrorCode!, downloaded.ErrorMessage!);
             }
 
-            Extract(archivePath, packageDirectory);
+            ExtractArchive(archivePath, packageDirectory);
             string manifestPath = Path.Combine(packageDirectory, PluginManifestLoader.ManifestFileName);
             Result<PluginDefinition> loaded = PluginManifestLoader.Load(manifestPath);
             if (loaded.IsFailure)
@@ -60,17 +60,18 @@ internal static class PluginPackageInstaller
         }
     }
 
-    private static async Task<Result> DownloadAsync(HttpClient client, PluginCatalogArtifact artifact,
-        string archivePath, CancellationToken cancellationToken, IProgress<double>? progress = null)
+    internal static async Task<Result> DownloadVerifiedAsync(HttpClient client, string url, long size,
+        string sha256, string archivePath, CancellationToken cancellationToken,
+        IProgress<double>? progress = null)
     {
-        if (artifact.Size > MaxPackageBytes)
+        if (size > MaxPackageBytes)
         {
             return Result.Failure(AppErrorCodes.ValidationFailed,
-                $"The plugin package exceeds the {MaxPackageBytes}-byte limit.");
+                $"The package exceeds the {MaxPackageBytes}-byte limit.");
         }
 
         IDownloadProgress? rich = progress as IDownloadProgress;
-        string relative = Uri.TryCreate(artifact.Url, UriKind.Absolute, out Uri? artifactUri)
+        string relative = Uri.TryCreate(url, UriKind.Absolute, out Uri? artifactUri)
             ? Path.GetFileName(artifactUri.AbsolutePath)
             : "package.zip";
         if (relative.Length == 0)
@@ -78,7 +79,7 @@ internal static class PluginPackageInstaller
             relative = "package.zip";
         }
 
-        DownloadFileProgress current = new(relative, "running", 0, artifact.Size);
+        DownloadFileProgress current = new(relative, "running", 0, size);
 
         void ReportFile(DownloadFileProgress value)
         {
@@ -89,7 +90,7 @@ internal static class PluginPackageInstaller
         ReportFile(current);
         try
         {
-            using HttpResponseMessage response = await client.GetAsync(artifact.Url,
+            using HttpResponseMessage response = await client.GetAsync(url,
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -97,7 +98,7 @@ internal static class PluginPackageInstaller
                     $"The plugin download returned HTTP {(int)response.StatusCode}.");
             }
 
-            if (response.Content.Headers.ContentLength is long declared && declared != artifact.Size)
+            if (response.Content.Headers.ContentLength is long declared && declared != size)
             {
                 Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                     "The plugin download Content-Length differs from the signed index.");
@@ -120,7 +121,7 @@ internal static class PluginPackageInstaller
                 }
 
                 total += read;
-                if (total > artifact.Size)
+                if (total > size)
                 {
                     Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                         "The plugin download is larger than the signed index declares.");
@@ -130,22 +131,22 @@ internal static class PluginPackageInstaller
 
                 hash.AppendData(buffer, 0, read);
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                ReportFile(new DownloadFileProgress(relative, "running", total, artifact.Size));
+                ReportFile(new DownloadFileProgress(relative, "running", total, size));
             }
 
-            if (total != artifact.Size)
+            if (total != size)
             {
                 Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
-                    $"The plugin download size {total} does not match the signed size {artifact.Size}.");
+                    $"The plugin download size {total} does not match the signed size {size}.");
                 rich?.ReportFile(current with { State = "failed", ErrorMessage = failure.ErrorMessage });
                 return failure;
             }
 
-            ReportFile(new DownloadFileProgress(relative, "verifying", total, artifact.Size));
+            ReportFile(new DownloadFileProgress(relative, "verifying", total, size));
             string actualHash = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             if (!CryptographicOperations.FixedTimeEquals(
                     System.Text.Encoding.ASCII.GetBytes(actualHash),
-                    System.Text.Encoding.ASCII.GetBytes(artifact.Sha256)))
+                    System.Text.Encoding.ASCII.GetBytes(sha256)))
             {
                 Result failure = Result.Failure(AppErrorCodes.ValidationFailed,
                     "The plugin download SHA-256 does not match the signed index.");
@@ -170,7 +171,7 @@ internal static class PluginPackageInstaller
         }
     }
 
-    private static void Extract(string archivePath, string packageDirectory)
+    internal static void ExtractArchive(string archivePath, string packageDirectory)
     {
         Directory.CreateDirectory(packageDirectory);
         string root = Path.GetFullPath(packageDirectory) + Path.DirectorySeparatorChar;
