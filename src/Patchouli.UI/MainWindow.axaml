@@ -467,15 +467,16 @@
 
     <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
       <Grid ColumnDefinitions="Auto,*,Auto">
-        <controls:CatStatusIndicator x:Name="CatIndicator"
-                                     Grid.Column="0"
-                                     Margin="0,0,8,0"
-                                     VerticalAlignment="Center"
-                                     IsBusy="{Binding IsActivityBusy}"
-                                     ActivitySummary="{Binding ActivitySummary}"
-                                     SleepReason="{Binding ActivityReason}"
-                                     StatusText="{Binding ActivityDescription}"
-                                     Foreground="{DynamicResource InverseOnSurfaceBrush}" />
+        <Button Grid.Column="0" Classes="statusBar" Command="{Binding OpenOcrQueueCommand}"
+                Padding="6,2" Margin="0,0,8,0" VerticalAlignment="Center"
+                AutomationProperties.Name="打开任务队列">
+          <controls:CatStatusIndicator x:Name="CatIndicator"
+                                       IsBusy="{Binding IsActivityBusy}"
+                                       ActivitySummary="{Binding ActivitySummary}"
+                                       SleepReason="{Binding ActivityReason}"
+                                       StatusText="{Binding ActivityDescription}"
+                                       Foreground="{DynamicResource InverseOnSurfaceBrush}" />
+        </Button>
         <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center"
                    TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Status}">
           <Classes.error>
