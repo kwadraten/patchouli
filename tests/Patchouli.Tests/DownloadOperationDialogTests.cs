@@ -23,8 +23,9 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
+[Collection("RetainedTabUI")]
+[Trait("Category", "ui")]
 public sealed class DownloadOperationDialogTests(AvaloniaSharedSessionFixture headless)
-    : IClassFixture<AvaloniaSharedSessionFixture>
 {
     private sealed class StubHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> respond)
         : HttpMessageHandler
