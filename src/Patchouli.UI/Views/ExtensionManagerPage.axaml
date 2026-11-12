@@ -6,6 +6,22 @@
              x:DataType="vm:ExtensionManagerViewModel">
 
   <UserControl.Styles>
+    <Style Selector="Button.IconButton">
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style Selector="Button.IconButton:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighestBrush}" />
+    </Style>
+    <Style Selector="Button.IconButton:disabled">
+      <Setter Property="Opacity" Value="0.35" />
+    </Style>
     <Style Selector="ToggleButton.filterChip">
       <Setter Property="Padding" Value="10,3" />
       <Setter Property="FontSize" Value="12" />
@@ -64,18 +80,25 @@
                        IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Content="{Binding InstallText}" Command="{Binding InstallCommand}"
+            <Button Classes="IconButton" Command="{Binding InstallCommand}"
                     IsVisible="{Binding ShowInstall}" IsEnabled="{Binding !IsBusy}"
-                    Classes="Primary" MinWidth="88" />
-            <Button Content="{Binding ToggleText}" Command="{Binding ToggleCommand}"
-                    IsVisible="{Binding ShowToggle}" IsEnabled="{Binding !IsBusy}" MinWidth="88" />
-            <Button Classes="Danger" Command="{Binding UninstallCommand}"
+                    ToolTip.Tip="{Binding InstallText}" AutomationProperties.Name="{Binding InstallText}">
+              <lucide:Lucide Icon="{Binding InstallIcon}" Width="16" Height="16" />
+            </Button>
+            <Button Classes="IconButton" Command="{Binding ToggleCommand}"
+                    IsVisible="{Binding ShowToggle}" IsEnabled="{Binding !IsBusy}"
+                    ToolTip.Tip="{Binding ToggleText}" AutomationProperties.Name="{Binding ToggleText}">
+              <lucide:Lucide Icon="Power" Width="16" Height="16" />
+            </Button>
+            <Button Classes="Danger IconButton" Command="{Binding UninstallCommand}"
                     IsVisible="{Binding ShowUninstall}" IsEnabled="{Binding !IsBusy}"
                     ToolTip.Tip="卸载" AutomationProperties.Name="卸载">
               <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
             </Button>
-            <Button Content="配置" Command="{Binding ConfigureCommand}"
-                    IsVisible="{Binding ShowConfigure}" MinWidth="88" />
+            <Button Classes="IconButton" Command="{Binding ConfigureCommand}"
+                    IsVisible="{Binding ShowConfigure}" ToolTip.Tip="配置" AutomationProperties.Name="配置">
+              <lucide:Lucide Icon="Settings" Width="16" Height="16" />
+            </Button>
           </StackPanel>
         </Grid>
       </Border>

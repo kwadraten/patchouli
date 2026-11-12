@@ -430,6 +430,7 @@ public abstract class ExtensionManagerRowViewModel : ViewModelBase
     public virtual bool IsBusy => false;
     public virtual bool ShowInstall => false;
     public virtual string InstallText => "";
+    public virtual string InstallIcon => InstallText == "更新" ? "RefreshCw" : "Download";
     public virtual AsyncCommand? InstallCommand => null;
     public virtual bool ShowToggle => false;
     public virtual string ToggleText => "";

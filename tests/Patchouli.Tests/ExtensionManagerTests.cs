@@ -112,11 +112,19 @@ public sealed class ExtensionManagerTests(AvaloniaSharedSessionFixture headless)
                     .Select(block => block.Text).Should()
                     .Contain(["示例插件", "演示扩展"]);
                 Button install = window.GetVisualDescendants().OfType<Button>()
-                    .Single(button => Equals(button.Content, "安装") && button.IsEffectivelyVisible);
+                    .Single(button => AutomationProperties.GetName(button) == "安装" && button.IsEffectivelyVisible);
+                install.Content.Should().BeOfType<Patchouli.Lucide.Avalonia.Lucide>()
+                    .Which.Icon.Should().Be("Download");
                 install.Bounds.Width.Should().BeGreaterThan(0);
                 Point position = install.TranslatePoint(default, window)!.Value;
                 position.X.Should().BeGreaterThan(260);
                 (position.X + install.Bounds.Width).Should().BeLessThanOrEqualTo(window.ClientSize.Width);
+                Button[] configure = window.GetVisualDescendants().OfType<Button>()
+                    .Where(button => AutomationProperties.GetName(button) == "配置" && button.IsEffectivelyVisible)
+                    .ToArray();
+                configure.Should().NotBeEmpty();
+                configure.All(button => button.Content is Patchouli.Lucide.Avalonia.Lucide { Icon: "Settings" })
+                    .Should().BeTrue();
                 ToggleButton pluginFilter = window.GetVisualDescendants().OfType<ToggleButton>()
                     .Single(button => Equals(button.Content, "插件") && button.IsEffectivelyVisible);
                 ToggleButton notInstalled = window.GetVisualDescendants().OfType<ToggleButton>()
@@ -161,6 +169,12 @@ public sealed class ExtensionManagerTests(AvaloniaSharedSessionFixture headless)
                 Button uninstall = window.GetVisualDescendants().OfType<Button>()
                     .Single(button => AutomationProperties.GetName(button) == "卸载" && button.IsEffectivelyVisible);
                 uninstall.Bounds.Width.Should().BeGreaterThan(0);
+                Button toggle = window.GetVisualDescendants().OfType<Button>()
+                    .Single(button => AutomationProperties.GetName(button) == "停用" && button.IsEffectivelyVisible);
+                toggle.Content.Should().BeOfType<Patchouli.Lucide.Avalonia.Lucide>()
+                    .Which.Icon.Should().Be("Power");
+                Avalonia.Platform.AssetLoader.Exists(new Uri("avares://Patchouli.UI/Assets/Lucide/power.svg"))
+                    .Should().BeTrue("the enable/disable action must use a bundled Lucide icon");
             }
             finally
             {
