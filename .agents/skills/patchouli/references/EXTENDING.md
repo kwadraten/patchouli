@@ -20,6 +20,7 @@
 - 桌面「设置 → 插件 → 插件商店」读取 GitHub Pages 的 `index/v1/index.json` 及 minisign 签名。客户端内置社区公钥；在线索引和离线缓存都必须验签，发行包按平台选择并复核大小与 SHA-256。
 - 社区包安装到设备数据目录 `plugins/{id}/{version}/`，先解包校验并完成 MCP 握手，再更新 `plugins/dev-plugins.json`。旧版本保留用于回滚；更新或回滚不会撤销已提交数据。本地开发包与社区包来源分别记录，商店不会接管手工 dev 注册。
 - 安装确认会列出请求的宿主动词、源码仓库和固定修订。当前不支持插件书库 grants、后台动作或 URI resolve。独立进程不是 OS 沙箱，索引签名与哈希也不是代码安全保证。
+- 插件可反向调用宿主动词：沿同一 stdio 通道发送 `patchouli.host.{find,fetch,put,cite,send,add}` JSON-RPC 请求，参数即对应 `patchouli.{verb}` MCP 工具的参数，宿主按同一命令面执行（同一校验、域权限与工具开关），以 `{content:[{type:"text",text}],isError}` 工具响应返回；拒绝也用同一形状，文本为 `{"tool","error":{"code","message"}}`。清单 `[host]` 段声明请求的宿主动词（`verbs = ["find","fetch"]`，缺省为不请求），设备注册 `allowed_host_verbs` 显式授予，两者交集才生效；社区索引用 `requested_host_verbs` 声明，安装器校验与清单一致。拒绝原因：`permission_denied`（未声明或未授予）、`reentrancy_refused`（不得反向调用自身挂载——直接读自有数据）、`depth_exceeded`（插件→宿主→插件嵌套超 8 层）、`invalid_argument`。在应答宿主调用时反向调用书库数据不会死锁。旧宿主忽略反向请求，插件以超时探测支持与否。
 - 社区索引仓库为 `https://github.com/kwadraten/patchouli-community`；作者仓库固定源码修订和发行产物摘要由索引 CI 复核。不得把“不能访问数据库/文件/网络”当作安全保证。
 
 ## 扩展包与生命周期

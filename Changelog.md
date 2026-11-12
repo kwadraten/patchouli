@@ -8,6 +8,7 @@
 - CLI 删除 `view` 命令（改用 `fetch patchouli://images/.../page-<n>.png --output <image.png>`），`fetch` 新增 `--output/--overwrite`；images/ 取图缺 `--output` 时直接报用法错误。
 - 修复元数据 `mapType` 未识别 `JournalArticle`：Semantic Scholar 返回的 `JournalArticle` 经小写化为 `journalarticle` 后此前无匹配分支，`SuggestedItemType` 为空；共享 `Support.fsx` 新增 `"journalarticle"` 分支，映射为 `article-journal`（DOI 10.1038/nature12373 回归测试覆盖）。
 - 受影响的 15 个内置元数据扩展（除 Crossref 外均包含共享 `Support.fsx`）版本由 `1.1.0` 升至 `1.1.1`，遵循 ADR 0055：同 SemVer 下不得修改包内容；已安装 1.1.0 扩展的升级路径由回归测试覆盖，升级时自动替换为新包且不触发版本冲突。
+- 插件可反向调用宿主动词：沿同一 stdio JSON-RPC 通道发送 `patchouli.host.{find,fetch,put,cite,send,add}`，参数即对应 MCP 工具的参数，经共享命令面执行（同一校验、域权限与工具开关），以 `{content,isError}` 工具响应返回。授权镜像正向模型：清单 `[host]` 段声明请求、设备注册 `allowed_host_verbs` 显式授予，两者交集生效，默认拒绝；社区索引用 `requested_host_verbs` 声明，安装器校验与清单一致，商店展示请求的宿主动词。反向调用不得指向自身挂载（`reentrancy_refused`），插件→宿主→插件嵌套超过 8 层时拒绝（`depth_exceeded`）；在应答宿主调用时反向调用书库数据不会死锁。
 
 ## 0.3.16
 
