@@ -71,6 +71,89 @@ public sealed class McpProtocolHandler
         _hostLifetime = hostLifetime;
     }
 
+    /// <summary>
+    /// Reverse-direction entry point: run one host verb over an already-built
+    /// command service (the shared <see cref="HostServices.McpCommands"/> with live
+    /// permission settings), for plugin-initiated <c>patchouli.host.*</c> calls.
+    /// Only the dispatch path is used — the read API serves the library-revision
+    /// lookup for error envelopes — so the remaining transport fields stay unset.
+    /// The settings snapshot only decides the transport-level tool list; the
+    /// command service's live settings and the reverse dispatcher's own tool-switch
+    /// check enforce the actual gates.
+    /// </summary>
+    internal McpProtocolHandler(McpCommandService commands, IMcpReadApi readApi,
+        McpServerSettings? settings = null, Func<object, string>? toonEncoder = null)
+    {
+        _readApi = readApi;
+        _commands = commands;
+        _settings = (settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow)) with
+        {
+            AuthRequired = false
+        };
+        _toonEncoder = toonEncoder ?? McpCommandService.DefaultToonEncoder;
+    }
+
+    /// <summary>
+    /// Runs one host verb by tool name with MCP-tool arguments and returns the
+    /// rendered tool response (<c>{content:[{type:"text",text}],isError}</c>), the
+    /// same shape an agent receives. Unknown tools, disabled tools and bad
+    /// arguments surface as error tool responses, never as thrown exceptions
+    /// (except cancellation). This is the invoker the reverse dispatcher calls.
+    /// </summary>
+    internal async Task<object> InvokeToolAsync(string toolName, JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        string format = ResponseFormat(arguments);
+        try
+        {
+            if (!Tools().Any(tool => string.Equals(tool.Name, toolName, StringComparison.Ordinal)))
+            {
+                throw new McpArgumentException("Unknown tool; use the published tools/list contract.");
+            }
+
+            if (!IsToolEnabled(toolName))
+            {
+                string? disabledReason = ToolDisabledReason(toolName);
+                McpToolError error = McpToolError.From(
+                    toolName == "patchouli.send" ? McpErrorCode.PermissionDenied : McpErrorCode.Unavailable,
+                    $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
+                return await ToolErrorAsync(toolName, error, cancellationToken, format);
+            }
+
+            if (arguments.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Object))
+            {
+                throw new McpArgumentException("arguments must be an object.");
+            }
+
+            return toolName switch
+            {
+                "patchouli.find" => await FindAsync(arguments, cancellationToken),
+                "patchouli.fetch" => await FetchAsync(arguments, cancellationToken),
+                "patchouli.cite" => await CiteAsync(arguments, cancellationToken),
+                "patchouli.put" => await PutAsync(arguments, cancellationToken),
+                "patchouli.send" => await SendAsync(arguments, cancellationToken),
+                "patchouli.add" => await AddAsync(arguments, cancellationToken),
+                _ => throw new McpArgumentException("Unknown tool.")
+            };
+        }
+        catch (McpArgumentException exception)
+        {
+            return await ToolErrorAsync(toolName, McpToolError.From(McpErrorCode.InvalidArgument,
+                exception.Message), cancellationToken, format);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            string correlationId = Guid.NewGuid().ToString("N");
+            ReportUnexpected(exception);
+            return await ToolErrorAsync(toolName, McpToolError.From(McpErrorCode.Internal, null,
+                correlationId), cancellationToken, format);
+        }
+    }
+
     private static bool IsSwitchOff(McpServerSettings settings, string toolName)
     {
         McpToolOverride? match = settings.ToolOverrides.FirstOrDefault(value =>
@@ -498,35 +581,9 @@ public sealed class McpProtocolHandler
             name = nameElement.GetString()!;
             JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
             format = ResponseFormat(a);
-            if (!Tools().Any(tool => string.Equals(tool.Name, name, StringComparison.Ordinal)))
-            {
-                throw new McpArgumentException("Unknown tool; use the published tools/list contract.");
-            }
-
-            if (!IsToolEnabled(name))
-            {
-                string? disabledReason = ToolDisabledReason(name);
-                McpToolError error = McpToolError.From(
-                    name == "patchouli.send" ? McpErrorCode.PermissionDenied : McpErrorCode.Unavailable,
-                    $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
-                return await ToolErrorAsync(name, error, ct, format);
-            }
-
-            if (a.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Object))
-            {
-                throw new McpArgumentException("arguments must be an object.");
-            }
-
-            return name switch
-            {
-                "patchouli.find" => await FindAsync(a, ct),
-                "patchouli.fetch" => await FetchAsync(a, ct),
-                "patchouli.cite" => await CiteAsync(a, ct),
-                "patchouli.put" => await PutAsync(a, ct),
-                "patchouli.send" => await SendAsync(a, ct),
-                "patchouli.add" => await AddAsync(a, ct),
-                _ => throw new McpArgumentException("Unknown tool.")
-            };
+            // The verb dispatch (tool validation, switches, per-verb methods, error
+            // rendering) is shared with the reverse plugin-invoker entry point.
+            return await InvokeToolAsync(name, a, ct);
         }
         catch (McpArgumentException ex)
         {

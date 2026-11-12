@@ -53,6 +53,7 @@ using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Update;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
+using Patchouli.McpServer;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
@@ -392,6 +393,26 @@ public sealed class HostServices
             metadataRuns: new McpHostMetadataRunsApi(MetadataRuns),
             implementationCatalog: McpImplementationCatalog,
             pluginApi: Plugins);
+        // Reverse plugin interop (ADR 0058): plugins call host verbs over their stdio
+        // channel through the same command surface agents use. The handler is built
+        // over the shared command service with default settings so the transport-level
+        // tool list passes through; the live settings below supply the tool switches
+        // the reverse dispatcher checks on every call.
+        if (Plugins is Plugins.HostPluginApi liveApi)
+        {
+            McpProtocolHandler reverseHandler = new(McpCommands, Mcp,
+                McpServerSettingsService.DefaultSettings(Clock.UtcNow));
+            liveApi.SetReverseHostInvoker(reverseHandler.InvokeToolAsync,
+                async cancellationToken =>
+                {
+                    Result<McpServerSettings> permissions =
+                        await McpSettings.GetSettingsAsync(cancellationToken).ConfigureAwait(false);
+                    return permissions.IsSuccess
+                        ? permissions.Value
+                        : throw new InvalidOperationException(permissions.ErrorMessage);
+                });
+        }
+
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
