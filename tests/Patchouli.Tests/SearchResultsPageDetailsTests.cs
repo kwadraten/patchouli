@@ -49,7 +49,7 @@ public class SearchResultsPageDetailsTests : IDisposable
                 }
 
                 PumpLayout(window);
-                RealizedRows(window).Should().NotBeEmpty();
+                RealizedRows(window).Should().NotBeEmpty().And.OnlyContain(row => row.AreDetailsVisible);
 
                 for (int cycle = 0; cycle < 6; cycle++)
                 {
@@ -59,7 +59,7 @@ public class SearchResultsPageDetailsTests : IDisposable
                     ScrollToItem(window, hits[0]);
                     PumpLayout(window);
 
-                    RealizedRows(window).Should().OnlyContain(row => row.AreDetailsVisible);
+                    RealizedRows(window).Should().OnlyContain(row => !row.AreDetailsVisible);
 
                     vm.SearchEvidence.ToggleAllHitsExpandedCommand.Execute(null);
                     PumpLayout(window);
@@ -67,7 +67,7 @@ public class SearchResultsPageDetailsTests : IDisposable
                     ScrollToItem(window, hits[0]);
                     PumpLayout(window);
 
-                    RealizedRows(window).Should().OnlyContain(row => !row.AreDetailsVisible);
+                    RealizedRows(window).Should().OnlyContain(row => row.AreDetailsVisible);
                 }
             }
             finally
@@ -104,6 +104,8 @@ public class SearchResultsPageDetailsTests : IDisposable
                 }
 
                 PumpLayout(window);
+                vm.SearchEvidence.ToggleAllHitsExpandedCommand.Execute(null);
+                PumpLayout(window);
 
                 hits[0].IsExpanded = true;
                 PumpLayout(window);
@@ -131,6 +133,23 @@ public class SearchResultsPageDetailsTests : IDisposable
 
             return true;
         }, CancellationToken.None);
+    }
+
+    [Fact]
+    public void Expanded_hit_details_are_content_sized_without_nested_scrolling()
+    {
+        SearchHitItemViewModel hit = CreateHit(0, 30);
+        hit.IsExpanded.Should().BeTrue();
+        hit.DetailsHeight.Should().BeGreaterThan(360);
+        hit.DetailsContainerHeight.Should().Be(hit.DetailsHeight + 10);
+
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
+        int start = xaml.IndexOf("<DataGrid.RowDetailsTemplate>", StringComparison.Ordinal);
+        int end = xaml.IndexOf("</DataGrid.RowDetailsTemplate>", start, StringComparison.Ordinal);
+        string template = xaml[start..end];
+        template.Should().Contain("Height=\"{Binding DetailsContainerHeight}\"")
+            .And.NotContain("<ScrollViewer");
     }
 
     [Theory]

@@ -79,7 +79,7 @@ public sealed class LibraryContextIsolationTests(AvaloniaSharedSessionFixture he
         SearchEvidenceViewModel search = main.SearchEvidence;
         OcrQueueViewModel ocr = main.OcrQueue;
         SnapshotViewModel snapshot = main.Snapshot;
-        search.BibliographicResults.Add(CreateItem());
+        search.FullTextResults.Add(SearchHitItemViewModel.HitItem(CreateItem(), []));
         search.Output = "old database result";
         await ocr.RefreshAsync();
         await snapshot.RefreshAsync();
@@ -89,7 +89,7 @@ public sealed class LibraryContextIsolationTests(AvaloniaSharedSessionFixture he
 
         main.LibraryGeneration.Should().Be(previousGeneration + 1,
             "late callbacks must become stale before shutdown awaits any old-host work");
-        search.BibliographicResults.Should().BeEmpty();
+        search.FullTextResults.Should().BeEmpty();
         search.Output.Should().BeEmpty();
         ocr.ActiveTaskRows.Should().BeEmpty();
         ocr.FinishedTaskRows.Should().BeEmpty();

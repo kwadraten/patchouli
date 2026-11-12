@@ -1,7 +1,6 @@
 using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Patchouli.UI.ViewModels;
@@ -37,8 +36,6 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
     public SearchResultsPage()
     {
         InitializeComponent();
-        BibliographicGrid.AddHandler(PointerPressedEvent, OnBibliographicGridPointerPressed,
-            Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -102,7 +99,6 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         _isClosed = true;
         _isActive = false;
         DetachSearch();
-        BibliographicGrid.RemoveHandler(PointerPressedEvent, OnBibliographicGridPointerPressed);
     }
 
     private void DetachSearch()
@@ -133,78 +129,10 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         }
     }
 
-    private void OnBibliographicGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        ApplyColumnLayout(BibliographicGrid);
-        if (TopLevel.GetTopLevel(this)?.DataContext is MainWindowViewModel main)
-        {
-            BibliographicContextMenu.DataContext = main.Shell;
-        }
-    }
-
     private void OnFullTextGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         ApplyColumnLayout(FullTextGrid);
         AttachSearch(DataContext as SearchEvidenceViewModel);
-    }
-
-    // Right-click keeps the shell selection in sync with the hit row so the shared library
-    // context-menu commands (edit/OCR/export/...) operate on the item under the cursor. The row
-    // is resolved to the shell's loaded item when possible; otherwise a shell-grade instance is
-    // fabricated from the row data, mirroring the library page's right-click selection.
-    private void OnBibliographicGridPointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main ||
-            e.Source is not Control source)
-        {
-            return;
-        }
-
-        DataGridRow? row = source.FindAncestorOfType<DataGridRow>();
-        if (row?.DataContext is not LibraryItemViewModel rowItem)
-        {
-            return;
-        }
-
-        if (!e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
-        {
-            return;
-        }
-
-        LibraryShellViewModel shell = main.Shell;
-        BibliographicContextMenu.DataContext = shell;
-        LibraryItemViewModel item = shell.Items.FirstOrDefault(loaded =>
-                                        string.Equals(loaded.ItemId, rowItem.ItemId, StringComparison.Ordinal))
-                                    ?? CreateShellSelectionItem(shell, rowItem);
-        shell.SelectedItem = item;
-        shell.SetSelectedItems([item]);
-        BibliographicGrid.SelectedItem = rowItem;
-    }
-
-    private static LibraryItemViewModel CreateShellSelectionItem(
-        LibraryShellViewModel shell, LibraryItemViewModel row)
-    {
-        return new LibraryItemViewModel(
-            row.ItemId,
-            row.Title,
-            row.ItemType,
-            row.Authors,
-            row.Year,
-            row.PublicationTitle,
-            row.Publisher,
-            row.DocumentInstanceId,
-            row.FileAssetId,
-            row.FileName,
-            row.SourcePath,
-            row.PageCount,
-            row.SearchUnitCount,
-            row.IndexStatus,
-            shell.RunOcrForItemAsync,
-            shell.EditMetadataForItemAsync,
-            shell.ViewPdfForItemAsync,
-            row.OcrStatus,
-            row.CreatedAt,
-            hasOcrText: row.HasOcrText);
     }
 
     // Row details visibility is driven imperatively from the view model: ProDataGrid applies

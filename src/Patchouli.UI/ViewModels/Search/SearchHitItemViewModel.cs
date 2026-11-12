@@ -44,11 +44,11 @@ public sealed partial class SearchHitItemViewModel : ViewModelBase
     public LibraryItemViewModel Item { get; }
     public IReadOnlyList<SearchHitSnippetViewModel> Snippets { get; }
     [ExcludeFromDerivedGeneration] public bool HasSnippets => Snippets.Count > 0;
-    [ExcludeFromDerivedGeneration] public double DetailsHeight => Math.Min(Snippets.Count * 28 + 10, 360);
+    [ExcludeFromDerivedGeneration] public double DetailsHeight => Snippets.Count * 28 + 10;
     [ExcludeFromDerivedGeneration] public double DetailsContainerHeight => DetailsHeight + 10;
     public RelayCommand ToggleExpandedCommand { get; }
 
-    [ObservableProperty] public partial bool IsExpanded { get; set; }
+    [ObservableProperty] public partial bool IsExpanded { get; set; } = true;
 
     public static SearchHitItemViewModel HitItem(LibraryItemViewModel item,
         IReadOnlyList<SearchHitSnippetViewModel> snippets)

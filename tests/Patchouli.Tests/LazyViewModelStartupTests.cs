@@ -45,9 +45,10 @@ public sealed class LazyViewModelStartupTests : IDisposable
         main.ToolbarSearchQuery = "patchouli";
         main.SelectToolbarSearchModeCommand.Execute(main.ToolbarSearchModeOptions[0]);
 
+        _ = main.SearchFilters;
         ReadField(main, "_searchEvidenceViewModel").Should().BeNull();
-        main.SearchEvidence.Query.Should().Be("patchouli");
-        main.SearchEvidence.SelectedMode.Mode.Should().Be(main.ToolbarSearchModeOptions[0].Mode);
+        main.ToolbarSearchQuery.Should().Be("patchouli");
+        main.ToolbarSearchMode.Mode.Should().Be(SearchMode.Bibliographic);
     }
 
     private static object? ReadField(MainWindowViewModel viewModel, string name)

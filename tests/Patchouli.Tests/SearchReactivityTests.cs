@@ -94,7 +94,6 @@ public sealed class SearchReactivityTests : IDisposable
         TimeSpan throttle = TimeSpan.FromMilliseconds(50);
         SearchEvidenceViewModel search = new(main, timingScheduler, ImmediateScheduler.Instance, throttle);
 
-        search.SelectedMode = search.ModeOptions[1]; // FullText
         search.Query = "first_rapid_query";
         search.SearchCommand.Execute(null);
 
@@ -141,9 +140,10 @@ public sealed class SearchReactivityTests : IDisposable
         search.FullTextResults.Add(hit1);
         search.HasResults.Should().BeTrue();
         search.HasNoResults.Should().BeFalse();
-        search.AreAllHitsExpanded.Should().BeFalse();
+        search.AreAllHitsExpanded.Should().BeTrue();
 
-        // Expanding hit updates AreAllHitsExpanded
+        hit1.IsExpanded = false;
+        search.AreAllHitsExpanded.Should().BeFalse();
         hit1.IsExpanded = true;
         search.AreAllHitsExpanded.Should().BeTrue();
 
@@ -152,26 +152,6 @@ public sealed class SearchReactivityTests : IDisposable
         search.HasResults.Should().BeFalse();
         search.HasNoResults.Should().BeTrue();
         search.AreAllHitsExpanded.Should().BeFalse();
-
-        // Switching to Bibliographic mode
-        search.SelectedMode = search.ModeOptions[0];
-        search.IsBibliographicMode.Should().BeTrue();
-        search.HasBibliographicResults.Should().BeFalse();
-        search.HasResults.Should().BeFalse();
-        search.HasNoResults.Should().BeTrue();
-
-        // Adding bibliographic item updates HasBibliographicResults and HasResults
-        LibraryItemViewModel bibItem = CreateItem("bib-item-1", "题录A");
-        search.BibliographicResults.Add(bibItem);
-        search.HasBibliographicResults.Should().BeTrue();
-        search.HasResults.Should().BeTrue();
-        search.HasNoResults.Should().BeFalse();
-
-        // Clearing bibliographic results updates HasBibliographicResults and HasResults
-        search.BibliographicResults.Clear();
-        search.HasBibliographicResults.Should().BeFalse();
-        search.HasResults.Should().BeFalse();
-        search.HasNoResults.Should().BeTrue();
 
         // Clearing query resets HasNoResults
         search.Query = "";
@@ -189,14 +169,14 @@ public sealed class SearchReactivityTests : IDisposable
         search.FullTextResults.Add(hit1);
         search.FullTextResults.Add(hit2);
 
+        search.AreAllHitsExpanded.Should().BeTrue();
+        search.ToggleAllHitsExpandedText.Should().Be("全部收起");
+
+        hit1.IsExpanded = false;
         search.AreAllHitsExpanded.Should().BeFalse();
         search.ToggleAllHitsExpandedText.Should().Be("全部展开");
 
         hit1.IsExpanded = true;
-        search.AreAllHitsExpanded.Should().BeFalse();
-        search.ToggleAllHitsExpandedText.Should().Be("全部展开");
-
-        hit2.IsExpanded = true;
         search.AreAllHitsExpanded.Should().BeTrue();
         search.ToggleAllHitsExpandedText.Should().Be("全部收起");
 
@@ -221,6 +201,7 @@ public sealed class SearchReactivityTests : IDisposable
         SearchHitItemViewModel hit = CreateHit("hit-dispose");
         search.FullTextResults.Add(hit);
         search.HasResults.Should().BeTrue();
+        search.AreAllHitsExpanded.Should().BeTrue();
 
         search.Dispose();
 
@@ -228,7 +209,7 @@ public sealed class SearchReactivityTests : IDisposable
         search.FullTextResults.Clear();
         search.HasResults.Should().BeTrue(); // Retains previous state because stream is disposed
 
-        hit.IsExpanded = true;
-        search.AreAllHitsExpanded.Should().BeFalse(); // Does not update
+        hit.IsExpanded = false;
+        search.AreAllHitsExpanded.Should().BeTrue(); // Does not update
     }
 }

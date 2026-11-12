@@ -214,7 +214,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
     /// ordinary tag selection.
     /// </summary>
     [ExcludeFromDerivedGeneration]
-    public IReadOnlyList<TagListItemViewModel> SelectedTags => _selectedTags;
+    public IReadOnlyList<TagListItemViewModel> SelectedTags => _selectedTags.ToArray();
 
     public event EventHandler? ScopeChanged;
 
@@ -309,6 +309,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
 
         Tags = new ObservableCollection<TagListItemViewModel>(sorted);
         Tags.Add(noTagItem);
+        Raise(nameof(SelectedTags));
     }
 
     /// <summary>

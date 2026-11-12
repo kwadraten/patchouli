@@ -21,6 +21,7 @@ public interface ILibraryItemQueryService
         IReadOnlyList<string>? requiredTags = null,
         CollectionId? requiredCollection = null,
         bool untaggedOnly = false,
+        BibliographicItemSearch? search = null,
         CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<LibraryItemRow>>> GetRowsByIdsAsync(

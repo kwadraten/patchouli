@@ -7,6 +7,7 @@
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
         xmlns:agents="using:Patchouli.UI.ViewModels.Agents"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        xmlns:search="using:Patchouli.Core.Search"
         xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
@@ -74,6 +75,13 @@
     </Style>
     <Style Selector="TextBlock.statusBar.error">
       <Setter Property="Foreground" Value="{DynamicResource StatusErrorBrush}" />
+    </Style>
+    <Style Selector="ToggleButton#ToolbarSearchFilterButton">
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="ToggleButton#ToolbarSearchFilterButton.hasActiveFilters">
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
     </Style>
 
   </Window.Styles>
@@ -297,7 +305,8 @@
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
           </MenuItem>
         </Menu>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="0" VerticalAlignment="Center">
+        <StackPanel x:Name="ToolbarSearchPanel" Grid.Column="1" Orientation="Horizontal"
+                    Spacing="0" VerticalAlignment="Center">
           <Menu Classes="toolbar" Height="24" Background="Transparent" FontSize="12">
             <MenuItem ToolTip.Tip="{Binding ToolbarSearchMode.Hint}">
               <MenuItem.Header>
@@ -340,15 +349,90 @@
             </TextBox.InnerLeftContent>
           </TextBox>
           <Button Command="{Binding RunToolbarSearchCommand}" Height="24" Width="28"
+                  IsEnabled="{Binding IsSearchEnabled}"
                   ToolTip.Tip="搜索" Background="Transparent" BorderThickness="0" Padding="0"
                   HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
             <lucide:Lucide Icon="Search" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
           </Button>
-          <Button Command="{Binding OpenAdvancedSearchCommand}" Height="24" Width="28"
-                  ToolTip.Tip="高级搜索" Background="Transparent" BorderThickness="0" Padding="0"
-                  HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+          <ToggleButton x:Name="ToolbarSearchFilterButton" Height="24" Width="28"
+                        IsChecked="{Binding IsToolbarSearchFilterOpen, Mode=TwoWay}"
+                        IsVisible="{Binding !IsToolbarDocumentFullTextSearch}" IsEnabled="{Binding IsSearchEnabled}"
+                        ToolTip.Tip="筛选条件" AutomationProperties.Name="筛选条件"
+                        Classes.hasActiveFilters="{Binding SearchFilters.HasActiveFilters}"
+                        Background="Transparent" Padding="0"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                        KeyDown="OnToolbarSearchFilterKeyDown">
             <lucide:Lucide Icon="Filter" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-          </Button>
+          </ToggleButton>
+          <Popup x:Name="ToolbarSearchFilterPopup" IsOpen="{Binding IsToolbarSearchFilterOpen, Mode=TwoWay}"
+                 PlacementTarget="{Binding #ToolbarSearchPanel}" Placement="BottomEdgeAlignedRight" VerticalOffset="4"
+                 ShouldUseOverlayLayer="True" IsLightDismissEnabled="True" OverlayDismissEventPassThrough="True"
+                 OverlayInputPassThroughElement="{Binding #ToolbarSearchFilterButton}"
+                 Opened="OnToolbarSearchFilterOpened">
+            <Border Width="408" Padding="10" CornerRadius="6" BorderThickness="1"
+                    BorderBrush="{DynamicResource OutlineVariantBrush}"
+                    Background="{DynamicResource SurfaceContainerLowestBrush}" BoxShadow="0 4 16 #33000000"
+                    KeyDown="OnToolbarSearchFilterKeyDown">
+              <Grid RowDefinitions="Auto,Auto">
+                <ScrollViewer MaxHeight="300" HorizontalScrollBarVisibility="Disabled">
+                  <StackPanel>
+                    <ItemsControl ItemsSource="{Binding SearchFilters.FilterRows}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="local:SearchFilterRowViewModel">
+                          <Grid ColumnDefinitions="30,120,*" ColumnSpacing="6" Margin="0,0,0,6">
+                            <Button Command="{Binding RemoveCommand}" ToolTip.Tip="删除筛选条件"
+                                    AutomationProperties.Name="删除筛选条件" Width="30" Height="30"
+                                    Background="Transparent" BorderThickness="0" Padding="0"
+                                    HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+                              <lucide:Lucide Icon="Trash2" Width="13" Height="13"
+                                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                            </Button>
+                            <ComboBox Grid.Column="1" ItemsSource="{x:Static local:SearchFilterKeyOption.All}"
+                                      SelectedItem="{Binding Key}" FontSize="12" MinHeight="30"
+                                      HorizontalAlignment="Stretch" AutomationProperties.Name="筛选字段"
+                                      IsVisible="{Binding !IsReadOnly}">
+                              <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="local:SearchFilterKeyOption">
+                                  <TextBlock Text="{Binding Label}" />
+                                </DataTemplate>
+                              </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Column="1" Text="{Binding Key.Label}" FontSize="12" MinHeight="30"
+                                       VerticalAlignment="Center" Margin="12,0" IsVisible="{Binding IsReadOnly}" />
+                            <TextBox Grid.Column="2" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                     FontSize="12" MinHeight="30" VerticalContentAlignment="Center"
+                                     IsVisible="{Binding IsTextKey}" AutomationProperties.Name="{Binding Key.Label}"
+                                     KeyDown="OnToolbarSearchKeyDown" />
+                            <ComboBox Grid.Column="2" ItemsSource="{Binding AvailableValues}"
+                                      SelectedValue="{Binding Value}" SelectedValueBinding="{Binding Value}"
+                                      FontSize="12" MinHeight="30" HorizontalAlignment="Stretch"
+                                      IsVisible="{Binding IsChoiceKey}" AutomationProperties.Name="{Binding Key.Label}">
+                              <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="search:SearchFilterOption">
+                                  <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                              </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Grid.Column="2" Text="{Binding DisplayValue}" FontSize="12" MinHeight="30"
+                                       VerticalAlignment="Center" Margin="12,0" TextTrimming="CharacterEllipsis"
+                                       ToolTip.Tip="{Binding DisplayValue}" IsVisible="{Binding IsReadOnly}" />
+                          </Grid>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </ScrollViewer>
+                <Button Grid.Row="1" Command="{Binding SearchFilters.AddFilterRowCommand}" Height="30"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" FontSize="12">
+                  <StackPanel Orientation="Horizontal" Spacing="5">
+                    <lucide:Lucide Icon="Plus" Width="12" Height="12" VerticalAlignment="Center"
+                                   StrokeBrush="{DynamicResource OnSurfaceBrush}" />
+                    <TextBlock Text="添加筛选条件" VerticalAlignment="Center" />
+                  </StackPanel>
+                </Button>
+              </Grid>
+            </Border>
+          </Popup>
         </StackPanel>
       </Grid>
     </Border>

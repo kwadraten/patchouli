@@ -103,7 +103,7 @@ public static class SearchPageAwareness
             WorkspaceTabKind.PdfWorkspace => "PDF 工作台",
             WorkspaceTabKind.Settings => "设置",
             WorkspaceTabKind.SyncCenter => "同步中心",
-            WorkspaceTabKind.SearchResults => "搜索结果",
+            WorkspaceTabKind.SearchResults => "全文搜索结果",
             WorkspaceTabKind.OcrQueue => "任务队列",
             WorkspaceTabKind.ItemEditor => "题录编辑器",
             WorkspaceTabKind.About => "关于",

@@ -16,6 +16,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 using Patchouli.Core.Settings;
 using Patchouli.Ocr;
 using Avalonia.Threading;
@@ -51,6 +52,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     private CancellationTokenSource _pagingSession = new();
     private TaskCompletionSource _refreshCompletion = NewRefreshCompletion(true);
     private LibraryPageQuery? _pageQuery;
+    private BibliographicItemSearch? _metadataSearch;
     private LibraryItemCursor? _nextPageCursor;
     private int _pageLoadInFlight;
     private int _pagingGeneration;
@@ -339,6 +341,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 .TrySetResult();
             _pagingSession.Cancel();
             _pageQuery = null;
+            _metadataSearch = null;
             _nextPageCursor = null;
             _sidebarCatalogLoaded = false;
             Interlocked.Increment(ref _cursorVersion);
@@ -952,6 +955,17 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         return RefreshItemsCoreAsync(CancellationToken.None);
     }
 
+    internal Task ApplyMetadataSearchAsync(BibliographicItemSearch search)
+    {
+        _metadataSearch = string.IsNullOrWhiteSpace(search.Query) && search.Filters.Count == 0 ? null : search;
+        if (Sidebar.IsTrashSelected)
+        {
+            Sidebar.SelectedSection = Sidebar.Sections[0];
+        }
+
+        return RefreshItemsCoreAsync(CancellationToken.None, false);
+    }
+
     private Task RefreshItemsCoreAsync(CancellationToken cancellationToken, bool reloadSidebar = true)
     {
         return _operationLifetime.RunAsync(() => RefreshItemsTrackedAsync(cancellationToken, reloadSidebar));
@@ -1033,6 +1047,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 noTagSelected,
                 requiredTags.ToArray(),
                 requiredCollectionId,
+                _metadataSearch,
                 _main.LibraryGeneration,
                 pagingGeneration);
             LibraryVisiblePage page = await Task.Run(
@@ -1258,6 +1273,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 query.RequiredTags.Count == 0 ? null : query.RequiredTags,
                 query.RequiredCollectionId,
                 query.NoTagSelected,
+                query.MetadataSearch,
                 cancellationToken);
         if (result.IsFailure)
         {
@@ -1914,13 +1930,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             return;
         }
 
-        bool hasActiveFilter = Sidebar.HasSelectedCollection || Sidebar.IsNoTagSelected ||
+        bool hasActiveFilter = _metadataSearch is not null || Sidebar.HasSelectedCollection ||
+                               Sidebar.IsNoTagSelected ||
                                Sidebar.GetSelectedTagNames().Count > 0;
         if (Sidebar.SelectedScope == LibrarySidebarScope.Trash || hasActiveFilter)
         {
             // Incremental row lookup returns active items by ID without applying the current
-            // sidebar relation filters. Re-run the filtered query so newly imported/scanned
-            // items cannot leak into an empty collection or a tag-filtered view.
+            // current filters. Re-run the filtered query to keep membership correct after edits and imports.
             await DispatcherTasks.RunAsync(() => RefreshItemsCoreAsync(cancellationToken), cancellationToken);
             return;
         }
@@ -2919,6 +2935,7 @@ internal sealed record LibraryPageQuery(
     bool NoTagSelected,
     IReadOnlyList<string> RequiredTags,
     CollectionId? RequiredCollectionId,
+    BibliographicItemSearch? MetadataSearch,
     int LibraryGeneration,
     int PagingGeneration);
 

@@ -295,6 +295,21 @@ public sealed partial class MainWindow : Window
         _viewModel.RunToolbarSearchCommand.Execute(null);
     }
 
+    private void OnToolbarSearchFilterOpened(object? sender, EventArgs e)
+    {
+        _viewModel.LoadToolbarSearchFiltersCommand.Execute(null);
+    }
+
+    private void OnToolbarSearchFilterKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && _viewModel.IsToolbarSearchFilterOpen)
+        {
+            e.Handled = true;
+            _viewModel.IsToolbarSearchFilterOpen = false;
+            ToolbarSearchFilterButton.Focus();
+        }
+    }
+
     private void OnWindowDragOver(object? sender, DragEventArgs e)
     {
         if (e.Handled)

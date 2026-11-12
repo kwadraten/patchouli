@@ -236,7 +236,7 @@ public sealed class LibraryItemQueryServiceTests
     }
 
     [Fact]
-    public async Task Collection_and_tag_filters_page_only_matching_active_items()
+    public async Task Metadata_collection_and_tag_filters_page_only_matching_active_items()
     {
         await using TestContext context = await CreateContextAsync();
         ItemMetadata first = (await context.Items.CreateItemAsync("book", "First member")).Value;
@@ -248,6 +248,10 @@ public sealed class LibraryItemQueryServiceTests
         ItemMetadata wrongTag = (await context.Items.CreateItemAsync("book", "Member without tag")).Value;
         context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
         ItemMetadata trashed = (await context.Items.CreateItemAsync("book", "Trashed member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata wrongType = (await context.Items.CreateItemAsync("article-journal", "Journal member")).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        ItemMetadata wrongQuery = (await context.Items.CreateItemAsync("book", "Other title")).Value;
         for (int index = 0; index < 12; index++)
         {
             context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
@@ -259,7 +263,10 @@ public sealed class LibraryItemQueryServiceTests
         Collection group = (await collections.CreateCollectionAsync("Small group")).Value;
         Collection empty = (await collections.CreateCollectionAsync("Empty group")).Value;
         (await collections.AddItemsAsync(group.CollectionId,
-                [first.ItemId, second.ItemId, third.ItemId, wrongTag.ItemId, trashed.ItemId]))
+            [
+                first.ItemId, second.ItemId, third.ItemId, wrongTag.ItemId, trashed.ItemId, wrongType.ItemId,
+                wrongQuery.ItemId
+            ]))
             .IsSuccess.Should().BeTrue();
         await using (Microsoft.Data.Sqlite.SqliteConnection connection =
                      context.Database.ConnectionFactory.CreateConnection())
@@ -269,19 +276,25 @@ public sealed class LibraryItemQueryServiceTests
                 "update items set tags_json = '[\"target\"]' where item_id in @Ids;",
                 new
                 {
-                    Ids = new[] { first.ItemId, second.ItemId, third.ItemId, trashed.ItemId }
+                    Ids = new[]
+                        {
+                            first.ItemId, second.ItemId, third.ItemId, trashed.ItemId, wrongType.ItemId,
+                            wrongQuery.ItemId
+                        }
                         .Select(static id => id.ToString()).ToArray()
                 });
         }
 
         (await context.Items.DeleteItemAsync(trashed.ItemId)).IsSuccess.Should().BeTrue();
-        LibraryItemPage page = (await context.Query.ListRowsAsync(2, null, ["target"], group.CollectionId)).Value;
+        BibliographicItemSearch search = new("member", [new BibliographicSearchFilter("item_type", "book")]);
+        LibraryItemPage page = (await context.Query.ListRowsAsync(
+            2, null, ["target"], group.CollectionId, search: search)).Value;
         page.Rows.Select(row => row.ItemId).Should().Equal(third.ItemId, second.ItemId);
         page.HasMore.Should().BeTrue();
         page.NextCursor.Should().NotBeNull();
 
         LibraryItemPage next = (await context.Query.ListRowsAsync(
-            2, page.NextCursor, ["target"], group.CollectionId)).Value;
+            2, page.NextCursor, ["target"], group.CollectionId, search: search)).Value;
         next.Rows.Select(row => row.ItemId).Should().Equal(first.ItemId);
         next.HasMore.Should().BeFalse();
         (await context.Query.ListRowsAsync(2, null, requiredCollection: empty.CollectionId))

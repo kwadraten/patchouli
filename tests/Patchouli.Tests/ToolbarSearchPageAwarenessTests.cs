@@ -1,4 +1,8 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
+using Avalonia.Input;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
@@ -206,7 +210,7 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
     }
 
     [Fact]
-    public async Task Executing_a_global_search_keeps_the_chosen_mode_through_tab_activation()
+    public async Task Metadata_search_filters_the_library_and_combines_with_sidebar_selection()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<bool>(async () =>
@@ -219,14 +223,50 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
             await main.Library.CreateCommand.ExecuteAsync();
             try
             {
-                main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
+                HostServices services = await main.ServicesAsync();
+                ItemMetadata first = (await services.Items.CreateItemAsync("book", "First needle")).Value;
+                ItemMetadata second = (await services.Items.CreateItemAsync("book", "Second needle")).Value;
+                ItemMetadata other = (await services.Items.CreateItemAsync("book", "Other item")).Value;
+                (await services.Items.CreateItemAsync("article-journal", "Journal needle")).IsSuccess.Should().BeTrue();
+                Collection collection = (await services.Collections.CreateCollectionAsync("Reading list")).Value;
+                (await services.Collections.AddItemsAsync(collection.CollectionId,
+                    [first.ItemId, other.ItemId])).IsSuccess.Should().BeTrue();
+                (await services.Tags.AddTagsToItemsAsync([second.ItemId, other.ItemId], ["marked"]))
+                    .IsSuccess.Should().BeTrue();
+                await main.Shell.RefreshItemsAsync();
+
+                await main.ShowAboutCommand.ExecuteAsync();
+                main.SelectToolbarSearchModeCommand.Execute(main.ToolbarSearchModeOptions[0]);
                 main.ToolbarSearchQuery = "needle";
+                SearchFilterRowViewModel filter = main.SearchFilters.FilterRows.Single();
+                filter.Key = SearchFilterKeyOption.For(BibliographicSearchFilterKeys.ItemType);
+                filter.Value = "book";
                 await main.RunToolbarSearchCommand.ExecuteAsync();
 
-                main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.SearchResults);
-                // The activation created by the search itself must not restamp the user's mode.
+                main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
+                main.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.SearchResults);
                 main.ToolbarSearchMode.Mode.Should().Be(SearchMode.Bibliographic);
-                main.SearchEvidence.Mode.Should().Be(SearchMode.Bibliographic);
+                main.Shell.Items.Select(item => item.Title).Should().BeEquivalentTo("First needle", "Second needle");
+
+                main.Shell.Sidebar.SelectedCollection = main.Shell.Sidebar.Collections.Single();
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+                while (main.Shell.IsRefreshingItems)
+                {
+                    await main.Shell.CurrentRefreshCompletion.WaitAsync(timeout.Token);
+                }
+
+                main.Shell.Items.Should().ContainSingle().Which.Title.Should().Be("First needle");
+                main.Shell.Sidebar.ToggleTagSelection(main.Shell.Sidebar.Tags.Single(tag => tag.Name == "marked"));
+                while (main.Shell.IsRefreshingItems)
+                {
+                    await main.Shell.CurrentRefreshCompletion.WaitAsync(timeout.Token);
+                }
+
+                main.Shell.Items.Should().BeEmpty();
+                main.ToolbarSearchQuery = "";
+                filter.RemoveCommand.Execute(null);
+                await main.RunToolbarSearchCommand.ExecuteAsync();
+                main.Shell.Items.Should().ContainSingle().Which.Title.Should().Be("Other item");
                 return true;
             }
             finally
@@ -392,24 +432,68 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
     }
 
     [Fact]
-    public async Task Document_mode_never_leaks_into_the_shared_search_evidence_view_model()
+    public async Task Funnel_toggles_an_independent_panel_that_resizes_with_its_rows()
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<bool>(async () =>
         {
-            MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path);
+            MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path)
+            {
+                RuntimeDatabasePath = _settings.CreateDatabasePath("search-filter-popup")
+            };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            MainWindow window = new(main);
+            TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closed.TrySetResult();
             try
             {
-                main.ToolbarSearchMode = SearchPageAwareness.ModeOptions[2];
-                main.SearchEvidence.SelectedMode.Mode.Should().NotBe(SearchMode.DocumentFullText,
-                    "the library-wide evidence VM only carries bibliographic/full-text modes");
-                main.SearchEvidence.ModeOptions.Select(option => option.Mode)
-                    .Should().NotContain(SearchMode.DocumentFullText);
+                window.Show();
+                window.UpdateLayout();
+                ToggleButton toggle = window.FindControl<ToggleButton>("ToolbarSearchFilterButton")!;
+                Popup popup = window.FindControl<Popup>("ToolbarSearchFilterPopup")!;
+                Point center = toggle.TranslatePoint(
+                    new Point(toggle.Bounds.Width / 2, toggle.Bounds.Height / 2), window)!.Value;
+
+                window.MouseDown(center, MouseButton.Left);
+                window.MouseUp(center, MouseButton.Left);
+                window.UpdateLayout();
+                popup.IsOpen.Should().BeTrue();
+                toggle.IsChecked.Should().BeTrue();
+                main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
+                main.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.SearchResults);
+                toggle.Classes.Contains("hasActiveFilters").Should().BeFalse();
+                toggle.BorderThickness.Should().Be(new Thickness(0));
+
+                SearchFilterRowViewModel defaultRow = main.SearchFilters.FilterRows.Single();
+                defaultRow.Value = "needle";
+                window.UpdateLayout();
+                toggle.Classes.Contains("hasActiveFilters").Should().BeTrue();
+                toggle.BorderThickness.Should().Be(new Thickness(1));
+                toggle.BorderBrush.Should().NotBeNull();
+                defaultRow.Value = "";
+                window.UpdateLayout();
+                toggle.Classes.Contains("hasActiveFilters").Should().BeFalse();
+                toggle.BorderThickness.Should().Be(new Thickness(0));
+
+                double initialHeight = popup.Child!.Bounds.Height;
+                main.SearchFilters.AddFilterRowCommand.Execute(null);
+                window.UpdateLayout();
+                popup.Child.Bounds.Height.Should().BeGreaterThan(initialHeight);
+                main.SearchFilters.FilterRows[^1].RemoveCommand.Execute(null);
+                window.UpdateLayout();
+                popup.Child.Bounds.Height.Should().Be(initialHeight);
+
+                window.MouseDown(center, MouseButton.Left);
+                window.MouseUp(center, MouseButton.Left);
+                popup.IsOpen.Should().BeFalse();
+                toggle.IsChecked.Should().BeFalse();
                 return true;
             }
             finally
             {
-                await main.ShutdownAsync();
+                window.Close();
+                await closed.Task.WaitAsync(TimeSpan.FromSeconds(10));
             }
         }, CancellationToken.None);
     }
@@ -434,10 +518,10 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
             string uri = $"patchouli://items/{imported.CreatedItemId}.yml";
             main.ToolbarSearchQuery = uri;
             await main.RunToolbarSearchCommand.ExecuteAsync();
-            main.ActiveTab!.Kind.Should().Be(parseLinks ? WorkspaceTabKind.ItemEditor : WorkspaceTabKind.SearchResults);
+            main.ActiveTab!.Kind.Should().Be(parseLinks ? WorkspaceTabKind.ItemEditor : WorkspaceTabKind.Library);
             if (!parseLinks)
             {
-                main.SearchEvidence.Query.Should().Be(uri);
+                main.Shell.Items.Should().BeEmpty();
             }
 
             await main.OpenProtocolUriAsync(uri);

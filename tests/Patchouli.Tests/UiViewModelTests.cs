@@ -386,14 +386,14 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 imported.Success.Should().BeTrue(imported.ErrorMessage);
                 await vm.Shell.RefreshItemsAsync();
 
-                vm.SearchEvidence.Query =
+                vm.ToolbarSearchQuery =
                     $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-2.xml";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
                 vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
                 ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
 
-                vm.SearchEvidence.Query =
+                vm.ToolbarSearchQuery =
                     $"[URI navigation](patchouli://items/{imported.CreatedItemId}.yml)";
                 await vm.RunToolbarSearchCommand.ExecuteAsync();
 
@@ -1705,7 +1705,9 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         shellXaml.Should().Contain("RunToolbarSearchCommand");
         shellXaml.Should().Contain("ToolbarSearchQuery");
-        searchXaml.Should().Contain("搜索结果");
+        shellXaml.Should().Contain("ToolbarSearchFilterPopup");
+        searchXaml.Should().Contain("FullTextGrid");
+        searchXaml.Should().NotContain("FilterRows");
     }
 
     [Fact]

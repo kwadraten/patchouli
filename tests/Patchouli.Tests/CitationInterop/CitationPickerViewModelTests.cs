@@ -26,6 +26,7 @@ public sealed class CitationPickerViewModelTests
         public Task<Result<LibraryItemPage>> ListRowsAsync(
             int limit, LibraryItemCursor? after, IReadOnlyList<string>? requiredTags = null,
             CollectionId? requiredCollection = null, bool untaggedOnly = false,
+            BibliographicItemSearch? search = null,
             CancellationToken cancellationToken = default)
         {
             IReadOnlyList<LibraryItemRow> rows = after is null

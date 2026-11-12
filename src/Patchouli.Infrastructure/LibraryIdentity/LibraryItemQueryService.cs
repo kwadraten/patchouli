@@ -50,6 +50,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         IReadOnlyList<string>? requiredTags = null,
         CollectionId? requiredCollection = null,
         bool untaggedOnly = false,
+        BibliographicItemSearch? search = null,
         CancellationToken cancellationToken = default)
     {
         if (limit <= 0)
@@ -58,10 +59,23 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 "Page limit must be a positive integer.");
         }
 
+        string filterSql = "";
+        Dictionary<string, object?>? filterParameters = null;
+        if (search is not null)
+        {
+            Result<IReadOnlyList<string>> rewrites = await RewriteSearchQueryAsync(search.Query, cancellationToken);
+            if (rewrites.IsFailure)
+            {
+                return Result<LibraryItemPage>.Failure(rewrites.ErrorCode!, rewrites.ErrorMessage!);
+            }
+
+            (filterSql, filterParameters) = BuildSearchFilter(search, rewrites.Value);
+        }
+
         (Result<IReadOnlyList<LibraryItemRow>> result, bool hasMore) =
             await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken,
                 requiredTags: requiredTags, requiredCollection: requiredCollection,
-                untaggedOnly: untaggedOnly);
+                untaggedOnly: untaggedOnly, extraFilter: filterSql, extraParameters: filterParameters);
         if (result.IsFailure)
         {
             return Result<LibraryItemPage>.Failure(result.ErrorCode!, result.ErrorMessage!);
@@ -131,37 +145,49 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             return Result<IReadOnlyList<LibraryItemRow>>.Success([]);
         }
 
-        IReadOnlyList<string>? rewrittenQueries = null;
-        if (_rewriter is not null && !string.IsNullOrWhiteSpace(search.Query))
+        Result<IReadOnlyList<string>> rewrites = await RewriteSearchQueryAsync(search.Query, cancellationToken);
+        if (rewrites.IsFailure)
         {
-            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
-            await connection.OpenAsync(cancellationToken);
-            string? libraryText = await connection.ExecuteScalarAsync<string?>(
-                new CommandDefinition("select library_id from library_metadata limit 1;",
-                    cancellationToken: cancellationToken));
-            if (libraryText is not null)
-            {
-                LibraryId libraryId = LibraryId.Parse(libraryText);
-                if (await _rewriter.IsRewriteEnabledAsync(libraryId, cancellationToken))
-                {
-                    Result<SearchRewritePlan> plan = await _rewriter.BuildRewritePlanAsync(search.Query,
-                        new SearchRewriteOptions(libraryId), cancellationToken);
-                    if (plan.IsFailure)
-                    {
-                        return Result<IReadOnlyList<LibraryItemRow>>.Failure(plan.ErrorCode!, plan.ErrorMessage!);
-                    }
-
-                    rewrittenQueries = plan.Value.ExpandedQueries;
-                }
-            }
+            return Result<IReadOnlyList<LibraryItemRow>>.Failure(rewrites.ErrorCode!, rewrites.ErrorMessage!);
         }
 
-        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search, rewrittenQueries);
+        (string filterSql, Dictionary<string, object?> filterParameters) = BuildSearchFilter(search, rewrites.Value);
         int limit = Math.Clamp(search.Limit <= 0 ? 500 : search.Limit, 1, 1000);
         (Result<IReadOnlyList<LibraryItemRow>> result, _) = await QueryPageAsync(
             limit, null, QueryScope.Active, cancellationToken, extraFilter: filterSql,
             extraParameters: filterParameters);
         return result;
+    }
+
+    private async Task<Result<IReadOnlyList<string>>> RewriteSearchQueryAsync(
+        string? query, CancellationToken cancellationToken)
+    {
+        if (_rewriter is null || string.IsNullOrWhiteSpace(query))
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? libraryText = await connection.ExecuteScalarAsync<string?>(
+            new CommandDefinition("select library_id from library_metadata limit 1;",
+                cancellationToken: cancellationToken));
+        if (libraryText is null)
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        LibraryId libraryId = LibraryId.Parse(libraryText);
+        if (!await _rewriter.IsRewriteEnabledAsync(libraryId, cancellationToken))
+        {
+            return Result<IReadOnlyList<string>>.Success([]);
+        }
+
+        Result<SearchRewritePlan> plan = await _rewriter.BuildRewritePlanAsync(query,
+            new SearchRewriteOptions(libraryId), cancellationToken);
+        return plan.IsSuccess
+            ? Result<IReadOnlyList<string>>.Success(plan.Value.ExpandedQueries)
+            : Result<IReadOnlyList<string>>.Failure(plan.ErrorCode!, plan.ErrorMessage!);
     }
 
     public async Task<Result<IReadOnlyList<LibraryItemRow>>> ResolveRowsByCitationKeysAsync(
