@@ -521,7 +521,9 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
             main.ActiveTab!.Kind.Should().Be(parseLinks ? WorkspaceTabKind.ItemEditor : WorkspaceTabKind.Library);
             if (!parseLinks)
             {
-                main.Shell.Items.Should().BeEmpty();
+                // Without link parsing the URI is plain metadata text; it still resolves the
+                // item because bibliographic search matches canonical item identifiers.
+                main.Shell.Items.Select(item => item.ItemId).Should().Equal(imported.CreatedItemId);
             }
 
             await main.OpenProtocolUriAsync(uri);
