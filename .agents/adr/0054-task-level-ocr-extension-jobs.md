@@ -184,6 +184,10 @@ render-on-read loader; the queue/executor path migrates in a later slice.
 - Whether `ExtensionHostApi.Current` moves past `patchouli.extensions/3` for this break is left
   to the integration wave: no shipped OCR packages exist, but a bump would invalidate every
   bundled package's declared host api.
+- The superseded native `IRealOcrAdapter` implementations `RapidOcrOcrAdapter` and
+  `NdlLiteOcrAdapter` (ADRs 0031 and 0032) were removed on 2026-11-13; their engines run only
+  through the bundled compiled packages and `NativeOcrSession`. `NdlKotenOcrAdapter` removal is
+  tracked separately.
 
 ## Verification state
 

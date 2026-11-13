@@ -115,57 +115,6 @@ public sealed class MockOcrAdapter : IRealOcrAdapter
     }
 }
 
-public sealed class LocalPlaceholderOcrAdapter : IRealOcrAdapter
-{
-    private readonly IOcrModelPathValidator _validator;
-
-    public LocalPlaceholderOcrAdapter(IOcrModelPathValidator validator)
-    {
-        _validator = validator;
-    }
-
-    public string EngineId => OcrEngineIds.LocalPlaceholder;
-    public string DisplayName => "Local OCR placeholder (not implemented)";
-    public string Kind => OcrAdapterKind.LocalProcess;
-
-    public OcrEngineCapability GetCapability()
-    {
-        return new OcrEngineCapability(EngineId, DisplayName, true, false, true, false, true, true, true, false, true,
-            [OcrInputKinds.PageImage, OcrInputKinds.ImageFile, OcrInputKinds.RegionImage],
-            "Contract-only adapter; it never invokes a real OCR engine in this Alpha.");
-    }
-
-    public async Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,
-        CancellationToken cancellationToken = default)
-    {
-        OcrEnvironmentCheckResult result =
-            await _validator.ValidateModelPathAsync(presetVersion.ModelPath, true, cancellationToken);
-        return result with { EngineId = EngineId, ModelId = presetVersion.ModelId };
-    }
-
-    public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion,
-        CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(Result.Success());
-    }
-
-    public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(
-            input.InputKind is OcrInputKinds.PageImage or OcrInputKinds.ImageFile or OcrInputKinds.RegionImage
-                ? Result.Success()
-                : Result.Failure(AppErrorCodes.ValidationFailed,
-                    "The local placeholder does not support this OCR input kind."));
-    }
-
-    public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion,
-        CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(Result<OcrEnginePageResult>.Failure(AppErrorCodes.UnsupportedOperation,
-            "Real OCR adapters are not implemented in this Alpha."));
-    }
-}
-
 public sealed class MinerUOcrAdapter : IRealOcrAdapter
 {
     public string EngineId => OcrEngineIds.MinerU;

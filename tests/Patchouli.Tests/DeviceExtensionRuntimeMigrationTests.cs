@@ -110,6 +110,36 @@ public sealed class DeviceExtensionRuntimeMigrationTests
         File.Exists(Path.Combine(deviceRoot, ".device-migration.json")).Should().BeTrue();
     }
 
+    /// <summary>
+    ///     Retired-format manifests are never adopted: the current entry-metadata reader
+    ///     rejects <c>extension.yml</c> outright (EXT0014), so copying it would only break a
+    ///     package the startup legacy-migration would then have to replace anyway.
+    /// </summary>
+    [Fact]
+    public void Retired_extension_yml_files_are_never_copied_to_device_scope()
+    {
+        using TempDir temp = new();
+        string dataDir = Path.Combine(temp.Path, "data");
+        string databasePath = WriteLibraryRuntime(temp, "library-a",
+        [
+            ("extensions/translation.tencent-free/main.fsx", "let engine = \"legacy\""),
+            ("extensions/translation.tencent-free/extension.yml",
+                "id: translation.tencent-free\nversion: 1.0.0\nhost_api: patchouli.extensions/1\n"),
+            ("extensions/translation.tencent-free/extension-state.json",
+                "{\"schemaVersion\":\"1\",\"hostApi\":\"patchouli.extensions/1\"}")
+        ]);
+
+        DeviceExtensionRuntimeMigration.MigrateRuntime(databasePath, dataDir, new NoOpAppLogger())
+            .Should().Be(Path.Combine(dataDir, "extensions"));
+
+        string adopted = Path.Combine(dataDir, "extensions", "extensions",
+            "translation.tencent-free");
+        File.Exists(Path.Combine(adopted, "main.fsx")).Should().BeTrue();
+        File.Exists(Path.Combine(adopted, "extension.yml")).Should().BeFalse();
+        File.Exists(Path.Combine(adopted, "extension-state.json")).Should().BeTrue(
+            "activation state itself is ordinary data; the startup migration filters it");
+    }
+
     [Fact]
     public void Held_migration_lock_skips_adoption_and_leaves_retry_unmarked()
     {

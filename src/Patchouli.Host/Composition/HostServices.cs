@@ -947,6 +947,21 @@ public sealed class HostServices
             {
                 startupProgress?.Report(StartupStage.ApplyingMigrations);
                 await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+                try
+                {
+                    // Retired 1.0.0 built-in translation copies cannot self-upgrade (their
+                    // entry metadata read fails before any version comparison), so the
+                    // catalog replaces them with the bundled package before any engine
+                    // listing can see them.
+                    await services.TranslationExtensions
+                        .MigrateLegacyBuiltInTranslationPackagesAsync(CancellationToken.None);
+                }
+                catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                      exception, "host.composition",
+                                                      "legacy-extension-migration"))
+                {
+                }
+
                 Result builtInStyles = await ((CslStyleStore)services.CslStore)
                     .EnsureBuiltInStylesAsync(CancellationToken.None);
                 if (builtInStyles.IsFailure)

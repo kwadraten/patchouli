@@ -4,6 +4,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Patchouli.Core.Results;
+using Patchouli.Host.Downloads;
 
 namespace Patchouli.Host.ManagedFiles;
 
@@ -1268,7 +1269,7 @@ public sealed class ManagedFileService : IDisposable, IAsyncDisposable
     {
         return exception switch
         {
-            HttpRequestException => "network error",
+            HttpRequestException http => DownloadNetworkErrors.Describe(http),
             UnauthorizedAccessException => "access denied",
             IOException => "I/O error",
             _ => "internal error"

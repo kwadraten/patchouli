@@ -170,9 +170,8 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
             {
                 RuntimeDatabasePath = CreateDatabasePath("ui-page-ocr-working")
             };
-            // The built-in development engine keeps page OCR on the adapter path this fixture
-            // measures; extension engines (the NdlKoten default) run through compiled FSX jobs
-            // and never consult the adapter registry.
+            // Force the mock adapter path this fixture measures; extension engines such as NdlKoten
+            // run through compiled FSX jobs and never consult the adapter registry.
             main.UpdateAppOptions(main.AppOptions with
             {
                 OcrEngines = main.AppOptions.OcrEngines with { PageOcrEngine = OcrEngineIds.Mock }

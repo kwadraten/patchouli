@@ -9,7 +9,9 @@ public sealed record OcrEnginesAppSettings(
 {
     public static OcrEnginesAppSettings Default()
     {
-        return new OcrEnginesAppSettings(OcrEngineIds.NdlKoten, OcrEngineIds.NdlKoten, OcrEngineIds.NdlKoten);
+        // First-run setup requires a MinerU token, so the implicit engine is usable from the
+        // first session without an additional local-model download.
+        return new OcrEnginesAppSettings(OcrEngineIds.MinerU, OcrEngineIds.MinerU, OcrEngineIds.MinerU);
     }
 
     /// <summary>

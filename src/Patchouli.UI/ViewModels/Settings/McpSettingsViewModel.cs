@@ -110,6 +110,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
         StopMcpCommand = new AsyncCommand(StopMcpAsync, () => _main.CanStopMcpServer);
         SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
+        DiscardChangesCommand = new AsyncCommand(DiscardChangesAsync);
         AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
         RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
         RefreshLibraryPreviewCommand = new AsyncCommand(RefreshLibraryPreviewAsync);
@@ -363,6 +364,15 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     [ExcludeFromDerivedGeneration]
     public bool HasPendingLeaveDecision => IsDirty || RequiresReload || _isConfirmingLeave;
 
+    /// <summary>Unsaved drafts and saved-but-unapplied settings both need an explicit save and restart.</summary>
+    [ExcludeFromDerivedGeneration]
+    public bool NeedsSaveAndRestart => IsDirty || RequiresReload;
+
+    [ExcludeFromDerivedGeneration]
+    public string SaveAndRestartBannerText => IsDirty ? "有未保存的更改，保存并重启服务后生效" : "设置已保存，需重启服务后生效";
+
+    public AsyncCommand DiscardChangesCommand { get; }
+
     public async Task<bool> ConfirmLeaveAsync()
     {
         if (_isConfirmingLeave)
@@ -393,31 +403,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
                 return false;
             }
 
-            IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
-            McpServerSettings draft = _settings;
-            Result validation = await Task.Run(() => service.ValidateSettingsAsync(draft));
-            if (validation.IsFailure)
-            {
-                LastError = validation.ErrorMessage;
-                ValidationState = SettingsValidationState.Invalid;
-                SetStatus($"无法保存并重启 MCP：{validation.ErrorMessage}");
-                return false;
-            }
-
-            try
-            {
-                await SaveAndRestartAsync();
-                return !IsDirty && !RequiresReload && _main.McpServerRunning;
-            }
-            catch (InvalidOperationException exception)
-            {
-                LastError = exception.Message;
-                SetStatus($"MCP 重启失败：{exception.Message}");
-                // The draft was persisted, but it has not been applied to a running listener.
-                RequiresReload = true;
-                _restartFailed = true;
-                return false;
-            }
+            return await TrySaveAndApplyAsync() && !IsDirty && !RequiresReload && _main.McpServerRunning;
         }
         finally
         {
@@ -481,6 +467,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             SetStatus("已放弃更改");
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
+            RaiseSaveAndRestartState();
         }
         finally
         {
@@ -570,8 +557,29 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         IsCliInPath = _cliInstallation.InPath;
     }
 
-    private async Task SaveAndRestartAsync()
+    private Task SaveAndRestartAsync()
     {
+        return TrySaveAndApplyAsync();
+    }
+
+    /// <summary>
+    /// Validates and saves the draft, then (re)starts the listener with exactly the saved
+    /// configuration. A stopped server is started by the same path so the explicit port is
+    /// never silently replaced by a fallback port. Failures are reported, never thrown.
+    /// </summary>
+    private async Task<bool> TrySaveAndApplyAsync()
+    {
+        IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
+        McpServerSettings draft = _settings;
+        Result validation = await Task.Run(() => service.ValidateSettingsAsync(draft));
+        if (validation.IsFailure)
+        {
+            LastError = validation.ErrorMessage;
+            ValidationState = SettingsValidationState.Invalid;
+            SetStatus($"无法保存并重启 MCP：{validation.ErrorMessage}");
+            return false;
+        }
+
         if (IsDirty)
         {
             await SaveAsync();
@@ -579,18 +587,44 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         if (IsDirty || SaveState == SettingsSaveState.Failed)
         {
-            return;
+            return false;
         }
 
-        await _main.RestartMcpServerAsync("应用新设置");
-        if (!_main.McpServerRunning)
+        bool wasRunning = _main.McpServerRunning;
+        try
         {
-            throw new InvalidOperationException("MCP Server 未能启动。请检查状态栏中的错误详情。");
+            await _main.RestartMcpServerAsync("应用新设置");
+        }
+        catch (InvalidOperationException exception)
+        {
+            LastError = exception.Message;
+            SetStatus(wasRunning ? $"MCP 重启失败：{exception.Message}" : $"MCP 启动失败：{exception.Message}");
+            // The draft was persisted, but it has not been applied to a running listener.
+            _restartFailed = true;
+            RequiresReload = true;
+            RaiseSaveAndRestartState();
+            return false;
         }
 
-        RequiresReload = false;
         _restartFailed = false;
+        RequiresReload = false;
         _discardBaseline = _persistedSettings;
+        LastError = null;
+        SetStatus(wasRunning ? "已保存并重启 MCP 服务" : "已保存并启动 MCP 服务");
+        RaiseSaveAndRestartState();
+        return true;
+    }
+
+    private Task DiscardChangesAsync()
+    {
+        return DiscardAsync();
+    }
+
+    private void RaiseSaveAndRestartState()
+    {
+        Raise(nameof(NeedsSaveAndRestart));
+        Raise(nameof(SaveAndRestartBannerText));
+        Raise(nameof(HasPendingLeaveDecision));
     }
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
@@ -640,6 +674,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         SetStatus(validation.IsFailure ? $"已保存，启动服务前仍需补全：{validation.ErrorMessage}" : "已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
+        RaiseSaveAndRestartState();
     }
 
     public override async Task SaveAsync()
@@ -712,6 +747,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             RefreshRequiresReload();
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
+            RaiseSaveAndRestartState();
         }
         catch (OperationCanceledException) when (saveCancellation.IsCancellationRequested)
         {
@@ -724,6 +760,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             SetStatus("保存已取消，当前草稿仍未保存");
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
+            RaiseSaveAndRestartState();
         }
         finally
         {
@@ -784,6 +821,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
         Raise(nameof(LibraryPreviewHint));
+        RaiseSaveAndRestartState();
         SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
     }
@@ -794,6 +832,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         RequiresReload = _restartFailed || (_hasLoadedSettings && _main.McpAppliedSettings is { } running &&
                                             !SameConfiguration(running, _persistedSettings));
         Raise(nameof(LibraryPreviewHint));
+        RaiseSaveAndRestartState();
     }
 
     private static bool SameConfiguration(McpServerSettings first, McpServerSettings second)
@@ -956,11 +995,8 @@ public sealed partial class McpDomainPermissionRowViewModel : ViewModelBase
     public bool HasChildren { get; }
     public IReadOnlyList<RunSendPermissionViewModel> Children { get; }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ExpansionGlyph))]
-    public partial bool IsExpanded { get; set; }
+    [ObservableProperty] public partial bool IsExpanded { get; set; }
 
-    [ExcludeFromDerivedGeneration] public string ExpansionGlyph => IsExpanded ? "▼" : "▶";
     public IReadOnlyList<McpDomainPermissionCellViewModel> Cells { get; }
 }
 

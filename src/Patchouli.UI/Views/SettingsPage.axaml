@@ -403,12 +403,16 @@
                   </Grid>
                   <Border Background="{DynamicResource ErrorContainerBrush}"
                           BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
-                          Padding="12" IsVisible="{Binding RequiresReload}">
+                          Padding="12" IsVisible="{Binding NeedsSaveAndRestart}">
                     <StackPanel Spacing="6">
-                      <TextBlock Text="设置已保存，需重启服务后生效" FontWeight="Bold"
+                      <TextBlock Text="{Binding SaveAndRestartBannerText}" FontWeight="Bold"
                                  Foreground="{DynamicResource OnErrorContainerBrush}" />
-                      <Button Content="保存并重启服务" Command="{Binding SaveAndRestartCommand}"
-                              HorizontalAlignment="Left" Classes="Primary" />
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="保存并重启服务" Command="{Binding SaveAndRestartCommand}"
+                                Classes="Primary" />
+                        <Button Content="放弃更改" Command="{Binding DiscardChangesCommand}"
+                                IsVisible="{Binding IsDirty}" />
+                      </StackPanel>
                     </StackPanel>
                   </Border>
                 </StackPanel>
@@ -490,11 +494,17 @@
                               <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
                                 <ToggleButton IsVisible="{Binding HasChildren}" IsChecked="{Binding IsExpanded}"
-                                              Content="{Binding ExpansionGlyph}" Padding="2,0" MinWidth="0"
+                                              Padding="2,0" MinWidth="0"
                                               MinHeight="0"
                                               Width="20" Height="22" Background="Transparent" BorderThickness="0"
                                               Foreground="{DynamicResource OnSurfaceBrush}"
                                               AutomationProperties.Name="展开 runs 子域权限">
+                                  <Panel>
+                                    <lucide:Lucide Icon="ChevronRight" Width="14" Height="14"
+                                                   IsVisible="{Binding !IsExpanded}" />
+                                    <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
+                                                   IsVisible="{Binding IsExpanded}" />
+                                  </Panel>
                                   <ToggleButton.Template>
                                     <ControlTemplate>
                                       <ContentPresenter Content="{TemplateBinding Content}" Background="Transparent"

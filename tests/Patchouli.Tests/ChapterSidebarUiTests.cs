@@ -498,8 +498,25 @@ public sealed class ChapterSidebarUiTests
                         Pump(window);
                     }
 
-                    workspace.ChapterNodes.First(node => node.HasChildren).IsExpanded = true;
+                    ChapterTreeNodeViewModel parent = workspace.ChapterNodes.First(node => node.HasChildren);
+                    Pump(window);
+                    ExpanderIcon(parent).Should().Be(parent.IsExpanded ? "ChevronDown" : "ChevronRight");
+                    parent.IsExpanded = !parent.IsExpanded;
+                    Pump(window);
+                    ExpanderIcon(parent).Should().Be(parent.IsExpanded ? "ChevronDown" : "ChevronRight");
+                    parent.IsExpanded = true;
+                    Pump(window);
+                    ExpanderIcon(parent).Should().Be("ChevronDown");
                     SavePreview(window, 1200, "chapter-expanded");
+
+                    string? ExpanderIcon(ChapterTreeNodeViewModel node)
+                    {
+                        return page.GetVisualDescendants().OfType<Avalonia.Controls.Primitives.ToggleButton>()
+                            .Single(toggle => ReferenceEquals(toggle.DataContext, node) &&
+                                              toggle.IsEffectivelyVisible)
+                            .GetVisualDescendants().OfType<Patchouli.Lucide.Avalonia.Lucide>()
+                            .Single(icon => icon.IsEffectivelyVisible).Icon;
+                    }
                 }
                 else
                 {

@@ -15,6 +15,7 @@ using Patchouli.UI.Views;
 using Patchouli.UI.Themes;
 using Patchouli.Core.Search;
 using Patchouli.Host.Composition;
+using LucideIcon = Patchouli.Lucide.Avalonia.Lucide;
 
 namespace Patchouli.Tests;
 
@@ -169,9 +170,10 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
                 AutomationProperties.GetName(control) == "展开 runs 子域权限" && control.IsEffectivelyVisible);
             ToggleSwitch parent = window.GetVisualDescendants().OfType<ToggleSwitch>().Single(control =>
                 AutomationProperties.GetName(control) == "runs 全部子域 send 权限" && control.IsEffectivelyVisible);
+            VisibleExpanderIcon(triangle).Should().Be("ChevronRight");
             Click(window, triangle);
             runs.IsExpanded.Should().BeTrue();
-            triangle.Content.Should().Be("▼");
+            VisibleExpanderIcon(triangle).Should().Be("ChevronDown");
             ToggleSwitch ocr = window.GetVisualDescendants().OfType<ToggleSwitch>().Single(control =>
                 AutomationProperties.GetName(control) == "runs/ocr" && control.IsEffectivelyVisible);
             ocr.GetVisualAncestors().OfType<Expander>().Should()
@@ -186,6 +188,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
             parent.IsChecked.Should().BeNull();
             Click(window, triangle);
             runs.IsExpanded.Should().BeFalse();
+            VisibleExpanderIcon(triangle).Should().Be("ChevronRight");
             settings.RunSendPermissions.Checked.Should().BeNull("collapsing does not change child grants");
             Click(window, triangle);
             Pump(window);
@@ -275,6 +278,12 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
         window.MouseDown(point, MouseButton.Left);
         window.MouseUp(point, MouseButton.Left);
         Pump(window);
+    }
+
+    private static string? VisibleExpanderIcon(ToggleButton toggle)
+    {
+        return toggle.GetVisualDescendants().OfType<LucideIcon>()
+            .Single(icon => icon.IsEffectivelyVisible).Icon;
     }
 
     private async Task RunAsync(Func<MainWindowViewModel, Window, SettingsPage, Task> action)

@@ -3796,6 +3796,10 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         xaml.Should().Contain("凭据");
         xaml.Should().Contain("运行状态");
         xaml.Should().Contain("Command=\"{Binding SaveAndRestartCommand}\"");
+        xaml.Should().Contain("IsVisible=\"{Binding NeedsSaveAndRestart}\"");
+        xaml.Should().NotContain("IsVisible=\"{Binding RequiresReload}\"");
+        xaml.Should().Contain("Text=\"{Binding SaveAndRestartBannerText}\"");
+        xaml.Should().Contain("Command=\"{Binding DiscardChangesCommand}\"");
         xaml.Should().Contain("添加并扫描");
         xaml.Should().Contain("立即重新扫描");
 

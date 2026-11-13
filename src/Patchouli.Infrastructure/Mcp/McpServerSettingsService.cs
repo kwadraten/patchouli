@@ -190,12 +190,12 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ? bind.GetString() ?? "127.0.0.1"
             : "127.0.0.1";
         bool cors = mcp.TryGetProperty("CorsEnabled", out JsonElement c) && c.GetBoolean();
-        bool auth = mcp.TryGetProperty("AuthRequired", out JsonElement a) && a.GetBoolean();
+        string token = mcp.TryGetProperty("Token", out JsonElement t) ? t.GetString() ?? "" : "";
+        bool auth = ResolveAuthRequired(mcp, token);
         string[] origins = mcp.TryGetProperty("AllowedOrigins", out JsonElement o) && o.ValueKind == JsonValueKind.Array
             ? o.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
                 .Select(value => value.GetString()!).ToArray()
             : [];
-        string token = mcp.TryGetProperty("Token", out JsonElement t) ? t.GetString() ?? "" : "";
         IReadOnlyList<McpToolOverride> tools =
             mcp.TryGetProperty("ToolOverrides", out JsonElement overrides) && overrides.ValueKind == JsonValueKind.Array
                 ? overrides.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
@@ -222,7 +222,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 ? parsedUpdatedAt.ToUniversalTime()
                 : _clock.UtcNow.ToUniversalTime();
         McpServerSettings settings = new(port, bindAddress, cors, origins,
-            auth || !string.IsNullOrWhiteSpace(token),
+            auth,
             string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
         {
             ShellCommandTimeoutSeconds = shellCommandTimeoutSeconds,
@@ -234,6 +234,21 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 : []
         };
         return MigrateViewToImagesFetch(settings);
+    }
+
+    /// <summary>
+    /// An explicit boolean <c>AuthRequired</c> is authoritative even when a token is still stored.
+    /// Settings files written before the key existed infer the requirement from the token.
+    /// </summary>
+    public static bool ResolveAuthRequired(JsonElement mcp, string? token)
+    {
+        if (mcp.ValueKind == JsonValueKind.Object && mcp.TryGetProperty("AuthRequired", out JsonElement value) &&
+            value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return value.GetBoolean();
+        }
+
+        return !string.IsNullOrWhiteSpace(token);
     }
 
     /// <summary>

@@ -31,6 +31,8 @@ Reasons:
 - The upstream models and configs are licensed under CC-BY-4.0; the UI must display attribution and license notice before download/use.
 
 
+Implementation note (2026-11): the standalone `NdlKotenOcrAdapter` (`IRealOcrAdapter`) has been removed. The `ndl-koten` engine now runs through `NativeOcrSession` (`Patchouli.Ocr.Engines`) registered by `BuiltInOcrExtensions`, still using `NdlKotenOcrPipeline` and the same downloaded models; the decision above is unchanged.
+
 ## Implemented Model And Local-file Management Contract
 
 Recorded from completed PRD V3-T9 (2026-09-10). The `ndl-koten` adapter supports page/region images and vertical text. Detection, right-to-left vertical reading order and recognition feed the shared working/commit importer; providers never write `document_boxes` directly.

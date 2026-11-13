@@ -85,9 +85,113 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
 
         workspace.AdjustZoom(-0.1);
         workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
-        workspace.Zoom.Should().BeApproximately(0.1, 0.0001);
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MinZoom);
         workspace.AdjustZoom(0.1);
-        workspace.Zoom.Should().BeApproximately(0.2, 0.0001);
+        workspace.Zoom.Should().BeApproximately(PdfWorkspaceViewModel.MinZoom + 0.1, 0.0001);
+    }
+
+    [Theory]
+    [InlineData("80", 0.8)]
+    [InlineData("80%", 0.8)]
+    [InlineData("  80 % ", 0.8)]
+    [InlineData("80％", 0.8)]
+    [InlineData("12.5", 0.125)]
+    [InlineData("1", 0.01)]
+    [InlineData("400%", 4.0)]
+    public void Zoom_percent_input_parses_with_or_without_percent_sign(string text, double expected)
+    {
+        PdfWorkspaceViewModel.TryParseZoomPercent(text, out double zoom).Should().BeTrue();
+        zoom.Should().BeApproximately(expected, 0.000001);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("%")]
+    [InlineData("abc")]
+    [InlineData("80%%")]
+    [InlineData("-50")]
+    [InlineData("0")]
+    [InlineData("0.5")]
+    [InlineData("401")]
+    [InlineData("1e2")]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("1,000")]
+    public void Zoom_percent_input_rejects_invalid_or_out_of_range_text(string? text)
+    {
+        PdfWorkspaceViewModel.TryParseZoomPercent(text, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Typed_zoom_applies_in_free_mode_clamps_to_the_minimum_and_keeps_value_on_invalid_input()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        SetProperty(workspace, nameof(workspace.WidthPixels), 1000);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 2000);
+        workspace.UpdateViewportSize(848, 1048);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitHeight);
+
+        workspace.TrySetZoomFromText("abc").Should().BeFalse();
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitHeight, "rejected input must not touch the viewport");
+        workspace.Zoom.Should().BeApproximately(0.5, 0.0001);
+
+        workspace.TrySetZoomFromText(" 150 % ").Should().BeTrue();
+        workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
+        workspace.Zoom.Should().BeApproximately(1.5, 0.0001);
+        workspace.ZoomText.Should().Be("150%");
+
+        workspace.TrySetZoomFromText("2%").Should().BeTrue();
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MinZoom);
+        workspace.ZoomText.Should().Be("5%");
+        workspace.ZoomOutCommand.CanExecute(null).Should().BeFalse();
+
+        workspace.TrySetZoomFromText("400").Should().BeTrue();
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MaxZoom);
+        workspace.ZoomInCommand.CanExecute(null).Should().BeFalse();
+
+        workspace.TrySetZoomFromText("500").Should().BeFalse();
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MaxZoom);
+    }
+
+    [Fact]
+    public async Task Zoom_out_reaches_the_new_minimum_below_twenty_five_percent()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        workspace.TrySetZoomFromText("30").Should().BeTrue();
+
+        int steps = 0;
+        while (workspace.ZoomOutCommand.CanExecute(null) && steps++ < 20)
+        {
+            await workspace.ZoomOutCommand.ExecuteAsync();
+        }
+
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MinZoom);
+        PdfWorkspaceViewModel.MinZoom.Should().BeLessThan(0.25);
+        workspace.ZoomOutCommand.CanExecute(null).Should().BeFalse();
+        workspace.ZoomInCommand.CanExecute(null).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Fit_modes_shrink_very_large_pages_to_the_shared_minimum()
+    {
+        using MainWindowViewModel main = CreateMainWindow();
+        using PdfWorkspaceViewModel workspace = CreateWorkspace(main);
+        SetProperty(workspace, nameof(workspace.WidthPixels), 20000);
+        SetProperty(workspace, nameof(workspace.HeightPixels), 40000);
+
+        workspace.UpdateViewportSize(848, 4048);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitHeight);
+        workspace.Zoom.Should().BeApproximately(0.1, 0.0001);
+        workspace.ZoomOutCommand.CanExecute(null).Should().BeTrue();
+
+        workspace.CycleFitModeCommand.Execute(null);
+        workspace.FitMode.Should().Be(PdfViewportFitMode.FitWidth);
+        workspace.Zoom.Should().Be(PdfWorkspaceViewModel.MinZoom, "fit width wants 4% and is clamped to the minimum");
+        workspace.ZoomOutCommand.CanExecute(null).Should().BeFalse();
     }
 
     [Fact]
@@ -454,8 +558,8 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         pdf.ZoomInCommand.CanExecute(null).Should().BeFalse();
         pdf.ZoomOutCommand.CanExecute(null).Should().BeTrue();
 
-        pdf.AdjustZoom(-4.0); // Zoom clamped to 0.25
-        pdf.Zoom.Should().Be(0.25);
+        pdf.AdjustZoom(-4.0); // Zoom clamped to the minimum
+        pdf.Zoom.Should().Be(PdfWorkspaceViewModel.MinZoom);
         pdf.ZoomInCommand.CanExecute(null).Should().BeTrue();
         pdf.ZoomOutCommand.CanExecute(null).Should().BeFalse();
 

@@ -362,7 +362,7 @@ public sealed class DownloadTaskService : IDisposable, IAsyncDisposable, IDownlo
     {
         return exception switch
         {
-            HttpRequestException => "network error",
+            HttpRequestException http => DownloadNetworkErrors.Describe(http),
             UnauthorizedAccessException => "access denied",
             IOException => "I/O error",
             _ => "internal error"

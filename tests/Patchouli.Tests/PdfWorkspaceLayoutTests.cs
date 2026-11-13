@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using FluentAssertions;
 
 namespace Patchouli.Tests;
@@ -28,6 +29,21 @@ public sealed class PdfWorkspaceLayoutTests
 
         xaml.Should().NotContain("ResolveConflictOverwriteCommand").And.NotContain("强制覆盖");
         viewModel.Should().NotContain("ResolveConflictOverwriteAsync").And.NotContain("CheckOverlap");
+    }
+
+    [Fact]
+    public void Chapter_expander_uses_lucide_chevrons_instead_of_text_glyphs()
+    {
+        string path = TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml");
+        XElement toggle = XDocument.Load(path).Descendants()
+            .Single(element => element.Name.LocalName == "ToggleButton" &&
+                               (string?)element.Attribute("Theme") == "{StaticResource ChapterExpanderTheme}");
+
+        toggle.Attribute("Content").Should().BeNull();
+        toggle.Descendants().Where(element => element.Name.LocalName == "Lucide")
+            .Select(icon => ((string?)icon.Attribute("Icon"), (string?)icon.Attribute("IsVisible")))
+            .Should().Equal(("ChevronRight", "{Binding !IsExpanded}"), ("ChevronDown", "{Binding IsExpanded}"));
+        File.ReadAllText(path).Should().NotContain("▸").And.NotContain("▾").And.NotContain("ExpanderGlyph");
     }
 
     [Fact]

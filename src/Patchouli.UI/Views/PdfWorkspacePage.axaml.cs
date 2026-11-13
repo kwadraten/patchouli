@@ -936,6 +936,69 @@ public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
         }
     }
 
+    private void OnZoomInputKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox textBox || _workspace is null)
+        {
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Enter:
+                e.Handled = true;
+                CommitZoomInput(textBox);
+                textBox.SelectAll();
+                break;
+            case Key.Escape:
+                e.Handled = true;
+                ResetZoomInput(textBox);
+                textBox.SelectAll();
+                break;
+        }
+    }
+
+    private void OnZoomInputGotFocus(object? sender, FocusChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            textBox.SelectAll();
+        }
+    }
+
+    private void OnZoomInputLostFocus(object? sender, FocusChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            CommitZoomInput(textBox);
+        }
+    }
+
+    // Unchanged text is not re-applied: re-committing the displayed (rounded) value would
+    // needlessly drop an active fit mode back to free zoom.
+    private void CommitZoomInput(TextBox textBox)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        if (!string.Equals(textBox.Text?.Trim(), _workspace.ZoomText, StringComparison.Ordinal))
+        {
+            _workspace.TrySetZoomFromText(textBox.Text);
+        }
+
+        ResetZoomInput(textBox);
+    }
+
+    private void ResetZoomInput(TextBox textBox)
+    {
+        if (_workspace is not null)
+        {
+            textBox.SetCurrentValue(TextBox.TextProperty, _workspace.ZoomText);
+        }
+    }
+
 
     private void OnBookReadingStarted()
     {

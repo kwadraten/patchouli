@@ -112,6 +112,15 @@ internal static class DeviceExtensionRuntimeMigration
         int copied = 0;
         foreach (string source in Directory.EnumerateFiles(legacyRoot, "*", SearchOption.AllDirectories))
         {
+            // The retired extension.yml format is rejected by the current entry-metadata
+            // reader (EXT0014); adopting it would only break the destination package, which
+            // the startup legacy-migration then has to replace anyway. Note this guard only
+            // helps devices that have not written the migration marker yet.
+            if (string.Equals(Path.GetFileName(source), "extension.yml", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             string destination = Path.Combine(deviceRoot, Path.GetRelativePath(legacyRoot, source));
             if (File.Exists(destination))
             {

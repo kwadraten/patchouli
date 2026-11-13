@@ -7,13 +7,24 @@ namespace Patchouli.Tests;
 public sealed class OcrEnginesAppSettingsTests
 {
     [Fact]
-    public void Default_uses_ndl_koten_for_all_scopes()
+    public void Default_uses_mineru_for_all_scopes()
     {
         OcrEnginesAppSettings settings = OcrEnginesAppSettings.Default();
 
-        settings.DocumentOcrEngine.Should().Be(OcrEngineIds.NdlKoten);
-        settings.PageOcrEngine.Should().Be(OcrEngineIds.NdlKoten);
-        settings.RegionOcrEngine.Should().Be(OcrEngineIds.NdlKoten);
+        settings.DocumentOcrEngine.Should().Be(OcrEngineIds.MinerU);
+        settings.PageOcrEngine.Should().Be(OcrEngineIds.MinerU);
+        settings.RegionOcrEngine.Should().Be(OcrEngineIds.MinerU);
+    }
+
+    [Theory]
+    [InlineData(OcrScope.Document)]
+    [InlineData(OcrScope.Page)]
+    [InlineData(OcrScope.Region)]
+    public void EngineFor_returns_the_implicit_mineru_default(OcrScope scope)
+    {
+        OcrEnginesAppSettings settings = OcrEnginesAppSettings.Default();
+
+        settings.EngineFor(scope).Should().Be(OcrEngineIds.MinerU);
     }
 
     [Theory]
@@ -25,6 +36,19 @@ public sealed class OcrEnginesAppSettingsTests
         OcrEnginesAppSettings settings = new("doc-engine", "page-engine", "region-engine");
 
         settings.EngineFor(scope).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Patchouli_defaults_use_mineru_without_an_ocr_engine_section()
+    {
+        using TemporaryAppSettingsFile file = new();
+        File.WriteAllText(file.Path, "{\"Patchouli\":{}}");
+
+        PatchouliAppSettings loaded = PatchouliAppSettings.Load(file.Path);
+
+        loaded.OcrEngines.DocumentOcrEngine.Should().Be(OcrEngineIds.MinerU);
+        loaded.OcrEngines.PageOcrEngine.Should().Be(OcrEngineIds.MinerU);
+        loaded.OcrEngines.RegionOcrEngine.Should().Be(OcrEngineIds.MinerU);
     }
 
     [Fact]

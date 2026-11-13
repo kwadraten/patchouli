@@ -1,11 +1,6 @@
 using FluentAssertions;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
-using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Ocr.RapidOcr;
 using Patchouli.Ocr.Engines.RapidOcr;
-using Patchouli.Ocr;
 using SkiaSharp;
 
 namespace Patchouli.Tests;
@@ -480,122 +475,6 @@ public sealed class RapidOcrTests
         oriented.Pixels[3].Should().Be(20);
     }
 
-    [Fact]
-    public async Task Adapter_validates_preset_options_and_model_directory()
-    {
-        RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), Path.GetTempPath());
-
-        (await adapter.ValidatePresetAsync(Preset("""{"useRec":false}"""))).ErrorMessage.Should()
-            .Contain("useDet and useRec");
-        (await adapter.ValidatePresetAsync(Preset("""{"returnWordBox":true}"""))).ErrorMessage.Should()
-            .Contain("returnWordBox");
-        (await adapter.ValidatePresetAsync(Preset("{}", null))).ErrorMessage.Should()
-            .Contain("model directory");
-        (await adapter.ValidatePresetAsync(Preset("{}", Path.GetTempPath()))).IsSuccess.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task Adapter_reports_missing_model_files_as_a_readiness_failure()
-    {
-        string directory = CreateTemporaryDirectory();
-        try
-        {
-            RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), directory);
-
-            OcrEnvironmentCheckResult result = await adapter.CheckEnvironmentAsync(Preset(modelPath: directory));
-
-            result.IsReady.Should().BeFalse();
-            result.Status.Should().Be(OcrEnvironmentStatus.MissingModelPath);
-            result.RequiredAction.Should().Be(OcrRequiredAction.RebindModelPath);
-            result.Message.Should().Contain("PP-OCRv6_det_small.onnx");
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
-    }
-
-    [Fact]
-    public async Task Adapter_is_ready_once_every_pinned_model_file_is_present()
-    {
-        string directory = CreateTemporaryDirectory();
-        try
-        {
-            foreach (RapidOcrModelFile file in RapidOcrModelFiles.Files)
-            {
-                File.WriteAllBytes(RapidOcrModelFiles.GetLocalPath(directory, file), new byte[file.ExpectedBytes]);
-            }
-
-            RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), directory);
-            OcrEnvironmentCheckResult result = await adapter.CheckEnvironmentAsync(Preset(modelPath: directory));
-
-            result.IsReady.Should().BeTrue();
-            result.Status.Should().Be(OcrEnvironmentStatus.Ready);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
-    }
-
-    [Fact]
-    public async Task Adapter_is_ready_without_the_classifier_when_classification_is_disabled()
-    {
-        string directory = CreateTemporaryDirectory();
-        try
-        {
-            File.WriteAllBytes(RapidOcrModelFiles.GetLocalPath(directory, RapidOcrModelFiles.Detector),
-                new byte[RapidOcrModelFiles.Detector.ExpectedBytes]);
-            File.WriteAllBytes(RapidOcrModelFiles.GetLocalPath(directory, RapidOcrModelFiles.Recognizer),
-                new byte[RapidOcrModelFiles.Recognizer.ExpectedBytes]);
-
-            RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), directory);
-            OcrEnvironmentCheckResult withoutClassifier = await adapter.CheckEnvironmentAsync(
-                Preset("""{"useCls":false}""", directory));
-            OcrEnvironmentCheckResult withClassifier =
-                await adapter.CheckEnvironmentAsync(Preset(modelPath: directory));
-
-            withoutClassifier.IsReady.Should().BeTrue();
-            withClassifier.IsReady.Should().BeFalse();
-            withClassifier.Message.Should().Contain(RapidOcrModelFiles.Classifier.FileName);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
-    }
-
-    [Fact]
-    public async Task Adapter_refuses_to_run_when_the_model_files_are_missing()
-    {
-        string directory = CreateTemporaryDirectory();
-        string imagePath = CreatePng(64, 64);
-        try
-        {
-            RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), directory);
-
-            Result<OcrEnginePageResult> result = await adapter.RunPageAsync(
-                ImageInput(imagePath, null), Preset(modelPath: directory));
-
-            result.IsFailure.Should().BeTrue();
-            result.ErrorMessage.Should().Contain("missing");
-        }
-        finally
-        {
-            File.Delete(imagePath);
-            Directory.Delete(directory, true);
-        }
-    }
-
-    [Fact]
-    public void Adapter_resolves_the_models_directory_from_parameters_before_the_preset()
-    {
-        RapidOcrOcrAdapter.ResolveModelsDirectory(RapidOcrParameters.Default with { ModelRootDir = "/a" }, "/b")
-            .Should().Be("/a");
-        RapidOcrOcrAdapter.ResolveModelsDirectory(RapidOcrParameters.Default, "/b").Should().Be("/b");
-        RapidOcrOcrAdapter.ResolveModelsDirectory(RapidOcrParameters.Default, null).Should().BeNull();
-    }
-
     private static float[] FilledProbabilityMap(int width, int height, int x0, int y0, int rectangleWidth,
         int rectangleHeight, float value)
     {
@@ -621,30 +500,5 @@ public sealed class RapidOcrTests
         string directory = Path.Combine(Path.GetTempPath(), $"patchouli-rapidocr-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         return directory;
-    }
-
-    private static OcrPresetVersion Preset(string parametersJson = "{}", string? modelPath = "/models/rapidocr")
-    {
-        return new OcrPresetVersion(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.RapidOcr,
-            OcrModelIds.RapidOcrDefault, modelPath, parametersJson, true, DateTimeOffset.UtcNow);
-    }
-
-    private static OcrInputDescriptor ImageInput(string imagePath, NormalizedBBox? region)
-    {
-        return new OcrInputDescriptor(PageId.New(), DocumentInstanceId.New(),
-            region is null ? OcrInputKinds.ImageFile : OcrInputKinds.RegionImage, imagePath, null, region, "available",
-            null);
-    }
-
-    private static string CreatePng(int width, int height)
-    {
-        string path = Path.Combine(Path.GetTempPath(), $"patchouli-rapidocr-test-{Guid.NewGuid():N}.png");
-        using SKBitmap bitmap = new(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-        bitmap.Erase(SKColors.White);
-        using SKImage image = SKImage.FromBitmap(bitmap);
-        using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using FileStream stream = File.Create(path);
-        data.SaveTo(stream);
-        return path;
     }
 }

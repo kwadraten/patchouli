@@ -5,7 +5,7 @@
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.4.0, must match Changelog.md)
+#   VERSION       Application version (default: 0.4.1, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
@@ -23,7 +23,7 @@ export TMPDIR="$root/.tmp"
 # A fresh checkout has no .tmp directory; MSBuild needs it before publishing.
 mkdir -p "$TMPDIR"
 
-version="${VERSION:-0.4.0}"
+version="${VERSION:-0.4.1}"
 runtime="${RUNTIME:-linux-x64}"
 [[ "$runtime" =~ ^linux-[a-z0-9]+$ ]] || { echo "Invalid Linux runtime: $runtime" >&2; exit 2; }
 skip_publish="${SKIP_PUBLISH:-0}"

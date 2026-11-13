@@ -48,6 +48,13 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Sat Nov 14 2026 kwadraten <schild0van0man@duck.com> - 0.4.1-1
+- Fix MCP settings persistence and make save-and-restart available for dirty drafts
+- Migrate legacy 1.0.0 translation extensions directly to the bundled 1.1.0 XML packages
+- Add editable PDF zoom (1%-400%) with a 5% minimum and bounded scrollable confirm dialogs
+- Use Lucide chevrons for tree expanders and classify download proxy/TLS/DNS failures
+- Default unset document/page/region OCR to MinerU and remove unused legacy OCR adapters
+
 * Fri Nov 13 2026 kwadraten <schild0van0man@duck.com> - 0.4.0-1
 - Milestone release: full plugin architecture with stdio plugins, declared web views and a unified plugin/extension manager
 - Install community extensions from the signed index; route downloads and OCR through a shared task queue

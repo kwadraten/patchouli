@@ -33,8 +33,6 @@ public sealed partial class PdfWorkspaceViewModel
     // DIPs of empty chrome around the page inside the scroller (page margin + border + shadow).
     // Fit modes leave this much breathing room so the fitted page never touches the viewport edge.
     private const double ViewportFitChromeDip = 48;
-    private const double MinFitZoom = 0.05;
-    private const double MaxFitZoom = 4.0;
 
     // Viewport extent in DIPs, reported by the view's ScrollViewer. Zero means "not known yet":
     // fit is skipped until the first real size arrives, then applied (converges after attach).
@@ -328,7 +326,7 @@ public sealed partial class PdfWorkspaceViewModel
         double fitZoom = FitMode == PdfViewportFitMode.FitWidth
             ? availableWidth / contentWidth
             : availableHeight / contentHeight;
-        double zoom = Math.Clamp(fitZoom, MinFitZoom, MaxFitZoom);
+        double zoom = Math.Clamp(fitZoom, MinZoom, MaxZoom);
         if (Math.Abs(zoom - Zoom) < 0.0005)
         {
             return;

@@ -30,51 +30,10 @@ internal sealed class RapidOcrImage
     public byte[] Pixels { get; }
 
     /// <summary>
-    /// Decodes an image file the way upstream <c>LoadImage</c> does: EXIF orientation is
-    /// applied and images with an alpha channel are composited over a black or white
-    /// background chosen from the mean luminance of the opaque pixels.
-    /// </summary>
-    public static RapidOcrImage? TryDecode(string path)
-    {
-        try
-        {
-            using FileStream stream = File.OpenRead(path);
-            using SKCodec? codec = SKCodec.Create(stream);
-            if (codec is null)
-            {
-                return null;
-            }
-
-            using SKBitmap? decoded = SKBitmap.Decode(codec);
-            if (decoded is null)
-            {
-                return null;
-            }
-
-            return FromBitmap(decoded, codec.EncodedOrigin);
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (ArgumentException)
-        {
-            return null;
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-        catch (NotSupportedException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Decodes hosted image bytes with the same rules as <see cref="TryDecode(string)"/>: EXIF
-    /// orientation is applied and alpha is composited over the luminance-picked background.
-    /// The extension runtime supplies image bytes; no temporary file is written.
+    /// Decodes hosted image bytes the way upstream <c>LoadImage</c> does: EXIF orientation is
+    /// applied and alpha is composited over a black or white background chosen from the mean
+    /// luminance of the opaque pixels. The extension runtime supplies image bytes; no
+    /// temporary file is written.
     /// </summary>
     public static RapidOcrImage? TryDecode(ReadOnlySpan<byte> data)
     {

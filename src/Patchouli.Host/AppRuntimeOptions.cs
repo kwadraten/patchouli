@@ -6,6 +6,7 @@ using Patchouli.Core.Agents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Ids;
+using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Settings;
@@ -1850,7 +1851,8 @@ public sealed record PatchouliAppSettings(
                 : fallback.ToolOverrides;
         return new McpServerSettings(ReadInt(section, "Port", fallback.Port), bind,
             ReadBool(section, "CorsEnabled", fallback.CorsEnabled), origins,
-            ReadBool(section, "AuthRequired", fallback.AuthRequired), string.IsNullOrWhiteSpace(token) ? null : token,
+            McpServerSettingsService.ResolveAuthRequired(element, token),
+            string.IsNullOrWhiteSpace(token) ? null : token,
             overrides,
             DateTimeOffset.TryParse(ReadString(section, "UpdatedAt", fallback.UpdatedAt.ToString("O")),
                 out DateTimeOffset updatedAt)

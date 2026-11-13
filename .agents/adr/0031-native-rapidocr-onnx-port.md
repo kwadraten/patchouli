@@ -1,6 +1,9 @@
 # Native RapidOCR ONNX Port
 
-Status: accepted
+Status: accepted; **integration boundary amended by ADR `0054`** (2026-10-25; adapter removed
+2026-11-13): the engine runs as the bundled `ocr.rapidocr` FSX package through
+`Patchouli.Ocr.Engines.NativeOcrSession`; the `RapidOcrOcrAdapter` implementation recorded
+below is removed. Pipeline, model, and known-difference records remain valid.
 
 ## Context
 
@@ -13,9 +16,11 @@ cross-platform binary.
 
 ## Decision
 
-Integrate RapidOCR as a **managed .NET ONNX Runtime adapter** (`local_library` kind in
-`IRealOcrAdapter`), reusing the `Microsoft.ML.OnnxRuntime` and `SkiaSharp` dependencies
-already present for the NDL Koten port.
+Integrate RapidOCR as an **in-process ONNX pipeline surfaced through the built-in
+`ocr.rapidocr` OCR extension package** (`local_library` kind), reusing the
+`Microsoft.ML.OnnxRuntime` and `SkiaSharp` dependencies already present for the NDL Koten
+port. The original `RapidOcrOcrAdapter` `IRealOcrAdapter` implementation predated ADR 0054
+and is now removed.
 
 - **Pinned model set.** The adapter uses the upstream default ONNX models of RapidOCR
   v3.9.2: `PP-OCRv6_det_small.onnx` (DB detection), `PP-OCRv6_rec_small.onnx` (CTC
@@ -47,7 +52,12 @@ already present for the NDL Koten port.
   and `returnWordBox`/`returnSingleCharBox` are rejected because word boxes are not
   implemented. Upstream `modelType`/`langType`/`ocrVersion` keys (and their model-routing
   behavior) are intentionally not honored: the pinned v3.9.2 model set is fixed, so
-  those keys are ignored rather than silently selecting a model.
+  those keys are ignored rather than silently selecting a model. Under the
+  `NativeOcrSession` boundary the model directory resolves in fixed order: the
+  run-pinned `model-path`, then `model-root-dir`/`modelRootDir`, then the legacy flat
+  `modelPath` scalar and `modelPath` inside `parameters-json`. Typed kebab-case keys
+  (`use-cls`, `text-score`, ...) take precedence over the legacy flat camelCase scalars,
+  which override the `parameters-json` payload, which itself overlays upstream defaults.
 
 ## Consequences
 

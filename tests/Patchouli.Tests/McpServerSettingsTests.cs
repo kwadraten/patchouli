@@ -259,6 +259,54 @@ public sealed class McpServerSettingsTests
     }
 
     [Fact]
+    public async Task Explicit_auth_not_required_survives_reload_even_with_a_stored_token()
+    {
+        using TemporaryAppSettingsFile file = new();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        McpServerSettingsService service = new(file.Path, clock);
+        McpServerSettings current = (await service.GetSettingsAsync()).Value;
+
+        Result<McpServerSettings> saved = await service.SaveSettingsAsync(
+            current with { AuthRequired = false, Token = "kept-token" }, current.Revision);
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        loaded.Value.AuthRequired.Should().BeFalse();
+        loaded.Value.Token.Should().Be("kept-token");
+        loaded.Value.Revision.Should().Be(saved.Value.Revision);
+        PatchouliAppSettings.Load(file.Path).Mcp.AuthRequired.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("\"Token\":\"legacy-token\"", true)]
+    [InlineData("\"Token\":\"\"", false)]
+    [InlineData("\"Port\":4540", false)]
+    public async Task Legacy_settings_without_auth_key_infer_auth_from_the_token(string fields, bool expected)
+    {
+        using TemporaryAppSettingsFile file = new();
+        await File.WriteAllTextAsync(file.Path, "{\"Mcp\":{" + fields + "}}");
+        McpServerSettingsService service = new(file.Path, new FixedClock(DateTimeOffset.UtcNow));
+
+        (await service.GetSettingsAsync()).Value.AuthRequired.Should().Be(expected);
+        PatchouliAppSettings.Load(file.Path).Mcp.AuthRequired.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Unsafe_bind_still_requires_a_token_when_auth_is_not_required()
+    {
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        McpServerSettingsService service =
+            new(Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json"), clock);
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(clock.UtcNow) with
+        {
+            BindAddress = "0.0.0.0", AuthRequired = false, Token = null
+        };
+
+        (await service.ValidateSettingsAsync(settings)).ErrorCode.Should().Be("unsafe_configuration");
+        (await service.ValidateSettingsAsync(settings with { Token = "t" })).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
     public void Migration_denies_images_fetch_when_view_was_never_allowed()
     {
         McpServerSettings settings = McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);

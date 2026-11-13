@@ -1,6 +1,9 @@
 # Native NDLOCR-Lite ONNX Port
 
-Status: accepted
+Status: accepted; **integration boundary amended by ADR `0054`** (2026-10-25; adapter removed
+2026-11-13): the engine runs as the bundled `ocr.ndlocr-lite` FSX package through
+`Patchouli.Ocr.Engines.NativeOcrSession`; the `NdlLiteOcrAdapter` implementation recorded
+below is removed. Pipeline, model, and known-difference records remain valid.
 
 ## Context
 
@@ -13,9 +16,11 @@ ships without a Python runtime, alongside NDL Koten (ADR 0025) and RapidOCR (ADR
 
 ## Decision
 
-Integrate NDLOCR-Lite as a **managed .NET ONNX Runtime adapter** (`local_library` kind in
-`IRealOcrAdapter`) with engine id `ndlocr-lite`, reusing the existing
-`Microsoft.ML.OnnxRuntime` and `SkiaSharp` dependencies.
+Integrate NDLOCR-Lite as an **in-process ONNX pipeline surfaced through the built-in
+`ocr.ndlocr-lite` OCR extension package** (`local_library` kind) with engine id
+`ndlocr-lite`, reusing the existing `Microsoft.ML.OnnxRuntime` and `SkiaSharp`
+dependencies. The original `NdlLiteOcrAdapter` `IRealOcrAdapter` implementation predated
+ADR 0054 and is now removed.
 
 - **Pinned upstream.** Models, `config/ndl.yaml` and `config/NDLmoji.yaml` are taken from
   `ndl-lab/ndlocr-lite` release `1.3.1`, pinned to commit

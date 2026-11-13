@@ -204,14 +204,14 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         ReloadCommand = new AsyncCommand(ReloadAsync);
         ZoomInCommand = new AsyncCommand(() =>
         {
-            SetZoom(Zoom + 0.1);
+            SetZoom(Zoom + ZoomStep);
             return Task.CompletedTask;
-        }, () => Zoom < 4.0);
+        }, () => Zoom < MaxZoom);
         ZoomOutCommand = new AsyncCommand(() =>
         {
-            SetZoom(Zoom - 0.1);
+            SetZoom(Zoom - ZoomStep);
             return Task.CompletedTask;
-        }, () => Zoom > 0.25);
+        }, () => Zoom > MinZoom);
 
         EnterEditModeCommand = new AsyncCommand(EnterEditModeAsync, () => !IsEditMode);
         SaveAndExitCommand = new AsyncCommand(SaveAndExitAsync, () => EditSessionId is not null);
@@ -379,6 +379,17 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public string PageNumberText => PageCount == 0 ? "-" : (PageIndex + 1).ToString();
     public string PageTotalText => PageCount == 0 ? "/ -" : $"/ {PageCount}";
+
+    /// <summary>Smallest page zoom (manual and fit modes), low enough to shrink very large pages.</summary>
+    public const double MinZoom = 0.05;
+
+    /// <summary>Largest page zoom (manual and fit modes).</summary>
+    public const double MaxZoom = 4.0;
+
+    private const double ZoomStep = 0.1;
+    private const double MinZoomInputPercent = 1;
+    private const double MaxZoomInputPercent = 400;
+
     [ExcludeFromDerivedGeneration] public string ZoomText => $"{Math.Round(Zoom * 100):0}%";
 
     [ObservableProperty]
@@ -2519,11 +2530,49 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         SetZoom(Zoom + delta);
     }
 
+    /// <summary>
+    /// Applies a typed zoom percentage ("80", "80%", " 80 % "). Input outside
+    /// <see cref="MinZoomInputPercent"/>..<see cref="MaxZoomInputPercent"/> or unparseable text is
+    /// rejected and leaves the zoom untouched; accepted input is clamped to
+    /// <see cref="MinZoom"/>..<see cref="MaxZoom"/> and switches the viewport to free zoom.
+    /// </summary>
+    public bool TrySetZoomFromText(string? text)
+    {
+        if (!TryParseZoomPercent(text, out double zoom))
+        {
+            return false;
+        }
+
+        SetZoom(zoom);
+        return true;
+    }
+
+    /// <summary>Parses a typed zoom percentage into a zoom factor (100% → 1.0). Accepts an
+    /// optional trailing % (half- or full-width) and surrounding whitespace.</summary>
+    public static bool TryParseZoomPercent(string? text, out double zoom)
+    {
+        zoom = 0;
+        string value = (text ?? "").Trim();
+        if (value.EndsWith('%') || value.EndsWith('％'))
+        {
+            value = value[..^1].TrimEnd();
+        }
+
+        if (!double.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
+                out double percent) || !double.IsFinite(percent) ||
+            percent is < MinZoomInputPercent or > MaxZoomInputPercent)
+        {
+            return false;
+        }
+
+        zoom = percent / 100;
+        return true;
+    }
+
     private void SetZoom(double value)
     {
-        double minimumZoom = Math.Min(0.25, Zoom);
         OnManualZoomChanging();
-        Zoom = Math.Clamp(value, minimumZoom, 4.0);
+        Zoom = Math.Clamp(value, MinZoom, MaxZoom);
     }
 
     private async Task RenderCurrentPageAsync()

@@ -225,8 +225,12 @@
             <TextBlock Text="-" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                        VerticalAlignment="Center" />
           </Button>
-          <TextBlock Text="{Binding ZoomText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}"
-                     VerticalAlignment="Center" Margin="4,0" />
+          <TextBox x:Name="ZoomInput" Text="{Binding ZoomText, Mode=OneWay}" Width="52" Height="24" FontSize="12"
+                   BorderThickness="1"
+                   BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3"
+                   HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0"
+                   AutomationProperties.Name="缩放比例" ToolTip.Tip="缩放比例（1%–400%）"
+                   KeyDown="OnZoomInputKeyDown" GotFocus="OnZoomInputGotFocus" LostFocus="OnZoomInputLostFocus" />
           <Button Classes="ToolbarButton" Command="{Binding ZoomInCommand}">
             <TextBlock Text="+" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                        VerticalAlignment="Center" />
@@ -744,13 +748,19 @@
                                     <MenuItem Header="删除章节及子章节" Command="{Binding DeleteCommand}" />
                                   </ContextMenu>
                                 </Grid.ContextMenu>
-                                <ToggleButton Content="{Binding ExpanderGlyph}"
-                                              Theme="{StaticResource ChapterExpanderTheme}"
+                                <ToggleButton Theme="{StaticResource ChapterExpanderTheme}"
                                               IsChecked="{Binding IsExpanded, Mode=TwoWay}"
                                               IsVisible="{Binding HasChildren}"
                                               Background="Transparent" BorderThickness="0" Padding="4,2"
                                               VerticalAlignment="Top"
-                                              ToolTip.Tip="展开/折叠子章节" />
+                                              ToolTip.Tip="展开/折叠子章节">
+                                  <Panel>
+                                    <lucide:Lucide Icon="ChevronRight" Width="14" Height="14"
+                                                   IsVisible="{Binding !IsExpanded}" />
+                                    <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
+                                                   IsVisible="{Binding IsExpanded}" />
+                                  </Panel>
+                                </ToggleButton>
                                 <Button Grid.Column="1" Command="{Binding NavigateCommand}"
                                         Background="Transparent" BorderThickness="0" Padding="6,4"
                                         HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">

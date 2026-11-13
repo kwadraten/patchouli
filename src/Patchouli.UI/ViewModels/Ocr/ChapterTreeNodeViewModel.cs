@@ -48,7 +48,7 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
         MoveDownCommand = new AsyncCommand(() => editor?.MoveAsync(ChapterId, 1) ?? Task.CompletedTask);
         IndentCommand = new AsyncCommand(() => editor?.IndentAsync(ChapterId) ?? Task.CompletedTask);
         OutdentCommand = new AsyncCommand(() => editor?.OutdentAsync(ChapterId) ?? Task.CompletedTask);
-        // Assign via the property so ExpanderGlyph stays consistent; the expansion callback
+        // Assign via the property so the expander icon stays consistent; the expansion callback
         // fires but the parent re-applies visibility once after the full list is built.
         IsExpanded = isExpanded;
     }
@@ -90,8 +90,6 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
     /// <summary>Left indentation for the tree depth.</summary>
     public Thickness Indent => new(Depth * 16, 0, 0, 0);
 
-    public string ExpanderGlyph => IsExpanded ? "▾" : "▸";
-
     /// <summary>Title, resolved printed number, and physical position on one line.</summary>
     [ExcludeFromDerivedGeneration]
     public string PositionText
@@ -110,7 +108,6 @@ public sealed partial class ChapterTreeNodeViewModel : ViewModelBase
 
     partial void OnIsExpandedChanged(bool value)
     {
-        Raise(nameof(ExpanderGlyph));
         _expandedChanged?.Invoke(this);
     }
 

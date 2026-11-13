@@ -86,6 +86,122 @@ public sealed class McpSettingsNavigationTests
     }
 
     [Fact]
+    public async Task Turning_auth_off_with_a_stored_token_stays_off_after_save_and_restart()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        IMcpServerSettingsService service = (await fixture.Main.ServicesAsync()).McpSettings;
+        McpServerSettings current = await fixture.ReadSettingsAsync();
+        (await service.SaveSettingsAsync(current with { AuthRequired = true, Token = "kept-token" },
+            current.Revision)).IsSuccess.Should().BeTrue();
+        await fixture.Main.StartMcpServerAsync();
+        await mcp.LoadAsync();
+        mcp.AuthRequired.Should().BeTrue();
+
+        mcp.AuthRequired = false;
+        mcp.NeedsSaveAndRestart.Should().BeTrue();
+        await mcp.SaveAndRestartCommand.ExecuteAsync();
+
+        fixture.Main.McpServerRunning.Should().BeTrue();
+        mcp.AuthRequired.Should().BeFalse();
+        mcp.RequiresReload.Should().BeFalse();
+        mcp.NeedsSaveAndRestart.Should().BeFalse();
+        fixture.Main.McpRunningSettings!.AuthRequired.Should().BeFalse();
+        fixture.Main.McpRunningSettings.Token.Should().Be("kept-token");
+        (await fixture.ReadSettingsAsync()).AuthRequired.Should().BeFalse();
+        await mcp.LoadAsync();
+        mcp.AuthRequired.Should().BeFalse();
+        mcp.NeedsSaveAndRestart.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unsaved_edits_show_the_save_and_restart_banner_until_applied(bool running)
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        if (running)
+        {
+            await fixture.Main.StartMcpServerAsync();
+            await mcp.LoadAsync();
+        }
+
+        mcp.NeedsSaveAndRestart.Should().BeFalse();
+        List<string?> raised = [];
+        mcp.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        mcp.ExposeLibraryTags = false;
+
+        raised.Should().Contain(nameof(McpSettingsViewModel.NeedsSaveAndRestart));
+        mcp.NeedsSaveAndRestart.Should().BeTrue();
+        mcp.SaveAndRestartBannerText.Should().Be("有未保存的更改，保存并重启服务后生效");
+
+        await mcp.SaveAndRestartCommand.ExecuteAsync();
+
+        mcp.LastError.Should().BeNull();
+        fixture.Main.McpServerRunning.Should().BeTrue();
+        fixture.Main.McpRunningSettings!.Port.Should().Be(fixture.InitialPort);
+        fixture.Main.McpRunningSettings.ExposeLibraryTags.Should().BeFalse();
+        mcp.IsDirty.Should().BeFalse();
+        mcp.RequiresReload.Should().BeFalse();
+        mcp.NeedsSaveAndRestart.Should().BeFalse();
+        mcp.HasPendingLeaveDecision.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Saved_but_unapplied_settings_show_the_restart_text()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        await fixture.Main.StartMcpServerAsync();
+        await mcp.LoadAsync();
+        mcp.ExposeLibraryTags = false;
+
+        await mcp.SaveAsync();
+
+        mcp.IsDirty.Should().BeFalse();
+        mcp.RequiresReload.Should().BeTrue();
+        mcp.NeedsSaveAndRestart.Should().BeTrue();
+        mcp.SaveAndRestartBannerText.Should().Be("设置已保存，需重启服务后生效");
+    }
+
+    [Fact]
+    public async Task Banner_discard_reverts_the_draft_without_persisting()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        mcp.ExposeLibraryTags = false;
+
+        await mcp.DiscardChangesCommand.ExecuteAsync();
+
+        mcp.ExposeLibraryTags.Should().BeTrue();
+        mcp.IsDirty.Should().BeFalse();
+        mcp.NeedsSaveAndRestart.Should().BeFalse();
+        (await fixture.ReadSettingsAsync()).ExposeLibraryTags.Should().BeTrue();
+        fixture.Dialogs.Shown.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_failure_reports_the_actual_reason_and_keeps_the_banner()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        McpSettingsViewModel mcp = fixture.Main.Settings.McpSettings;
+        using TcpListener occupied = new(IPAddress.Loopback, 0);
+        occupied.Start();
+        mcp.Port = ((IPEndPoint)occupied.LocalEndpoint).Port;
+
+        await mcp.SaveAndRestartCommand.ExecuteAsync();
+
+        fixture.Main.McpServerRunning.Should().BeFalse();
+        mcp.IsDirty.Should().BeFalse();
+        mcp.NeedsSaveAndRestart.Should().BeTrue();
+        mcp.LastError.Should().NotBeNullOrWhiteSpace();
+        mcp.LastError.Should().NotContain("请检查状态栏");
+        mcp.Status.Should().StartWith("MCP 启动失败");
+    }
+
+    [Fact]
     public async Task Invalid_settings_keep_the_page_and_do_not_write_the_draft()
     {
         await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Confirm);

@@ -1,25 +1,25 @@
 using System.Globalization;
 using FluentAssertions;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
-using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Ocr.RapidOcr;
-using Patchouli.Ocr.Engines.RapidOcr;
-using Patchouli.Ocr;
+using Patchouli.Extensions.Contracts;
+using Patchouli.Ocr.Engines;
 using SkiaSharp;
 
 namespace Patchouli.Tests;
 
 /// <summary>
-/// Opt-in end-to-end smoke test for the native RapidOCR pipeline. It runs only when
-/// <c>PATCHOULI_RAPIDOCR_MODELS</c> points at a directory containing the pinned models,
-/// and optionally uses the image in <c>PATCHOULI_RAPIDOCR_IMAGE</c> so the output can be
-/// compared against upstream RapidOCR on the same input.
+/// Opt-in end-to-end smoke test for the native RapidOCR pipeline behind the bundled
+/// <c>ocr.rapidocr</c> extension. It runs only when <c>PATCHOULI_RAPIDOCR_MODELS</c> points at a
+/// directory containing the pinned models, and optionally uses the image in
+/// <c>PATCHOULI_RAPIDOCR_IMAGE</c> so the output can be compared against upstream RapidOCR on the
+/// same input.
 /// </summary>
 public sealed class RapidOcrRealModelSmokeTests
 {
     [Fact]
-    public async Task Native_pipeline_runs_against_the_pinned_models()
+    public void Native_pipeline_runs_against_the_pinned_models()
     {
         string? modelsDirectory = Environment.GetEnvironmentVariable("PATCHOULI_RAPIDOCR_MODELS");
         if (string.IsNullOrWhiteSpace(modelsDirectory))
@@ -28,49 +28,41 @@ public sealed class RapidOcrRealModelSmokeTests
         }
 
         string? fixedImage = Environment.GetEnvironmentVariable("PATCHOULI_RAPIDOCR_IMAGE");
-        string imagePath = string.IsNullOrWhiteSpace(fixedImage)
-            ? Path.Combine(Path.GetTempPath(), $"patchouli-rapidocr-smoke-{Guid.NewGuid():N}.png")
-            : fixedImage;
-        try
-        {
-            if (string.IsNullOrWhiteSpace(fixedImage))
-            {
-                CreateTextImage(imagePath);
-            }
+        byte[] imageBytes = string.IsNullOrWhiteSpace(fixedImage)
+            ? CreateTextImage()
+            : File.ReadAllBytes(fixedImage);
 
-            await RunAsync(modelsDirectory, imagePath, """{"textScore":0.0}""", "cls");
-            await RunAsync(modelsDirectory, imagePath, """{"useCls":false,"textScore":0.0}""", "noclass");
-        }
-        finally
-        {
-            if (string.IsNullOrWhiteSpace(fixedImage) && File.Exists(imagePath))
-            {
-                File.Delete(imagePath);
-            }
-        }
+        Run(modelsDirectory, imageBytes, """{"textScore":0.0}""", "cls");
+        Run(modelsDirectory, imageBytes, """{"useCls":false,"textScore":0.0}""", "noclass");
     }
 
-    private static async Task RunAsync(string modelsDirectory, string imagePath, string parametersJson, string label)
+    private static void Run(string modelsDirectory, byte[] imageBytes, string parametersJson, string label)
     {
-        RapidOcrOcrAdapter adapter = new(new OcrModelPathValidator(), modelsDirectory);
-        OcrPresetVersion preset = new(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.RapidOcr,
-            OcrModelIds.RapidOcrDefault, modelsDirectory, parametersJson, true, DateTimeOffset.UtcNow);
-        OcrInputDescriptor input = new(PageId.New(), DocumentInstanceId.New(), OcrInputKinds.ImageFile, imagePath,
-            null, null, "available", null);
-
-        Result<OcrEnginePageResult> result = await adapter.RunPageAsync(input, preset);
-        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-
-        OcrEnginePageResult page = result.Value!;
-        page.TextBoxes.Should().NotBeEmpty();
-        foreach (OcrEngineTextBox box in page.TextBoxes)
+        ExtensionConfigSnapshot config = new(new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["model-path"] = modelsDirectory,
+            ["parameters-json"] = parametersJson
+        }, 1);
+        OcrJobInput input = new(new OcrInputId("smoke"), new NormalizedBBox(0, 0, 1, 1), "image/png");
+        OcrJobPage page = new(new ExtensionPageIdentity(DocumentInstanceId.New(), PageId.New(),
+            DocumentTreeRevisionId.New(), 0), [input]);
+
+        using NativeOcrSession session = new(NativeOcrSession.RapidOcrEngineId, config);
+        using OcrInputImage image = new(input.Id, "image/png", imageBytes);
+        OcrExtensionBoxCandidate[] candidates = session.Recognize(page, input, image, CancellationToken.None);
+
+        candidates.Should().NotBeEmpty();
+        foreach (OcrExtensionBoxCandidate candidate in candidates)
+        {
+            DocumentBoxSeed seed = candidate.Candidate;
+            NormalizedBBox box = seed.BBox;
+            string text = (seed.Payload as TextBoxPayload)?.Markdown ?? "";
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"NATIVE {label} x={box.BBox.X:0.#####} y={box.BBox.Y:0.#####} w={box.BBox.Width:0.#####} h={box.BBox.Height:0.#####} score={box.Confidence:0.#####} text={box.Text}"));
+                $"NATIVE {label} x={box.X:0.#####} y={box.Y:0.#####} w={box.Width:0.#####} h={box.Height:0.#####} score={seed.Confidence:0.#####} text={text}"));
         }
     }
 
-    private static void CreateTextImage(string path)
+    private static byte[] CreateTextImage()
     {
         using SKBitmap bitmap = new(900, 400, SKColorType.Bgra8888, SKAlphaType.Premul);
         using (SKCanvas canvas = new(bitmap))
@@ -85,7 +77,6 @@ public sealed class RapidOcrRealModelSmokeTests
 
         using SKImage image = SKImage.FromBitmap(bitmap);
         using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using FileStream stream = File.Create(path);
-        data.SaveTo(stream);
+        return data.ToArray();
     }
 }

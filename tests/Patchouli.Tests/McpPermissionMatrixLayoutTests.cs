@@ -51,6 +51,29 @@ public sealed class McpPermissionMatrixLayoutTests
     }
 
     [Fact]
+    public void Runs_expander_uses_lucide_chevrons_instead_of_text_glyphs()
+    {
+        XElement toggle = MatrixRoot().Descendants()
+            .Single(element => element.Name.LocalName == "ToggleButton" &&
+                               (string?)element.Attribute("IsVisible") == "{Binding HasChildren}");
+
+        toggle.Attribute("Content").Should().BeNull("the expander must not render a font-dependent glyph");
+        toggle.Attribute("Width")!.Value.Should().Be("20");
+        toggle.Attribute("Height")!.Value.Should().Be("22");
+        toggle.Attributes().Single(attribute => attribute.Name.LocalName == "AutomationProperties.Name")
+            .Value.Should().Be("展开 runs 子域权限");
+
+        XElement[] icons = toggle.Descendants().Where(element => element.Name.LocalName == "Lucide").ToArray();
+        icons.Select(icon => ((string?)icon.Attribute("Icon"), (string?)icon.Attribute("IsVisible")))
+            .Should().Equal(("ChevronRight", "{Binding !IsExpanded}"), ("ChevronDown", "{Binding IsExpanded}"));
+        icons.Should().OnlyContain(icon => (string?)icon.Attribute("Width") == "14" &&
+                                           (string?)icon.Attribute("Height") == "14");
+
+        string xaml = File.ReadAllText(AxamlPath);
+        xaml.Should().NotContain("▶").And.NotContain("▼").And.NotContain("ExpansionGlyph");
+    }
+
+    [Fact]
     public void Permission_matrix_layout_is_sized_for_six_columns()
     {
         XElement root = MatrixRoot();

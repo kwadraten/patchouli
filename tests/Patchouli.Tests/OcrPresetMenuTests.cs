@@ -6,6 +6,7 @@ using Patchouli.Core.Translation;
 using Patchouli.Extensions.Contracts;
 using Patchouli.Host;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Extensions;
 using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
@@ -368,6 +369,41 @@ public sealed class OcrPresetMenuTests : IDisposable
             .ContainSingle(entry => entry.Header.Contains("translation.broken-draft")).Subject;
         broken.Header.Should().Contain("不可用",
             "an unparseable draft whose kind is unknown stays honest about being unavailable");
+    }
+
+    /// <summary>
+    ///     A release-1.0.0 working copy (<c>extension.yml</c>, no XML declaration,
+    ///     <c>patchouli.extensions/1</c> state) cannot parse under the current contract, so
+    ///     it listed as an id-only 不可用 entry. The startup migration replaces it with the
+    ///     bundled package when the host opens, before the menu ever enumerates engines.
+    /// </summary>
+    [Fact]
+    public async Task Startup_migration_restores_a_retired_format_built_in_engine_for_the_menu()
+    {
+        string dataDirectory = Path.Combine(Path.GetDirectoryName(_settings.Path)!, "data");
+        string legacy = Path.Combine(DeviceExtensionRuntimeMigration.RuntimeRoot(dataDirectory),
+            "extensions", "translation.tencent-free");
+        Directory.CreateDirectory(legacy);
+        File.WriteAllText(Path.Combine(legacy, "extension.yml"),
+            "id: translation.tencent-free\nversion: 1.0.0\nhost_api: patchouli.extensions/1\n");
+        File.WriteAllText(Path.Combine(legacy, "main.fsx"), "let engine = \"legacy\"\n");
+        File.WriteAllText(Path.Combine(legacy, "Support.fsx"), "// retired shared support\n");
+        File.WriteAllText(Path.Combine(legacy, "extension-state.json"),
+            "{\"schemaVersion\":\"1\",\"hostApi\":\"patchouli.extensions/1\"," +
+            "\"activeFingerprint\":\"9cb4bc5d19c6664462e859b2662d86c48f7be994bd750bf52351cab9daec26a8\"}");
+
+        MainWindowViewModel main = await OpenMainAsync(
+            nameof(Startup_migration_restores_a_retired_format_built_in_engine_for_the_menu));
+        await main.RefreshOcrPresetMenuAsync();
+
+        TranslationEngineMenuEntryViewModel entry = main.TranslationEngineMenuEntries.Should()
+            .ContainSingle(item => item.Header == "Tencent Transmart (free web)").Subject;
+        File.Exists(Path.Combine(legacy, "extension.yml")).Should().BeFalse(
+            "the retired manifest was replaced, not merely skipped");
+        await main.SelectTranslationEngineAsync("translation.tencent-free");
+        main.StatusIsError.Should().BeFalse(
+            "the migrated engine is a real selectable catalog entry, not an unavailable marker");
+        entry.IsSelected.Should().BeTrue();
     }
 
     [Fact]

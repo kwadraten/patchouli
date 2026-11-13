@@ -412,6 +412,34 @@ public sealed class NativeOcrSessionTests
             .WithMessage("*" + missing + "*Local Files*");
     }
 
+    [Fact]
+    public void Recognize_reports_a_typed_failure_for_a_corrupt_same_size_model()
+    {
+        // A corrupt .onnx whose byte length matches the manifest passes the size-only
+        // readiness check; the session must surface a typed InvalidOperationException
+        // the page driver records as a stable input failure instead of letting the
+        // queue report worker_crashed.
+        string directory = SparseModelDir(NdlLiteModelFiles.Files
+            .Select(entry => (entry.RelativePath, entry.ExpectedBytes)).ToArray());
+        try
+        {
+            using NativeOcrSession session = new(NativeOcrSession.NdlOcrLiteEngineId,
+                Config(("model-path", directory)));
+            (OcrJobPage page, OcrJobInput input) = Issue(new NormalizedBBox(0, 0, 1, 1));
+            using OcrInputImage image = new(input.Id, "image/png", PngBytes());
+
+            NativeOcrSession capturedSession = session;
+            OcrInputImage capturedImage = image;
+            Action act = () => capturedSession.Recognize(page, input, capturedImage, CancellationToken.None);
+            act.Should().Throw<InvalidOperationException>()
+                .WithMessage("*" + directory + "*could not be loaded*Local Files*");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     // ── In-memory decode + EXIF orientation ─────────────────────────────────
 
     [Fact]

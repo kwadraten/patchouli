@@ -38,13 +38,26 @@ A strong simplification reduces an actual maintenance obligation:
 - two stores, events, projections, caches, flags, or state machines mirror the same fact without distinct ownership;
 - an old implementation, fallback, adapter, DTO, query, notification, or compatibility path survived its replacement;
 - a deployable production type or package exists only to host test fixtures;
-- an empty compatibility file or source-text assertion exists only to keep an obsolete test green.
+- an empty compatibility file or source-text assertion exists only to keep an obsolete test green;
+- a View, dialog, or control is registered or templated but no user entry path ever opens it (see Liveness Model §6):
+  - `DialogService.Register<VM, View>()` exists, but no production path constructs that VM and calls `ShowDialogAsync` with it;
+  - a `DataTemplate` exists, but its VM is never created by a tab, `ContentControl`, navigation, or child-view producer;
+  - a command, `KeyBinding`, menu item, style class, resource, or converter is defined or registered but used by no user entry point.
+
+When the View is chosen from the runtime type (for example `ShowDialogAsync(this)` or template lookup), follow the VM→View type map and the VM's actual construction sites; a registration line is not a caller.
 
 Complex code is not dead merely because it is defensive or hard to read.
 
+Apply these judgment rules to every candidate:
+
+1. **Complete effect path.** Trace producer → transformation → implementation → observable outcome. A setting, CLI argument, or request knob that is overwritten, defaulted, or ignored before it takes effect has no working path even if every hop compiles.
+2. **No circular evidence.** A requirement, check, test, log, or record introduced by the candidate itself does not prove the candidate is needed.
+3. **Scoped rejection.** A rejection reason applies only to the candidate it was established for. Do not reuse an old rejection for a different candidate; when re-proposing, refresh the evidence.
+4. **No unverified exhaustiveness.** Never report a survey as exhaustive unless every claimed area was actually checked. Name what was not inspected.
+
 ## Adaptation Boundary
 
-Borrow from DeepSeek Harness: production-versus-test consumer proof, strong-candidate selection, tests-are-not-golden-truth, complete-obligation removal, explicit trade-offs, and reintroduction conditions. Do not copy its pre-release “reject old data instead of migrating” stance, Cordis/knip assumptions, per-file 100% coverage pressure, bilingual Agent Note lifecycle, or rule that every non-trivial change needs an Agent Note. Patchouli uses supported SQLite migrations, `.agents/CONTEXT.md`, ADRs, GitHub Issues, ReSharper, and real Avalonia/MCP/CLI entry paths.
+Borrow from DeepSeek Harness: production-versus-test consumer proof, strong-candidate selection, tests-are-not-golden-truth, complete-obligation removal, explicit trade-offs, and reintroduction conditions, plus its later judgment rules (complete effect path, no circular evidence, scoped rejection, no unverified exhaustiveness). The user-reachability framing follows reachability-based deletion systems such as Meta SCARF and Google Sensenmann. Do not copy its pre-release “reject old data instead of migrating” stance, Cordis/knip assumptions, per-file 100% coverage pressure, bilingual Agent Note lifecycle, or rule that every non-trivial change needs an Agent Note. Patchouli uses supported SQLite migrations, `.agents/CONTEXT.md`, ADRs, GitHub Issues, ReSharper, and real Avalonia/MCP/CLI entry paths.
 
 ## Non-Negotiable Repository Rules
 
@@ -110,6 +123,19 @@ Use `dotnet nuget why <project> <package>` before calling a centrally pinned pac
 
 Tests, performance fixtures, documentation, comments, snapshots, and generated expected output may explain intent but do not prove a shipped consumer. Inspect whether the artifact protects current behavior, compatibility, or merely its own obsolete API.
 
+### 6. User-reachable UI
+
+Referenced is not reachable. XAML, `x:DataType`, dialog registration, and templates keep code compiling; they do not prove a user can reach it. For every UI candidate (View, dialog, control, command, menu item, shortcut, style, resource), write the path or record that none exists:
+
+```text
+entry point (startup / menu / tray / tab / shortcut / plugin view)
+  → View or control → command/event → VM → dialog/child view
+```
+
+- A UI piece is live only if at least one complete path exists in production.
+- UI switched by OS, theme, settings, extension manifest, or feature flag is a dynamic root: keep it when any supported configuration reaches it, and name that configuration.
+- Independent workspace tab pages (ADR 0041) and plugin view containers (ADR 0056) are protected roots; a page or container with no current built-in producer is not dead on that basis alone.
+
 ## Workflow
 
 ### Phase 0: Protect the Worktree
@@ -136,6 +162,17 @@ Use multiple signals; none is sufficient alone:
 5. Tests and docs, explicitly separated from production consumers.
 6. Git history only when it explains whether a path is an unfinished migration, a superseded implementation, or an intentional compatibility commitment. History is supporting evidence, not the only source of rationale.
 
+For Avalonia candidates, reverse-look-up computed references before calling a class, resource, control name, or converter branch unused:
+
+- `Classes.Add(...)` / `Classes.Set(...)` and `Classes="..."` bindings against `Style` selectors and `ControlTheme`s;
+- `TryFindResource(key)`, `StaticResource` / `DynamicResource`, and keys assembled from strings or enums;
+- `FindControl<T>("name")` against `x:Name`;
+- `ConverterParameter` values against each converter branch;
+- `ReflectionBinding` paths against VM properties;
+- `AvaloniaResource` includes and `avares://` URIs against asset files.
+
+A computed key can produce zero `rg` hits and still be live; zero hits is not proof of deadness. Enumerate the key's possible values from its producer instead. ReSharper XAML inspections are hints only and are not added to any required gate.
+
 Relevant JetBrains findings include `NotAccessedField.Local`, `UnusedVariable`, `UnusedMember.Local`, `UnusedType.Global`, `ClassNeverInstantiated.Global`, `UnusedMember.Global`, and `UnusedMemberInSuper.Global`. Do not copy Roslyn `IDE00xx` identifiers into the InspectCode gate; InspectCode reports JetBrains rule IDs and `CSharpWarnings::CSxxxx`.
 
 ### Phase 3: Build a Consumer Table
@@ -148,6 +185,7 @@ For each candidate, record:
 | Direct production callers | Exact callers, or none |
 | Dynamic callers | XAML/serialization/reflection/SQL/config/package references |
 | Producers and consumers | For events, states, DTO fields, warnings, settings, and vocabulary |
+| User entry path | For UI: entry point → View → command → VM → dialog/child view, or none |
 | Test/doc-only callers | Whether they protect current behavior or only the candidate itself |
 | Persistence/compatibility | Schema, migration, snapshot, wire, URI, or old-data obligations |
 | ADR/issue rationale | Current decision, superseded decision, or none |
@@ -167,6 +205,8 @@ Use one of these outcomes:
 - **Keep: intentional seam or lifecycle safety** — the machinery protects a distinct transition, rollback, cancellation, transaction, callback containment, resource ownership, dispose-to-quiescence, or security rule.
 - **Reject as thin** — naming/style cleanup without meaningful surface reduction. Do not inflate the audit with it.
 
+Unreachable UI is not automatically **Remove now**. If an open issue, ADR, or recent history shows the entry point is unfinished or was removed by mistake, classify it as a product decision: the choice is between wiring the entry point and deleting the UI.
+
 Tests are not golden truth. If a test exists only to exercise a removed API, delete or rewrite that test. Conversely, do not delete a negative contract test that prevents a retired path from returning.
 
 ### Phase 5: Report or Remove
@@ -179,6 +219,10 @@ Return a ranked table with no more than a few strong candidates unless breadth w
 |---|---|---|---|---|---|
 
 Also list representative rejected candidates and why they are live. Prefer “no strong candidate found” over weak guesses.
+
+For an explicitly requested whole-repository audit, split the survey by domain—UI/Avalonia; Host/Infrastructure/SQLite; MCP/CLI; OCR/Extensions/FSX; scripts/tests/packaging—and require each domain pass (or sub-agent) to return consumer evidence and rejected candidates. Merge into one short ranked list; the default audit still reports only a few strong candidates.
+
+When a class of dead surface could recur (for example, every `Register<VM, View>()` needs a production `ShowDialogAsync` caller for that VM), you may propose an architecture test modeled on `tests/Patchouli.Tests/Architecture/ViewModelArchitectureTests.cs`. Describe the invariant and the expected exceptions only; do not create or modify tests without the user's explicit approval.
 
 For a durable architectural simplification, offer a GitHub issue or ADR proposal with:
 
@@ -203,7 +247,8 @@ Delete the complete obligation, not only its most visible declaration:
 - tests that only pin the removed behavior;
 - stale docs, comments, XML docs, generated contract outputs, and expected fixtures;
 - obsolete settings, package references, resources, helper files, build entries, and packaging rules;
-- duplicate cache/query/event/notification/fallback path replaced by the surviving owner.
+- duplicate cache/query/event/notification/fallback path replaced by the surviving owner;
+- for UI removals: the `Window.DataTemplates` / `DataTemplate` entry, the `Register<,>` line, the ViewModel and its commands, `KeyBinding`s and menu items, style classes, resources, converters, and `ControlTheme`s used only by that View, `AvaloniaResource` assets (icons, images) used only by it, and the headless/UI tests that open it.
 
 If complete removal requires a file outside the approved scope, a dirty file, or a decision-required data/compatibility edit, stop and report the candidate instead of leaving a half-removed obligation.
 
@@ -217,7 +262,7 @@ After deletion:
 
 1. Repeat exact symbol and external-string searches. Hits in ADR/history/negative tests may be legitimate; classify them rather than demanding zero repository-wide hits.
 2. Re-run CodeGraph callers/impact or equivalent searches to detect orphaned callers, interfaces, registrations, and fakes.
-3. Confirm UI, MCP, CLI, serialization, schema, snapshot, and packaging closed sets remain coherent.
+3. Confirm UI, MCP, CLI, serialization, schema, snapshot, and packaging closed sets remain coherent. For a removed UI piece, walk the surviving entry points (menus, tray, tabs, shortcuts, toolbars, context menus, plugin views) and confirm none still exposes a command, binding, template, resource key, or `x:Name` lookup that pointed at it.
 4. Run cleanup on changed C#/AXAML before tests:
 
 ```powershell
@@ -240,6 +285,9 @@ Always report:
 - files changed;
 - tests/inspection/cleanup commands run and their results;
 - dynamic, persistence, protocol, or migration checks performed;
+- user entry paths traced for UI candidates, and computed references enumerated;
+- areas or domains not inspected (never imply exhaustive coverage);
+- architecture tests proposed but not created, if any;
 - pre-existing worktree changes kept untouched;
 - residual risks and any decision that still needs a human.
 

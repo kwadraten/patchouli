@@ -481,6 +481,34 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
+    public async Task Http_server_on_loopback_accepts_requests_without_bearer_when_auth_is_off_but_token_is_kept()
+    {
+        string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite");
+        int port = GetFreeTcpPort();
+        McpServerSettings settings = new(port, "127.0.0.1", false, [], false, "kept-token", [],
+            DateTimeOffset.UtcNow);
+        McpHttpServer server = new(new McpProtocolHandler(new FakeApi(), new SqliteConnectionFactory(path), settings),
+            settings);
+        try
+        {
+            await server.StartAsync();
+            using HttpClient http = new();
+            HttpResponseMessage response = await http.PostAsync(server.Endpoint,
+                new StringContent("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}", System.Text.Encoding.UTF8,
+                    "application/json"));
+            ((int)response.StatusCode).Should().Be(200);
+        }
+        finally
+        {
+            await server.DisposeAsync();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Http_server_uses_single_mcp_endpoint_for_post_sse_and_options()
     {
         string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite");

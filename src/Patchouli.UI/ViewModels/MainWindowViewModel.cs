@@ -2318,22 +2318,25 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     /// <summary>
     /// Restarts the MCP server from the currently persisted settings (settings-apply flow).
+    /// A stopped server is started the same way; the failure carries the host's actual reason.
     /// </summary>
     public async Task RestartMcpServerAsync(string detail = "应用新设置")
     {
         await ServicesAsync();
         if (_mcpHost is null)
         {
-            return;
+            throw new InvalidOperationException("MCP Server 主机不可用。");
         }
 
         McpServerHost host = _mcpHost;
         await Task.Run(() => host.StopAsync(detail));
         // Applying an explicit configuration must not silently substitute another port.
         await Task.Run(() => host.StartAsync());
-        if (!_mcpHost.IsRunning)
+        if (!host.IsRunning)
         {
-            throw new InvalidOperationException("MCP Server 未能重启。请检查状态栏中的错误详情。");
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(host.StatusDetail)
+                ? "MCP Server 未能启动。"
+                : host.StatusDetail);
         }
 
         await PublishRuntimeHostAsync(_services!);

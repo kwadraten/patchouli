@@ -186,6 +186,114 @@ public sealed class BuiltInExtensionUpgradeTests
         }
     }
 
+    /// <summary>
+    ///     Release-1.0.0 working copies predate the XML metadata declaration: they carry
+    ///     <c>extension.yml</c>, a <c>main.fsx</c> without <c>&lt;patchouli-extension&gt;</c>,
+    ///     and a state file that recorded <c>patchouli.extensions/1</c>. The versioned
+    ///     upgrade in <c>EnsureExtensionAsync</c> never reaches them — the metadata read
+    ///     throws EXT0014 first — so the startup migration replaces the whole directory
+    ///     (keeping only <c>config.json</c>) before any listing or activation runs.
+    /// </summary>
+    [Fact]
+    public async Task Startup_migration_replaces_a_retired_format_working_copy_and_keeps_its_config()
+    {
+        string runtimeDirectory = NewRuntimeDirectory();
+        try
+        {
+            WriteRetiredFormatWorkingCopy(runtimeDirectory);
+
+            await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
+                () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            await catalog.MigrateLegacyBuiltInTranslationPackagesAsync();
+
+            string directory = Path.Combine(runtimeDirectory, "extensions", EngineId);
+            File.Exists(Path.Combine(directory, "extension.yml")).Should().BeFalse(
+                "the retired manifest is removed, not merely ignored");
+            File.Exists(Path.Combine(directory, "extension-state.json")).Should().BeFalse(
+                "the 1.0.0 state must not resurrect the old generation");
+            Directory.Exists(Path.Combine(directory, ".generations")).Should().BeFalse(
+                "retired generation snapshots belong to the 1.0.0 format and are discarded");
+            File.ReadAllText(Path.Combine(directory, "main.fsx"))
+                .Should().Be(Bundled.Sources["main.fsx"]);
+            File.ReadAllText(Path.Combine(directory, "Support.fsx"))
+                .Should().Be(Bundled.Sources["Support.fsx"]);
+            ExtensionEntryMetadata.Parse(
+                    await catalog.Manager.ReadSourceAsync(EngineId, CancellationToken.None))
+                .Name.Should().Be(
+                    ExtensionEntryMetadata.Parse(Bundled).Name,
+                    "the repaired copy declares the current XML metadata instead of EXT0014");
+            (await catalog.Manager.ReadConfigAsync(EngineId, CancellationToken.None))
+                .Values["target-language"].Should().Be("zh-Hant",
+                    "user configuration survives the format migration verbatim");
+
+            // The repaired copy is a normal bundled package: the ordinary upgrade path now
+            // activates it instead of throwing before the fingerprint comparison.
+            await catalog.EnsureExtensionAsync(EngineId);
+            catalog.Manager.List().Should().ContainSingle(item =>
+                    item.Id == EngineId && item.Fingerprint == Bundled.Fingerprint,
+                "after migration the bundled generation activates normally");
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(runtimeDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Startup_migration_detects_a_retired_state_without_extension_yml()
+    {
+        string runtimeDirectory = NewRuntimeDirectory();
+        try
+        {
+            WriteRetiredFormatWorkingCopy(runtimeDirectory);
+            string directory = Path.Combine(runtimeDirectory, "extensions", EngineId);
+            File.Delete(Path.Combine(directory, "extension.yml"));
+
+            await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
+                () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            await catalog.MigrateLegacyBuiltInTranslationPackagesAsync();
+
+            File.ReadAllText(Path.Combine(directory, "main.fsx"))
+                .Should().Be(Bundled.Sources["main.fsx"],
+                    "the unsupported hostApi in extension-state.json alone flags the copy");
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(runtimeDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Startup_migration_leaves_modern_copies_and_config_overlays_untouched()
+    {
+        string runtimeDirectory = NewRuntimeDirectory();
+        try
+        {
+            string overlay = Path.Combine(runtimeDirectory, "extensions", "translation.llm");
+            Directory.CreateDirectory(overlay);
+            File.WriteAllText(Path.Combine(overlay, "config.json"),
+                "{\"Values\":{\"target-language\":\"zh-Hans\"},\"Revision\":2}");
+            WriteLegacyWorkingCopy(runtimeDirectory);
+
+            await using TranslationExtensionCatalog catalog = new(runtimeDirectory,
+                () => LlmAppSettings.Default(), TestExtensionResources.Unavailable());
+            await catalog.MigrateLegacyBuiltInTranslationPackagesAsync();
+
+            // The XML-metadata legacy upgrade fixture is not the retired 1.0.0 format: it
+            // stays in place for the versioned EnsureExtensionAsync upgrade to handle.
+            File.ReadAllText(Path.Combine(runtimeDirectory, "extensions", EngineId, "main.fsx"))
+                .Should().Be(File.ReadAllText(Path.Combine(FixtureDirectory, "main.fsx")),
+                    "a current-format working copy is never deleted");
+            // A config-only overlay keeps its seed; no package files are synthesized for it.
+            string[] overlayFiles = Directory.GetFiles(overlay);
+            overlayFiles.Should().BeEquivalentTo([Path.Combine(overlay, "config.json")]);
+        }
+        finally
+        {
+            DeleteRuntimeDirectory(runtimeDirectory);
+        }
+    }
+
     [Fact]
     public async Task Upgrade_keeps_old_leases_configuration_and_explicit_lkg_recovery()
     {
@@ -292,6 +400,30 @@ public sealed class BuiltInExtensionUpgradeTests
 
             File.WriteAllText(Path.Combine(target, name), content);
         }
+    }
+
+    /// <summary>
+    ///     Writes the directory shape the 1.0.0 release left behind: the retired
+    ///     <c>extension.yml</c> manifest, a <c>main.fsx</c> without the XML declaration, a
+    ///     <c>patchouli.extensions/1</c> state record, persisted generation snapshots and a
+    ///     user <c>config.json</c>.
+    /// </summary>
+    private static void WriteRetiredFormatWorkingCopy(string runtimeDirectory)
+    {
+        string target = Path.Combine(runtimeDirectory, "extensions", EngineId);
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "extension.yml"),
+            "id: translation.tencent-free\nversion: 1.0.0\nhost_api: patchouli.extensions/1\n");
+        File.WriteAllText(Path.Combine(target, "main.fsx"), "let engine = \"legacy\"\n");
+        File.WriteAllText(Path.Combine(target, "Support.fsx"), "// retired shared support\n");
+        File.WriteAllText(Path.Combine(target, "extension-state.json"),
+            "{\"schemaVersion\":\"1\",\"hostApi\":\"patchouli.extensions/1\"," +
+            $"\"activeFingerprint\":\"{LegacyFingerprint}\"}}");
+        File.WriteAllText(Path.Combine(target, "config.json"),
+            "{\"Values\":{\"target-language\":\"zh-Hant\"},\"Revision\":3}");
+        string generation = Path.Combine(target, ".generations", LegacyFingerprint);
+        Directory.CreateDirectory(generation);
+        File.WriteAllText(Path.Combine(generation, "main.fsx"), "let engine = \"legacy\"\n");
     }
 
     private static string NewRuntimeDirectory()

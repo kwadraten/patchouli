@@ -628,6 +628,131 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    ///     One-shot startup repair for working copies written by the retired 1.0.0 package
+    ///     format: a directory carrying <c>extension.yml</c>, a <c>main.fsx</c> without the
+    ///     <c>&lt;patchouli-extension&gt;</c> XML declaration, or an <c>extension-state.json</c>
+    ///     that recorded a host API older than the current contract family. Such copies can
+    ///     never reach the versioned upgrade in <see cref="EnsureBundledVersionAsync" /> — the
+    ///     entry metadata read throws EXT0014 before any fingerprint or version comparison —
+    ///     so each flagged built-in translation directory is replaced wholesale: the user
+    ///     <c>config.json</c> is kept verbatim while every other file (old sources,
+    ///     <c>extension.yml</c>, <c>extension-state.json</c>, <c>.generations</c>,
+    ///     <c>.lkg</c>) is discarded and the current bundled package is written in its place.
+    ///     Activation stays lazy; menu and settings listings read the repaired working
+    ///     manifest. Only bundled translation ids are candidates — user drafts and overlays
+    ///     with no package payload are left untouched. Called once from host composition
+    ///     before any extension listing runs; a per-package failure is reported and skipped
+    ///     rather than blocking startup.
+    /// </summary>
+    public async Task MigrateLegacyBuiltInTranslationPackagesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        string workingRoot = Path.Combine(_root, "extensions");
+        if (!Directory.Exists(workingRoot))
+        {
+            return;
+        }
+
+        foreach (ExtensionPackageSnapshot bundled in BuiltInTranslationExtensions.Packages)
+        {
+            string directory = Path.Combine(workingRoot, bundled.Id);
+            if (!Directory.Exists(directory) || !IsLegacyBuiltInWorkingCopy(directory))
+            {
+                continue;
+            }
+
+            SemaphoreSlim gate = _engineGates.GetOrAdd(bundled.Id, static _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+                if (!IsLegacyBuiltInWorkingCopy(directory))
+                {
+                    continue;
+                }
+
+                // The user configuration survives the format migration; everything else in
+                // the directory belongs to the retired package or its activation state.
+                string configPath = Path.Combine(directory, "config.json");
+                string? config = File.Exists(configPath)
+                    ? await File.ReadAllTextAsync(configPath, cancellationToken).ConfigureAwait(false)
+                    : null;
+                Directory.Delete(directory, true);
+                await Manager.SavePackageAsync(bundled, cancellationToken).ConfigureAwait(false);
+                if (config is not null)
+                {
+                    await File.WriteAllTextAsync(configPath, config, cancellationToken).ConfigureAwait(false);
+                }
+
+                Trace.WriteLine($"Migrated retired built-in extension working copy: {bundled.Id}");
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                                  "host.extensions.legacy-migration", bundled.Id))
+            {
+                // One unreadable directory must not block the remaining packages or startup;
+                // the untouched copy simply stays listed as unavailable.
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Detects the retired 1.0.0 package format inside a built-in working directory. A
+    ///     <c>main.fsx</c> edited in the current format keeps the
+    ///     <c>&lt;patchouli-extension&gt;</c> marker even when the rest of the declaration is
+    ///     broken, so only genuinely pre-XML sources match.
+    /// </summary>
+    private static bool IsLegacyBuiltInWorkingCopy(string directory)
+    {
+        string mainPath = Path.Combine(directory, "main.fsx");
+        string yamlPath = Path.Combine(directory, "extension.yml");
+        string statePath = Path.Combine(directory, "extension-state.json");
+        if (!File.Exists(mainPath) && !File.Exists(yamlPath))
+        {
+            // A config/state overlay carries no package payload and is not migratable content.
+            return false;
+        }
+
+        if (File.Exists(yamlPath))
+        {
+            return true;
+        }
+
+        try
+        {
+            if (File.Exists(mainPath) &&
+                !File.ReadAllText(mainPath).Contains("<patchouli-extension", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (File.Exists(statePath))
+            {
+                Dictionary<string, string>? state = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, string>>(File.ReadAllText(statePath));
+                if (state is not null && state.TryGetValue("hostApi", out string? hostApi) &&
+                    !string.IsNullOrWhiteSpace(hostApi) && !ExtensionHostApi.IsSupported(hostApi))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or System.Text.Json.JsonException)
+        {
+            // An unreadable source/state answers "unknown", not "legacy": the normal listing
+            // path reports the package as broken instead of discarding a possible user edit.
+            return false;
+        }
+
+        return false;
+    }
+
     /// <summary>Checks the bundled version once, then preserves explicit runtime recovery choices.</summary>
     public async Task EnsureExtensionAsync(string extensionId, CancellationToken cancellationToken = default)
     {

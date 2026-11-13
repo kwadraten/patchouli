@@ -300,6 +300,90 @@ public sealed class PdfViewportInteractionTests(AvaloniaSharedSessionFixture hea
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Zoom_input_commits_on_enter_and_focus_loss_and_cancels_on_escape()
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            using MainWindowViewModel main = new(new Clipboard(), settingsPath: _settings.Path);
+            LibraryItemViewModel item = new(ItemId.New().ToString(), "缩放输入", "book", "", "", "",
+                null, null, null, "source.pdf", "", 1, 0, "", _ => Task.CompletedTask, _ => Task.CompletedTask);
+            using PdfWorkspaceViewModel workspace = new(main, item);
+            SetProperty(workspace, nameof(workspace.WidthPixels), 600);
+            SetProperty(workspace, nameof(workspace.HeightPixels), 800);
+            PdfWorkspacePage page = new() { DataContext = workspace };
+            Window window = new() { Width = 1400, Height = 900, Content = page };
+            try
+            {
+                window.Show();
+                Pump(window);
+                TextBox input = page.GetVisualDescendants().OfType<TextBox>()
+                    .Single(box => AutomationProperties.GetName(box) == "缩放比例");
+                input.Name.Should().Be("ZoomInput");
+                PdfViewportFitMode initialFit = workspace.FitMode;
+                double initialZoom = workspace.Zoom;
+                input.Text.Should().Be(workspace.ZoomText);
+
+                void Type(string text)
+                {
+                    input.Focus();
+                    Pump(window);
+                    input.SelectAll();
+                    window.KeyTextInput(text);
+                    Pump(window);
+                }
+
+                void Press(Key key)
+                {
+                    window.KeyPress(key, RawInputModifiers.None, PhysicalKey.None, null);
+                    window.KeyRelease(key, RawInputModifiers.None, PhysicalKey.None, null);
+                    Pump(window);
+                }
+
+                // Focusing and leaving without edits must not drop an active fit mode.
+                input.Focus();
+                Pump(window);
+                page.FindControl<Grid>("PageVisualLayer")!.Focusable = true;
+                page.FindControl<Grid>("PageVisualLayer")!.Focus();
+                Pump(window);
+                workspace.FitMode.Should().Be(initialFit);
+                workspace.Zoom.Should().Be(initialZoom);
+
+                Type("12%");
+                Press(Key.Enter);
+                workspace.FitMode.Should().Be(PdfViewportFitMode.Free);
+                workspace.Zoom.Should().BeApproximately(0.12, 0.0001);
+                input.Text.Should().Be("12%");
+
+                Type("300");
+                Press(Key.Escape);
+                workspace.Zoom.Should().BeApproximately(0.12, 0.0001);
+                input.Text.Should().Be("12%");
+
+                Type("oops");
+                Press(Key.Enter);
+                workspace.Zoom.Should().BeApproximately(0.12, 0.0001);
+                input.Text.Should().Be("12%");
+
+                Type(" 75 ");
+                page.FindControl<Grid>("PageVisualLayer")!.Focus();
+                Pump(window);
+                workspace.Zoom.Should().BeApproximately(0.75, 0.0001);
+                input.Text.Should().Be("75%");
+
+                await workspace.ZoomOutCommand.ExecuteAsync();
+                Pump(window);
+                input.Text.Should().Be("65%", "the input keeps tracking toolbar zoom changes");
+                return true;
+            }
+            finally
+            {
+                window.Close();
+                await main.ShutdownAsync();
+            }
+        }, CancellationToken.None);
+    }
+
     private static void Draw(Window window, Control canvas, Point start, Point end)
     {
         Point windowStart = canvas.TranslatePoint(start, window)!.Value;

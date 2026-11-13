@@ -623,7 +623,9 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
     private async Task ResolveMcpTokenAsync(HostServices services)
     {
         Result<McpServerSettings> configured = await Task.Run(() => services.McpSettings.GetSettingsAsync());
-        if (configured.IsSuccess && configured.Value.AuthRequired &&
+        // Mirrors the listener rule: non-loopback binds always require the token.
+        if (configured.IsSuccess &&
+            (configured.Value.AuthRequired || !IsLoopbackBind(configured.Value.BindAddress)) &&
             !string.IsNullOrWhiteSpace(configured.Value.Token))
         {
             _mcpToken = configured.Value.Token.Trim();
@@ -636,6 +638,13 @@ public sealed partial class AgentWorkspaceViewModel : ViewModelBase
             _mcpToken = CreatePlaceholderMcpToken();
             _mcpTokenFromSettings = false;
         }
+    }
+
+    private static bool IsLoopbackBind(string bindAddress)
+    {
+        string bind = bindAddress.Trim();
+        return string.Equals(bind, "127.0.0.1", StringComparison.Ordinal) ||
+               string.Equals(bind, "localhost", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreatePlaceholderMcpToken()
