@@ -1,6 +1,7 @@
 name: Package smoke
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/package-smoke.yml'
