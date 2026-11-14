@@ -28,8 +28,12 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private long _credentialRefreshEpoch;
+
     private Func<Task<ICredentialStore>> _credentialStoreFactory;
-    private Func<Task<ILlmSubscriptionService>> _subscriptionServiceFactory;
+
+    // Returns the service plus the per-operation HttpClient it borrows (null when injected); the
+    // caller disposes the client once the operation finishes.
+    private Func<Task<(ILlmSubscriptionService Service, IDisposable? Owner)>> _subscriptionServiceFactory;
 
     private Action<Uri> _openSubscriptionBrowser = uri =>
     {
@@ -56,7 +60,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         _isConstructing = true;
         _main = main;
         _credentialStoreFactory = credentialStoreFactory;
-        _subscriptionServiceFactory = async () => new LlmSubscriptionService(await _credentialStoreFactory());
+        _subscriptionServiceFactory = CreateSubscriptionServiceAsync;
         _current = main.AppOptions.Llm;
         _persisted = _current;
         AddProviderCommand =
@@ -503,9 +507,21 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         _credentialStoreFactory = () => Task.FromResult(credentialStore);
     }
 
+    /// <summary>
+    /// Default subscription service: credentials from the configured store, transport from the
+    /// Library host's proxy-aware Subscription client (redirects stay disabled by the host).
+    /// </summary>
+    private async Task<(ILlmSubscriptionService Service, IDisposable? Owner)> CreateSubscriptionServiceAsync()
+    {
+        ICredentialStore store = await _credentialStoreFactory();
+        HostServices services = await _main.ServicesAsync();
+        HttpClient client = services.CreateHttpClient(HostHttpPurpose.Subscription);
+        return (new LlmSubscriptionService(store, client), client);
+    }
+
     internal void UseSubscriptionService(ILlmSubscriptionService service, Action<Uri> openBrowser)
     {
-        _subscriptionServiceFactory = () => Task.FromResult(service);
+        _subscriptionServiceFactory = () => Task.FromResult<(ILlmSubscriptionService, IDisposable?)>((service, null));
         _openSubscriptionBrowser = openBrowser;
     }
 
@@ -717,9 +733,10 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         int generation = _main.LibraryGeneration;
         string providerId = row.ProviderId;
         Action<Uri> openBrowser = _openSubscriptionBrowser;
+        IDisposable? serviceOwner = null;
         try
         {
-            ILlmSubscriptionService service = await _subscriptionServiceFactory();
+            (ILlmSubscriptionService service, serviceOwner) = await _subscriptionServiceFactory();
             row.SubscriptionStatusText = action == "login" ? "请在浏览器中完成订阅登录…" : "正在读取订阅状态…";
             if (action == "login")
             {
@@ -793,6 +810,10 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         catch (Exception)
         {
             row.SubscriptionStatusText = "订阅操作失败，请检查网络、重新登录或刷新模型。";
+        }
+        finally
+        {
+            serviceOwner?.Dispose();
         }
     }
 

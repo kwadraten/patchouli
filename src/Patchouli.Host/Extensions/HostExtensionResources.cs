@@ -32,6 +32,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
     private readonly Func<LlmAppSettings> _settings;
     private readonly ICredentialStore _credentials;
     private readonly HttpMessageInvoker _http;
+    private readonly HttpMessageInvoker? _llmHttpInvoker;
     private readonly ExtensionHttpScheduler _scheduler;
     private readonly LlmAppSettings? _frozen;
     private readonly ExtensionConfigSnapshot? _config;
@@ -39,18 +40,19 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
     private readonly TranslationExecutionGate? _dispatchGate;
     private readonly string? _domain;
     private readonly HttpClient _extensionHttp;
+    private readonly HttpClient _llmHttp;
     private readonly Func<LlmProviderRuntimeSettings, ILlmChatTransport>? _transportFactory;
 
     public HostExtensionResources(Func<LlmAppSettings> settings, ICredentialStore credentials,
-        HttpMessageInvoker http)
-        : this(settings, credentials, http, new ExtensionHttpScheduler(), null)
+        HttpMessageInvoker http, HttpMessageInvoker? llmHttp = null)
+        : this(settings, credentials, http, new ExtensionHttpScheduler(), null, llmHttp: llmHttp)
     {
     }
 
     public HostExtensionResources(Func<LlmAppSettings> settings, ICredentialStore credentials,
         HttpMessageInvoker http,
-        ExtensionHttpScheduler scheduler)
-        : this(settings, credentials, http, scheduler, null)
+        ExtensionHttpScheduler scheduler, HttpMessageInvoker? llmHttp = null)
+        : this(settings, credentials, http, scheduler, null, llmHttp: llmHttp)
     {
     }
 
@@ -68,12 +70,13 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
         ExtensionHttpScheduler scheduler, LlmAppSettings? frozen, ExtensionConfigSnapshot? config = null,
         TranslationExecutionGate? dispatchGate = null, string? domain = null,
         Func<LlmProviderRuntimeSettings, ILlmChatTransport>? transportFactory = null,
-        SharedCapabilities? capabilities = null)
+        SharedCapabilities? capabilities = null, HttpMessageInvoker? llmHttp = null)
     {
         _capabilities = capabilities ?? new SharedCapabilities();
         _settings = settings;
         _credentials = credentials;
         _http = http;
+        _llmHttpInvoker = llmHttp;
         _scheduler = scheduler;
         _frozen = frozen;
         _config = config;
@@ -81,6 +84,11 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
         _domain = domain;
         _transportFactory = transportFactory;
         _policy = frozen is null ? null : new RequestPolicy(frozen.Translation, config, dispatchGate, domain);
+        // Provider LLM calls share the host transport policy (issue #56) without going through the
+        // extension request scheduler, which is reserved for extension-declared HTTP traffic. The
+        // dedicated llmHttp invoker carries no-redirect transport defaults so subscription OAuth
+        // headers can never be forwarded onto a redirected authority; tests pass a single invoker.
+        _llmHttp = new HttpClient(new InvokerHandler(llmHttp ?? http), false);
         _extensionHttp = new HttpClient(new ExtensionHttpHandler(new InvokerHandler(http), scheduler, this),
             true);
         // Queueing, cooldown and pause time are not network time. The handler starts the configured
@@ -94,13 +102,13 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(domain);
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler, _frozen, _config,
-            _dispatchGate, domain, _transportFactory, _capabilities);
+            _dispatchGate, domain, _transportFactory, _capabilities, _llmHttpInvoker);
     }
 
     public HostExtensionResources WithDispatchGate(TranslationExecutionGate? gate)
     {
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler, _frozen, _config, gate,
-            _domain, _transportFactory, _capabilities);
+            _domain, _transportFactory, _capabilities, _llmHttpInvoker);
     }
 
     public ILlmCapability Llm => this;
@@ -187,7 +195,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
 
         ExtensionConfigSnapshot frozen = new(new ReadOnlyDictionary<string, string>(values), config.Revision);
         return (new HostExtensionResources(_settings, _credentials, _http, _scheduler, settings,
-            frozen, _dispatchGate, _domain, _transportFactory, _capabilities), frozen);
+            frozen, _dispatchGate, _domain, _transportFactory, _capabilities, _llmHttpInvoker), frozen);
     }
 
     private sealed class BoundLlm(
@@ -231,7 +239,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
         LlmAppSettings settings = _frozen ?? _settings();
         return new HostExtensionResources(_settings, _credentials, _http, _scheduler,
             settings with { Providers = settings.Providers.ToArray() }, config, _dispatchGate, _domain,
-            _transportFactory, _capabilities);
+            _transportFactory, _capabilities, _llmHttpInvoker);
     }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
@@ -338,7 +346,7 @@ public sealed class HostExtensionResources : IExtensionResources, ILlmCapability
             };
         }).ToArray());
         Func<LlmProviderRuntimeSettings, ILlmChatTransport> createTransport =
-            _transportFactory ?? LlmClientFactory.CreateTransport;
+            _transportFactory ?? (settings => LlmClientFactory.CreateTransport(settings, _llmHttp));
         LlmChatClient client = new(resolved.Value, createTransport(resolved.Value));
         LlmChatRequest chatRequest = new(history, Options: new LlmChatRequestOptions(resolved.Value.Model,
             request.Temperature is { } temperature ? (double)temperature : null, request.MaxOutputTokens)

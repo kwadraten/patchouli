@@ -153,6 +153,63 @@ public sealed class AssetDownloadTaskIntegrationTests(AvaloniaSharedSessionFixtu
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Default_agent_install_downloads_through_the_host_agent_download_client()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            string root = Path.GetDirectoryName(settings.Path)!;
+            string installRoot = Path.Combine(root, "agent-install");
+            string executableName = OperatingSystem.IsWindows() ? "opencode.exe" : "opencode";
+            byte[] archive = AgentArchive(executableName);
+            using GatedAssetStream body = new(archive);
+            // The single AgentDownload client takes ownership of this handler.
+            GatedAssetHttpHandler agentHandler = new(AgentUrl, body);
+            ConcurrentQueue<HostHttpPurpose> purposes = new();
+            RecordingDialogs dialogs = new(ConfirmDialogResult.Confirm);
+            ScriptedProcessRunner processes = new() { Handler = _ => ScriptedProcessRunner.Output("1.19.3") };
+            await using MainWindowViewModel main = new(dialogs: dialogs, settingsPath: settings.Path,
+                appPaths: new TestAppPaths(root), infrastructure: new HostInfrastructureOptions
+                {
+                    ProcessRunner = processes,
+                    HttpHandlerFactory = purpose =>
+                    {
+                        purposes.Enqueue(purpose);
+                        return purpose == HostHttpPurpose.AgentDownload
+                            ? agentHandler
+                            : new GatedAssetHttpHandler();
+                    }
+                });
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            using AgentIntegrationSettingsViewModel section = new(main) { DefaultInstallRoot = installRoot };
+            AgentIntegrationRowViewModel row = section.Agents.Single(item => item.Entry.Id == "opencode");
+            AgentInstallOffer offer = new("opencode", "OpenCode", "1.19.3", "windows-x86_64",
+                AgentUrl, null, executableName, ["acp"], [], "https://github.com/anomalyco/opencode",
+                "MIT", "https://opensource.org/license/mit");
+            row.ApplyDetection(new AgentDetectionResult(row.Entry, AgentDetectionStatus.NotInstalled,
+                null, [], offer));
+            purposes.Should().NotContain(HostHttpPurpose.AgentDownload,
+                "the section must not create its download client before an install starts");
+
+            Task pending = section.InstallAsync(row, CancellationToken.None);
+            try
+            {
+                await body.Blocked.Task.WaitAsync(Deadline);
+                purposes.Should().Contain(HostHttpPurpose.AgentDownload);
+            }
+            finally
+            {
+                body.Release.TrySetResult();
+                await pending.WaitAsync(Deadline);
+            }
+
+            row.CustomPath.Should().Be(Path.Combine(installRoot, "opencode", executableName));
+            return 0;
+        }, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -63,6 +63,7 @@ using Patchouli.Host.Agents;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Metadata;
+using Patchouli.Host.Network;
 using Patchouli.Host.Translation;
 using Patchouli.Host.Extensions;
 using Patchouli.Host.Ocr;
@@ -82,6 +83,7 @@ public sealed class HostServices
                 $"Patchouli unexpected error at {boundary}/{operation}: {exception}");
 
     private readonly OcrRunEngine _ocrEngine;
+    private readonly PageRenderService _pageRenderService;
     private readonly HostLibraryServices _libraryServices;
     private readonly OnnxDocumentLayoutDetector _documentLayoutDetector = new();
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
@@ -104,6 +106,7 @@ public sealed class HostServices
     private HttpClient? _cslCatalogHttpClient;
 
     private readonly HttpMessageInvoker _extensionHttpInvoker;
+    private readonly HttpMessageInvoker _llmHttpInvoker;
 
     private HttpClient? _ndlKotenModelHttpClient;
     private HttpClient? _ndlLiteModelHttpClient;
@@ -114,6 +117,10 @@ public sealed class HostServices
     private readonly HttpClient _updateDownloadHttpClient;
     private readonly HttpClient _pluginCatalogHttpClient;
     private readonly HttpClient _pluginDownloadHttpClient;
+    private readonly HttpClient _minerUHttpClient;
+    private readonly HostHttpClientFactory _httpClients;
+    private readonly IHttpTransportPolicy _transportPolicy;
+    private NetworkAppSettings _networkSettings;
     private IAppSettingsStore? _observedSettingsStore;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
@@ -125,8 +132,24 @@ public sealed class HostServices
         IAppPaths? appPaths = null, HostInfrastructureOptions? infrastructure = null)
     {
         _logger = logger;
-        HostHttpClientFactory httpClients = new(infrastructure?.HttpHandlerFactory);
+        Credentials = new CredentialStore(settingsPath);
+        _networkSettings = settings.Network.Normalize();
+        _transportPolicy = infrastructure?.HttpTransportPolicy ?? new HttpTransportPolicy(_networkSettings,
+            async cancellationToken =>
+            {
+                Result<string> secret = await Credentials
+                    .GetActiveSecretForProviderAsync(ProviderIds.NetworkProxy, cancellationToken)
+                    .ConfigureAwait(false);
+                return secret.IsSuccess ? secret.Value : null;
+            });
+        _httpClients = new HostHttpClientFactory(infrastructure?.HttpHandlerFactory, _transportPolicy);
+        HostHttpClientFactory httpClients = _httpClients;
+        NetworkConnectionTest = new NetworkConnectionTestService(_transportPolicy);
+        _minerUHttpClient = httpClients.CreateClient(HostHttpPurpose.MinerU);
         _extensionHttpInvoker = httpClients.CreateExtensionInvoker();
+        // LLM calls use the subscription transport shape: proxy policy applied, redirects never
+        // followed, so OAuth/subscription headers cannot be forwarded onto another authority.
+        _llmHttpInvoker = httpClients.CreateTransportInvoker(HostHttpPurpose.Subscription);
         _layoutModelHttpClient = httpClients.CreateClient(HostHttpPurpose.LayoutModel);
         _updateApiHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateApi);
         _updateDownloadHttpClient = httpClients.CreateClient(HostHttpPurpose.UpdateDownload);
@@ -149,7 +172,8 @@ public sealed class HostServices
         AgentMcpConfig = new AgentMcpConfigService();
         AppStorageLocations storagePaths = (appPaths ?? new PlatformAppPaths()).Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(storagePaths);
-        ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor);
+        ExtensionFiles = new ExtensionManagedFileService(OcrStorage.ModelsRoot, OcrStorage.ModelDirectoryFor,
+            httpClients.CreateTransportInvoker(HostHttpPurpose.Extension));
         DownloadTasks = new DownloadTaskService();
         LayoutModelDownload =
             new LayoutModelDownloadService(_layoutModelHttpClient, OcrStorage.GetLayoutModelPath, DownloadTasks);
@@ -173,7 +197,6 @@ public sealed class HostServices
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
         LibrarySettingCoordinator = new LibrarySettingCoordinator(LibrarySettings, LibrarySettingRecords);
         Files = new FileAssetService(ConnectionFactory, Library, Clock, revisions: LibraryRevisions);
-        Documents = new DocumentInstanceService(ConnectionFactory, Clock, LibraryRevisions);
         INativeFileAccessAdapter? nativeAdapter = OperatingSystem.IsMacOS()
             ? new MacOSNativeFileAccessAdapter()
             : null;
@@ -183,6 +206,18 @@ public sealed class HostServices
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings,
             revisions: LibraryRevisions);
+        HostPdfServices pdf = infrastructure?.Pdf ?? HostPdfServices.CreateDefault();
+        PdfPreviewRenderer = pdf.PreviewRenderer;
+        // The render cache is built before the document service so document removal and item
+        // purge can clear its per-document directory (issue #57).
+        _pageRenderService = new PageRenderService(ConnectionFactory, Library, FileResolution,
+            pdf.Renderer, Clock, Path.Combine(storagePaths.CacheDirectory, "page-renders"),
+            FileSearchRootAccess,
+            diskCacheByteLimit: settings.RenderCache.DiskLimitBytes,
+            pngQuality: settings.RenderCache.PngQuality);
+        PageRenders = _pageRenderService;
+        CacheMaintenance = new CacheMaintenanceService(_pageRenderService, OcrStorage);
+        Documents = new DocumentInstanceService(ConnectionFactory, Clock, LibraryRevisions, PageRenders);
         BiblatexHelper = new BiblatexHelperClient();
         BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents, activityTracker,
             LifetimeToken);
@@ -215,7 +250,6 @@ public sealed class HostServices
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         OcrSelections = new OcrPresetSelectionService(new OcrPresetSelectionStore(settingsPath), OcrPresets, Library);
         ModelPathValidator = new OcrModelPathValidator();
-        Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
         // Other engines route through the compiled-extension runtime.
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
@@ -238,10 +272,6 @@ public sealed class HostServices
         RapidOcrModelDownload =
             new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory,
                 DownloadTasks);
-        HostPdfServices pdf = infrastructure?.Pdf ?? HostPdfServices.CreateDefault();
-        PdfPreviewRenderer = pdf.PreviewRenderer;
-        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdf.Renderer, Clock,
-            Path.Combine(storagePaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
         SourceFingerprintValidation = new SourceFingerprintValidationService();
         PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
@@ -255,7 +285,8 @@ public sealed class HostServices
         VersionedEvidenceReader =
             new VersionedEvidenceReader(ConnectionFactory, Library, DocumentTrees, DocumentMarkdown);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
-        ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials, _extensionHttpInvoker);
+        ExtensionResources = new HostExtensionResources(() => LlmSettings, Credentials,
+            _extensionHttpInvoker, _llmHttpInvoker);
         TranslationExtensions = new TranslationExtensionCatalog(
             DeviceExtensionRuntimeMigration.MigrateRuntime(runtimeDatabasePath, storagePaths.DataDirectory,
                 _logger),
@@ -343,7 +374,8 @@ public sealed class HostServices
             managedFiles: PluginFiles);
         _ownsPluginApi = infrastructure?.PluginApi is null;
         ManagedFileInventory = new ManagedFileInventoryService(TranslationExtensions,
-            ExtensionFiles, OcrStorage, Plugins as Plugins.IPluginManagedDefinitionSource, PluginFiles);
+            ExtensionFiles, OcrStorage, Plugins as Plugins.IPluginManagedDefinitionSource, PluginFiles,
+            _pageRenderService);
         PluginStore = infrastructure?.PluginStore ?? new Plugins.PluginStore(_pluginCatalogHttpClient,
             _pluginDownloadHttpClient, new Plugins.PluginStoreOptions
             {
@@ -407,7 +439,7 @@ public sealed class HostServices
             LifetimeToken);
         PurgeItems =
             new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions,
-                logger);
+                logger, PageRenders);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
         PdfMetadata = pdf.Metadata;
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
@@ -460,6 +492,41 @@ public sealed class HostServices
 
     /// <summary>Live LLM settings shared by OCR and translation without rebuilding the Library host.</summary>
     public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
+
+    /// <summary>
+    /// The unified outbound transport policy (issue #56): every host HTTP client routes through it,
+    /// honoring the persisted "Network" proxy mode, bypass list and credential-store password.
+    /// Loopback transports never use it.
+    /// </summary>
+    public IHttpTransportPolicy HttpTransportPolicy => _transportPolicy;
+
+    /// <summary>Live network/proxy settings applied to new outbound connections.</summary>
+    public NetworkAppSettings NetworkSettings => Volatile.Read(ref _networkSettings);
+
+    /// <summary>Non-UI connectivity probe; classifies proxy tunnel / TLS / DNS / connection / auth failures.</summary>
+    public NetworkConnectionTestService NetworkConnectionTest { get; }
+
+    /// <summary>
+    /// Live-updates the proxy configuration for subsequent outbound requests and drops cached
+    /// proxy credentials. Called when the "Network" settings section commits.
+    /// </summary>
+    public void UpdateNetworkSettings(NetworkAppSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        NetworkAppSettings normalized = settings.Normalize();
+        Volatile.Write(ref _networkSettings, normalized);
+        _transportPolicy.Update(normalized);
+    }
+
+    /// <summary>
+    /// Creates an outbound HTTP client with the host transport policy applied (issue #56).
+    /// Callers own the returned client. Intended for UI-side services such as the agent installer
+    /// and subscription sign-in; loopback transports must keep their own clients.
+    /// </summary>
+    public HttpClient CreateHttpClient(HostHttpPurpose purpose)
+    {
+        return _httpClients.CreateClient(purpose);
+    }
 
     public McpServerHostDependencies CreateMcpServerHostDependencies()
     {
@@ -553,6 +620,10 @@ public sealed class HostServices
     public INdlLiteModelDownloadService NdlLiteModelDownload { get; }
     public IRapidOcrModelDownloadService RapidOcrModelDownload { get; }
     public IPageRenderService PageRenders { get; }
+
+    /// <summary>Periodic page-render LRU sweep and ocr-work cleanup (issue #57).</summary>
+    public CacheMaintenanceService CacheMaintenance { get; }
+
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
     public ISourceFingerprintValidationService SourceFingerprintValidation { get; }
@@ -711,6 +782,18 @@ public sealed class HostServices
         FileSearchRootAccess.UpdateExclusionPatterns(settings.ExclusionPatterns);
     }
 
+    /// <summary>
+    /// Applies committed "RenderCache" settings live (issue #57): the limit setter schedules a
+    /// sweep so the cache converges immediately; the quality applies to the next render.
+    /// </summary>
+    public void UpdateRenderCacheSettings(RenderCacheAppSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        RenderCacheAppSettings normalized = settings.Normalize();
+        _pageRenderService.SetDiskCacheLimit(normalized.DiskLimitBytes);
+        _pageRenderService.SetPngQuality(normalized.PngQuality);
+    }
+
     public void ObserveSettingsStore(IAppSettingsStore settingsStore)
     {
         ArgumentNullException.ThrowIfNull(settingsStore);
@@ -792,6 +875,30 @@ public sealed class HostServices
                 if (AcceptSettingsCommitLocked("FileScanning", change.CommitSequence))
                 {
                     UpdateFileScanExclusions(change.Snapshot.FileScanning);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("Network", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("Network", change.CommitSequence))
+                {
+                    UpdateNetworkSettings(change.Snapshot.Network);
+                }
+            }
+        }
+
+        if (change.Categories.Contains("RenderCache", StringComparer.OrdinalIgnoreCase) &&
+            change.CommitSequence > 0)
+        {
+            lock (_settingsCommitGate)
+            {
+                if (AcceptSettingsCommitLocked("RenderCache", change.CommitSequence))
+                {
+                    UpdateRenderCacheSettings(change.Snapshot.RenderCache);
                 }
             }
         }
@@ -897,7 +1004,7 @@ public sealed class HostServices
 
     private IMinerUClient CreateMinerUClient(MinerUConfiguration configuration)
     {
-        return new MinerUClient(new MinerUOptions
+        return new MinerUClient(_minerUHttpClient, new MinerUOptions
         {
             Token = configuration.Token,
             BaseUrl = configuration.BaseUrl ?? StartupSettings.MinerU.BaseUrl,
@@ -1040,6 +1147,7 @@ public sealed class HostServices
 
                 startupProgress?.Report(StartupStage.StartingOcrQueue);
                 await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
+                await services.CacheMaintenance.Start(services.LifetimeToken);
 
                 startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
                 await services.ApplySyncedMetadataLookupAsync(settings);
@@ -1120,6 +1228,7 @@ public sealed class HostServices
         }
 
         _lifetimeCancellation.Cancel();
+        await CacheMaintenance.DisposeAsync();
 
         Task metadataSettings;
         lock (_settingsCommitGate)
@@ -1174,12 +1283,18 @@ public sealed class HostServices
         }
 
         _extensionHttpInvoker.Dispose();
+        _llmHttpInvoker.Dispose();
         _documentLayoutDetector.Dispose();
         _layoutModelHttpClient.Dispose();
         _updateApiHttpClient.Dispose();
         _updateDownloadHttpClient.Dispose();
         _pluginCatalogHttpClient.Dispose();
         _pluginDownloadHttpClient.Dispose();
+        _minerUHttpClient.Dispose();
+        _cslCatalogHttpClient?.Dispose();
+        _ndlKotenModelHttpClient?.Dispose();
+        _ndlLiteModelHttpClient?.Dispose();
+        _rapidOcrModelHttpClient?.Dispose();
         ConnectionFactory.ClearPools();
     }
 

@@ -31,6 +31,12 @@ public static class ProviderIds
 {
     public const string MinerU = "mineru";
     public const string MultimodalLlmOcr = "multimodal-llm-ocr";
+
+    /// <summary>
+    /// Credential-store key for the manual proxy password (issue #56). The secret value holds only
+    /// the password; the matching username is non-secret metadata in the "Network" settings section.
+    /// </summary>
+    public const string NetworkProxy = "network-proxy";
 }
 
 public interface ICredentialStore

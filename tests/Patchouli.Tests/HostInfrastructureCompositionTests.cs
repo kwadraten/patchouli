@@ -75,6 +75,9 @@ public sealed class HostInfrastructureCompositionTests
     [InlineData(HostHttpPurpose.LayoutModel, 600)]
     [InlineData(HostHttpPurpose.UpdateApi, 30)]
     [InlineData(HostHttpPurpose.UpdateDownload, 900)]
+    [InlineData(HostHttpPurpose.MinerU, 100)]
+    [InlineData(HostHttpPurpose.AgentDownload, 1800)]
+    [InlineData(HostHttpPurpose.Subscription, 100)]
     public async Task Injected_transport_preserves_client_policy_and_handler_ownership(HostHttpPurpose purpose,
         int timeoutSeconds)
     {

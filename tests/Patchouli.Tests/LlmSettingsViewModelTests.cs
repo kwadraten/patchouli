@@ -538,6 +538,52 @@ public sealed class LlmSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Default_subscription_service_uses_the_host_subscription_client()
+    {
+        RecordingCredentialStore store = new();
+        store.SeedSecret(LlmSubscriptionCatalog.CredentialProviderId("openai-subscription"),
+            """{"AccessToken":"old","RefreshToken":"old","AccountId":"account","Email":"a@example.test"}""");
+        System.Collections.Concurrent.ConcurrentQueue<Host.Composition.HostHttpPurpose> purposes = new();
+        MainWindowViewModel vm = new(settingsPath: _settings.Path,
+            infrastructure: new Host.Composition.HostInfrastructureOptions
+            {
+                HttpHandlerFactory = purpose =>
+                {
+                    purposes.Enqueue(purpose);
+                    return new NotFoundHandler();
+                }
+            });
+        Host.Composition.HostServices services = await vm.ServicesAsync();
+        try
+        {
+            LlmSettingsViewModel section = vm.Settings.LlmSettings;
+            section.UseCredentialStore(store);
+            await section.LoadAsync();
+            LlmProviderSettingsRowViewModel row =
+                section.VisibleProviders.Single(item => item.ProviderId == "openai-subscription");
+            purposes.Clear();
+            await row.RefreshSubscriptionModelsCommand.ExecuteAsync();
+
+            purposes.Should().Contain(Host.Composition.HostHttpPurpose.Subscription);
+            row.SubscriptionStatusText.Should().Be("订阅操作失败，请检查网络、重新登录或刷新模型。");
+        }
+        finally
+        {
+            vm.Dispose();
+            await services.ShutdownAsync();
+        }
+    }
+
+    private sealed class NotFoundHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
     public async Task Cancelling_subscription_login_leaves_the_connection_card_editable()
     {
         RecordingCredentialStore store = new();

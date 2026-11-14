@@ -2,6 +2,7 @@ using System.Net;
 using Patchouli.Core.Agents;
 using Patchouli.Core.Import;
 using Patchouli.Core.Time;
+using Patchouli.Host.Network;
 using Patchouli.Host.Plugins;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
@@ -20,7 +21,10 @@ public enum HostHttpPurpose
     UpdateApi,
     UpdateDownload,
     PluginCatalog,
-    PluginDownload
+    PluginDownload,
+    MinerU,
+    AgentDownload,
+    Subscription
 }
 
 /// <summary>Runtime dependencies for embedders; these are not persisted application settings.</summary>
@@ -32,6 +36,13 @@ public sealed record HostInfrastructureOptions
 
     /// <summary>Returns a fresh handler owned by its client. Client policies remain host-defined.</summary>
     public Func<HostHttpPurpose, HttpMessageHandler>? HttpHandlerFactory { get; init; }
+
+    /// <summary>
+    /// Optional transport-policy override (issue #56, test/embedder seam). When null the host builds
+    /// a <see cref="HttpTransportPolicy"/> over the persisted "Network" settings. Loopback transports
+    /// never use this policy.
+    /// </summary>
+    public IHttpTransportPolicy? HttpTransportPolicy { get; init; }
 
     /// <summary>
     /// Optional plugin mount surface (test/embedding override). When null the host builds the
@@ -61,11 +72,15 @@ public sealed record HostPdfServices(
     }
 }
 
-internal sealed class HostHttpClientFactory(Func<HostHttpPurpose, HttpMessageHandler>? handlerFactory)
+internal sealed class HostHttpClientFactory(
+    Func<HostHttpPurpose, HttpMessageHandler>? handlerFactory,
+    IHttpTransportPolicy? transportPolicy = null)
 {
     public HttpClient CreateClient(HostHttpPurpose purpose)
     {
-        HttpClient client = handlerFactory is null ? new HttpClient() : new HttpClient(handlerFactory(purpose), true);
+        HttpClient client = handlerFactory is null
+            ? new HttpClient(CreateTransportHandler(purpose), true)
+            : new HttpClient(handlerFactory(purpose), true);
         client.Timeout = purpose switch
         {
             HostHttpPurpose.LayoutModel => TimeSpan.FromMinutes(10),
@@ -73,6 +88,7 @@ internal sealed class HostHttpClientFactory(Func<HostHttpPurpose, HttpMessageHan
             HostHttpPurpose.UpdateDownload => TimeSpan.FromMinutes(15),
             HostHttpPurpose.PluginCatalog => TimeSpan.FromSeconds(30),
             HostHttpPurpose.PluginDownload => TimeSpan.FromMinutes(15),
+            HostHttpPurpose.AgentDownload => TimeSpan.FromMinutes(30),
             _ => TimeSpan.FromSeconds(100)
         };
         return client;
@@ -80,10 +96,36 @@ internal sealed class HostHttpClientFactory(Func<HostHttpPurpose, HttpMessageHan
 
     public HttpMessageInvoker CreateExtensionInvoker()
     {
-        HttpMessageHandler handler = handlerFactory?.Invoke(HostHttpPurpose.Extension) ?? new SocketsHttpHandler
+        return CreateTransportInvoker(HostHttpPurpose.Extension);
+    }
+
+    /// <summary>
+    /// Builds an invoker with the same transport defaults (policy proxy, decompression) and no
+    /// client-level timeout; used by managed-file engines that own their own request budgets.
+    /// </summary>
+    public HttpMessageInvoker CreateTransportInvoker(HostHttpPurpose purpose)
+    {
+        return new HttpMessageInvoker(CreateTransportHandler(purpose), true);
+    }
+
+    private HttpMessageHandler CreateTransportHandler(HostHttpPurpose purpose)
+    {
+        if (handlerFactory?.Invoke(purpose) is { } injected)
+        {
+            return injected;
+        }
+
+        SocketsHttpHandler handler = new()
         {
             AutomaticDecompression = DecompressionMethods.All
         };
-        return new HttpMessageInvoker(handler, true);
+        transportPolicy?.ConfigureHandler(handler);
+        if (purpose == HostHttpPurpose.Subscription)
+        {
+            // OAuth token exchanges must not silently follow redirects onto a different authority.
+            handler.AllowAutoRedirect = false;
+        }
+
+        return handler;
     }
 }

@@ -156,6 +156,54 @@ public sealed class CslDownloadTaskTests(AvaloniaSharedSessionFixture headless)
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Default_style_download_uses_the_host_csl_catalog_client()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            ConcurrentQueue<(HostHttpPurpose Purpose, string Uri)> requests = new();
+            RecordingDialogs dialogs = new();
+            await using MainWindowViewModel main = new(dialogs: dialogs, autoStartMcpServer: false,
+                settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!),
+                infrastructure: new HostInfrastructureOptions
+                {
+                    ProcessRunner = new NoProcesses(),
+                    HttpHandlerFactory = purpose => new PurposeRecordingHandler(purpose, requests)
+                });
+            await main.OpenDatabaseCommand.ExecuteAsync().WaitAsync(Deadline);
+            await main.Library.CreateCommand.ExecuteAsync().WaitAsync(Deadline);
+            HostServices services = await main.ServicesAsync().WaitAsync(Deadline);
+            CslStyleManagerViewModel manager = new(main);
+            CslCatalogStyle catalog = new("progress-style", "Progress Style",
+                "https://progress.invalid/styles/progress-style.csl", "test");
+
+            await manager.InstallStyleAsync(catalog).WaitAsync(Deadline);
+
+            requests.Should().Contain((HostHttpPurpose.CslCatalog,
+                "https://progress.invalid/styles/progress-style.csl"));
+            services.DownloadTasks.List().Single().State.Should().Be(DownloadTaskService.SucceededState);
+            (await services.CslStore.ListInstalledStylesAsync().WaitAsync(Deadline))
+                .Value.Should().ContainSingle(style => style.StyleId == catalog.StyleId);
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    private sealed class PurposeRecordingHandler(
+        HostHttpPurpose purpose,
+        ConcurrentQueue<(HostHttpPurpose Purpose, string Uri)> requests) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            requests.Enqueue((purpose, request.RequestUri!.AbsoluteUri));
+            return Task.FromResult(purpose == HostHttpPurpose.CslCatalog
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(StyleXml) }
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+    }
+
     private static Func<HttpClient> StyleClientFactory(DownloadProgressTestStream body, bool unknownLength)
     {
         return () => new HttpClient(new StyleHandler(body, unknownLength));

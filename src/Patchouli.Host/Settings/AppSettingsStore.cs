@@ -482,6 +482,9 @@ public sealed class AppSettingsStore : IAppSettingsStore
         AddChangedCategory(categories, "Credentials", previous.Credentials, committed.Credentials, sectionsToPersist);
         AddChangedCategory(categories, "OcrEngines", previous.OcrEngines, committed.OcrEngines, sectionsToPersist);
         AddChangedCategory(categories, "Import", previous.Import, committed.Import, sectionsToPersist);
+        AddChangedCategory(categories, "RenderCache", previous.RenderCache, committed.RenderCache,
+            sectionsToPersist);
+        AddChangedCategory(categories, "Network", previous.Network, committed.Network, sectionsToPersist);
         LlmAppSettings previousLlm = previous.Llm.Normalize();
         LlmAppSettings committedLlm = committed.Llm.Normalize();
         bool llmEqual = previousLlm.Providers.SequenceEqual(committedLlm.Providers) &&
@@ -563,6 +566,8 @@ public sealed class AppSettingsStore : IAppSettingsStore
             "Credentials" => current with { Credentials = persisted.Credentials },
             "OcrEngines" => current with { OcrEngines = persisted.OcrEngines },
             "Import" => current with { Import = persisted.Import },
+            "RenderCache" => current with { RenderCache = persisted.RenderCache },
+            "Network" => current with { Network = persisted.Network },
             "Llm" => current with { Llm = persisted.Llm },
             "Agents" => current with { Agents = persisted.Agents },
             "MetadataLookup" => current with { MetadataLookup = persisted.MetadataLookup },

@@ -31,9 +31,16 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+
     private readonly AgentSkillService _skills;
-    private readonly HttpClient _httpClient;
-    private readonly AgentInstaller _installer;
+
+    // Test seam. When null, each install creates its own proxy-aware AgentDownload client inside
+    // the download worker and disposes it when the worker ends.
+    private readonly AgentInstaller? _installer;
+
+    /// <summary>Test seam: install root for the default per-operation installer (null = platform default).</summary>
+    internal string? DefaultInstallRoot { get; init; }
+
     private readonly SemaphoreSlim _saveGate = new(1, 1);
 
     private AgentIntegrationAppSettings _draft;
@@ -52,9 +59,7 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
         _main = main;
         _skills = skills ?? main.AgentSkills;
         _draft = main.AppOptions.Agents.Normalize();
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        Register(_httpClient);
-        _installer = installer ?? new AgentInstaller(_httpClient);
+        _installer = installer;
         foreach (AgentCatalogEntry entry in AgentCatalog.All)
         {
             AgentIntegrationRowViewModel row = new(this, entry);
@@ -325,9 +330,13 @@ public sealed partial class AgentIntegrationSettingsViewModel : SettingsSectionV
 
                     ReportFile(current);
                     Result<AgentInstallResult> inner;
+                    using HttpClient? ownedClient = _installer is null
+                        ? hostServices.CreateHttpClient(HostHttpPurpose.AgentDownload)
+                        : null;
+                    AgentInstaller installer = _installer ?? new AgentInstaller(ownedClient!, DefaultInstallRoot);
                     try
                     {
-                        inner = await _installer.InstallAsync(offer,
+                        inner = await installer.InstallAsync(offer,
                             new SynchronousProgress<AgentInstallProgress>(value =>
                             {
                                 if (_main.IsCurrentLibraryContext(hostServices, generation))

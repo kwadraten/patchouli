@@ -23,12 +23,13 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
     private int _searchVersion;
     private CslCatalogSourceViewModel _selectedCatalogSource = null!;
 
-    private readonly Func<HttpClient> _httpClientFactory;
+    // Null uses the Library host's proxy-aware CslCatalog client; the caller owns each client.
+    private readonly Func<HttpClient>? _httpClientFactory;
 
     public CslStyleManagerViewModel(MainWindowViewModel main,
         Func<HttpClient>? httpClientFactory = null)
     {
-        _httpClientFactory = httpClientFactory ?? (() => new HttpClient());
+        _httpClientFactory = httpClientFactory;
         _isConstructing = true;
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshAsync, () => SelectedCatalogSource is not null);
@@ -310,7 +311,8 @@ public sealed partial class CslStyleManagerViewModel : SettingsSectionViewModelB
                     ReportFile(current);
                     try
                     {
-                        using HttpClient client = _httpClientFactory();
+                        using HttpClient client = _httpClientFactory?.Invoke() ??
+                                                  services.CreateHttpClient(HostHttpPurpose.CslCatalog);
                         client.DefaultRequestHeaders.UserAgent.ParseAdd(
                             $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
                         using HttpResponseMessage response = await client.GetAsync(

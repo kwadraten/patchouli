@@ -355,7 +355,16 @@ public static class LlmClientFactory
 {
     public static ILlmChatTransport CreateTransport(LlmProviderRuntimeSettings settings)
     {
+        return CreateTransport(settings, null);
+    }
+
+    /// <summary>
+    /// <paramref name="http"/> is the host-managed outbound client (transport policy applied,
+    /// issue #56); when null the transport uses its own default client as before.
+    /// </summary>
+    public static ILlmChatTransport CreateTransport(LlmProviderRuntimeSettings settings, HttpClient? http)
+    {
         ArgumentNullException.ThrowIfNull(settings);
-        return new LlmModelsDevTransport(settings);
+        return new LlmModelsDevTransport(settings, http);
     }
 }

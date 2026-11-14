@@ -116,7 +116,7 @@ internal static class LlmSubscriptionAccess
     }
 }
 
-public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscriptionService
+public sealed class LlmSubscriptionService(ICredentialStore store, HttpClient? http = null) : ILlmSubscriptionService
 {
     public async Task<LlmSubscriptionAccount?> GetAccountAsync(string providerId,
         CancellationToken cancellationToken = default)
@@ -136,7 +136,7 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await new LlmCodexAuthentication(credentials).LoginAsync(openBrowser, cancellationToken)
+            await new LlmCodexAuthentication(credentials, http).LoginAsync(openBrowser, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -153,7 +153,7 @@ public sealed class LlmSubscriptionService(ICredentialStore store) : ILlmSubscri
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await new LlmCodexAuthentication(credentials).ListModelsAsync(cancellationToken)
+            return await new LlmCodexAuthentication(credentials, http).ListModelsAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
         finally

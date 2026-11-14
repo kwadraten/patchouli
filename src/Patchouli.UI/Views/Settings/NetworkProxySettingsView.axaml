@@ -1,0 +1,63 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+             xmlns:controls="using:Patchouli.UI.Controls"
+             x:Class="Patchouli.UI.Views.Settings.NetworkProxySettingsView"
+             x:DataType="settings:NetworkProxySettingsViewModel">
+  <StackPanel Spacing="10">
+    <controls:SettingRow Label="代理模式">
+      <ComboBox Name="ProxyModeComboBox" ItemsSource="{Binding ModeOptions}"
+                SelectedItem="{Binding SelectedMode}" MinWidth="160" HorizontalAlignment="Left">
+        <ComboBox.ItemTemplate>
+          <DataTemplate DataType="settings:NetworkProxyModeOption">
+            <TextBlock Text="{Binding DisplayName}" />
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+    </controls:SettingRow>
+
+    <StackPanel Name="ManualProxyPanel" IsVisible="{Binding IsManual}" Spacing="10">
+      <controls:SettingRow Label="地址" HorizontalContentAlignment="Stretch"
+                           Hint="支持 http、https、socks5 与 socks5h，用户名和密码请在下方填写。">
+        <StackPanel Spacing="4">
+          <TextBox Name="ProxyAddressTextBox" Text="{Binding ProxyAddress}"
+                   PlaceholderText="http://host:port 或 socks5://host:port" />
+          <TextBlock Text="{Binding ValidationText}" FontSize="12"
+                     Foreground="{DynamicResource ErrorBrush}" IsVisible="{Binding HasValidationText}" />
+        </StackPanel>
+      </controls:SettingRow>
+
+      <controls:SettingRow Label="需要排除的网址" HorizontalContentAlignment="Stretch"
+                           Hint="按主机名或域名匹配，每行一个；支持 * 与 ? 通配符，可附加 :端口。">
+        <TextBox Name="ProxyBypassTextBox" Text="{Binding BypassText}" AcceptsReturn="True"
+                 MinHeight="72" PlaceholderText="每行一个主机名或域名，如 *.example.com" />
+      </controls:SettingRow>
+
+      <controls:SettingRow Label="用户名">
+        <TextBox Text="{Binding ProxyUsername}" PlaceholderText="可选" MinWidth="280"
+                 HorizontalAlignment="Left" />
+      </controls:SettingRow>
+
+      <controls:SettingRow Label="密码">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <TextBox Name="ProxyPasswordTextBox" Text="{Binding ProxyPasswordInput}" PasswordChar="•"
+                   PlaceholderText="{Binding PasswordStateText}" />
+          <Button Grid.Column="1" Content="清除凭据" Classes="Danger"
+                  Command="{Binding ClearCredentialCommand}" IsEnabled="{Binding HasProxyPassword}" />
+        </Grid>
+      </controls:SettingRow>
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" Spacing="8">
+      <Button Content="测试连接" Command="{Binding TestConnectionCommand}"
+              IsEnabled="{Binding !IsTesting}" />
+      <Button Content="取消" Command="{Binding CancelTestCommand}" IsVisible="{Binding IsTesting}" />
+      <TextBlock Name="ConnectionResultText" Text="{Binding ConnectionResultText}" Classes="SettingsStatus"
+                 VerticalAlignment="Center" TextWrapping="Wrap"
+                 IsVisible="{Binding HasConnectionResult}" />
+    </StackPanel>
+
+    <TextBlock Text="{Binding Status}" Classes="SettingsStatus" TextWrapping="Wrap"
+               IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+  </StackPanel>
+</UserControl>

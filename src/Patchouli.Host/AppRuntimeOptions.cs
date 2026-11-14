@@ -357,7 +357,9 @@ public sealed record UiPreferences(
     string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide,
     string ThemeMode = UiPreferences.ThemeModeSystem,
     Dictionary<string, string>? SearchPageModes = null,
-    bool ParseVirtualLinksInSearchBar = true)
+    bool ParseVirtualLinksInSearchBar = true,
+    bool ExpandFullTextSearchResults = true,
+    bool ActivateWindowOnProtocolOpen = true)
 {
     public const double DefaultReadingFontSize = 14;
 
@@ -525,6 +527,20 @@ public sealed record PatchouliAppSettings(
     public CitationInteropAppSettings CitationInterop { get; init; } = CitationInteropAppSettings.Default();
 
     /// <summary>
+    /// Page render disk-cache bounds and PNG encoding quality (issue #57), persisted in the
+    /// JSON "RenderCache" section.
+    /// </summary>
+    public RenderCacheAppSettings RenderCache { get; init; } = RenderCacheAppSettings.Default();
+
+    /// <summary>
+    /// Proxy configuration for outbound HTTP, persisted in the JSON "Network" section (issue #56).
+    /// The proxy password is deliberately absent: it lives in
+    /// <see cref="Patchouli.Core.Credentials.ICredentialStore"/> under
+    /// <c>ProviderIds.NetworkProxy</c>; only the <c>HasProxyPassword</c> marker is persisted here.
+    /// </summary>
+    public NetworkAppSettings Network { get; init; } = NetworkAppSettings.Default();
+
+    /// <summary>
     /// LLM provider directory and translation defaults, persisted in the JSON "Llm" section. API keys are
     /// deliberately absent: each provider key lives in <see cref="Patchouli.Core.Credentials.ICredentialStore"/>
     /// (D2), so a shared or synced settings file never carries a secret.
@@ -612,6 +628,8 @@ public sealed record PatchouliAppSettings(
             JsonElement? llm = GetSection(root, "Llm");
             JsonElement? agents = GetSection(root, "Agents") ?? GetSection(root, "AgentIntegration");
             JsonElement? citationInterop = GetSection(root, "CitationInterop");
+            JsonElement? renderCache = GetSection(root, "RenderCache");
+            JsonElement? network = GetSection(root, "Network");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -647,7 +665,9 @@ public sealed record PatchouliAppSettings(
                     UiPreferences.NormalizeThemeMode(
                         ReadString(ui, "ThemeMode", defaults.Ui.ThemeMode)),
                     ReadStringStringDict(ui, "SearchPageModes", defaults.Ui.SearchPageModes),
-                    ReadBool(ui, "ParseVirtualLinksInSearchBar", defaults.Ui.ParseVirtualLinksInSearchBar)))
+                    ReadBool(ui, "ParseVirtualLinksInSearchBar", defaults.Ui.ParseVirtualLinksInSearchBar),
+                    ReadBool(ui, "ExpandFullTextSearchResults", defaults.Ui.ExpandFullTextSearchResults),
+                    ReadBool(ui, "ActivateWindowOnProtocolOpen", defaults.Ui.ActivateWindowOnProtocolOpen)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -655,6 +675,8 @@ public sealed record PatchouliAppSettings(
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Import = ReadImport(import, defaults.Import),
                 CitationInterop = ReadCitationInterop(citationInterop, defaults.CitationInterop),
+                RenderCache = ReadRenderCache(renderCache, defaults.RenderCache),
+                Network = ReadNetwork(network, defaults.Network),
                 Llm = ReadLlm(llm, defaults.Llm),
                 Agents = ReadAgents(agents, defaults.Agents),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
@@ -869,7 +891,9 @@ public sealed record PatchouliAppSettings(
                 Ui.ReadingCompareMode,
                 Ui.ThemeMode,
                 Ui.SearchPageModes,
-                Ui.ParseVirtualLinksInSearchBar
+                Ui.ParseVirtualLinksInSearchBar,
+                Ui.ExpandFullTextSearchResults,
+                Ui.ActivateWindowOnProtocolOpen
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -894,6 +918,13 @@ public sealed record PatchouliAppSettings(
                 CitationInterop.Enabled,
                 CitationInterop.Port
             });
+            RenderCacheAppSettings normalizedRenderCache = RenderCache.Normalize();
+            root["RenderCache"] = JsonSerializer.SerializeToNode(new
+            {
+                normalizedRenderCache.DiskLimitBytes,
+                normalizedRenderCache.PngQuality
+            });
+            root["Network"] = SerializeNetwork(Network);
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -1071,7 +1102,9 @@ public sealed record PatchouliAppSettings(
                     Ui.ReadingCompareMode,
                     Ui.ThemeMode,
                     Ui.SearchPageModes,
-                    Ui.ParseVirtualLinksInSearchBar
+                    Ui.ParseVirtualLinksInSearchBar,
+                    Ui.ExpandFullTextSearchResults,
+                    Ui.ActivateWindowOnProtocolOpen
                 });
             }
 
@@ -1117,6 +1150,21 @@ public sealed record PatchouliAppSettings(
                     CitationInterop.Enabled,
                     CitationInterop.Port
                 });
+            }
+
+            if (saveAll || dirtyFields!.Contains("RenderCache"))
+            {
+                RenderCacheAppSettings renderCache = RenderCache.Normalize();
+                root["RenderCache"] = JsonSerializer.SerializeToNode(new
+                {
+                    renderCache.DiskLimitBytes,
+                    renderCache.PngQuality
+                });
+            }
+
+            if (saveAll || dirtyFields!.Contains("Network"))
+            {
+                root["Network"] = SerializeNetwork(Network);
             }
 
             if (saveAll || dirtyFields!.Contains(LlmProviderCatalog.SectionName))
@@ -1450,6 +1498,57 @@ public sealed record PatchouliAppSettings(
         return new CitationInteropAppSettings(
             ReadBool(element, "Enabled", fallback.Enabled),
             CitationInteropAppSettings.NormalizePort(ReadInt(element, "Port", fallback.Port)));
+    }
+
+    /// <summary>
+    /// Reads the "RenderCache" section (issue #57). A missing or malformed section returns the
+    /// fallback; out-of-range values are clamped rather than rejected so a hand-edited file
+    /// still loads.
+    /// </summary>
+    private static RenderCacheAppSettings ReadRenderCache(JsonElement? section,
+        RenderCacheAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback.Normalize();
+        }
+
+        return new RenderCacheAppSettings(
+            ReadLong(element, "DiskLimitBytes", fallback.DiskLimitBytes),
+            ReadInt(element, "PngQuality", fallback.PngQuality)).Normalize();
+    }
+
+    /// <summary>
+    /// Reads the "Network" section (issue #56). Unknown mode values and malformed fields fall back
+    /// per field; the proxy password is never part of this section — only the
+    /// <c>HasProxyPassword</c> marker written beside it.
+    /// </summary>
+    private static NetworkAppSettings ReadNetwork(JsonElement? section, NetworkAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return new NetworkAppSettings(
+            ReadString(element, "ProxyMode", fallback.ProxyMode),
+            ReadString(element, "ProxyAddress", fallback.ProxyAddress),
+            ReadString(element, "ProxyUsername", fallback.ProxyUsername),
+            ReadBool(element, "HasProxyPassword", fallback.HasProxyPassword),
+            ReadStringList(element, "BypassList", fallback.BypassList)).Normalize();
+    }
+
+    private static JsonObject SerializeNetwork(NetworkAppSettings network)
+    {
+        NetworkAppSettings normalized = network.Normalize();
+        return JsonSerializer.SerializeToNode(new
+        {
+            normalized.ProxyMode,
+            normalized.ProxyAddress,
+            normalized.ProxyUsername,
+            normalized.HasProxyPassword,
+            normalized.BypassList
+        }) as JsonObject ?? new JsonObject();
     }
 
     /// <summary>
