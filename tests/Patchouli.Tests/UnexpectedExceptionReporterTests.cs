@@ -3,6 +3,8 @@ using Patchouli.Core.Diagnostics;
 
 namespace Patchouli.Tests;
 
+// The sink is process-global; unrelated parallel tests must not report into this test's callback.
+[Collection("Avalonia")]
 public sealed class UnexpectedExceptionReporterTests : IDisposable
 {
     public UnexpectedExceptionReporterTests()

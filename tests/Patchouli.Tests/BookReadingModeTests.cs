@@ -21,8 +21,9 @@ namespace Patchouli.Tests;
 /// tests inject a fake through <see cref="PdfWorkspaceViewModel.BookReadingStreamFactory" /> so
 /// they never need a database.
 /// </summary>
-[Collection("Avalonia")]
-public sealed class BookReadingModeTests : IDisposable
+[Collection("RetainedTabUI")]
+[Trait("Category", "ui")]
+public sealed class BookReadingModeTests(AvaloniaSharedSessionFixture headless) : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
@@ -33,12 +34,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_and_exit_toggle_IsBookReadingMode_with_a_streamed_document()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0);
 
             workspace.IsBookReadingMode.Should().BeFalse();
@@ -56,9 +57,9 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_without_a_DocumentInstanceId_keeps_reading_mode_off_and_reports_status()
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path);
+        using MainWindowViewModel main = new(settingsPath: _settings.Path);
         LibraryItemViewModel item = CreateItem(null);
-        PdfWorkspaceViewModel workspace = new(main, item);
+        using PdfWorkspaceViewModel workspace = new(main, item);
         workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0);
 
         await workspace.EnterBookReadingCommand.ExecuteAsync();
@@ -70,12 +71,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_loads_only_the_initial_window_around_the_current_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             List<BookReadingPage> delivered = [];
@@ -96,12 +97,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Enter_preloads_the_pages_behind_the_start_page_after_the_pages_ahead()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
@@ -122,12 +123,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Forward_requests_load_the_next_batch_and_stop_at_the_end()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             List<BookReadingPage> delivered = [];
@@ -154,12 +155,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Backward_requests_load_the_previous_batch_as_prepends_and_stop_at_the_start()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
@@ -186,12 +187,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Requests_are_no_ops_outside_reading_mode()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
 
@@ -206,12 +207,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Replay_reannounces_the_start_and_every_delivered_page_in_order()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
@@ -231,12 +232,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Exit_clears_the_session_cache_so_reentering_reloads()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             List<BookReadingPage> delivered = [];
@@ -258,9 +259,9 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public void Reading_font_size_is_clamped_to_the_supported_range_and_persisted()
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path);
+        using MainWindowViewModel main = new(settingsPath: _settings.Path);
         LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-        PdfWorkspaceViewModel workspace = new(main, item);
+        using PdfWorkspaceViewModel workspace = new(main, item);
 
         workspace.BookReadingFontSize = 4;
         workspace.BookReadingFontSize.Should().Be(ReadingFontCatalog.MinimumFontSize);
@@ -279,9 +280,9 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public void Reading_font_family_persists_the_system_default_label_as_an_empty_string()
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path);
+        using MainWindowViewModel main = new(settingsPath: _settings.Path);
         LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-        PdfWorkspaceViewModel workspace = new(main, item);
+        using PdfWorkspaceViewModel workspace = new(main, item);
 
         workspace.BookReadingFontFamily.Should().Be(PdfWorkspaceViewModel.SystemDefaultReadingFontLabel,
             "the persisted empty family maps to the localized default label");
@@ -297,12 +298,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task BookReadingFontFamilies_leads_with_the_system_default_label()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        HeadlessUnitTestSession session = headless.Session;
         IReadOnlyList<string> families = await session.Dispatch(() =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             return workspace.BookReadingFontFamilies;
         }, CancellationToken.None);
 
@@ -314,9 +315,9 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public void Reset_font_size_command_restores_the_default_and_persists()
     {
-        MainWindowViewModel main = new(settingsPath: _settings.Path);
+        using MainWindowViewModel main = new(settingsPath: _settings.Path);
         LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-        PdfWorkspaceViewModel workspace = new(main, item);
+        using PdfWorkspaceViewModel workspace = new(main, item);
 
         workspace.BookReadingFontSize = 22;
         workspace.BookReadingResetFontSizeCommand.Execute(null);
@@ -329,12 +330,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task ExitBookReadingToPage_leaves_reading_mode()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(3);
 
             await workspace.EnterBookReadingCommand.ExecuteAsync();
@@ -352,12 +353,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Concurrent_forward_requests_serialize_sequentially_without_overlap()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             List<BookReadingPage> delivered = [];
@@ -380,12 +381,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Clear_cancels_in_flight_book_reading()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             TaskCompletionSource<bool> pauseLoad = new(TaskCreationOptions.RunContinuationsAsynchronously);
             BlockingBookReadingStream stream = new(30, pauseLoad.Task);
             workspace.BookReadingStreamFactory = _ => stream;
@@ -409,12 +410,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Scroll_requests_during_initial_window_load_are_dropped_preserving_initial_order()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             TaskCompletionSource<bool> pauseLoad = new(TaskCreationOptions.RunContinuationsAsynchronously);
             BlockingBookReadingStream stream = new(30, pauseLoad.Task);
             workspace.BookReadingStreamFactory = _ => stream;
@@ -455,12 +456,12 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Scroll_requests_after_initial_window_load_deliver_expected_batches()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
@@ -492,45 +493,54 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task PdfWorkspacePage_initial_load_from_non_zero_page_preserves_scroll_offset()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30, true);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
 
             PdfWorkspacePage page = new() { DataContext = workspace };
             Window window = new() { Content = page, Width = 1280, Height = 900 };
-            window.Show();
-            window.Measure(new Size(1280, 900));
-            window.Arrange(new Rect(0, 0, 1280, 900));
+            try
+            {
+                window.Show();
+                window.Measure(new Size(1280, 900));
+                window.Arrange(new Rect(0, 0, 1280, 900));
 
-            await workspace.EnterBookReadingCommand.ExecuteAsync();
+                await workspace.EnterBookReadingCommand.ExecuteAsync();
 
-            window.Measure(new Size(1280, 900));
-            window.Arrange(new Rect(0, 0, 1280, 900));
-            ScrollViewer scroller = page.FindControl<ScrollViewer>("BookReadingScroller")!;
-            scroller.Offset.Y.Should().BeGreaterThan(500,
-                "the start page sits two tall pages below the document top, so anchoring to it " +
-                "lands far from zero; a pinned-to-top offset was the original bug");
-            stream.RequestedPages.Should().OnlyContain(p => p >= 18 && p <= 28,
-                "after anchoring, the trailing layout scroll events must not cascade backward " +
-                "prefetches past the initial window {18..28} down to page zero");
+                window.Measure(new Size(1280, 900));
+                window.Arrange(new Rect(0, 0, 1280, 900));
+                ScrollViewer scroller = page.FindControl<ScrollViewer>("BookReadingScroller")!;
+                scroller.Offset.Y.Should().BeGreaterThan(500,
+                    "the start page sits two tall pages below the document top, so anchoring to it " +
+                    "lands far from zero; a pinned-to-top offset was the original bug");
+                stream.RequestedPages.Should().OnlyContain(p => p >= 18 && p <= 28,
+                    "after anchoring, the trailing layout scroll events must not cascade backward " +
+                    "prefetches past the initial window {18..28} down to page zero");
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
         }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Initial_window_completion_raises_anchor_before_prefetch_guard_lifts()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await DispatchAsync(session, async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
@@ -539,6 +549,8 @@ public sealed class BookReadingModeTests : IDisposable
             workspace.BookReadingAnchorRequested += () =>
             {
                 anchorCount++;
+                // This owned event runs inside the awaited load, before its publisher is disposed.
+                // ReSharper disable once AccessToDisposedClosure
                 pendingAtAnchor = workspace.BookReadingInitialWindowPending;
             };
 
@@ -554,36 +566,56 @@ public sealed class BookReadingModeTests : IDisposable
     [Fact]
     public async Task Replay_after_view_recreation_anchors_to_start_page()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
-        await session.Dispatch(async () =>
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
         {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            await using MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
+            using PdfWorkspaceViewModel workspace = new(main, item);
             FakeBookReadingStream stream = new(30, true);
             workspace.BookReadingStreamFactory = _ => stream;
             workspace.BookReadingStartPageOverride = 20;
 
             PdfWorkspacePage firstView = new() { DataContext = workspace };
             Window window = new() { Content = firstView, Width = 1280, Height = 900 };
-            window.Show();
-            window.Measure(new Size(1280, 900));
-            window.Arrange(new Rect(0, 0, 1280, 900));
+            try
+            {
+                window.Show();
+                window.Measure(new Size(1280, 900));
+                window.Arrange(new Rect(0, 0, 1280, 900));
 
-            await workspace.EnterBookReadingCommand.ExecuteAsync();
+                await workspace.EnterBookReadingCommand.ExecuteAsync();
 
-            // Recreate the view against the live reading session, as a tab switch back would.
-            PdfWorkspacePage recreatedView = new() { DataContext = workspace };
-            window.Content = recreatedView;
-            window.Measure(new Size(1280, 900));
-            window.Arrange(new Rect(0, 0, 1280, 900));
-            window.UpdateLayout();
+                // Recreate the view against the live reading session, as a tab switch back would.
+                PdfWorkspacePage recreatedView = new() { DataContext = workspace };
+                window.Content = recreatedView;
+                window.Measure(new Size(1280, 900));
+                window.Arrange(new Rect(0, 0, 1280, 900));
+                window.UpdateLayout();
 
-            ScrollViewer scroller = recreatedView.FindControl<ScrollViewer>("BookReadingScroller")!;
-            scroller.Offset.Y.Should().BeGreaterThan(500,
-                "the replay re-delivers every cached page and anchors the recreated view to the " +
-                "start page instead of leaving it at the top of the loaded region");
+                ScrollViewer scroller = recreatedView.FindControl<ScrollViewer>("BookReadingScroller")!;
+                scroller.Offset.Y.Should().BeGreaterThan(500,
+                    "the replay re-delivers every cached page and anchors the recreated view to the " +
+                    "start page instead of leaving it at the top of the loaded region");
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
         }, CancellationToken.None);
+    }
+
+    // Await the actual async body before resetting the shared headless application.
+    private static Task DispatchAsync(HeadlessUnitTestSession session, Func<Task> action,
+        CancellationToken cancellationToken)
+    {
+        return session.Dispatch<int>(async () =>
+        {
+            await action();
+            return 0;
+        }, cancellationToken);
     }
 
     public void Dispose()
