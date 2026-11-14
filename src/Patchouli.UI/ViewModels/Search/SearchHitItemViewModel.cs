@@ -34,10 +34,12 @@ public sealed class SearchHitSnippetViewModel : ViewModelBase
 /// matched snippets rendered in the row's full-width details section when expanded.</summary>
 public sealed partial class SearchHitItemViewModel : ViewModelBase
 {
-    private SearchHitItemViewModel(LibraryItemViewModel item, IReadOnlyList<SearchHitSnippetViewModel> snippets)
+    private SearchHitItemViewModel(LibraryItemViewModel item, IReadOnlyList<SearchHitSnippetViewModel> snippets,
+        bool isExpanded)
     {
         Item = item;
         Snippets = snippets;
+        IsExpanded = isExpanded;
         ToggleExpandedCommand = new RelayCommand(_ => IsExpanded = !IsExpanded);
     }
 
@@ -51,12 +53,13 @@ public sealed partial class SearchHitItemViewModel : ViewModelBase
     [ObservableProperty] public partial bool IsExpanded { get; set; } = true;
 
     public static SearchHitItemViewModel HitItem(LibraryItemViewModel item,
-        IReadOnlyList<SearchHitSnippetViewModel> snippets)
+        IReadOnlyList<SearchHitSnippetViewModel> snippets, bool isExpanded = true)
     {
-        return new SearchHitItemViewModel(item, snippets);
+        return new SearchHitItemViewModel(item, snippets, isExpanded);
     }
 
-    public static SearchHitItemViewModel FallbackItem(string title, IReadOnlyList<SearchHitSnippetViewModel> snippets)
+    public static SearchHitItemViewModel FallbackItem(string title, IReadOnlyList<SearchHitSnippetViewModel> snippets,
+        bool isExpanded = true)
     {
         LibraryItemViewModel item = new(
             "",
@@ -75,6 +78,6 @@ public sealed partial class SearchHitItemViewModel : ViewModelBase
             "not_indexed",
             _ => Task.CompletedTask,
             _ => Task.CompletedTask);
-        return new SearchHitItemViewModel(item, snippets);
+        return new SearchHitItemViewModel(item, snippets, isExpanded);
     }
 }

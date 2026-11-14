@@ -20,13 +20,67 @@
               RowDetailsVisibilityMode="Collapsed"
               SelectionMode="Single" CanUserReorderColumns="False" CanUserResizeColumns="True"
               CanUserSortColumns="False" IsReadOnly="True" GridLinesVisibility="Horizontal"
-              Loaded="OnFullTextGridLoaded"
+              Loaded="OnFullTextGridLoaded" LoadingRow="OnFullTextGridLoadingRow"
+              SelectionChanged="OnFullTextGridSelectionChanged"
+              ContextRequested="OnFullTextGridContextRequested"
               RowBackground="Transparent" BorderThickness="0"
               Background="{DynamicResource SurfaceContainerLowestBrush}">
       <DataGrid.ContextMenu>
-        <ContextMenu>
+        <!-- Item commands are the Library grid's active-scope menu, bound to the shared shell. Search
+             hits are always active items, so nothing here depends on the sidebar scope; trash-only
+             commands (restore, purge) are intentionally absent. -->
+        <ContextMenu x:Name="FullTextContextMenu">
           <MenuItem Header="{Binding ToggleAllHitsExpandedText}" Command="{Binding ToggleAllHitsExpandedCommand}"
                     IsEnabled="{Binding HasResults}" />
+          <Separator />
+          <MenuItem Header="编辑元数据" Command="{Binding Shell.EditSelectedItemCommand}"
+                    IsEnabled="{Binding Shell.IsSingleSelectionOrNone}" />
+          <MenuItem Header="打开文档" Command="{Binding Shell.ShowReadingCommand}" />
+          <MenuItem Header="合并题录" Command="{Binding Shell.MergeSelectedItemsCommand}"
+                    IsEnabled="{Binding Shell.CanMergeSelectedItems}" />
+          <MenuItem Header="获取所选题录元数据"
+                    Command="{Binding Shell.LookupMetadataBatchCommand}"
+                    IsEnabled="{Binding Shell.HasBatchSelection}" />
+          <MenuItem Header="取消批量获取元数据"
+                    Command="{Binding Shell.CancelMetadataBatchCommand}"
+                    IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
+          <MenuItem Header="文献加工">
+            <MenuItem Header="运行 OCR" Command="{Binding Shell.RunSelectedItemOcrCommand}" />
+            <MenuItem Header="全文翻译" Command="{Binding Shell.StartFullTranslationCommand}"
+                      ToolTip.Tip="翻译所选题录主文档的全部页面" />
+          </MenuItem>
+          <MenuItem Header="添加到集合" IsEnabled="{Binding Shell.HasCollections}"
+                    ItemsSource="{Binding Shell.CollectionContextItems}" x:CompileBindings="False">
+            <MenuItem.ItemTemplate>
+              <DataTemplate x:DataType="vm:CollectionListItemViewModel">
+                <TextBlock Text="{Binding Name}" />
+              </DataTemplate>
+            </MenuItem.ItemTemplate>
+            <MenuItem.Styles>
+              <Style Selector="MenuItem MenuItem">
+                <Setter Property="ToggleType" Value="CheckBox" />
+                <Setter Property="IsChecked" Value="{Binding ContainsSelection, Mode=OneWay}" />
+                <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
+              </Style>
+            </MenuItem.Styles>
+          </MenuItem>
+          <MenuItem Header="从当前集合移除"
+                    Command="{Binding Shell.RemoveSelectedItemsFromCurrentCollectionCommand}"
+                    IsVisible="{Binding Shell.HasSelectedCollectionFilter}" />
+          <MenuItem Header="{Binding Shell.CopyCslBibliographyDescriptor.Label}"
+                    Command="{Binding Shell.CopyCslBibliographyDescriptor}"
+                    ToolTip.Tip="{Binding Shell.CopyCslBibliographyDescriptor.DisabledReason}" />
+          <MenuItem Header="{Binding Shell.ExportBiblatexDescriptor.Label}"
+                    Command="{Binding Shell.ExportBiblatexDescriptor}" />
+          <MenuItem Header="{Binding Shell.CopyBiblatexDescriptor.Label}"
+                    Command="{Binding Shell.CopyBiblatexDescriptor}" />
+          <MenuItem Header="删除" Command="{Binding Shell.DeleteSelectedItemsCommand}" />
+          <Separator />
+          <MenuItem Header="新建题录" Command="{Binding Shell.CreateItemMenuCommand}" />
+          <MenuItem Header="{Binding Shell.ImportBiblatexBatchDescriptor.Label}"
+                    Command="{Binding Shell.ImportBiblatexBatchDescriptor}" />
+          <MenuItem Header="检测重复题录" Command="{Binding Shell.DetectDuplicatesCommand}" />
+          <MenuItem Header="管理 CSL 样式" Command="{Binding Shell.OpenCslStyleManagerCommand}" />
         </ContextMenu>
       </DataGrid.ContextMenu>
       <DataGrid.RowDetailsTemplate>

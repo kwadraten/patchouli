@@ -214,6 +214,53 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     [ObservableProperty] public partial string Query { get; set; } = "";
 
+    /// <summary>The Library shell whose item commands the result context menu reuses.</summary>
+    [ExcludeFromDerivedGeneration]
+    public LibraryShellViewModel Shell => _main.Shell;
+
+    /// <summary>Drops hits whose items are no longer active (trashed, merged or purged).</summary>
+    internal void RemoveHits(IReadOnlySet<string> itemIds)
+    {
+        if (itemIds.Count == 0)
+        {
+            return;
+        }
+
+        Shell.RemoveSearchSelection(itemIds);
+        for (int index = FullTextResults.Count - 1; index >= 0; index--)
+        {
+            if (itemIds.Contains(FullTextResults[index].Item.ItemId))
+            {
+                FullTextResults.RemoveAt(index);
+            }
+        }
+    }
+
+    /// <summary>Re-checks hits touched by a committed change and drops the ones that left the active scope.</summary>
+    internal async Task ReconcileHitsAsync(HostServices services, IReadOnlyCollection<ItemId> changedItemIds,
+        CancellationToken cancellationToken)
+    {
+        HashSet<string> shown = FullTextResults.Select(hit => hit.Item.ItemId).ToHashSet(StringComparer.Ordinal);
+        ItemId[] touched = changedItemIds.Where(id => shown.Contains(id.ToString())).Distinct().ToArray();
+        if (touched.Length == 0)
+        {
+            return;
+        }
+
+        int libraryGeneration = _main.LibraryGeneration;
+        Result<IReadOnlyList<LibraryItemRow>> active = await Task.Run(
+            () => services.LibraryItems.GetRowsByIdsAsync(touched, cancellationToken), cancellationToken);
+        if (active.IsFailure || !_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
+        HashSet<string> stillActive = active.Value.Select(row => row.ItemId.ToString())
+            .ToHashSet(StringComparer.Ordinal);
+        RemoveHits(touched.Select(id => id.ToString()).Where(id => !stillActive.Contains(id))
+            .ToHashSet(StringComparer.Ordinal));
+    }
+
     [ExcludeFromDerivedGeneration] public bool ShowItemTypeColumn => GetColumnVisibility("ItemType");
     [ExcludeFromDerivedGeneration] public bool ShowYearColumn => GetColumnVisibility("Year");
     [ExcludeFromDerivedGeneration] public bool ShowAuthorColumn => GetColumnVisibility("Author");
@@ -502,6 +549,7 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             ? items.Value.ToDictionary(row => row.ItemId)
             : new Dictionary<ItemId, LibraryItemRow>();
 
+        bool expandHits = _main.AppOptions.Ui.ExpandFullTextSearchResults;
         List<SearchHitItemViewModel> hits = new();
         List<string> units = new();
         string? firstMatchedUnit = default;
@@ -529,8 +577,8 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             }
 
             hits.Add(rowsByItem.TryGetValue(itemId, out LibraryItemRow? row)
-                ? SearchHitItemViewModel.HitItem(CreateItemViewModel(row), snippets)
-                : SearchHitItemViewModel.FallbackItem(itemPages[0].ItemTitle, snippets));
+                ? SearchHitItemViewModel.HitItem(CreateItemViewModel(row), snippets, expandHits)
+                : SearchHitItemViewModel.FallbackItem(itemPages[0].ItemTitle, snippets, expandHits));
         }
 
         await RunOnUiThreadAsync(() =>
@@ -547,6 +595,8 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
                 SearchUnits.Add(unit);
             }
 
+            // Replacing the results invalidates any borrowed selection of the previous hits.
+            Shell.EndSearchSelection();
             FullTextResults.Clear();
             foreach (SearchHitItemViewModel hit in hits)
             {
@@ -635,6 +685,7 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     private void ClearResults()
     {
+        Shell.EndSearchSelection();
         SearchUnits.Clear();
         FullTextResults.Clear();
         UnitId = "";

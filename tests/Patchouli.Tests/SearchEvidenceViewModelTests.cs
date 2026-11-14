@@ -344,6 +344,89 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
         vm.SearchEvidence.TryGetColumnWidth("Title", out _).Should().BeFalse();
     }
 
+    [Fact]
+    public void Search_selection_enables_item_commands_regardless_of_sidebar_scope()
+    {
+        MainWindowViewModel vm = CreateMainWindow();
+        LibraryShellViewModel shell = vm.SearchEvidence.Shell;
+        shell.Should().BeSameAs(vm.Shell);
+        shell.Sidebar.SelectedSection = shell.Sidebar.Sections.Single(section => section.Scope ==
+            LibrarySidebarScope.Trash);
+        shell.CanModifyLibraryItems.Should().BeFalse();
+
+        SearchHitItemViewModel first = CreateHit(ItemId.New().ToString());
+        SearchHitItemViewModel second = CreateHit(ItemId.New().ToString());
+        vm.SearchEvidence.FullTextResults.Add(first);
+        vm.SearchEvidence.FullTextResults.Add(second);
+
+        shell.SelectSearchHit(first.Item);
+        shell.IsSearchSelectionActive.Should().BeTrue();
+        shell.CanModifyLibraryItems.Should().BeTrue("search hits are active items whatever the sidebar shows");
+        shell.SelectedItem.Should().BeSameAs(first.Item);
+        shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(first.Item);
+
+        shell.SelectSearchHit(second.Item);
+        shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(second.Item);
+
+        shell.EndSearchSelection();
+        shell.IsSearchSelectionActive.Should().BeFalse();
+        shell.CanModifyLibraryItems.Should().BeFalse("the trash scope keeps its own safety rules");
+        shell.SelectedItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Collection_filter_keeps_remove_from_collection_with_a_search_selection()
+    {
+        MainWindowViewModel vm = CreateMainWindow();
+        LibraryShellViewModel shell = vm.Shell;
+        shell.Sidebar.LoadCollections([
+            new Core.Bibliography.Collection(CollectionId.New(), LibraryId.New(), "Reading list", 1,
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+        ]);
+        shell.Sidebar.SelectedCollection = shell.Sidebar.Collections.Single();
+        SearchHitItemViewModel hit = CreateHit(ItemId.New().ToString());
+        vm.SearchEvidence.FullTextResults.Add(hit);
+
+        shell.SelectSearchHit(hit.Item);
+
+        shell.CanModifyLibraryItems.Should().BeTrue();
+        shell.HasSelectedCollectionFilter.Should().BeTrue();
+        shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(hit.Item);
+    }
+
+    [Fact]
+    public void Unresolvable_hits_and_replaced_results_never_leave_a_stale_selection()
+    {
+        MainWindowViewModel vm = CreateMainWindow();
+        LibraryShellViewModel shell = vm.Shell;
+        SearchHitItemViewModel fallback = SearchHitItemViewModel.FallbackItem("已删除的题录", []);
+        SearchHitItemViewModel hit = CreateHit(ItemId.New().ToString());
+        vm.SearchEvidence.FullTextResults.Add(fallback);
+        vm.SearchEvidence.FullTextResults.Add(hit);
+
+        shell.SelectSearchHit(fallback.Item);
+        shell.SelectedItem.Should().BeNull();
+        shell.SelectedItems.Should().BeEmpty();
+
+        shell.SelectSearchHit(hit.Item);
+        vm.SearchEvidence.RemoveHits(new HashSet<string>([hit.Item.ItemId]));
+        vm.SearchEvidence.FullTextResults.Should().NotContain(hit);
+        shell.SelectedItems.Should().BeEmpty();
+
+        shell.SelectSearchHit(fallback.Item);
+        vm.SearchEvidence.DetachLibraryContext();
+        shell.IsSearchSelectionActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Hits_honor_the_initial_expansion_preference()
+    {
+        SearchHitItemViewModel collapsed = SearchHitItemViewModel.HitItem(CreateItem("collapsed", "t"), [], false);
+        collapsed.IsExpanded.Should().BeFalse();
+        SearchHitItemViewModel.FallbackItem("t", [], false).IsExpanded.Should().BeFalse();
+        SearchHitItemViewModel.HitItem(CreateItem("expanded", "t"), []).IsExpanded.Should().BeTrue();
+    }
+
     private MainWindowViewModel CreateMainWindow()
     {
         return new MainWindowViewModel(new FakeClipboard(), settingsPath: _settings.Path);

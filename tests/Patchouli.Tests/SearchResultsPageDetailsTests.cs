@@ -201,6 +201,185 @@ public class SearchResultsPageDetailsTests : IDisposable
         }, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Initial_search_results_open_details_for_expanded_hits(bool addBeforeShow)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+            Window window = new()
+            {
+                Width = 1280,
+                Height = 800,
+                Content = new SearchResultsPage { DataContext = vm.SearchEvidence }
+            };
+            List<SearchHitItemViewModel> hits = Enumerable.Range(0, 25).Select(i => CreateHit(i, 3)).ToList();
+            if (addBeforeShow)
+            {
+                hits.ForEach(vm.SearchEvidence.FullTextResults.Add);
+            }
+
+            window.Show();
+            try
+            {
+                if (!addBeforeShow)
+                {
+                    PumpLayout(window);
+                    hits.ForEach(vm.SearchEvidence.FullTextResults.Add);
+                }
+
+                PumpLayout(window);
+                RealizedRows(window).Where(row => row.IsVisible).Should().NotBeEmpty()
+                    .And.OnlyContain(row => row.AreDetailsVisible);
+
+                ScrollToItem(window, hits[^1]);
+                PumpLayout(window);
+                RealizedRows(window).Where(row => row.IsVisible).Should()
+                    .OnlyContain(row => RowMatchesViewModel(row) && row.AreDetailsVisible);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Results_arriving_while_page_is_hidden_open_details_when_shown(bool activateThroughLifecycle)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+            // Mirrors RetainedContentHost: the page is attached hidden, then made visible and activated.
+            SearchResultsPage page = new() { DataContext = vm.SearchEvidence, IsVisible = false };
+            Window window = new() { Width = 1280, Height = 800, Content = page };
+            window.Show();
+            try
+            {
+                PumpLayout(window);
+                List<SearchHitItemViewModel> hits = Enumerable.Range(0, 25).Select(i => CreateHit(i, 3)).ToList();
+                hits.ForEach(vm.SearchEvidence.FullTextResults.Add);
+                PumpLayout(window);
+
+                page.IsVisible = true;
+                if (activateThroughLifecycle)
+                {
+                    page.OnTabActivated();
+                }
+
+                PumpLayout(window);
+                PumpLayout(window);
+                RealizedRows(window).Where(row => row.IsVisible).Should().NotBeEmpty()
+                    .And.OnlyContain(row => row.AreDetailsVisible);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Replacing_results_opens_details_for_new_expanded_hits(bool collapsePrevious, bool scrolled)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+            Window window = new()
+            {
+                Width = 1280,
+                Height = 800,
+                Content = new SearchResultsPage { DataContext = vm.SearchEvidence }
+            };
+            window.Show();
+            try
+            {
+                List<SearchHitItemViewModel> first = Enumerable.Range(0, 25).Select(i => CreateHit(i, 3)).ToList();
+                first.ForEach(vm.SearchEvidence.FullTextResults.Add);
+                PumpLayout(window);
+                if (collapsePrevious)
+                {
+                    vm.SearchEvidence.ToggleAllHitsExpandedCommand.Execute(null);
+                    PumpLayout(window);
+                }
+
+                if (scrolled)
+                {
+                    ScrollToItem(window, first[^1]);
+                    PumpLayout(window);
+                }
+
+                List<SearchHitItemViewModel> second =
+                    Enumerable.Range(100, 25).Select(i => CreateHit(i, 2)).ToList();
+                vm.SearchEvidence.FullTextResults.Clear();
+                second.ForEach(vm.SearchEvidence.FullTextResults.Add);
+                PumpLayout(window);
+                PumpLayout(window);
+
+                RealizedRows(window).Where(row => row.IsVisible).Should().NotBeEmpty()
+                    .And.OnlyContain(row => second.Contains(row.DataContext) && row.AreDetailsVisible);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Collapsed_default_from_settings_keeps_initial_rows_closed()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch(() =>
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+            Window window = new()
+            {
+                Width = 1280,
+                Height = 800,
+                Content = new SearchResultsPage { DataContext = vm.SearchEvidence }
+            };
+            window.Show();
+            try
+            {
+                PumpLayout(window);
+                List<SearchHitItemViewModel> hits = Enumerable.Range(0, 25)
+                    .Select(i => CreateHit(i, 3, false)).ToList();
+                hits.ForEach(vm.SearchEvidence.FullTextResults.Add);
+                PumpLayout(window);
+                RealizedRows(window).Where(row => row.IsVisible).Should().NotBeEmpty()
+                    .And.OnlyContain(row => !row.AreDetailsVisible);
+
+                hits[0].ToggleExpandedCommand.Execute(null);
+                PumpLayout(window);
+                RealizedRows(window).Where(row => row.IsVisible).Should().OnlyContain(row => RowMatchesViewModel(row));
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
     [Fact]
     public void ProDataGrid_details_table_writer_contract_exists()
     {
@@ -247,7 +426,7 @@ public class SearchResultsPageDetailsTests : IDisposable
         return CreateHit(index, 12);
     }
 
-    private static SearchHitItemViewModel CreateHit(int index, int snippetCount)
+    private static SearchHitItemViewModel CreateHit(int index, int snippetCount, bool isExpanded = true)
     {
         List<SearchHitSnippetViewModel> snippets = new();
         for (int i = 0; i < snippetCount; i++)
@@ -282,7 +461,7 @@ public class SearchResultsPageDetailsTests : IDisposable
             "not_indexed",
             _ => Task.CompletedTask,
             _ => Task.CompletedTask);
-        return SearchHitItemViewModel.HitItem(item, snippets);
+        return SearchHitItemViewModel.HitItem(item, snippets, isExpanded);
     }
 
     private sealed class FakeClipboard : IClipboardService

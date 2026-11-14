@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -10,7 +12,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 /// device-local UI preferences written through the settings store's debounced writer on change, so
 /// each edit auto-saves without touching this section's dirty/save lifecycle or unrelated
 /// settings.</summary>
-public sealed partial class SearchPageAwarenessSettingsViewModel : ViewModelBase
+public sealed partial class SearchPageAwarenessSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
 
@@ -31,6 +33,44 @@ public sealed partial class SearchPageAwarenessSettingsViewModel : ViewModelBase
 
     public IReadOnlyList<SearchPageModeRowViewModel> Rows { get; }
 
+    public override bool SupportsEditing => true;
+    public override bool IsDirty => false;
+    public override bool CanSave => false;
+
+    public override Task LoadAsync(CancellationToken cancellationToken = default)
+    {
+        RefreshFromPersisted();
+        return Task.CompletedTask;
+    }
+
+    public override Task SaveAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    public override Task DiscardAsync()
+    {
+        RefreshFromPersisted();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Whether new full-text search hits start with their snippets expanded.</summary>
+    [ObservableProperty]
+    public partial bool ExpandFullTextSearchResults { get; set; } = true;
+
+    partial void OnExpandFullTextSearchResultsChanged(bool value)
+    {
+        if (_isSyncing || _main.AppOptions.Ui.ExpandFullTextSearchResults == value)
+        {
+            return;
+        }
+
+        _main.UpdateAppOptionsDeferred(current => current with
+        {
+            Ui = current.Ui with { ExpandFullTextSearchResults = value }
+        }, "Ui");
+    }
+
     /// <summary>Re-reads the persisted preferences into the row selections without writing back.</summary>
     internal void RefreshFromPersisted()
     {
@@ -38,6 +78,7 @@ public sealed partial class SearchPageAwarenessSettingsViewModel : ViewModelBase
         try
         {
             UiPreferences preferences = _main.AppOptions.Ui;
+            ExpandFullTextSearchResults = preferences.ExpandFullTextSearchResults;
             foreach (SearchPageModeRowViewModel row in Rows)
             {
                 row.SelectedMode = SearchPageAwareness.GetModeOption(preferences, row.Kind);
@@ -117,9 +158,7 @@ public sealed partial class SearchPageModeRowViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchModeOption> ModeOptions =>
-        Kind is WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor
-            ? SearchPageAwareness.ModeOptions
-            : SearchPageAwareness.UnscopedModeOptions;
+        SearchPageAwareness.ModeOptionsFor(Kind);
 
     [ObservableProperty] public partial SearchModeOption? SelectedMode { get; set; }
 

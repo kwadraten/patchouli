@@ -1,7 +1,11 @@
+using System.Collections.Specialized;
 using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
@@ -22,6 +26,8 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
     private bool _isActive;
     private bool _isClosed;
     private bool _pendingCollapseReset;
+    private bool _pendingSlotReset;
+    private bool _rowsSyncScheduled;
 
     static SearchResultsPage()
     {
@@ -36,6 +42,51 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
     public SearchResultsPage()
     {
         InitializeComponent();
+        FullTextGrid.AddHandler(PointerPressedEvent, OnFullTextGridPointerPressed, RoutingStrategies.Tunnel,
+            true);
+    }
+
+    // The result context menu reuses the Library item commands: the clicked hit's own item instance
+    // becomes the shell selection while this tab is active.
+    private void OnFullTextGridPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(FullTextGrid).Properties.IsRightButtonPressed ||
+            e.Source is not Control source ||
+            source.FindAncestorOfType<DataGridRow>(true)?.DataContext is not SearchHitItemViewModel hit)
+        {
+            return;
+        }
+
+        FullTextGrid.SelectedItem = hit;
+        SelectHit(hit);
+    }
+
+    private void OnFullTextGridSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        SelectHit(FullTextGrid.SelectedItem as SearchHitItemViewModel);
+    }
+
+    private void OnFullTextGridContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        // Keyboard-opened menus and menus opened over empty space act on the grid's current hit.
+        SelectHit(FullTextGrid.SelectedItem as SearchHitItemViewModel);
+    }
+
+    private void SelectHit(SearchHitItemViewModel? hit)
+    {
+        if (!_isActive || _isClosed || _search is null)
+        {
+            return;
+        }
+
+        // A cleared grid selection only matters once search owns the shell selection; otherwise the
+        // Library selection stays untouched.
+        if (hit is null && !_search.Shell.IsSearchSelectionActive)
+        {
+            return;
+        }
+
+        _search.Shell.SelectSearchHit(hit?.Item);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -75,18 +126,21 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         }
 
         _isActive = true;
-        if (_pendingCollapseReset)
+        if (_pendingCollapseReset || _pendingSlotReset)
         {
             _pendingCollapseReset = false;
+            _pendingSlotReset = false;
             ResetDetailsVisibilityTable();
         }
 
         ApplyAllRealizedRows();
+        SelectHit(FullTextGrid.SelectedItem as SearchHitItemViewModel);
     }
 
     public void OnTabDeactivated()
     {
         _isActive = false;
+        _search?.Shell.EndSearchSelection();
     }
 
     public void OnTabClosed()
@@ -110,6 +164,8 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
 
         _search.HitExpansionChanged -= OnHitExpansionChanged;
         _search.AllHitsExpansionChanged -= OnAllHitsExpansionChanged;
+        _search.FullTextResults.CollectionChanged -= OnFullTextResultsChanged;
+        _search.Shell.EndSearchSelection();
         _search = null;
     }
 
@@ -126,10 +182,58 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         {
             _search.HitExpansionChanged += OnHitExpansionChanged;
             _search.AllHitsExpansionChanged += OnAllHitsExpansionChanged;
+            _search.FullTextResults.CollectionChanged += OnFullTextResultsChanged;
         }
     }
 
-    private void OnFullTextGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    // Replacing the results reuses realized rows: ProDataGrid prepares them for the new items
+    // with RowDetailsVisibilityMode="Collapsed" after the DataContext handler already ran (the row
+    // has no slot index yet at that point), so the initial expansion of new hits is lost. Converge
+    // once the grid has finished preparing the rows.
+    private void OnFullTextResultsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            // Slot entries of the previous result set must not leak into the new one.
+            _pendingSlotReset = true;
+        }
+
+        ScheduleRealizedRowsSync();
+    }
+
+    private void OnFullTextGridLoadingRow(object? sender, DataGridRowEventArgs e)
+    {
+        ScheduleRealizedRowsSync();
+    }
+
+    private void ScheduleRealizedRowsSync()
+    {
+        if (_rowsSyncScheduled)
+        {
+            return;
+        }
+
+        _rowsSyncScheduled = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _rowsSyncScheduled = false;
+            if (!_isActive || _isClosed)
+            {
+                // OnTabActivated converges the rows when the page is shown again.
+                return;
+            }
+
+            if (_pendingSlotReset)
+            {
+                _pendingSlotReset = false;
+                ResetDetailsVisibilityTable();
+            }
+
+            ApplyAllRealizedRows();
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void OnFullTextGridLoaded(object? sender, RoutedEventArgs e)
     {
         ApplyColumnLayout(FullTextGrid);
         AttachSearch(DataContext as SearchEvidenceViewModel);
@@ -250,7 +354,7 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         return column.Tag as string;
     }
 
-    private async void OnCopySearchUnitEvidenceUriClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnCopySearchUnitEvidenceUriClick(object? sender, RoutedEventArgs e)
     {
         await UnexpectedExceptionBoundary.RunAsync(
             () => CopySearchUnitEvidenceUriAsync(sender),
@@ -268,7 +372,7 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         await main.SearchEvidence.CopyVersionedUriForSearchUnitAsync(unit);
     }
 
-    private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, RoutedEventArgs e)
     {
         await UnexpectedExceptionBoundary.RunAsync(
             () => CopySearchUnitEvidenceMarkdownAsync(sender),
@@ -286,7 +390,7 @@ public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
         await main.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
     }
 
-    private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, RoutedEventArgs e)
     {
         await UnexpectedExceptionBoundary.RunAsync(
             () => ExportSearchUnitEvidenceMarkdownAsync(sender),
