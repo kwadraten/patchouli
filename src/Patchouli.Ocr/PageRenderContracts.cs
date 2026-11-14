@@ -139,14 +139,20 @@ public sealed record PdfPagePixelBufferOutput(
 
 public interface IPdfPageRenderer
 {
+    /// <param name="pdfPath">Resolved source PDF path.</param>
+    /// <param name="pageIndex">Zero-based physical page index.</param>
+    /// <param name="outputPath">Destination PNG path; parent directories are created by the renderer.</param>
+    /// <param name="dpi">Requested raster density.</param>
+    /// <param name="cancellationToken">Cancellation for the render.</param>
+    /// <param name="pngQuality">SkiaSharp PNG encoder quality (1-100); feeds the cache file only.</param>
     Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath, int dpi,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, int pngQuality = 100);
 }
 
 public interface IPdfPageMemoryRenderer
 {
     Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, int pngQuality = 100);
 }
 
 public interface IPdfPagePixelBufferRenderer
@@ -159,6 +165,9 @@ public interface IPdfPageRendererIdentity
 {
     string GetRendererBasisVersion(int dpi);
 }
+
+/// <summary>Point-in-time footprint of the on-disk page render cache (issue #57).</summary>
+public sealed record PageRenderCacheUsage(string CacheRoot, long TotalBytes, int FileCount);
 
 public sealed record PdfRendererAvailability(string RendererName, bool IsAvailable, string Message);
 

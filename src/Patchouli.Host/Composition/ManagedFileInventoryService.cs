@@ -1,3 +1,4 @@
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Downloads;
 using Patchouli.Core.Results;
 using Patchouli.Extensions.Contracts;
@@ -6,7 +7,9 @@ using Patchouli.Host.ManagedFiles;
 using Patchouli.Host.Plugins;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Ocr;
+using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Translation;
+using Patchouli.Ocr;
 using Patchouli.UI;
 
 namespace Patchouli.Host.Composition;
@@ -54,6 +57,14 @@ public sealed record ManagedInventoryDownload(
     ManagedFilesPlan Plan,
     Func<IProgress<double>?, CancellationToken, Task<Result>> Download);
 
+/// <summary>The Local Files row for the page-render disk cache (issue #57).</summary>
+public sealed record PageRenderCacheDescription(
+    string Directory,
+    int FileCount,
+    long TotalBytes,
+    long DiskLimitBytes,
+    int PngQuality);
+
 /// <summary>
 /// Unified managed-file inventory: enumerates FSX extension declaration groups and plugin
 /// <c>[[files]]</c> declaration groups, merges them by canonical directory and prepares
@@ -77,16 +88,59 @@ public sealed class ManagedFileInventoryService
     private readonly OcrStorageLocations _storage;
     private readonly IPluginManagedDefinitionSource? _plugins;
     private readonly PluginManagedFileService _pluginFiles;
+    private readonly PageRenderService? _pageRenders;
 
     public ManagedFileInventoryService(TranslationExtensionCatalog extensions,
         ExtensionManagedFileService extensionFiles, OcrStorageLocations storage,
-        IPluginManagedDefinitionSource? plugins, PluginManagedFileService pluginFiles)
+        IPluginManagedDefinitionSource? plugins, PluginManagedFileService pluginFiles,
+        PageRenderService? pageRenders = null)
     {
         _extensions = extensions;
         _extensionFiles = extensionFiles;
         _storage = storage;
         _plugins = plugins;
         _pluginFiles = pluginFiles;
+        _pageRenders = pageRenders;
+    }
+
+    /// <summary>
+    /// The page-render cache row for Local Files management (issue #57): live disk usage plus
+    /// the configured limit/quality the UI displays beside it.
+    /// </summary>
+    public async Task<Result<PageRenderCacheDescription>> DescribePageRenderCacheAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_pageRenders is null)
+        {
+            return Result<PageRenderCacheDescription>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Page render cache is not configured for this host.");
+        }
+
+        PageRenderCacheUsage usage = await _pageRenders.GetCacheUsageAsync();
+        return Result<PageRenderCacheDescription>.Success(new PageRenderCacheDescription(
+            usage.CacheRoot, usage.FileCount, usage.TotalBytes, _pageRenders.DiskCacheLimitBytes,
+            _pageRenders.PngQuality));
+    }
+
+    /// <summary>Clears every cached page render; renders are rebuilt lazily on demand.</summary>
+    public async Task<Result> ClearPageRenderCacheAsync(CancellationToken cancellationToken = default)
+    {
+        if (_pageRenders is null)
+        {
+            return Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Page render cache is not configured for this host.");
+        }
+
+        try
+        {
+            await _pageRenders.ClearDiskCacheAsync();
+            return Result.Success();
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "host.managed-files", "clear-page-render-cache"))
+        {
+            return Result.Failure(AppErrorCodes.InvalidState, $"Clearing the render cache failed: {exception.Message}");
+        }
     }
 
     /// <summary>

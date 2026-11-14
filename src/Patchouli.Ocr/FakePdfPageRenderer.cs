@@ -14,9 +14,12 @@ public sealed class FakePdfPageRenderer : IPdfPageRenderer, IPdfPageRendererIden
         return "fake-pdf-renderer-v1";
     }
 
+    public int LastPngQuality { get; private set; } = 100;
+
     public async Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath,
-        int dpi, CancellationToken cancellationToken = default)
+        int dpi, CancellationToken cancellationToken = default, int pngQuality = 100)
     {
+        LastPngQuality = pngQuality;
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         await File.WriteAllBytesAsync(outputPath, TinyPng, cancellationToken);
         return new PdfPageRenderOutput(1200, 1600, 0, CoordinateBasis.NormalizedPage, 1200, 1600,

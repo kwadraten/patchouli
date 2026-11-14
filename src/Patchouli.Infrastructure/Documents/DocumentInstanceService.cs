@@ -8,6 +8,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Documents;
 
@@ -16,13 +17,15 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
     private readonly ILibraryRevisionService? _revisions;
+    private readonly IPageRenderService? _pageRenders;
 
     public DocumentInstanceService(SqliteConnectionFactory connectionFactory, IClock clock,
-        ILibraryRevisionService? revisions = null)
+        ILibraryRevisionService? revisions = null, IPageRenderService? pageRenders = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _revisions = revisions;
+        _pageRenders = pageRenders;
     }
 
     public async Task<Result<DocumentInstance>> AttachDocumentInstanceAsync(
@@ -421,6 +424,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
 
             await transaction.CommitAsync(cancellationToken);
             PublishRevision(revision.Value);
+            await ClearPageRenderCacheAsync(documentInstanceId);
             return Result<DocumentInstanceRemoval>.Success(new DocumentInstanceRemoval(fileAssetIds));
         }
         catch (OperationCanceledException)
@@ -432,6 +436,28 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             return Result<DocumentInstanceRemoval>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Best-effort page-render cache cleanup after a committed removal (issue #57): a failure
+    /// only delays the disk files to the periodic sweep and never rewrites the committed delete.
+    /// </summary>
+    private async Task ClearPageRenderCacheAsync(DocumentInstanceId documentInstanceId)
+    {
+        if (_pageRenders is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _pageRenders.ClearRenderCacheForDocumentAsync(documentInstanceId, CancellationToken.None);
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance", "clear-render-cache"))
+        {
+            // Already reported; the sweep collects leftovers.
         }
     }
 

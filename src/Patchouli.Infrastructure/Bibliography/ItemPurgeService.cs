@@ -28,6 +28,7 @@ public sealed class ItemPurgeService : IItemPurgeService
     private readonly ISnapshotSyncBindingStore? _snapshotBindings;
     private readonly ILibraryRevisionService? _revisions;
     private readonly IAppLogger? _logger;
+    private readonly IPageRenderService? _pageRenders;
 
     public ItemPurgeService(
         SqliteConnectionFactory connectionFactory,
@@ -35,7 +36,8 @@ public sealed class ItemPurgeService : IItemPurgeService
         ILibraryIdentityService libraryIdentityService,
         ISnapshotSyncBindingStore? snapshotBindings = null,
         ILibraryRevisionService? revisions = null,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        IPageRenderService? pageRenders = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -43,6 +45,7 @@ public sealed class ItemPurgeService : IItemPurgeService
         _snapshotBindings = snapshotBindings;
         _revisions = revisions;
         _logger = logger;
+        _pageRenders = pageRenders;
     }
 
     public async Task<Result<ItemPurgeDependencyReport>> BuildPurgeReportAsync(
@@ -439,6 +442,26 @@ public sealed class ItemPurgeService : IItemPurgeService
             await transaction.CommitAsync(cancellationToken);
             await FinishPhaseAsync(progress, "commit", "整批永久删除已提交。", commitStarted);
             PublishRevision(revision.Value);
+
+            // Issue #57: best-effort disk cleanup after the committed purge; a failure here
+            // only delays the files to the periodic sweep and never rewrites the purge.
+            if (_pageRenders is not null)
+            {
+                foreach (string documentId in documentIds)
+                {
+                    try
+                    {
+                        await _pageRenders.ClearRenderCacheForDocumentAsync(
+                            DocumentInstanceId.Parse(documentId), CancellationToken.None);
+                    }
+                    catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                                          "infrastructure.item-purge",
+                                                          "clear-render-cache"))
+                    {
+                        // Already reported; the sweep collects leftovers.
+                    }
+                }
+            }
 
             return Result.Success();
         }

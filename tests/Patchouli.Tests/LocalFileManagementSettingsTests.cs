@@ -1,15 +1,20 @@
+using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Downloads;
 using Patchouli.Host.ManagedFiles;
+using Patchouli.Infrastructure.Rendering;
 using Patchouli.Llm;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Settings;
+using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
@@ -629,6 +634,248 @@ public sealed class LocalFileManagementSettingsTests
             Directory.Exists(nested).Should().BeTrue("unrelated nested directories survive");
             return true;
         }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Page_render_cache_row_shows_directory_size_file_count_and_settings()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            string cacheRoot = (await services.ManagedFileInventory.DescribePageRenderCacheAsync()).Value.Directory;
+            PlantRender(cacheRoot, 2048);
+            LocalFileManagementSettingsViewModel management = main.Settings.LocalFileManagement;
+
+            await management.LoadAsync();
+
+            management.HasPageRenderCache.Should().BeTrue();
+            management.PageRenderCacheDirectory.Should().Be(cacheRoot);
+            Path.GetFileName(cacheRoot).Should().Be("page-renders");
+            management.PageRenderCacheFileCount.Should().Be(1);
+            management.PageRenderCacheBytes.Should().Be(2048);
+            management.PageRenderCacheSizeDisplay.Should().Be("2.00 KB");
+            management.RenderCacheLimitMiB.Should().Be(512, "the default disk limit is 512 MiB");
+            management.RenderCachePngQuality.Should().Be(100);
+            management.Locations.Should().NotContain(row => string.Equals(row.Path, cacheRoot,
+                StringComparison.OrdinalIgnoreCase), "the render cache has its own clear path, not a generic row");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Settings_page_renders_the_page_render_cache_card()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            string cacheRoot = (await services.ManagedFileInventory.DescribePageRenderCacheAsync()).Value.Directory;
+            PlantRender(cacheRoot, 2048);
+            SettingsPage page = new() { DataContext = main.Settings };
+            Window window = new() { Width = 1280, Height = 900, Content = page };
+            window.Show();
+            try
+            {
+                await main.Settings.SelectSectionAsync("local_files");
+                await main.Settings.LocalFileManagement.LoadAsync();
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+
+                TextBlock[] texts = window.GetVisualDescendants().OfType<TextBlock>()
+                    .Where(block => block.IsEffectivelyVisible).ToArray();
+                texts.Should().Contain(block => block.Text == "页面渲染缓存");
+                texts.Should().Contain(block => block.Text == cacheRoot);
+                texts.Should().Contain(block => block.Text == "2.00 KB");
+                texts.Should().Contain(block => block.Text == "1 个文件");
+                NumericUpDown[] spinners = window.GetVisualDescendants().OfType<NumericUpDown>()
+                    .Where(spinner => spinner.IsEffectivelyVisible).ToArray();
+                spinners.Should().Contain(spinner => spinner.Value == 512m && spinner.Minimum == 32m &&
+                                                     spinner.Maximum == 16384m);
+                spinners.Should().Contain(spinner => spinner.Value == 100m && spinner.Minimum == 1m &&
+                                                     spinner.Maximum == 100m);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Render_cache_limit_and_quality_persist_and_reach_the_host()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            LocalFileManagementSettingsViewModel management = main.Settings.LocalFileManagement;
+            await management.LoadAsync();
+            PatchouliAppSettings before = main.AppOptions;
+
+            // Rapid spinner edits coalesce: only the final values are committed.
+            management.RenderCacheLimitMiB = 640;
+            management.RenderCacheLimitMiB = 768;
+            management.RenderCacheLimitMiB = 1024;
+            management.RenderCachePngQuality = 80;
+
+            main.AppOptions.RenderCache.Should().Be(new RenderCacheAppSettings(1024L * 1024 * 1024, 80));
+            main.AppOptions.Ui.Should().Be(before.Ui, "a RenderCache edit never replaces other categories");
+            await WaitUntil(async () =>
+            {
+                Result<PageRenderCacheDescription> host =
+                    await services.ManagedFileInventory.DescribePageRenderCacheAsync();
+                return host.Value.DiskLimitBytes == 1024L * 1024 * 1024 && host.Value.PngQuality == 80;
+            }, "the committed RenderCache category applies the limit and quality to the host");
+            await WaitUntil(() => Task.FromResult(
+                    PatchouliAppSettings.Load(settings.Path).RenderCache ==
+                    new RenderCacheAppSettings(1024L * 1024 * 1024, 80)),
+                "the debounced writer persists the RenderCache section");
+
+            // Out-of-range values clamp to the host's supported range.
+            management.RenderCacheLimitMiB = 1;
+            management.RenderCachePngQuality = 0;
+            main.AppOptions.RenderCache.Should().Be(new RenderCacheAppSettings(
+                PageRenderService.MinDiskCacheByteLimit, 1));
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Clearing_the_render_cache_requires_confirmation()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            ConfirmDialogs dialogs = new() { Result = ConfirmDialogResult.Cancel };
+            await using MainWindowViewModel main = new(dialogs: dialogs,
+                settingsPath: settings.Path, appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            string cacheRoot = (await services.ManagedFileInventory.DescribePageRenderCacheAsync()).Value.Directory;
+            string planted = PlantRender(cacheRoot, 16);
+            LocalFileManagementSettingsViewModel management = main.Settings.LocalFileManagement;
+            await management.LoadAsync();
+
+            await management.ClearPageRenderCacheAsync();
+
+            File.Exists(planted).Should().BeTrue("a cancelled prompt deletes nothing");
+            dialogs.Shown.OfType<ConfirmDialogViewModel>().Should().ContainSingle()
+                .Which.ConfirmDanger.Should().BeTrue();
+
+            dialogs.Result = ConfirmDialogResult.Confirm;
+            await management.ClearPageRenderCacheAsync();
+
+            File.Exists(planted).Should().BeFalse("a confirmed clear goes through the host cache API");
+            management.PageRenderCacheFileCount.Should().Be(0, "the row refreshes after the clear");
+            management.PageRenderCacheBytes.Should().Be(0);
+            management.Status.Should().Contain("已清理页面渲染缓存");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_library_switch_during_the_render_cache_prompt_never_clears()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            SwitchingDialogs dialogs = new();
+            await using MainWindowViewModel main = new(dialogs: dialogs,
+                settingsPath: settings.Path, appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            string cacheRoot = (await services.ManagedFileInventory.DescribePageRenderCacheAsync()).Value.Directory;
+            string planted = PlantRender(cacheRoot, 16);
+            LocalFileManagementSettingsViewModel management = main.Settings.LocalFileManagement;
+            await management.LoadAsync();
+
+            MainWindowViewModel stale = main;
+            TemporaryAppSettingsFile switched = settings;
+            dialogs.Switch = async () =>
+            {
+                stale.RuntimeDatabasePath = switched.CreateDatabasePath("switched");
+                await stale.OpenDatabaseCommand.ExecuteAsync();
+            };
+            await management.ClearPageRenderCacheAsync();
+
+            File.Exists(planted).Should().BeTrue("a stale confirmation context must never clear the cache");
+            management.Status.Should().Contain("书库已切换");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_stale_render_cache_read_is_never_applied_after_a_library_switch()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(HeadlessTestApp));
+        await session.Dispatch<bool>(async () =>
+        {
+            await using MainWindowViewModel main = new(settingsPath: settings.Path,
+                appPaths: new TestAppPaths(Path.GetDirectoryName(settings.Path)!));
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices staleServices = await main.ServicesAsync();
+            int staleGeneration = main.LibraryGeneration;
+            string cacheRoot = (await staleServices.ManagedFileInventory.DescribePageRenderCacheAsync()).Value
+                .Directory;
+            LocalFileManagementSettingsViewModel management = main.Settings.LocalFileManagement;
+            PlantRender(cacheRoot, 4096);
+
+            main.RuntimeDatabasePath = settings.CreateDatabasePath("switched");
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await management.LoadAsync();
+            management.PageRenderCacheBytes.Should().Be(4096, "the current context reads the device cache");
+
+            // A read captured under the previous library context must never overwrite it.
+            PlantRender(cacheRoot, 1024);
+            await management.RefreshPageRenderCacheAsync(staleServices, staleGeneration);
+
+            management.PageRenderCacheBytes.Should().Be(4096,
+                "a read captured under the previous library context is discarded");
+            return true;
+        }, CancellationToken.None);
+    }
+
+    private static string PlantRender(string cacheRoot, int bytes)
+    {
+        string path = Path.Combine(cacheRoot, Guid.NewGuid().ToString(), "planted.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, new byte[bytes]);
+        return path;
+    }
+
+    private static async Task WaitUntil(Func<Task<bool>> condition, string because)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!await condition())
+        {
+            (DateTime.UtcNow < deadline).Should().BeTrue($"timed out: {because}");
+            await Task.Delay(20);
+        }
     }
 
     private const string TestPluginId = "kwadraten.kuzushi-classifier";

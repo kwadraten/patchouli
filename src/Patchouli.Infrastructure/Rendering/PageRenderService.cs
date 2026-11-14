@@ -19,6 +19,21 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
 {
     public const long DefaultPreviewRasterByteLimit = 256L * 1024 * 1024;
 
+    /// <summary>Default and clamped bounds for the on-disk render cache (issue #57).</summary>
+    public const long DefaultDiskCacheByteLimit = 512L * 1024 * 1024;
+
+    public const long MinDiskCacheByteLimit = 32L * 1024 * 1024;
+    public const long MaxDiskCacheByteLimit = 16L * 1024 * 1024 * 1024;
+    public const int DefaultPngQuality = 100;
+
+    // Cache filenames are {pageId}_t{12}_s{12}.png with derivatives attached at stem[64]
+    // (".rot90.png", ".region-{12}.png", ".{guid}.tmp"). The 52-char family prefix groups
+    // every source-hash sibling of one page+dpi+basis+quality.
+    private const int BaseStemLength = 64;
+    private const int FamilyStemLength = 52;
+    private static readonly TimeSpan FreshFileGrace = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan LooseFileGrace = TimeSpan.FromHours(24);
+
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _library;
     private readonly IFileResolutionService _fileResolution;
@@ -33,12 +48,18 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
     private readonly BoundedLruCache<string, PreviewPixels> _rasterCache;
     private readonly object _pendingPreviewSync = new();
     private readonly Dictionary<string, Task<PreviewPixels>> _pendingPreviews = [];
+    private readonly SemaphoreSlim _diskSweepLock = new(1, 1);
+    private long _diskCacheLimitBytes;
+    private int _pngQuality;
+    private int _sweepQueued;
+    private long _diskCacheEvictions;
 
     public PageRenderService(SqliteConnectionFactory connectionFactory, ILibraryIdentityService library,
         IFileResolutionService fileResolution, IPdfPageRenderer renderer, IClock clock, string cacheRoot,
         IFileMaterializationService? fileMaterialization = null, ISourceValidationService? sourceValidation = null,
         PdfiumSessionCache? sessionCache = null, long previewRasterByteLimit = DefaultPreviewRasterByteLimit,
-        FileAssetPdfViewingSessions? viewingSessions = null)
+        FileAssetPdfViewingSessions? viewingSessions = null, long? diskCacheByteLimit = null,
+        int? pngQuality = null)
     {
         _connectionFactory = connectionFactory;
         _library = library;
@@ -55,6 +76,10 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
         _clock = clock;
         _cacheRoot = Path.GetFullPath(cacheRoot);
         _rasterCache = new BoundedLruCache<string, PreviewPixels>(previewRasterByteLimit);
+        // The constructor accepts the raw value (the settings layer clamps); tests use it to
+        // exercise eviction below the user-facing minimum.
+        _diskCacheLimitBytes = diskCacheByteLimit ?? DefaultDiskCacheByteLimit;
+        _pngQuality = Math.Clamp(pngQuality ?? DefaultPngQuality, 1, 100);
     }
 
     /// <summary>Bounded preview raster cache metrics (AC15: hard caps, LRU eviction).</summary>
@@ -64,6 +89,113 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
     public long PreviewCacheEvictions => _rasterCache.Evictions;
     public long PreviewCacheBytes => _rasterCache.CachedBytes;
     public int OpenDocumentSessions => _viewingSessions?.OpenDocumentSessions ?? 0;
+
+    /// <summary>The disk budget the LRU sweep converges toward (issue #57).</summary>
+    public long DiskCacheLimitBytes => Interlocked.Read(ref _diskCacheLimitBytes);
+
+    /// <summary>PNG encoder quality applied to newly written cache files.</summary>
+    public int PngQuality => Volatile.Read(ref _pngQuality);
+
+    /// <summary>Files deleted by the disk sweep since this service started.</summary>
+    public long DiskCacheEvictions => Interlocked.Read(ref _diskCacheEvictions);
+
+    /// <summary>
+    /// Applies a new disk budget (clamped to the supported range) and schedules a sweep so the
+    /// cache converges toward it immediately instead of on the next maintenance pass.
+    /// </summary>
+    public void SetDiskCacheLimit(long limitBytes)
+    {
+        Interlocked.Exchange(ref _diskCacheLimitBytes,
+            Math.Clamp(limitBytes, MinDiskCacheByteLimit, MaxDiskCacheByteLimit));
+        RequestDiskCacheSweep();
+    }
+
+    /// <summary>Applies a new PNG quality (1-100); subsequent renders are written under a new token.</summary>
+    public void SetPngQuality(int quality)
+    {
+        Volatile.Write(ref _pngQuality, Math.Clamp(quality, 1, 100));
+    }
+
+    /// <summary>
+    /// Requests a background LRU sweep. Rendering calls this after every new file so the
+    /// budget is enforced without blocking the render itself; calls coalesce so concurrent
+    /// renders never stack multiple sweeps.
+    /// </summary>
+    public void RequestDiskCacheSweep()
+    {
+        if (Interlocked.Exchange(ref _sweepQueued, 1) != 0)
+        {
+            return;
+        }
+
+        _ = RunDiskCacheSweepAsync();
+    }
+
+    /// <summary>
+    /// Runs one full sweep inline: stale sibling groups, orphan derivatives, leftover temp
+    /// and legacy files, then LRU eviction down to the current limit. Also the startup and
+    /// periodic maintenance entry point; sweeps serialize with each other and with
+    /// <see cref="ClearRenderCacheForDocumentAsync"/>.
+    /// </summary>
+    public async Task SweepDiskCacheAsync()
+    {
+        await _diskSweepLock.WaitAsync();
+        try
+        {
+            SweepDiskCacheNow();
+        }
+        finally
+        {
+            _diskSweepLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Counts every file currently under the cache root (documents, files, bytes). The walk
+    /// never follows reparse points, so linked directories cannot inflate or mislead usage.
+    /// </summary>
+    public Task<PageRenderCacheUsage> GetCacheUsageAsync()
+    {
+        long bytes = 0;
+        int count = 0;
+        if (Directory.Exists(_cacheRoot))
+        {
+            foreach (string file in ReparsePointGuard.EnumerateFilesRecursive(_cacheRoot))
+            {
+                try
+                {
+                    bytes += new FileInfo(file).Length;
+                    count++;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // A file that vanished mid-scan is simply not counted.
+                }
+            }
+        }
+
+        return Task.FromResult(new PageRenderCacheUsage(_cacheRoot, bytes, count));
+    }
+
+    /// <summary>
+    /// Deletes every cached render under the cache root (all documents). Reparse-point
+    /// entries are never followed or removed — only app-created cache content is deleted.
+    /// </summary>
+    public async Task ClearDiskCacheAsync()
+    {
+        await _diskSweepLock.WaitAsync();
+        try
+        {
+            if (Directory.Exists(_cacheRoot))
+            {
+                ReparsePointGuard.DeleteTree(_cacheRoot);
+            }
+        }
+        finally
+        {
+            _diskSweepLock.Release();
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -240,8 +372,19 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
             PageRenderCacheKey key = new(library.Value.LibraryId, request.DocumentInstanceId, request.PageId,
                 fileAssetId, page.PageIndex, request.Dpi, rendererBasisVersion, sourceHash);
             string path = CachePath(key);
+            // The document's cache directory must be app-created storage: a reparse point
+            // would aim cache hits, render writes and sibling cleanup at external content.
+            string? cacheDirectory = Path.GetDirectoryName(path);
+            if (cacheDirectory is not null && ReparsePointGuard.IsReparsePoint(cacheDirectory))
+            {
+                return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RenderFailed,
+                    request, page, rendererBasisVersion,
+                    "Page render cache directory is a reparse point; refusing to render into it."));
+            }
+
             if (!request.ForceRerender && File.Exists(path))
             {
+                TouchCacheFamily(path);
                 return Result<PageRenderResult>.Success(new PageRenderResult(PageRenderStatus.FromCache, request.PageId,
                     request.DocumentInstanceId, path, 1200, 1600, request.Dpi, page.Rotation,
                     CoordinateBasis.NormalizedPage, key.RendererBasisVersion, FileAssetStatus.Available, sourceHash,
@@ -251,7 +394,9 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
             try
             {
                 PdfPageRenderOutput output = await _renderer.RenderPageToPngAsync(resolution.Value.ResolvedPath,
-                    page.PageIndex, path, request.Dpi, cancellationToken);
+                    page.PageIndex, path, request.Dpi, cancellationToken, PngQuality);
+                DeleteStaleSiblingGroups(path);
+                RequestDiskCacheSweep();
                 await connection.ExecuteAsync(
                     "update pages set width=@Width,height=@Height,rotation=@Rotation,coordinate_basis=@Basis,basis_width=@BasisWidth,basis_height=@BasisHeight,renderer_basis_version=@Renderer,source_file_hash=@Hash,updated_at=@Updated where page_id=@PageId;",
                     new
@@ -493,9 +638,21 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         string directory = Path.Combine(_cacheRoot, documentInstanceId.ToString());
-        if (Directory.Exists(directory))
+        // Deleting a document directory must not race a sweep that is concurrently grouping
+        // and evicting files in the same directory.
+        await _diskSweepLock.WaitAsync(cancellationToken);
+        try
         {
-            Directory.Delete(directory, true);
+            // A linked cache directory is skipped entirely: DeleteTree never follows or
+            // removes reparse points, so external content and the link itself survive.
+            if (Directory.Exists(directory))
+            {
+                ReparsePointGuard.DeleteTree(directory);
+            }
+        }
+        finally
+        {
+            _diskSweepLock.Release();
         }
 
         string docKey = documentInstanceId.ToString();
@@ -561,6 +718,7 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
             }
 
             imagePath = rotated.Value;
+            TouchCacheFamily(imagePath);
         }
 
         return Result<OcrInputDescriptor>.Success(new OcrInputDescriptor(pageId, documentInstanceId,
@@ -602,12 +760,14 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
         string cropPath = RegionCropPath(fullPagePath, imageRegion);
         if (File.Exists(cropPath))
         {
+            TouchCacheFamily(cropPath);
             return Result<string>.Success(cropPath);
         }
 
         try
         {
             RegionImageCrop.CropPngToFile(fullPagePath, imageRegion, cropPath);
+            TouchCacheFamily(cropPath);
             return Result<string>.Success(cropPath);
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render"))
@@ -751,12 +911,394 @@ public sealed class PageRenderService : IPageRenderService, IAsyncDisposable
         return Math.Max(1024L, (long)output.Stride * output.HeightPixels);
     }
 
+    /// <summary>
+    /// Issue #57 layout: files are readable siblings instead of an opaque token. The 12-char
+    /// <c>t</c> token binds page+dpi+renderer basis+PNG quality; the <c>s</c> token binds the
+    /// source hash. Rotated and cropped derivatives share the base stem, so
+    /// <c>{pageId}_t{t}_s</c> (52 chars) addresses a whole source-version family and
+    /// <c>{stem}.</c> (64 chars) every derivative of one base file.
+    /// </summary>
     private string CachePath(PageRenderCacheKey key)
     {
-        string token =
-            Blake3Hash.ComputeUtf8(
-                $"{key.LibraryId}|{key.DocumentInstanceId}|{key.PageId}|{key.FileAssetId}|{key.PageIndex}|{key.Dpi}|{key.RendererBasisVersion}|{key.SourceFileHash}");
-        return Path.Combine(_cacheRoot, key.DocumentInstanceId.ToString(), $"{token}.png");
+        string token = Blake3Hash.ComputeUtf8(
+            $"{key.LibraryId}|{key.FileAssetId}|{key.PageIndex}|{key.Dpi}|{key.RendererBasisVersion}|" +
+            $"{PngQuality}")[..12];
+        string source = Blake3Hash.ComputeUtf8(key.SourceFileHash ?? string.Empty)[..12];
+        return Path.Combine(_cacheRoot, key.DocumentInstanceId.ToString(),
+            $"{key.PageId}_t{token}_s{source}.png");
+    }
+
+    /// <summary>
+    /// Refreshes the last-access stamp on a cached base render and every derivative sharing
+    /// its stem. The sweep orders LRU by this stamp, so a cache hit keeps the whole family
+    /// alive; stamp failures (last-access tracking disabled, transient locks) degrade to
+    /// write-time ordering.
+    /// </summary>
+    private void TouchCacheFamily(string path)
+    {
+        try
+        {
+            string? directory = Path.GetDirectoryName(path);
+            string? family = FamilyStemOf(path);
+            if (directory is null || family is null || ReparsePointGuard.IsReparsePoint(directory))
+            {
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            foreach (string file in Directory.EnumerateFiles(directory, family + ".*"))
+            {
+                // A reparse-point sibling would stamp the link target's metadata.
+                if (ReparsePointGuard.IsReparsePoint(file))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    File.SetLastAccessTimeUtc(file, now);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // One locked derivative must not break the touch of the rest of the family.
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                              ArgumentException)
+        {
+            // Access stamps are an LRU hint only.
+        }
+    }
+
+    /// <summary>
+    /// Deletes every cached sibling family of the same page+dpi+basis+quality whose source
+    /// token differs from the freshly written file — the "old source hash" files the issue
+    /// report identifies as the main unbounded-growth source. Runs after a successful render
+    /// so a failed render never invalidates the last usable cached image.
+    /// </summary>
+    private void DeleteStaleSiblingGroups(string freshPath)
+    {
+        try
+        {
+            string? directory = Path.GetDirectoryName(freshPath);
+            string? family = FamilyStemOf(freshPath);
+            if (directory is null || family is null || family.Length != BaseStemLength ||
+                ReparsePointGuard.IsReparsePoint(directory))
+            {
+                return;
+            }
+
+            string prefix = family[..FamilyStemLength];
+            foreach (string file in Directory.EnumerateFiles(directory, prefix + "*").ToArray())
+            {
+                if (file.StartsWith(freshPath[..^Path.GetExtension(freshPath).Length],
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !file.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // Base file of an older source token: remove it and every derivative.
+                string stem = Path.GetFileNameWithoutExtension(file);
+                if (stem.Length == BaseStemLength && stem.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    DeleteGroupFiles(directory, stem);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Sibling cleanup is best-effort; the periodic sweep removes whatever remains.
+        }
+    }
+
+    /// <summary>Deletes a base cache file and every derivative sharing its 64-char stem.</summary>
+    private void DeleteGroupFiles(string directory, string baseStem)
+    {
+        if (ReparsePointGuard.IsReparsePoint(directory))
+        {
+            return; // a linked directory must never contribute deletable files
+        }
+
+        foreach (string file in Directory.EnumerateFiles(directory, baseStem + ".*").ToArray())
+        {
+            if (ReparsePointGuard.IsReparsePoint(file))
+            {
+                continue; // linked siblings are foreign artifacts, never deleted
+            }
+
+            try
+            {
+                File.Delete(file);
+                Interlocked.Increment(ref _diskCacheEvictions);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // A file held open by an in-flight consumer is left for the next sweep.
+            }
+        }
+    }
+
+    private async Task RunDiskCacheSweepAsync()
+    {
+        try
+        {
+            await _diskSweepLock.WaitAsync();
+            try
+            {
+                while (Interlocked.Exchange(ref _sweepQueued, 0) == 1)
+                {
+                    SweepDiskCacheNow();
+                }
+            }
+            finally
+            {
+                _diskSweepLock.Release();
+            }
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-render-sweep"))
+        {
+            // A background sweep failure must never surface into a render caller.
+        }
+    }
+
+    /// <summary>
+    /// One scan of the cache root: leftover temp files first, then parseable base files are
+    /// grouped with their derivatives, stale same-family siblings and orphaned derivatives
+    /// are removed, legacy/unparseable files older than a day go next, and finally whole
+    /// groups are evicted oldest-access-first until usage fits the current limit. Files
+    /// younger than <see cref="FreshFileGrace"/> are never deleted: an in-flight render or
+    /// consumer may still be finishing with them.
+    /// </summary>
+    private void SweepDiskCacheNow()
+    {
+        if (!Directory.Exists(_cacheRoot) || ReparsePointGuard.IsReparsePoint(_cacheRoot))
+        {
+            return;
+        }
+
+        DateTime now = DateTime.UtcNow;
+        Dictionary<string, CacheGroup> groups = new(StringComparer.OrdinalIgnoreCase);
+        // Only real child directories are scanned: a linked directory would point the
+        // whole sweep at external content.
+        foreach (string directory in ReparsePointGuard.EnumerateChildDirectories(_cacheRoot).ToArray())
+        {
+            // Re-check at entry: a directory swapped for a link after enumeration is skipped.
+            if (ReparsePointGuard.IsReparsePoint(directory))
+            {
+                continue;
+            }
+
+            foreach (string file in Directory.EnumerateFiles(directory).ToArray())
+            {
+                if (file.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteFile(file, now - FreshFileGrace);
+                    continue;
+                }
+
+                string stem = Path.GetFileNameWithoutExtension(file);
+                string? baseStem = null;
+                if (file.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                {
+                    baseStem = TryParseBaseStem(stem);
+                    if (baseStem is null && stem.Length > BaseStemLength && stem[BaseStemLength] == '.')
+                    {
+                        baseStem = TryParseBaseStem(stem[..BaseStemLength]);
+                    }
+                }
+
+                if (baseStem is null)
+                {
+                    // Legacy opaque-token files and foreign files share one long grace.
+                    TryDeleteFile(file, now - LooseFileGrace);
+                    continue;
+                }
+
+                FileInfo info;
+                try
+                {
+                    info = new FileInfo(file);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
+                if (!groups.TryGetValue(Path.Combine(directory, baseStem), out CacheGroup? group))
+                {
+                    group = new CacheGroup(directory, baseStem);
+                    groups[Path.Combine(directory, baseStem)] = group;
+                }
+
+                if (stem.Length == BaseStemLength)
+                {
+                    group.BaseFile = file;
+                    group.BaseWriteUtc = info.LastWriteTimeUtc;
+                }
+
+                group.Bytes += info.Length;
+                group.LastUsedUtc = Max(info.LastAccessTimeUtc, info.LastWriteTimeUtc, group.LastUsedUtc);
+            }
+        }
+
+        // Orphan derivatives whose base file is gone, past the fresh-file grace.
+        foreach (CacheGroup group in groups.Values)
+        {
+            if (group.BaseFile is null)
+            {
+                foreach (string file in Directory.EnumerateFiles(group.Directory, group.BaseStem + ".*")
+                             .ToArray())
+                {
+                    TryDeleteFile(file, now - FreshFileGrace);
+                }
+            }
+        }
+
+        // Stale sibling bases: same page+dpi+basis family, different source token. Keep the
+        // most recently written base per family.
+        foreach (IGrouping<string, CacheGroup> family in groups.Values
+                     .Where(group => group.BaseFile is not null)
+                     .GroupBy(group => group.BaseStem[..FamilyStemLength], StringComparer.Ordinal))
+        {
+            CacheGroup? newest = null;
+            foreach (CacheGroup group in family)
+            {
+                if (newest is null || group.BaseWriteUtc > newest.BaseWriteUtc)
+                {
+                    newest = group;
+                }
+            }
+
+            foreach (CacheGroup group in family)
+            {
+                if (!ReferenceEquals(group, newest))
+                {
+                    DeleteGroupFiles(group.Directory, group.BaseStem);
+                }
+            }
+        }
+
+        // LRU eviction over the surviving base groups, oldest access first.
+        List<CacheGroup> survivors = [];
+        long totalBytes = 0;
+        foreach (CacheGroup group in groups.Values)
+        {
+            if (group.BaseFile is null || !File.Exists(group.BaseFile))
+            {
+                continue;
+            }
+
+            group.Bytes = Directory.EnumerateFiles(group.Directory, group.BaseStem + ".*")
+                .Sum(file => TryLength(file));
+            survivors.Add(group);
+            totalBytes += group.Bytes;
+        }
+
+        long limit = Interlocked.Read(ref _diskCacheLimitBytes);
+        foreach (CacheGroup group in survivors.OrderBy(survivor => survivor.LastUsedUtc))
+        {
+            if (totalBytes <= limit)
+            {
+                break;
+            }
+
+            if (group.BaseWriteUtc > now - FreshFileGrace)
+            {
+                continue; // too fresh to evict safely
+            }
+
+            long bytes = group.Bytes;
+            DeleteGroupFiles(group.Directory, group.BaseStem);
+            totalBytes -= bytes;
+        }
+    }
+
+    private static DateTime Max(DateTime first, DateTime second, DateTime third)
+    {
+        DateTime value = first > second ? first : second;
+        return value > third ? value : third;
+    }
+
+    private static long TryLength(string file)
+    {
+        try
+        {
+            return new FileInfo(file).Length;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    private void TryDeleteFile(string file, DateTime olderThan)
+    {
+        try
+        {
+            // Reparse points are never deleted: the check sits next to the delete so a
+            // link swapped in after enumeration is still skipped — at the file level and
+            // at the parent-directory level (deleting through a linked parent would
+            // remove external content).
+            string? parent = Path.GetDirectoryName(file);
+            if (parent is null || ReparsePointGuard.IsReparsePoint(parent) ||
+                ReparsePointGuard.IsReparsePoint(file))
+            {
+                return;
+            }
+
+            if (File.GetLastWriteTimeUtc(file) < olderThan)
+            {
+                File.Delete(file);
+                Interlocked.Increment(ref _diskCacheEvictions);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Locked or vanished files are retried by the next sweep.
+        }
+    }
+
+    /// <summary>
+    /// The family prefix of a cache file path: the 64-char base stem for base files, and for
+    /// derivative names (<c>{stem}.{suffix}</c>) the base stem the derivative hangs off.
+    /// </summary>
+    private static string? FamilyStemOf(string path)
+    {
+        string stem = Path.GetFileNameWithoutExtension(path);
+        if (TryParseBaseStem(stem) is { } baseStem)
+        {
+            return baseStem;
+        }
+
+        return stem.Length > BaseStemLength && stem[BaseStemLength] == '.'
+            ? TryParseBaseStem(stem[..BaseStemLength])
+            : null;
+    }
+
+    /// <summary>
+    /// Parses <c>{36-char pageId}_t{12}_s{12}</c> positionally; anything else returns null so
+    /// legacy opaque-token files and foreign files are handled as loose files.
+    /// </summary>
+    private static string? TryParseBaseStem(string stem)
+    {
+        return stem.Length == BaseStemLength &&
+               stem[8] == '-' && stem[13] == '-' && stem[18] == '-' && stem[23] == '-' &&
+               stem[36] == '_' && stem[37] == 't' && stem[50] == '_' && stem[51] == 's'
+            ? stem
+            : null;
+    }
+
+    private sealed class CacheGroup(string directory, string baseStem)
+    {
+        public string Directory { get; } = directory;
+        public string BaseStem { get; } = baseStem;
+        public string? BaseFile { get; set; }
+        public DateTime BaseWriteUtc { get; set; }
+        public DateTime LastUsedUtc { get; set; }
+        public long Bytes { get; set; }
     }
 
     private static PageRenderResult SourceState(string status, PageRenderRequest request, PageRow page,

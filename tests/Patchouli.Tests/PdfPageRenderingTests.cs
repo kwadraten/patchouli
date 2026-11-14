@@ -671,9 +671,12 @@ public sealed class PdfPageRenderingTests
         public TaskCompletionSource? PixelRenderEntered { get; set; }
         public TaskCompletionSource? PixelRenderGate { get; set; }
 
+        public int LastPngQuality { get; private set; } = 100;
+
         public async Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath,
-            int dpi, CancellationToken cancellationToken = default)
+            int dpi, CancellationToken cancellationToken = default, int pngQuality = 100)
         {
+            LastPngQuality = pngQuality;
             CallCount++;
             if (ThrowTimeout)
             {

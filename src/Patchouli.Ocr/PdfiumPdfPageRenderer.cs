@@ -41,9 +41,10 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
     }
 
     public async Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath,
-        int dpi, CancellationToken cancellationToken = default)
+        int dpi, CancellationToken cancellationToken = default, int pngQuality = 100)
     {
-        PdfPageRasterOutput raster = await RenderPageToPngBytesAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        PdfPageRasterOutput raster =
+            await RenderPageToPngBytesAsync(pdfPath, pageIndex, dpi, cancellationToken, pngQuality);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
         await File.WriteAllBytesAsync(outputPath, raster.PngBytes, cancellationToken);
         return new PdfPageRenderOutput(raster.WidthPixels, raster.HeightPixels, raster.Rotation, raster.CoordinateBasis,
@@ -51,7 +52,7 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
     }
 
     public async Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, int pngQuality = 100)
     {
         PdfPagePixelBufferOutput raster =
             await RenderPageToBgraBytesAsync(pdfPath, pageIndex, dpi, cancellationToken);
@@ -66,7 +67,7 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
         }
 
         using SKImage image = SKImage.FromBitmap(bitmap);
-        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, Math.Clamp(pngQuality, 1, 100));
         byte[] bytes = png.ToArray();
         return new PdfPageRasterOutput(bytes, raster.WidthPixels, raster.HeightPixels, raster.Rotation,
             raster.CoordinateBasis, raster.BasisWidth, raster.BasisHeight, raster.RendererBasisVersion);

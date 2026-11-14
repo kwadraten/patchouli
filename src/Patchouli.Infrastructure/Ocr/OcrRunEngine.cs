@@ -16,6 +16,7 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
+using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
@@ -2960,6 +2961,13 @@ public sealed class OcrRunEngine : IOcrRunEngine
         CancellationToken cancellationToken)
     {
         OcrRun completed = (await GetRunAsync(runId, cancellationToken)).Value;
+        if (completed.State == OcrRunState.Completed)
+        {
+            // Issue #57: a fully successful run no longer needs its MinerU work artifacts;
+            // failed or partially-failed runs keep them for diagnostics and retry.
+            CleanupRunWorkArtifacts(runId);
+        }
+
         if (!version.ApplyOnSuccess || completed.State != OcrRunState.Completed)
         {
             return Result<OcrRun>.Success(completed);
@@ -2983,6 +2991,28 @@ public sealed class OcrRunEngine : IOcrRunEngine
 
         // OCR and working revisions succeeded. Commit conflicts leave a previewable candidate for explicit resolution.
         return Result<OcrRun>.Success(completed);
+    }
+
+    /// <summary>
+    /// Removes the run-scoped work directory ({mineru work root}/{runId}, including the
+    /// p{pageIndex} upload/download trees). Best-effort: a delete failure leaves leftovers for
+    /// the periodic ocr-work sweep and never changes the run's terminal state. The tree walk
+    /// never follows or removes reparse points (issue #57 safety review).
+    /// </summary>
+    private void CleanupRunWorkArtifacts(OcrRunId runId)
+    {
+        try
+        {
+            string workDirectory = Path.Combine(_minerUCacheRoot, runId.ToString());
+            if (Directory.Exists(workDirectory))
+            {
+                ReparsePointGuard.DeleteTree(workDirectory);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Leftovers are collected by the maintenance sweep.
+        }
     }
 
     private async Task<Result<OcrRun>> FailRunAfterExceptionAsync(OcrRun run, IReadOnlyList<Page> pages,

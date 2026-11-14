@@ -12,6 +12,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Host.ManagedFiles;
+using Patchouli.Infrastructure.Rendering;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 
@@ -40,7 +41,11 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
     private readonly Dictionary<string, Task> _admittedDownloads =
         new(ManagedFileService.PathComparer());
 
+    private const long BytesPerMiB = 1024L * 1024;
+
     private long _loadGeneration;
+    private long _renderCacheGeneration;
+    private bool _isSyncingRenderCache;
 
     public LocalFileManagementSettingsViewModel(MainWindowViewModel main)
     {
@@ -48,12 +53,189 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         Locations = new ObservableCollection<ManagedLocationViewModel>();
         RefreshCommand = new AsyncCommand(() => LoadAsync());
         DownloadModelsCommand = new AsyncCommand(DownloadModelsAsync);
+        ClearPageRenderCacheCommand = new AsyncCommand(ClearPageRenderCacheAsync);
+        OpenPageRenderCacheCommand = new AsyncCommand(OpenPageRenderCacheAsync);
+        SyncRenderCacheSettings(_main.AppOptions.RenderCache);
     }
 
     [ExcludeFromDerivedGeneration] public ObservableCollection<ManagedLocationViewModel> Locations { get; }
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand DownloadModelsCommand { get; }
+    public AsyncCommand ClearPageRenderCacheCommand { get; }
+    public AsyncCommand OpenPageRenderCacheCommand { get; }
+
+    // Mirrors the Host clamp; SettingsPage.axaml uses the same 32–16384 MiB spinner bounds.
+    private const double MinRenderCacheLimitMiB = PageRenderService.MinDiskCacheByteLimit / (double)BytesPerMiB;
+    private const double MaxRenderCacheLimitMiB = PageRenderService.MaxDiskCacheByteLimit / (double)BytesPerMiB;
+
+    /// <summary>Whether the host exposes a page-render cache; the card is hidden otherwise.</summary>
+    [ObservableProperty]
+    public partial bool HasPageRenderCache { get; private set; }
+
+    [ObservableProperty] public partial string PageRenderCacheDirectory { get; private set; } = string.Empty;
+
+    [ObservableProperty] public partial long PageRenderCacheBytes { get; private set; }
+
+    [ObservableProperty] public partial int PageRenderCacheFileCount { get; private set; }
+
+    [ObservableProperty] public partial string PageRenderCacheSizeDisplay { get; private set; } = "0 B";
+
+    [ObservableProperty] public partial string PageRenderCacheFileCountDisplay { get; private set; } = "0 个文件";
+
+    /// <summary>Disk limit in MiB; edits persist through the settings store's debounced writer.</summary>
+    [ObservableProperty]
+    public partial double RenderCacheLimitMiB { get; set; }
+
+    /// <summary>PNG quality (1–100) for newly written renders; existing files are kept.</summary>
+    [ObservableProperty]
+    public partial double RenderCachePngQuality { get; set; }
+
+    partial void OnRenderCacheLimitMiBChanged(double value)
+    {
+        QueueRenderCacheSave();
+    }
+
+    partial void OnRenderCachePngQualityChanged(double value)
+    {
+        QueueRenderCacheSave();
+    }
+
+    /// <summary>
+    /// Device-level setting written through the settings store's debounced writer: rapid spinner
+    /// edits coalesce into one commit, and the committed "RenderCache" category reaches the Host
+    /// (limit + sweep, quality) off the dispatcher via its settings observer.
+    /// </summary>
+    private void QueueRenderCacheSave()
+    {
+        if (_isSyncingRenderCache || double.IsNaN(RenderCacheLimitMiB) || double.IsNaN(RenderCachePngQuality))
+        {
+            return;
+        }
+
+        RenderCacheAppSettings requested = new RenderCacheAppSettings(
+            (long)Math.Round(Math.Clamp(RenderCacheLimitMiB, MinRenderCacheLimitMiB, MaxRenderCacheLimitMiB)) *
+            BytesPerMiB,
+            (int)Math.Round(Math.Clamp(RenderCachePngQuality, 1, 100))).Normalize();
+        if (requested == _main.AppOptions.RenderCache.Normalize())
+        {
+            return;
+        }
+
+        _main.UpdateAppOptionsDeferred(current => current with { RenderCache = requested }, "RenderCache");
+    }
+
+    private void SyncRenderCacheSettings(RenderCacheAppSettings settings)
+    {
+        RenderCacheAppSettings normalized = settings.Normalize();
+        _isSyncingRenderCache = true;
+        try
+        {
+            RenderCacheLimitMiB = Math.Round(normalized.DiskLimitBytes / (double)BytesPerMiB);
+            RenderCachePngQuality = normalized.PngQuality;
+        }
+        finally
+        {
+            _isSyncingRenderCache = false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the page-render cache row off the dispatcher (the usage scan is synchronous I/O) and
+    /// applies it only while it is still the newest read for the same library context.
+    /// </summary>
+    internal async Task RefreshPageRenderCacheAsync(HostServices services, int libraryGeneration,
+        CancellationToken cancellationToken = default)
+    {
+        long generation = Interlocked.Increment(ref _renderCacheGeneration);
+        Result<PageRenderCacheDescription> described = await Task.Run(
+            () => services.ManagedFileInventory.DescribePageRenderCacheAsync(cancellationToken),
+            cancellationToken);
+        if (generation != Interlocked.Read(ref _renderCacheGeneration) ||
+            !_main.IsCurrentLibraryContext(services, libraryGeneration) ||
+            cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (described.IsFailure)
+        {
+            HasPageRenderCache = false;
+            return;
+        }
+
+        PageRenderCacheDescription cache = described.Value;
+        HasPageRenderCache = true;
+        PageRenderCacheDirectory = cache.Directory;
+        PageRenderCacheBytes = cache.TotalBytes;
+        PageRenderCacheFileCount = cache.FileCount;
+        PageRenderCacheSizeDisplay = FormatBytes(cache.TotalBytes);
+        PageRenderCacheFileCountDisplay = $"{cache.FileCount} 个文件";
+    }
+
+    internal async Task ClearPageRenderCacheAsync()
+    {
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            SetStatus("书库已切换，请刷新后重试清理。");
+            return;
+        }
+
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "清理页面渲染缓存",
+                $"将删除全部页面渲染缓存（约 {PageRenderCacheSizeDisplay}），页面会在查看时重新渲染。",
+                "清理",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            SetStatus("书库已切换，未执行清理。");
+            return;
+        }
+
+        try
+        {
+            // The Host API serializes the delete with the LRU sweeper; never a UI-side recursive delete.
+            Result cleared = await Task.Run(() =>
+                services.ManagedFileInventory.ClearPageRenderCacheAsync(services.LifetimeToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
+            await RefreshPageRenderCacheAsync(services, libraryGeneration);
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                SetStatus(cleared.IsSuccess ? "已清理页面渲染缓存。" : $"清理失败：{cleared.ErrorMessage}");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                SetStatus($"清理失败：{exception.Message}");
+            }
+        }
+    }
+
+    private Task OpenPageRenderCacheAsync()
+    {
+        if (string.IsNullOrEmpty(PageRenderCacheDirectory))
+        {
+            return Task.CompletedTask;
+        }
+
+        Directory.CreateDirectory(PageRenderCacheDirectory);
+        Process.Start(new ProcessStartInfo { FileName = PageRenderCacheDirectory, UseShellExecute = true });
+        return Task.CompletedTask;
+    }
 
     public override bool SupportsEditing => false;
     public override bool IsDirty => false;
@@ -120,6 +302,9 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
             {
                 await location.RefreshAsync(cancellationToken);
             }
+
+            SyncRenderCacheSettings(_main.AppOptions.RenderCache);
+            await RefreshPageRenderCacheAsync(services, libraryGeneration, cancellationToken);
 
             if (generation == Volatile.Read(ref _loadGeneration) &&
                 _main.IsCurrentLibraryContext(services, libraryGeneration))
