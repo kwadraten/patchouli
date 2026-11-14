@@ -15,8 +15,8 @@ public sealed partial class DownloadFileRowViewModel : ViewModelBase
     }
 
     public string RelativePath { get; }
-    [ObservableProperty] public partial string StateText { get; private set; }
-    [ObservableProperty] public partial string BytesText { get; private set; }
+    [ObservableProperty] public partial string StateText { get; private set; } = string.Empty;
+    [ObservableProperty] public partial string BytesText { get; private set; } = string.Empty;
     [ObservableProperty] public partial double ProgressValue { get; private set; }
     [ObservableProperty] public partial bool IsIndeterminate { get; private set; }
     [ObservableProperty] public partial string? ErrorMessage { get; private set; }
