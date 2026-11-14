@@ -86,10 +86,63 @@ public sealed class HistoricalResearchCslStyleTests
                 ("publisher-place", "北京"), ("publisher", "人民出版社"), ("issued", Date(1998))), "46")
             .Should().Be("《马克思恩格斯全集》第31卷，北京：人民出版社，1998年，第46页。");
 
+        Render(Item("book", "文坛忆旧", "zh", Literals("author", "赵景深"),
+                ("publisher-place", "上海"), ("publisher", "北新书局"), ("issued", Date(1948, 3, 15))), "43")
+            .Should().Be("赵景深：《文坛忆旧》，上海：北新书局，1948年，第43页。");
+
         Render(Item("book", "余绍宋日记", "zh", ("volume", "2"),
                 ("original-date", Date(1920, 12, 10)), ("publisher-place", "北京"),
                 ("publisher", "国家图书馆出版社"), ("issued", Date(2003)), ("medium", "影印版")), "101")
             .Should().Be("《余绍宋日记》第2卷，1920年12月10日，北京：国家图书馆出版社，2003年影印版，第101页。");
+    }
+
+    [Fact]
+    public void Monograph_publication_dates_keep_only_the_year_in_all_languages()
+    {
+        Render(Item("book", "Troubling Confessions", "en",
+                Names("author", ("Brooks", "Peter")), ("publisher-place", "Chicago"),
+                ("publisher", "University of Chicago Press"), ("issued", Date(2000, 6, 30))), "48")
+            .Should().Be("Peter Brooks, Troubling Confessions, Chicago: University of Chicago Press, 2000, p. 48.");
+
+        Render(Item("book", "現代日本の産業政策", "ja", Literals("author", "小野五郎"),
+                ("publisher-place", "東京"), ("publisher", "日本経済新聞社"), ("issued", Date(1999, 8, 20))), "27")
+            .Should().Be("小野五郎：『現代日本の産業政策』、東京：日本経済新聞社、1999年、第27頁。");
+
+        Render(Item("chapter", "言語情報の特質", "ja", Literals("author", "郡司隆男"),
+                ("container-title", "言語文化学概論"), ("publisher-place", "大阪"),
+                ("publisher", "大阪大学出版会"), ("issued", Date(1997, 10, 1))), "20")
+            .Should().Be("郡司隆男：「言語情報の特質」、『言語文化学概論』、大阪：大阪大学出版会、1997年、第20頁。");
+    }
+
+    [Fact]
+    public void Notes_are_never_appended_to_the_entry()
+    {
+        Render(Item("book", "在长沙晨光学校演说", "zh", Literals("author", "章太炎"),
+                ("issued", Date(1925, 10)), ("note", "转引自汤志钧：《章太炎年谱长编》下册，北京：中华书局，1979年")), "823")
+            .Should().Be("章太炎：《在长沙晨光学校演说》，1925年，第823页。");
+
+        Render(Item("book", "当代文化哲学沉思", "zh", Literals("author", "李鹏程"),
+                ("publisher-place", "北京"), ("publisher", "人民出版社"), ("issued", Date(1994)),
+                ("note", "“序言”")), "1")
+            .Should().Be("李鹏程：《当代文化哲学沉思》，北京：人民出版社，1994年，第1页。");
+
+        Render(Item("book", "Annotated Book", "en", Names("author", ("Brooks", "Peter")),
+                ("publisher-place", "Chicago"), ("publisher", "University of Chicago Press"),
+                ("issued", Date(2000)), ("note", "reprinted edition")), "48")
+            .Should().Be("Peter Brooks, Annotated Book, Chicago: University of Chicago Press, 2000, p. 48.");
+
+        Render(Item("book", "現代日本の産業政策", "ja", Literals("author", "小野五郎"),
+                ("publisher-place", "東京"), ("publisher", "日本経済新聞社"), ("issued", Date(1999)),
+                ("note", "参照：改訂版")), "27")
+            .Should().Be("小野五郎：『現代日本の産業政策』、東京：日本経済新聞社、1999年、第27頁。");
+    }
+
+    [Fact]
+    public void Chinese_classical_editions_accept_literal_dates_and_scroll_numbers()
+    {
+        Render(Item("book", "古今伪书考", "zh", Literals("author", "姚际恒"),
+                ("chapter-number", "3"), ("issued", LiteralDate("光绪三年苏州文学山房活字本"))), "9")
+            .Should().Be("姚际恒：《古今伪书考》卷3，光绪三年苏州文学山房活字本，第9页。");
     }
 
     [Fact]
@@ -100,19 +153,20 @@ public sealed class HistoricalResearchCslStyleTests
                 ("publisher-place", "北京"), ("publisher", "中央编译出版社"), ("issued", Date(1999))), "247-266")
             .Should().Be("杜威·佛克马：《走向新世界主义》，王宁、薛晓源编：《全球化与后殖民批评》，北京：中央编译出版社，1999年，第247—266页。");
 
-        Render(Item("chapter", "续问辨牍", "zh", Literals("author", "管志道"), ("chapter-number", "2"),
+        Render(Item("chapter", "续问辨牍", "zh", Literals("author", "管志道"),
+                ("chapter-number", "2《答屠仪部赤水丈书》"),
                 ("container-title", "四库全书存目丛书"), ("collection-title", "子部"),
                 ("collection-number", "第88册"), ("publisher-place", "济南"), ("publisher", "齐鲁书社"),
                 ("issued", Date(1997)), ("medium", "影印本")), "73")
-            .Should().Be("管志道：《续问辨牍》卷2，《四库全书存目丛书》《子部》第88册，济南：齐鲁书社，1997年影印本，第73页。");
+            .Should().Be("管志道：《续问辨牍》卷2《答屠仪部赤水丈书》，《四库全书存目丛书》子部第88册，济南：齐鲁书社，1997年影印本，第73页。");
     }
 
     [Fact]
     public void Chinese_periodicals_and_newspapers_cover_year_volume_issue_place_and_edition()
     {
-        Render(Item("article-journal", "读顾诚《南明史》", "zh", Literals("author", "何龄修"),
+        Render(Item("article-journal", "读顾诚〈南明史〉", "zh", Literals("author", "何龄修"),
                 ("container-title", "中国史研究"), ("issued", Date(1998)), ("issue", "3")))
-            .Should().Be("何龄修：《读顾诚《南明史》》，《中国史研究》1998年第3期。");
+            .Should().Be("何龄修：《读顾诚〈南明史〉》，《中国史研究》1998年第3期。");
 
         Render(Item("article-journal", "阴阳五行说之来历", "zh", Literals("author", "梁启超"),
                 ("container-title", "东方杂志"), ("volume", "20"), ("issue", "10"), ("issued", Date(1923))))
@@ -133,7 +187,7 @@ public sealed class HistoricalResearchCslStyleTests
     }
 
     [Fact]
-    public void Chinese_unpublished_electronic_and_indirect_sources_are_supported()
+    public void Chinese_unpublished_and_electronic_sources_are_supported()
     {
         Render(Item("thesis", "罗隆基政治思想研究（1913—1949）", "zh", Literals("author", "方明东"),
                 ("genre", "博士学位论文"), ("publisher", "北京师范大学历史系"), ("issued", Date(2000))), "67")
@@ -152,10 +206,6 @@ public sealed class HistoricalResearchCslStyleTests
         Render(Item("webpage", "关于中国学术期刊标准化数据库系统工程的进展", "zh", Literals("author", "王明亮"),
                 ("URL", "http://www.cajcd.cn/pub/wml.txt/980810-2.html"), ("accessed", Date(2025, 10, 4))))
             .Should().Be("王明亮：《关于中国学术期刊标准化数据库系统工程的进展》，http://www.cajcd.cn/pub/wml.txt/980810-2.html，访问日期：2025年10月4日。");
-
-        Render(Item("book", "在长沙晨光学校演说", "zh", Literals("author", "章太炎"),
-                ("issued", Date(1925, 10)), ("note", "转引自汤志钧：《章太炎年谱长编》下册，北京：中华书局，1979年")), "823")
-            .Should().Contain("转引自汤志钧：《章太炎年谱长编》下册").And.EndWith("第823页。");
     }
 
     [Fact]
@@ -245,16 +295,11 @@ public sealed class HistoricalResearchCslStyleTests
     }
 
     [Fact]
-    public void Special_responsibilities_prefaces_and_doi_remain_expressible()
+    public void Special_responsibilities_and_doi_remain_expressible()
     {
         Render(Item("book", "水经注校证", "zh", Literals("author", "郦道元著，陈桥驿校证"),
                 ("publisher-place", "北京"), ("publisher", "中华书局"), ("issued", Date(2007))), "1")
             .Should().Be("郦道元著，陈桥驿校证：《水经注校证》，北京：中华书局，2007年，第1页。");
-
-        Render(Item("book", "当代文化哲学沉思", "zh", Literals("author", "李鹏程"),
-                ("publisher-place", "北京"), ("publisher", "人民出版社"), ("issued", Date(1994)),
-                ("note", "“序言”")), "1")
-            .Should().Be("李鹏程：《当代文化哲学沉思》，北京：人民出版社，1994年，“序言”，第1页。");
 
         Render(Item("webpage", "Electronic Resource", "zh", ("DOI", "10.1000/example"),
                 ("URL", "https://example.test/fulltext"), ("accessed", Date(2025, 1, 1))))
@@ -413,6 +458,11 @@ public sealed class HistoricalResearchCslStyleTests
         {
             ["date-parts"] = new[] { new[] { (object?)year, month, day }.Where(value => value is not null).ToArray() }
         };
+    }
+
+    private static Dictionary<string, object?> LiteralDate(string literal)
+    {
+        return new Dictionary<string, object?> { ["literal"] = literal };
     }
 
     private static (string Key, object? Value) Literals(string role, params string[] names)

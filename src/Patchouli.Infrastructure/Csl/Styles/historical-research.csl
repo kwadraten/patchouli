@@ -7,7 +7,7 @@
     <category citation-format="note"/>
     <category field="history"/>
     <summary>依据《历史研究杂志社关于引文注释的规定》，支持中文、英文和日文脚注及再次引用。</summary>
-    <updated>2026-11-11T20:23:02+08:00</updated>
+    <updated>2026-11-14T10:00:00+08:00</updated>
   </info>
   <locale xml:lang="zh">
     <terms>
@@ -91,6 +91,7 @@
     <text variable="title" prefix="《" suffix="》"/>
     <group>
       <text variable="volume" prefix="第" suffix="卷"/>
+      <text variable="chapter-number" prefix="卷"/>
       <text variable="volume-title"/>
     </group>
     <text variable="edition" prefix="（" suffix="）"/>
@@ -103,7 +104,7 @@
     <text variable="container-title" prefix="《" suffix="》"/>
     <group>
       <text variable="volume" prefix="第" suffix="册"/>
-      <text variable="collection-title" prefix="《" suffix="》"/>
+      <text variable="collection-title"/>
       <text variable="collection-number"/>
     </group>
     <text variable="edition" prefix="（" suffix="）"/>
@@ -183,7 +184,14 @@
             <text variable="issue" prefix="第" suffix="期"/>
           </group>
           <text macro="zh-date"/>
-          <text variable="edition" prefix="第" suffix="版"/>
+          <choose>
+            <if is-numeric="edition">
+              <text variable="edition" prefix="第" suffix="版"/>
+            </if>
+            <else>
+              <text variable="edition"/>
+            </else>
+          </choose>
           <text variable="section" prefix="“" suffix="”"/>
         </group>
       </if>
@@ -242,7 +250,6 @@
         <text macro="zh-container-title"/>
       </group>
       <text macro="zh-publication"/>
-      <text variable="note"/>
       <text macro="zh-locator"/>
     </group>
   </macro>
@@ -254,7 +261,6 @@
             <text macro="zh-primary-contributor"/>
             <text variable="title" prefix="《" suffix="》"/>
           </group>
-          <text variable="note"/>
           <text macro="zh-access"/>
           <text macro="zh-locator"/>
         </group>
@@ -281,7 +287,6 @@
             <text variable="title" prefix="《" suffix="》"/>
           </group>
           <text macro="zh-newspaper-data"/>
-          <text variable="note"/>
           <text macro="zh-locator"/>
         </group>
       </else-if>
@@ -292,7 +297,6 @@
             <text variable="title" prefix="《" suffix="》"/>
           </group>
           <text macro="zh-journal-data"/>
-          <text variable="note"/>
           <text macro="zh-locator"/>
         </group>
       </else-if>
@@ -313,7 +317,6 @@
           <text variable="publisher"/>
           <text variable="publisher-place"/>
           <text macro="zh-date"/>
-          <text variable="note"/>
           <text macro="zh-locator"/>
         </group>
       </else-if>
@@ -344,7 +347,6 @@
               </choose>
               <text variable="publisher-place"/>
               <text macro="zh-date"/>
-              <text variable="note"/>
               <text macro="zh-locator"/>
             </group>
           </else>
@@ -361,7 +363,6 @@
           <text macro="zh-publication"/>
           <text variable="archive_location"/>
           <text variable="archive" suffix="藏"/>
-          <text variable="note"/>
           <text macro="zh-locator"/>
         </group>
       </else>
@@ -490,7 +491,6 @@
         <group delimiter=", ">
           <text macro="en-author"/>
           <text macro="en-article-title"/>
-          <text variable="note"/>
           <text macro="en-access"/>
           <text macro="en-locator"/>
         </group>
@@ -515,7 +515,6 @@
           <text variable="volume" prefix="Vol. "/>
           <text variable="issue" prefix="No. "/>
           <text macro="en-year"/>
-          <text variable="note"/>
           <text macro="en-locator"/>
         </group>
       </else-if>
@@ -526,7 +525,6 @@
           <text variable="container-title" font-style="italic"/>
           <text macro="en-date"/>
           <text variable="edition"/>
-          <text variable="note"/>
           <text macro="en-locator"/>
         </group>
       </else-if>
@@ -544,7 +542,6 @@
           </choose>
           <text variable="publisher"/>
           <text macro="en-year"/>
-          <text variable="note"/>
           <text macro="en-locator"/>
         </group>
       </else-if>
@@ -558,7 +555,6 @@
             <text variable="container-title" font-style="italic" text-case="title"/>
           </group>
           <text macro="en-publication"/>
-          <text variable="note"/>
           <text macro="en-locator"/>
         </group>
       </else-if>
@@ -568,7 +564,6 @@
           <text macro="en-title"/>
           <text macro="en-translator"/>
           <text macro="en-publication"/>
-          <text variable="note"/>
           <text macro="en-locator"/>
         </group>
       </else>
@@ -623,7 +618,9 @@
         <text variable="publisher"/>
       </group>
       <group>
-        <text macro="ja-date"/>
+        <date variable="issued">
+          <date-part name="year" form="numeric" suffix="年"/>
+        </date>
         <text variable="medium"/>
       </group>
     </group>
@@ -703,7 +700,6 @@
             <text variable="volume" prefix="第" suffix="巻"/>
           </group>
           <text macro="ja-publication"/>
-          <text variable="note"/>
           <text macro="ja-locator"/>
         </group>
       </else>
