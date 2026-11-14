@@ -101,6 +101,16 @@ public sealed class FileAssetGcService : IFileAssetGcService
                                               "load-snapshot-refs"))
         {
             // Do not delete local assets when a configured snapshot cannot be inspected safely.
+            // An explicit candidate-scoped physical deletion must report that it did not finish;
+            // an empty successful result would incorrectly look like complete local-file cleanup.
+            if (options.DeleteLocalFiles && candidateIdsJson is not null)
+            {
+                string[] candidateIds = JsonSerializer.Deserialize<string[]>(candidateIdsJson) ?? [];
+                failed.AddRange(candidateIds.Select(id => new FileAssetGcFailure(
+                    FileAssetId.Parse(id),
+                    "Local files were not deleted because snapshot references could not be verified.")));
+            }
+
             return new FileAssetGcResult(deleted, failed);
         }
 
@@ -121,6 +131,9 @@ public sealed class FileAssetGcService : IFileAssetGcService
         }
 
         int maxRetries = Math.Max(0, options.MaxRetries);
+        IReadOnlyDictionary<string, string[]> localPaths = options.DeleteLocalFiles
+            ? await BuildLocalFileDeletionPlanAsync(connection, transaction, candidates, cancellationToken)
+            : new Dictionary<string, string[]>();
 
         foreach (FileAssetGcCandidate candidate in candidates)
         {
@@ -136,7 +149,9 @@ public sealed class FileAssetGcService : IFileAssetGcService
 
                 try
                 {
-                    await DeleteCandidateAsync(connection, transaction, candidate.FileAssetId, cancellationToken);
+                    await DeleteCandidateAsync(connection, transaction, candidate.FileAssetId,
+                        localPaths.TryGetValue(candidate.FileAssetId.ToString(), out string[]? paths) ? paths : null,
+                        cancellationToken);
                     succeeded = true;
                     break;
                 }
@@ -182,8 +197,20 @@ public sealed class FileAssetGcService : IFileAssetGcService
         SqliteConnection connection,
         DbTransaction transaction,
         FileAssetId fileAssetId,
+        IReadOnlyList<string>? localFilePaths,
         CancellationToken cancellationToken)
     {
+        if (localFilePaths is not null)
+        {
+            // Delete the verified local files before dropping the asset and its known locations.
+            // A failure leaves the database rows intact so a later run can retry: a file that is
+            // already gone counts as success.
+            foreach (string path in localFilePaths)
+            {
+                DeleteLocalFile(path);
+            }
+        }
+
         string id = fileAssetId.ToString();
 
         await connection.ExecuteAsync(
@@ -200,6 +227,91 @@ public sealed class FileAssetGcService : IFileAssetGcService
                 transaction,
                 cancellationToken: cancellationToken));
     }
+
+    // Plans the physical deletion for the whole candidate set with two batch queries so no
+    // per-asset or per-path lookups are needed. Only locations still verified 'available' are
+    // scheduled; stale/missing rows and file_assets.original_path values that were never
+    // recorded as available are never touched. Paths still claimed by an asset outside the
+    // candidate set are excluded so shared content is preserved.
+    private static async Task<IReadOnlyDictionary<string, string[]>> BuildLocalFileDeletionPlanAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        IReadOnlyList<FileAssetGcCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        string idsJson = JsonSerializer.Serialize(
+            candidates.Select(candidate => candidate.FileAssetId.ToString()).ToArray());
+        LocalFileLocationRow[] rows = (await connection.QueryAsync<LocalFileLocationRow>(
+            new CommandDefinition(
+                """
+                select
+                    file_asset_id as FileAssetId,
+                    path as Path
+                from known_file_locations
+                where status = 'available'
+                  and file_asset_id in (select value from json_each(@IdsJson));
+                """,
+                new { IdsJson = idsJson },
+                transaction,
+                cancellationToken: cancellationToken))).ToArray();
+        if (rows.Length == 0)
+        {
+            return new Dictionary<string, string[]>();
+        }
+
+        string pathsJson = JsonSerializer.Serialize(rows.Select(row => row.Path).Distinct().ToArray());
+        HashSet<string> sharedPaths = (await connection.QueryAsync<string>(
+            new CommandDefinition(
+                """
+                select distinct path
+                from known_file_locations
+                where status = 'available'
+                  and path in (select value from json_each(@PathsJson))
+                  and file_asset_id not in (select value from json_each(@IdsJson));
+                """,
+                new { PathsJson = pathsJson, IdsJson = idsJson },
+                transaction,
+                cancellationToken: cancellationToken))).ToHashSet(PathComparer);
+
+        Dictionary<string, string[]> plan = new(StringComparer.Ordinal);
+        foreach (IGrouping<string, LocalFileLocationRow> group in rows.GroupBy(row => row.FileAssetId))
+        {
+            plan[group.Key] = group
+                .Select(row => row.Path)
+                .Distinct(PathComparer)
+                .Where(path => !sharedPaths.Contains(path))
+                .ToArray();
+        }
+
+        return plan;
+    }
+
+    // The user explicitly asked for permanent deletion, so this deletes whatever occupies the
+    // verified path directly instead of reusing the import-time locality logic: a cloud
+    // placeholder reparse point is still a real file the user chose to remove. Directories are
+    // never deleted; an already-absent file counts as done.
+    private static void DeleteLocalFile(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            throw new IOException($"Refusing to delete directory at '{path}'.");
+        }
+
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        File.Delete(path);
+        if (File.Exists(path))
+        {
+            throw new IOException($"File '{path}' was still present after deletion.");
+        }
+    }
+
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
 
     private async Task<IReadOnlyList<FileAssetGcCandidate>> LoadCandidatesAsync(
         SqliteConnection connection,
@@ -378,6 +490,12 @@ public sealed class FileAssetGcService : IFileAssetGcService
         public string OriginalPath { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public long SizeBytes { get; set; }
+    }
+
+    private sealed class LocalFileLocationRow
+    {
+        public string FileAssetId { get; set; } = string.Empty;
+        public string Path { get; set; } = string.Empty;
     }
 
     private readonly record struct SnapshotShardCacheKey(string Path, string Blake3);

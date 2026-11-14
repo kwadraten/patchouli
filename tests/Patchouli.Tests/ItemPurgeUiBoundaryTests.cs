@@ -8,6 +8,7 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Host.Composition;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Layout;
 using Patchouli.Infrastructure.Search;
 using Dapper;
@@ -204,6 +205,187 @@ public sealed class ItemPurgeUiBoundaryTests(AvaloniaSharedSessionFixture headle
     }
 
     [Theory]
+    [InlineData(LocalFileOutcome.PartialFailure, "已永久删除 1 个题录，但 1 个本地文件未能删除")]
+    [InlineData(LocalFileOutcome.Exception, "已永久删除 1 个题录；本地文件删除失败：injected gc failure")]
+    [InlineData(LocalFileOutcome.Cancelled, "已永久删除 1 个题录；本地文件删除被中断，可能未全部删除。")]
+    public async Task Local_file_failure_after_commit_reports_the_items_as_purged_and_refreshes(
+        LocalFileOutcome outcome, string expectedStatus)
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            await using Fixture fixture = await Fixture.CreateAsync();
+            string originalItemId = fixture.Original.ItemId;
+            FakeLocalFileGc gc = new(outcome);
+            fixture.Main.Shell.FileAssetGcDecorator = _ => gc;
+            fixture.Purge.ReportRelease.TrySetResult();
+            fixture.Purge.DeleteRelease.TrySetResult();
+            Task purging = fixture.StartWithLocalFiles();
+            await WaitUntilAsync(() => fixture.Dialogs.Blocking?.IsRunning == false);
+            fixture.Dialogs.Confirmation!.DeleteLocalFiles.Should().BeTrue();
+            fixture.Dialogs.Blocking!.OperationState.Should().Be("已成功");
+            await fixture.Dialogs.Blocking.ConfirmCommand.ExecuteAsync();
+            await purging.WaitAsync(TimeSpan.FromSeconds(10));
+
+            gc.Requested.Should().NotBeEmpty();
+            gc.Options!.DeleteLocalFiles.Should().BeTrue();
+            fixture.Main.Status.Should().StartWith(expectedStatus);
+            fixture.Main.Status.Should().NotContain("已取消").And.NotContain("永久删除失败");
+            fixture.Main.StatusIsError.Should().BeTrue("the local-file pass did not complete");
+            ItemLifecycleInfo item = (await Task.Run(() =>
+                fixture.Services.Items.GetItemLifecycleAsync(ItemId.Parse(originalItemId)))).Value;
+            item.State.Should().Be(ItemLifecycleState.Purged);
+            await WaitUntilAsync(() => fixture.Main.Shell.Items.All(row => row.ItemId != originalItemId));
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Local_file_purge_success_reports_deleted_files()
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            await using Fixture fixture = await Fixture.CreateAsync();
+            FakeLocalFileGc gc = new(LocalFileOutcome.Success);
+            fixture.Main.Shell.FileAssetGcDecorator = _ => gc;
+            fixture.Purge.ReportRelease.TrySetResult();
+            fixture.Purge.DeleteRelease.TrySetResult();
+            Task purging = fixture.StartWithLocalFiles();
+            await WaitUntilAsync(() => fixture.Dialogs.Blocking?.IsRunning == false);
+            await fixture.Dialogs.Blocking!.ConfirmCommand.ExecuteAsync();
+            await purging.WaitAsync(TimeSpan.FromSeconds(10));
+
+            fixture.Main.Status.Should().Be($"已永久删除 1 个题录；已删除 {gc.Requested.Count} 个本地文件。");
+            fixture.Main.StatusIsError.Should().BeFalse();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Search_selection_in_trash_scope_deletes_active_hits_but_never_purges_or_restores()
+    {
+        await headless.Session.Dispatch<bool>(async () =>
+        {
+            await using Fixture fixture = await Fixture.CreateAsync();
+            fixture.Main.Shell.Sidebar.IsTrashSelected.Should().BeTrue();
+            ItemId activeId = await Task.Run(async () =>
+                (await fixture.Services.Items.CreateItemAsync("book", "Active search hit")).Value.ItemId);
+            LibraryItemViewModel activeItem = new(activeId.ToString(), "Active search hit", "book", "", "", "",
+                null, null, null, "", "", 0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask);
+            SearchHitItemViewModel hit = SearchHitItemViewModel.HitItem(activeItem, []);
+            fixture.Main.SearchEvidence.FullTextResults.Add(hit);
+
+            // Creating the active hit publishes a revision. Arrange the Library selection
+            // against the settled projection, not a row from before that async refresh.
+            await fixture.Main.Shell.RefreshItemsAsync();
+            LibraryItemViewModel original = fixture.Main.Shell.Items
+                .Single(item => item.ItemId == fixture.Original.ItemId);
+            fixture.Main.Shell.SelectedItem = original;
+            fixture.Main.Shell.SetSelectedItems([original]);
+            fixture.Main.Shell.SelectSearchHit(hit.Item);
+            fixture.Main.Shell.CanModifyLibraryItems.Should().BeTrue();
+            await fixture.Main.Shell.PurgeSelectedItemsCommand.ExecuteAsync();
+            await fixture.Main.Shell.PurgeSelectedItemsWithLocalFilesCommand.ExecuteAsync();
+            await fixture.Main.Shell.RestoreSelectedItemsCommand.ExecuteAsync();
+            fixture.Purge.ReportStarted.Task.IsCompleted.Should().BeFalse("search hits are never purge targets");
+            fixture.Dialogs.Confirmation.Should().BeNull();
+
+            await fixture.Main.Shell.DeleteSelectedItemsCommand.ExecuteAsync();
+            ItemLifecycleInfo deleted = (await Task.Run(() =>
+                fixture.Services.Items.GetItemLifecycleAsync(activeId))).Value;
+            deleted.State.Should().Be(ItemLifecycleState.Trash);
+            fixture.Main.SearchEvidence.FullTextResults.Should().NotContain(hit);
+            fixture.Main.Shell.SelectedItems.Should().BeEmpty();
+
+            // Leaving the search tab gives the trash grid its own selection back.
+            // Settle the real trash projection after the deletion revision before checking
+            // synchronous selection restoration; the event-driven refresh runs off-thread.
+            await fixture.Main.Shell.RefreshItemsAsync();
+            fixture.Main.Shell.EndSearchSelection();
+            fixture.Main.Shell.SelectedItems.Should().ContainSingle()
+                .Which.ItemId.Should().Be(fixture.Original.ItemId);
+            ItemLifecycleInfo trashed = (await Task.Run(() =>
+                fixture.Services.Items.GetItemLifecycleAsync(ItemId.Parse(fixture.Original.ItemId)))).Value;
+            trashed.State.Should().Be(ItemLifecycleState.Trash);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public void Retained_shared_files_are_not_reported_as_failures()
+    {
+        FileAssetId deleted = FileAssetId.New();
+        FileAssetId shared = FileAssetId.New();
+        FileAssetId failed = FileAssetId.New();
+
+        (string message, bool incomplete) = LibraryShellViewModel.DescribeLocalFileDeletion(
+            "已永久删除 2 个题录", [deleted, shared], new FileAssetGcResult([deleted], []));
+        message.Should().Be("已永久删除 2 个题录；已删除 1 个本地文件，1 个共享或快照引用的文件已保留。");
+        incomplete.Should().BeFalse();
+
+        (message, incomplete) = LibraryShellViewModel.DescribeLocalFileDeletion(
+            "已永久删除 2 个题录", [deleted, shared, failed],
+            new FileAssetGcResult([deleted], [new FileAssetGcFailure(failed, "locked")]));
+        message.Should().Be("已永久删除 2 个题录，但 1 个本地文件未能删除，1 个共享或快照引用的文件已保留：locked");
+        incomplete.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Purge_confirmation_warns_only_when_local_files_are_deleted()
+    {
+        PurgeConfirmDialogViewModel plain = new(["A"], []);
+        plain.DeleteLocalFiles.Should().BeFalse();
+        plain.LocalFileWarning.Should().BeEmpty();
+        plain.ConfirmText.Should().Be("永久删除");
+        plain.SummaryMessage.Should().Contain("原始文件不会删除");
+
+        PurgeConfirmDialogViewModel withFiles = new(["A"], [], true);
+        withFiles.LocalFileWarning.Should().Contain("云盘");
+        withFiles.ConfirmText.Should().Be("永久删除并删除文件");
+        withFiles.SummaryMessage.Should().NotContain("原始文件不会删除");
+    }
+
+    public enum LocalFileOutcome
+    {
+        Success,
+        PartialFailure,
+        Exception,
+        Cancelled
+    }
+
+    private sealed class FakeLocalFileGc(LocalFileOutcome outcome) : IFileAssetGcService
+    {
+        public IReadOnlyList<FileAssetId> Requested { get; private set; } = [];
+        public FileAssetGcOptions? Options { get; private set; }
+
+        public Task<IReadOnlyList<FileAssetGcCandidate>> PreviewAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<FileAssetGcResult> RunAsync(FileAssetGcOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<FileAssetGcResult> RunCandidatesAsync(IEnumerable<FileAssetId> fileAssetIds,
+            FileAssetGcOptions options, CancellationToken cancellationToken = default)
+        {
+            Dispatcher.UIThread.CheckAccess().Should().BeFalse();
+            Requested = fileAssetIds.ToArray();
+            Options = options;
+            return outcome switch
+            {
+                LocalFileOutcome.Success => Task.FromResult(new FileAssetGcResult(Requested, [])),
+                LocalFileOutcome.PartialFailure => Task.FromResult(new FileAssetGcResult([],
+                    [new FileAssetGcFailure(Requested[0], "file is locked")])),
+                LocalFileOutcome.Exception => throw new IOException("injected gc failure"),
+                _ => throw new OperationCanceledException()
+            };
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     [Trait("Category", "performance")]
@@ -367,6 +549,11 @@ public sealed class ItemPurgeUiBoundaryTests(AvaloniaSharedSessionFixture headle
         public Task Start()
         {
             return _purging = Main.Shell.PurgeSelectedItemsCommand.ExecuteAsync();
+        }
+
+        public Task StartWithLocalFiles()
+        {
+            return _purging = Main.Shell.PurgeSelectedItemsWithLocalFilesCommand.ExecuteAsync();
         }
 
         public async ValueTask DisposeAsync()

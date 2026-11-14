@@ -12,8 +12,10 @@ public sealed class PurgeConfirmDialogViewModel : ViewModelBase
 
     public PurgeConfirmDialogViewModel(
         IReadOnlyList<string> titles,
-        IReadOnlyList<ItemPurgeDependencyReport> reports)
+        IReadOnlyList<ItemPurgeDependencyReport> reports,
+        bool deleteLocalFiles = false)
     {
+        DeleteLocalFiles = deleteLocalFiles;
         Titles = titles.ToArray();
         Reports = reports.ToArray();
         DisplayedTitles = Titles.Take(PreviewLimit).ToArray();
@@ -34,8 +36,18 @@ public sealed class PurgeConfirmDialogViewModel : ViewModelBase
         ? $"仅预览前 {PreviewLimit} 条；确认将删除完整选择中的全部 {Titles.Count} 个题录。"
         : "";
 
-    public string SummaryMessage =>
-        $"以下 {Titles.Count} 个题录及其页面树和全部正文历史将被永久删除。原始文件不会删除，内部派生文件另行后台回收。";
+    /// <summary>Whether the purge also deletes the items' unshared local files.</summary>
+    public bool DeleteLocalFiles { get; }
+
+    public string SummaryMessage => DeleteLocalFiles
+        ? $"以下 {Titles.Count} 个题录及其页面树和全部正文历史将被永久删除。"
+        : $"以下 {Titles.Count} 个题录及其页面树和全部正文历史将被永久删除。原始文件不会删除，内部派生文件另行后台回收。";
+
+    public string LocalFileWarning => DeleteLocalFiles
+        ? "同时删除其未共享的本地文件；云盘中的文件同样被真正删除，而非仅释放空间。被其他题录或快照引用的文件将保留。"
+        : "";
+
+    public string ConfirmText => DeleteLocalFiles ? "永久删除并删除文件" : "永久删除";
 
     public int TotalSnapshotCount => Reports.Sum(report => report.SnapshotCount);
 

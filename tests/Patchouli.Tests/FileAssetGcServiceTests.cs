@@ -193,6 +193,129 @@ public sealed class FileAssetGcServiceTests
         result.Deleted.Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task RunCandidates_with_delete_local_files_removes_original_and_available_locations()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        string extraPath = await c.CreateExtraFileAsync("extra location");
+        await c.AddKnownLocationAsync(fileAssetId, extraPath);
+
+        FileAssetGcResult result = await c.Gc.RunCandidatesAsync(
+            [fileAssetId], new FileAssetGcOptions(DeleteLocalFiles: true));
+
+        result.Deleted.Should().Equal(fileAssetId);
+        result.Failed.Should().BeEmpty();
+        File.Exists(c.OriginalFilePath).Should().BeFalse();
+        File.Exists(extraPath).Should().BeFalse();
+        (await c.CountAsync("file_assets")).Should().Be(0);
+        (await c.CountAsync("known_file_locations")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Run_with_default_options_keeps_local_files()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        string extraPath = await c.CreateExtraFileAsync("extra location");
+        await c.AddKnownLocationAsync(fileAssetId, extraPath);
+
+        FileAssetGcResult result = await c.Gc.RunAsync(new FileAssetGcOptions());
+
+        result.Deleted.Should().Equal(fileAssetId);
+        result.Failed.Should().BeEmpty();
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+        File.Exists(extraPath).Should().BeTrue();
+        (await c.CountAsync("file_assets")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunCandidates_with_delete_local_files_keeps_paths_shared_with_other_assets()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        FileAssetId otherId = await c.CreateAvailableFileAssetWithContentAsync("still referenced");
+        await c.AddKnownLocationAsync(otherId, c.OriginalFilePath);
+
+        FileAssetGcResult result = await c.Gc.RunCandidatesAsync(
+            [fileAssetId], new FileAssetGcOptions(DeleteLocalFiles: true));
+
+        result.Deleted.Should().Equal(fileAssetId);
+        result.Failed.Should().BeEmpty();
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+        (await c.CountAsync("file_assets")).Should().Be(1);
+        (await c.CountAsync("known_file_locations")).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task RunCandidates_with_delete_local_files_keeps_files_referenced_by_snapshot()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        await c.PublishSnapshotAsync();
+
+        FileAssetGcResult result = await c.Gc.RunCandidatesAsync(
+            [fileAssetId], new FileAssetGcOptions(DeleteLocalFiles: true));
+
+        result.Deleted.Should().BeEmpty();
+        result.Failed.Should().BeEmpty();
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+        (await c.CountAsync("file_assets")).Should().Be(1);
+        (await c.CountAsync("known_file_locations")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunCandidates_with_delete_local_files_reports_unverifiable_snapshot_references()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        await c.PublishSnapshotAsync();
+        await File.WriteAllTextAsync(Path.Combine(c.SyncRoot, "current.json"), "{}");
+
+        FileAssetGcResult result = await c.Gc.RunCandidatesAsync(
+            [fileAssetId], new FileAssetGcOptions(DeleteLocalFiles: true));
+
+        result.Deleted.Should().BeEmpty();
+        result.Failed.Should().ContainSingle().Which.FileAssetId.Should().Be(fileAssetId);
+        result.Failed[0].ErrorMessage.Should().Contain("snapshot references could not be verified");
+        File.Exists(c.OriginalFilePath).Should().BeTrue();
+        (await c.CountAsync("file_assets")).Should().Be(1);
+        (await c.CountAsync("known_file_locations")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunCandidates_with_delete_local_files_failure_keeps_database_rows_and_reports_failure()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        FileAssetId otherId = await c.CreateAvailableFileAssetWithContentAsync("other orphan");
+        string extraPath = await c.CreateExtraFileAsync("extra location");
+        await c.AddKnownLocationAsync(fileAssetId, extraPath);
+
+        // Platform-independent failure injection: a directory at a verified path is never
+        // deleted and must be reported as a failure without touching the asset rows.
+        string blockerPath = extraPath;
+        File.Delete(blockerPath);
+        Directory.CreateDirectory(blockerPath);
+        try
+        {
+            FileAssetGcResult result = await c.Gc.RunCandidatesAsync(
+                [fileAssetId, otherId], new FileAssetGcOptions(DeleteLocalFiles: true));
+
+            result.Deleted.Should().Equal(otherId);
+            result.Failed.Should().ContainSingle()
+                .Which.FileAssetId.Should().Be(fileAssetId);
+            File.Exists(c.OriginalFilePath).Should().BeFalse("earlier locations may be removed before the failure");
+            Directory.Exists(blockerPath).Should().BeTrue();
+            (await c.CountAsync("file_assets")).Should().Be(1);
+            (await c.CountAsync("known_file_locations")).Should().Be(2);
+        }
+        finally
+        {
+            Directory.Delete(blockerPath);
+        }
+    }
+
     private sealed class Ctx : IAsyncDisposable
     {
         private Ctx(
@@ -298,12 +421,36 @@ public sealed class FileAssetGcServiceTests
 
         public async Task<FileAssetId> CreateAvailableFileAssetWithContentAsync(string content)
         {
-            string path = Path.Combine(Path.GetTempPath(), $"gc-{Guid.NewGuid():N}.txt");
-            await File.WriteAllTextAsync(path, content);
-            ExtraFiles.Add(path);
+            string path = await CreateExtraFileAsync(content);
             Result<FileAsset> result = await Files.RegisterFileAsync(path);
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             return result.Value.FileAssetId;
+        }
+
+        public async Task<string> CreateExtraFileAsync(string content)
+        {
+            string path = Path.Combine(Path.GetTempPath(), $"gc-{Guid.NewGuid():N}.txt");
+            await File.WriteAllTextAsync(path, content);
+            ExtraFiles.Add(path);
+            return path;
+        }
+
+        public async Task AddKnownLocationAsync(FileAssetId fileAssetId, string path)
+        {
+            await using SqliteConnection connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into known_file_locations (location_id, file_asset_id, path, last_seen_at, status)
+                values (@LocationId, @FileAssetId, @Path, @LastSeenAt, 'available');
+                """,
+                new
+                {
+                    LocationId = KnownFileLocationId.New().ToString(),
+                    FileAssetId = fileAssetId.ToString(),
+                    Path = Path.GetFullPath(path),
+                    LastSeenAt = Clock.UtcNow.ToUniversalTime().ToString("O")
+                });
         }
 
         public async Task<DocumentInstanceId> AttachDocumentInstanceAsync(FileAssetId fileAssetId,

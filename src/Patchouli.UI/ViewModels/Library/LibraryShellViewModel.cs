@@ -260,6 +260,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         DeleteSelectedItemsCommand = new AsyncCommand(DeleteSelectedItemsAsync);
         RestoreSelectedItemsCommand = new AsyncCommand(RestoreSelectedItemsAsync);
         PurgeSelectedItemsCommand = new AsyncCommand(PurgeSelectedItemsAsync);
+        PurgeSelectedItemsWithLocalFilesCommand = new AsyncCommand(PurgeSelectedItemsWithLocalFilesAsync);
         QuickFillOcrCommand = new AsyncCommand(RunQuickFillOcrAsync);
 
         // Sorting is a UI-layer concern: the persisted key selects one of the grid columns (empty
@@ -538,6 +539,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
     public AsyncCommand DeleteSelectedItemsCommand { get; }
     public AsyncCommand RestoreSelectedItemsCommand { get; }
     public AsyncCommand PurgeSelectedItemsCommand { get; }
+    public AsyncCommand PurgeSelectedItemsWithLocalFilesCommand { get; }
     public AsyncCommand QuickFillOcrCommand { get; }
     public AsyncCommand RemoveSelectedItemsFromCurrentCollectionCommand { get; }
     public AsyncCommand CreateCollectionCommand { get; }
@@ -552,7 +554,70 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
     [ExcludeFromDerivedGeneration] public string SelectedCollectionFilterName => Sidebar.SelectedCollectionName;
 
-    [ExcludeFromDerivedGeneration] public bool CanModifyLibraryItems => Sidebar.IsActiveSelected;
+    /// <summary>
+    /// Active-item commands apply either to the Library's active scope or to a borrowed full-text
+    /// search selection; search hits are always active items, whatever scope the sidebar shows.
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public bool CanModifyLibraryItems => IsSearchSelectionActive || Sidebar.IsActiveSelected;
+
+    /// <summary>True while the full-text search tab owns <see cref="SelectedItems"/>.</summary>
+    [ObservableProperty]
+    public partial bool IsSearchSelectionActive { get; private set; }
+
+    partial void OnIsSearchSelectionActiveChanged(bool value)
+    {
+        Raise(nameof(CanModifyLibraryItems));
+    }
+
+    private string? _librarySelectionPrimaryId;
+    private HashSet<string>? _librarySelectionIds;
+
+    /// <summary>
+    /// Lets the full-text search tab drive the item commands with the exact hit instance. The
+    /// Library's own selection is remembered and restored by <see cref="EndSearchSelection"/>.
+    /// A hit without a resolvable active item (trashed, missing) clears the selection instead.
+    /// </summary>
+    public void SelectSearchHit(LibraryItemViewModel? item)
+    {
+        if (!IsSearchSelectionActive)
+        {
+            _librarySelectionPrimaryId = SelectedItem?.ItemId;
+            _librarySelectionIds = SelectedItems.Select(selected => selected.ItemId)
+                .ToHashSet(StringComparer.Ordinal);
+            IsSearchSelectionActive = true;
+        }
+
+        LibraryItemViewModel? target = item is not null && ParseItemIdOrNull(item.ItemId) is not null ? item : null;
+        SelectedItem = target;
+        SetSelectedItems(target is null ? [] : [target]);
+    }
+
+    /// <summary>Returns the selection to the Library grid; a no-op when search does not own it.</summary>
+    public void EndSearchSelection()
+    {
+        if (!IsSearchSelectionActive)
+        {
+            return;
+        }
+
+        string? primaryId = _librarySelectionPrimaryId;
+        HashSet<string> selectedIds = _librarySelectionIds ?? new HashSet<string>(StringComparer.Ordinal);
+        _librarySelectionPrimaryId = null;
+        _librarySelectionIds = null;
+        IsSearchSelectionActive = false;
+        SelectedItem = primaryId is null ? null : Items.FirstOrDefault(item => item.ItemId == primaryId);
+        SetSelectedItems(Items.Where(item => selectedIds.Contains(item.ItemId)));
+    }
+
+    /// <summary>Drops a borrowed search selection whose item is no longer an active item.</summary>
+    internal void RemoveSearchSelection(IReadOnlySet<string> inactiveItemIds)
+    {
+        if (IsSearchSelectionActive && SelectedItems.Any(item => inactiveItemIds.Contains(item.ItemId)))
+        {
+            SelectSearchHit(null);
+        }
+    }
 
     private CancellationTokenSource? _metadataBatchCancellation;
     private bool _cancelMetadataBatchForLibrarySwitch;
@@ -792,6 +857,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             : CreatedAtDescendingComparison);
         Items = new ObservableCollection<LibraryItemViewModel>(sorted);
         Raise(nameof(Items));
+        if (IsSearchSelectionActive)
+        {
+            return;
+        }
+
         SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId);
         SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
     }
@@ -988,9 +1058,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         try
         {
             refreshToken.ThrowIfCancellationRequested();
-            string? primaryItemId = SelectedItem?.ItemId;
-            HashSet<string> selectedItemIds =
-                SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+            // While search borrows the selection, the Library's own selection is the remembered one;
+            // this refresh may complete after the borrow ends.
+            string? primaryItemId = IsSearchSelectionActive ? _librarySelectionPrimaryId : SelectedItem?.ItemId;
+            HashSet<string> selectedItemIds = IsSearchSelectionActive
+                ? new HashSet<string>(_librarySelectionIds ?? [], StringComparer.Ordinal)
+                : SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
             HostServices services = await _main.ServicesAsync();
             // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
             // reads run on a thread-pool thread to keep scope switching responsive.
@@ -1109,8 +1182,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             // Publish the new Items collection before restoring the selection. The DataGrid selection
             // model only accepts items that belong to its current ItemsSource, and the ItemsSource
             // binding still points at the previous collection until the notification above is processed.
-            SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
-            SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+            // A borrowed search selection keeps ownership; the Library selection returns when it ends.
+            if (!IsSearchSelectionActive)
+            {
+                SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
+                SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
                                                  pagingGeneration != Volatile.Read(ref _pagingGeneration))
@@ -2386,7 +2463,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             {
                 if (result.ErrorCode == LibraryImportOrchestrator.MinerUTokenRequiredErrorCode)
                 {
-                    await _main.OpenSettingsAsync("mineru", "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
+                    await _main.OpenSettingsAsync("ocr_components",
+                        "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
                     _main.Report("运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
                     return;
                 }
@@ -2597,11 +2675,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
     private async Task DeleteSelectedItemsAsync()
     {
-        if (SelectedItems.Count == 0 || Sidebar.SelectedScope != LibrarySidebarScope.Active)
+        if (SelectedItems.Count == 0 || !CanModifyLibraryItems)
         {
             return;
         }
 
+        bool fromSearch = IsSearchSelectionActive;
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         HostServices services = await _main.ServicesAsync();
         int generation = _main.LibraryGeneration;
@@ -2614,12 +2693,32 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         if (!result.IsSuccess)
         {
             _main.ReportError($"删除题录失败：{result.ErrorMessage}");
+            return;
+        }
+
+        if (fromSearch)
+        {
+            // Trashed hits leave the search results immediately so they cannot be operated on again.
+            _main.SearchEvidence.RemoveHits(itemIds.Select(id => id.ToString()).ToHashSet(StringComparer.Ordinal));
         }
     }
 
-    private async Task PurgeSelectedItemsAsync()
+    private Task PurgeSelectedItemsAsync()
     {
-        if (SelectedItems.Count == 0 || Sidebar.SelectedScope != LibrarySidebarScope.Trash)
+        return PurgeSelectedItemsCoreAsync(false);
+    }
+
+    private Task PurgeSelectedItemsWithLocalFilesAsync()
+    {
+        return PurgeSelectedItemsCoreAsync(true);
+    }
+
+    private async Task PurgeSelectedItemsCoreAsync(bool deleteLocalFiles)
+    {
+        // Search-hit selections are active items borrowed by the search tab; they can never be
+        // purge targets even when the Library sidebar happens to show the trash.
+        if (SelectedItems.Count == 0 || Sidebar.SelectedScope != LibrarySidebarScope.Trash ||
+            IsSearchSelectionActive)
         {
             return;
         }
@@ -2643,6 +2742,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
         AsyncOperationLifetime work = new();
         _purgeCancellation = cancellation;
         _purgeWorkLifetime = work;
+        bool purgeCommitted = false;
         try
         {
             _main.Report("正在生成永久删除依赖报告...");
@@ -2685,7 +2785,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
             }
 
             using PurgeConfirmDialogViewModel dialog = new(reports.Select(report => titles[report.ItemId]).ToArray(),
-                reports);
+                reports, deleteLocalFiles);
             await _main.LogOperationAsync("item-purge-phase", string.Create(CultureInfo.InvariantCulture,
                 $"phase=ui_prepare; elapsed_ms={Stopwatch.GetElapsedTime(uiStarted).TotalMilliseconds:F3}"));
             if (!_main.IsCurrentLibraryContext(services, generation) || token.IsCancellationRequested)
@@ -2725,8 +2825,23 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 return;
             }
 
+            // The item purge is committed from here on: nothing below may report it as cancelled or
+            // failed, and the list must refresh even when the local-file pass does not complete.
+            purgeCommitted = true;
+            FileAssetId[] fileAssetIds = reports.SelectMany(report => report.FileAssetIds).Distinct().ToArray();
+            string completion = $"已永久删除 {itemIds.Length} 个题录；原始文件保留。";
+            bool localFilesIncomplete = false;
+            if (deleteLocalFiles)
+            {
+                (completion, localFilesIncomplete) =
+                    await DeleteLocalFilesAfterPurgeAsync(services, work, fileAssetIds, itemIds.Length, token);
+            }
+            else
+            {
+                ScheduleFileAssetGc(services, fileAssetIds);
+            }
+
             long uiUpdateStarted = Stopwatch.GetTimestamp();
-            ScheduleFileAssetGc(services, reports.SelectMany(report => report.FileAssetIds).Distinct().ToArray());
             try
             {
                 // Include the real list projection in the UI timing, not just the status text.
@@ -2741,7 +2856,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 await RefreshItemsCoreAsync(token);
                 if (_main.IsCurrentLibraryContext(services, generation) && !token.IsCancellationRequested)
                 {
-                    _main.Report($"已永久删除 {itemIds.Length} 个题录；原始文件保留。");
+                    ReportPurgeCompletion(completion, localFilesIncomplete);
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -2749,8 +2864,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 UnexpectedExceptions.Sink.Report(exception, "item-purge-ui-refresh");
                 if (_main.IsCurrentLibraryContext(services, generation) && !token.IsCancellationRequested)
                 {
-                    _main.ReportError($"题录已永久删除，但列表刷新失败：{exception.Message}");
+                    _main.ReportError($"{completion} 列表刷新失败：{exception.Message}");
                 }
+            }
+            catch (OperationCanceledException) when (_main.IsCurrentLibraryContext(services, generation))
+            {
+                // A retired Library or shutdown cancels the refresh; the committed result still stands.
+                ReportPurgeCompletion(completion, localFilesIncomplete);
             }
             finally
             {
@@ -2758,8 +2878,9 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                     $"phase=ui_update; elapsed_ms={Stopwatch.GetElapsedTime(uiUpdateStarted).TotalMilliseconds:F3}"));
             }
         }
-        catch (OperationCanceledException exception) when (token.IsCancellationRequested ||
-                                                           exception.CancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (!purgeCommitted &&
+                                                           (token.IsCancellationRequested ||
+                                                            exception.CancellationToken.IsCancellationRequested))
         {
             if (_main.IsCurrentLibraryContext(services, generation))
             {
@@ -2774,6 +2895,82 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
                 _purgeWorkLifetime = null;
                 _purgeCancellation = null;
             }
+        }
+    }
+
+    /// <summary>Test seam for the post-purge local-file deletion pass.</summary>
+    internal Func<IFileAssetGcService, IFileAssetGcService>? FileAssetGcDecorator { get; set; }
+
+    private async Task<(string Message, bool Incomplete)> DeleteLocalFilesAfterPurgeAsync(
+        HostServices services,
+        AsyncOperationLifetime work,
+        IReadOnlyList<FileAssetId> fileAssetIds,
+        int itemCount,
+        CancellationToken token)
+    {
+        string purged = $"已永久删除 {itemCount} 个题录";
+        if (fileAssetIds.Count == 0)
+        {
+            return ($"{purged}；没有需要删除的本地文件。", false);
+        }
+
+        IFileAssetGcService gc = FileAssetGcDecorator?.Invoke(services.FileAssetGc) ?? services.FileAssetGc;
+        _main.Report($"{purged}，正在删除本地文件...");
+        try
+        {
+            FileAssetGcResult result = await Task.Run(async () =>
+            {
+                using IDisposable? lease = work.TryEnter();
+                if (lease is null)
+                {
+                    throw new OperationCanceledException(token);
+                }
+
+                return await gc.RunCandidatesAsync(fileAssetIds, new FileAssetGcOptions(DeleteLocalFiles: true),
+                    token);
+            });
+            return DescribeLocalFileDeletion(purged, fileAssetIds, result);
+        }
+        catch (OperationCanceledException)
+        {
+            return ($"{purged}；本地文件删除被中断，可能未全部删除。", true);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "item-purge-local-files");
+            return ($"{purged}；本地文件删除失败：{exception.Message}", true);
+        }
+    }
+
+    internal static (string Message, bool Incomplete) DescribeLocalFileDeletion(
+        string purged,
+        IReadOnlyList<FileAssetId> requested,
+        FileAssetGcResult result)
+    {
+        // Candidates that were neither deleted nor failed are still referenced (shared with another
+        // item or pinned by a snapshot) and were intentionally kept.
+        HashSet<FileAssetId> handled = result.Deleted.Concat(result.Failed.Select(failure => failure.FileAssetId))
+            .ToHashSet();
+        int retained = requested.Distinct().Count(id => !handled.Contains(id));
+        string retainedText = retained > 0 ? $"，{retained} 个共享或快照引用的文件已保留" : "";
+        if (result.Failed.Count > 0)
+        {
+            return ($"{purged}，但 {result.Failed.Count} 个本地文件未能删除{retainedText}：{result.Failed[0].ErrorMessage}",
+                true);
+        }
+
+        return ($"{purged}；已删除 {result.Deleted.Count} 个本地文件{retainedText}。", false);
+    }
+
+    private void ReportPurgeCompletion(string message, bool localFilesIncomplete)
+    {
+        if (localFilesIncomplete)
+        {
+            _main.ReportError(message);
+        }
+        else
+        {
+            _main.Report(message);
         }
     }
 
@@ -2800,7 +2997,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase, IAsyncDisposa
 
     private async Task RestoreSelectedItemsAsync()
     {
-        if (SelectedItems.Count == 0 || Sidebar.SelectedScope != LibrarySidebarScope.Trash)
+        if (SelectedItems.Count == 0 || Sidebar.SelectedScope != LibrarySidebarScope.Trash || IsSearchSelectionActive)
         {
             return;
         }

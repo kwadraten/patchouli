@@ -304,6 +304,8 @@
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            <MenuItem Header="永久删除（含本地文件）" Command="{Binding PurgeSelectedItemsWithLocalFilesCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <Separator IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
