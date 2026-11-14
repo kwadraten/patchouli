@@ -12,6 +12,7 @@ using FluentAssertions;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 using Patchouli.UI.Views;
+using Patchouli.UI.Controls;
 using Patchouli.UI.Themes;
 using Patchouli.Core.Search;
 using Patchouli.Host.Composition;
@@ -32,25 +33,126 @@ namespace Patchouli.Tests;
 [Collection("RetainedTabUI")]
 public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headless)
 {
-    [Fact]
-    public async Task Virtual_links_subpage_renders_two_independent_switches()
+    [Theory]
+    [InlineData("appearance")]
+    [InlineData("ocr_components")]
+    [InlineData("mcp")]
+    [InlineData("permissions")]
+    [InlineData("csl_cayw")]
+    public async Task Settings_cards_reuse_the_shared_card_surface(string sectionId)
     {
         await RunAsync(async (main, window, _) =>
         {
-            await main.Settings.SelectSectionAsync("virtual_links");
+            await main.Settings.SelectSectionAsync(sectionId);
+            await main.Settings.WaitForActiveSectionLoadAsync();
+            Pump(window);
+            Control[] cards = window.GetVisualDescendants().OfType<Control>()
+                .Where(control => control is ISettingsAnchor && control.IsEffectivelyVisible).ToArray();
+            cards.Should().NotBeEmpty();
+            foreach (Control card in cards)
+            {
+                Border surface = card.GetVisualDescendants().OfType<Border>()
+                    .Single(border => border.Name == "PART_Card");
+                surface.Classes.Should().Contain("Card");
+                surface.Padding.Should().Be(new Thickness(16));
+                surface.CornerRadius.Should().Be(new CornerRadius(8));
+                surface.BorderThickness.Should().Be(new Thickness(1));
+            }
+
+            SavePreview(window, $"settings-review-{sectionId}.png");
+        });
+    }
+
+    [Fact]
+    public async Task Settings_search_keyboard_and_light_dismiss_preserve_the_workspace()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await main.OpenSettingsCommand.ExecuteAsync();
+            UI.MainWindow window = new(main);
+            window.Show();
+            try
+            {
+                TextBox search = window.GetVisualDescendants().OfType<TextBox>()
+                    .Single(control => control.Name == "ToolbarSearchTextBox");
+                Popup popup = window.FindControl<Popup>("SettingsSearchPopup")!;
+                search.Focus();
+                main.ToolbarSearchQuery = "端口";
+                Pump(window);
+                popup.IsOpen.Should().BeTrue();
+                main.SettingsSearchResults.Count.Should().BeGreaterThan(1);
+                int count = main.SettingsSearchResults.Count;
+                window.KeyPress(Key.Down, RawInputModifiers.None, default, null);
+                main.SelectedSettingsSearchIndex.Should().Be(1);
+                window.KeyPress(Key.Up, RawInputModifiers.None, default, null);
+                main.SelectedSettingsSearchIndex.Should().Be(0);
+                window.KeyPress(Key.Up, RawInputModifiers.None, default, null);
+                main.SelectedSettingsSearchIndex.Should().Be(count - 1);
+                window.KeyPress(Key.Escape, RawInputModifiers.None, default, null);
+                Pump(window);
+                popup.IsOpen.Should().BeFalse();
+                main.ToolbarSearchQuery.Should().Be("端口");
+                main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Settings);
+
+                main.ToolbarSearchQuery = "token";
+                Pump(window);
+                popup.IsOpen.Should().BeTrue();
+                window.MouseDown(new Point(20, 200), MouseButton.Left);
+                window.MouseUp(new Point(20, 200), MouseButton.Left);
+                Pump(window);
+                popup.IsOpen.Should().BeFalse();
+                main.IsSettingsSearchOpen.Should().BeFalse();
+
+                search.Focus();
+                main.ToolbarSearchQuery = "端口";
+                Pump(window);
+                SettingsSearchEntry target = main.SettingsSearchResults[0].Entry;
+                string? anchor = null;
+                main.Settings.CardNavigationRequested += (_, args) => anchor = args.AnchorId;
+                window.KeyPress(Key.Enter, RawInputModifiers.None, default, null);
+                await main.Settings.WaitForActiveSectionLoadAsync();
+                Pump(window);
+                anchor.Should().Be(target.CardAnchorId);
+                popup.IsOpen.Should().BeFalse();
+                main.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.SearchResults);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task System_integration_renders_registration_and_foreground_activation_switches()
+    {
+        await RunAsync(async (main, window, _) =>
+        {
+            await main.Settings.SelectSectionAsync("system_integration");
             await main.Settings.WaitForActiveSectionLoadAsync();
             Pump(window);
             ToggleSwitch[] switches = window.GetVisualDescendants().OfType<ToggleSwitch>()
                 .Where(control => control.IsEffectivelyVisible).ToArray();
             switches.Should().HaveCount(2);
-            ToggleSwitch search = switches.Single(control => Equals(control.Content, "搜索栏解析文献虚拟链接"));
-            search.IsChecked.Should().BeTrue();
-            search.IsChecked = false;
+            ToggleSwitch registration = switches.Single(control =>
+                Equals(control.Content, "注册 patchouli:// 协议"));
+            registration.IsChecked.Should().Be(main.Settings.VirtualLinkSettings.RegisterProtocol);
+            ToggleSwitch foreground = switches.Single(control =>
+                Equals(control.Content, "打开链接时前台显示窗口"));
+            foreground.IsChecked.Should().BeTrue();
+            Border track = foreground.GetVisualDescendants().OfType<Border>()
+                .Single(control => control.Name == "SwitchTrack");
+            (track.TranslatePoint(default, window)!.Value.X - foreground.TranslatePoint(default, window)!.Value.X)
+                .Should().BeApproximately(192, 1, "switches use the same leading label column as SettingRow");
+            foreground.IsChecked = false;
             Pump(window);
-            main.AppOptions.Ui.ParseVirtualLinksInSearchBar.Should().BeFalse();
-            switches.Single(control => Equals(control.Content, "在系统中注册 patchouli:// 协议"))
-                .IsChecked.Should().Be(main.Settings.VirtualLinkSettings.RegisterProtocol);
-            SavePreview(window, "settings-virtual-links.png");
+            main.AppOptions.Ui.ActivateWindowOnProtocolOpen.Should().BeFalse();
+            main.Settings.VirtualLinkSettings.ActivateWindowOnProtocolOpen.Should().BeFalse();
+            SavePreview(window, "settings-system-integration.png");
         });
     }
 
@@ -113,9 +215,9 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
     }
 
     [Theory]
-    [InlineData("import", 6)]
-    [InlineData("library", 2)]
-    [InlineData("search_rewrite", 2)]
+    [InlineData("import", 2)]
+    [InlineData("system_integration", 3)]
+    [InlineData("search_rewrite", 3)]
     public async Task Every_settings_group_switches_one_subpage_at_a_time_in_the_fixed_header(string sectionId,
         int expectedHeaders)
     {
@@ -126,6 +228,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
             Border title = page.FindControl<Border>("SettingsHeader")!;
             SettingsSectionGroupViewModel group = main.Settings.ActiveTabbedGroup!;
             group.Entries.Should().HaveCount(expectedHeaders);
+
             TabStrip tabs = window.GetVisualDescendants().OfType<TabStrip>()
                 .Single(strip => strip.Name == "SettingsSectionTabs" && strip.IsEffectivelyVisible);
             tabs.Items.Count.Should().Be(expectedHeaders);
@@ -135,12 +238,16 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
             header.Bounds.Width.Should().BeApproximately(title.Bounds.Width, 1);
             header.TranslatePoint(default, window)!.Value.X.Should()
                 .BeApproximately(title.TranslatePoint(default, window)!.Value.X, 1);
+            Point headerPosition = header.TranslatePoint(default, window)!.Value;
             foreach (SettingsSectionEntryViewModel entry in group.Entries)
             {
                 tabs.SelectedItem = entry;
                 await main.Settings.WaitForActiveSectionLoadAsync();
                 Pump(window);
                 group.ActiveEntry.Should().BeSameAs(entry);
+                window.GetVisualDescendants().OfType<Border>()
+                    .Single(border => border.Name == "SettingsTabHeader" && border.IsEffectivelyVisible)
+                    .TranslatePoint(default, window)!.Value.Should().Be(headerPosition);
                 window.GetVisualDescendants().OfType<Control>().Should()
                     .Contain(control =>
                         ReferenceEquals(control.DataContext, entry.Content) && control.IsEffectivelyVisible);
@@ -161,7 +268,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
     {
         await RunAsync(async (main, window, _) =>
         {
-            await main.Settings.SelectSectionAsync("mcp");
+            await main.Settings.SelectSectionAsync("permissions");
             Pump(window);
             McpSettingsViewModel settings = main.Settings.McpSettings;
             McpDomainPermissionRowViewModel runs = settings.PermissionRows.Single(row => row.Domain == "runs");
@@ -269,6 +376,26 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
         });
     }
 
+    [Fact]
+    public async Task Settings_search_navigation_highlights_the_target_card()
+    {
+        await RunAsync(async (main, window, _) =>
+        {
+            SettingsSearchEntry entry = SettingsSearchIndex.Entries
+                .Single(candidate => candidate.CardAnchorId == "mcp_service");
+            await main.Settings.NavigateToSearchEntryAsync(entry);
+            Pump(window);
+            ISettingsAnchor card = window.GetVisualDescendants().OfType<Control>()
+                .OfType<ISettingsAnchor>()
+                .Single(control => control.AnchorId == "mcp_service");
+            card.IsHighlighted.Should().BeTrue();
+            SavePreview(window, "settings-search-highlight.png");
+            await Task.Delay(TimeSpan.FromSeconds(1.8));
+            Pump(window);
+            card.IsHighlighted.Should().BeFalse("search emphasis is temporary");
+        });
+    }
+
     private static void Click(Window window, Control control)
     {
         control.BringIntoView();
@@ -324,7 +451,7 @@ public sealed class SettingsHeaderLayoutTests(AvaloniaSharedSessionFixture headl
     {
         using WriteableBitmap? frame = window.CaptureRenderedFrame();
         frame.Should().NotBeNull();
-        string preview = TestPaths.FromRepositoryRoot(".tmp", "bug9-12", filename);
+        string preview = TestPaths.FromRepositoryRoot(".tmp", "issue53-sol-review", filename);
         Directory.CreateDirectory(Path.GetDirectoryName(preview)!);
         frame!.Save(preview);
     }

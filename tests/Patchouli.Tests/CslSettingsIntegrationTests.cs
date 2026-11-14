@@ -159,7 +159,7 @@ public sealed class CslSettingsIntegrationTests
     private static void AssertInstalledRoute(MainWindowViewModel main)
     {
         main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Settings);
-        main.Settings.ActiveCategory.Title.Should().Be("引用与题录");
+        main.Settings.ActiveCategory.Title.Should().Be("引用");
         main.Settings.ActiveTabbedGroup!.ActiveEntry.Id.Should().Be("csl_installed");
     }
 

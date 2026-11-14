@@ -27,12 +27,12 @@ public sealed class LayoutRecognitionSettingsTests(AvaloniaSharedSessionFixture 
             window.Show();
             try
             {
-                await main.Settings.SelectSectionAsync("layout_models");
+                await main.Settings.SelectSectionAsync("ocr_components");
                 Pump(window);
                 main.Settings.LayoutModelCatalog.Components.Select(row => row.ExtensionId).Should()
                     .Contain(["layout.pp-doclayout-v3", "layout.doclayout-yolo"]);
                 window.GetVisualDescendants().OfType<TextBlock>().Should().Contain(block =>
-                    block.IsEffectivelyVisible && block.Text == "版面识别模型列表");
+                    block.IsEffectivelyVisible && block.Text == "版面识别模型");
                 using WriteableBitmap? frame = window.CaptureRenderedFrame();
                 string preview = TestPaths.FromRepositoryRoot(".tmp", "layout-recognition", "settings.png");
                 Directory.CreateDirectory(Path.GetDirectoryName(preview)!);

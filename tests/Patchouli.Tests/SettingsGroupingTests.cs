@@ -30,7 +30,7 @@ public sealed class SettingsGroupingTests(AvaloniaSharedSessionFixture headless)
             page.LlmSettings.ReportSaveFailure("Provider 'deepseek' is missing model.");
             main.Status.Should().Contain("模型连接").And.Contain("missing model");
             main.StatusIsError.Should().BeTrue();
-            page.ActiveCategory = page.Categories.Single(category => category.Title == "同步与快照");
+            page.ActiveCategory = page.Categories.Single(category => category.Title == "同步");
             main.Status.Should().Contain("missing model");
             if (laterError)
             {
@@ -45,21 +45,27 @@ public sealed class SettingsGroupingTests(AvaloniaSharedSessionFixture headless)
     }
 
     [Theory]
-    [InlineData("mcp", "MCP 服务与权限", "AI集成")]
-    [InlineData("llm", "模型连接", "AI集成")]
-    [InlineData("agents", "Agent 集成", "AI集成")]
-    [InlineData("import", "导入时设置", "文献加工")]
-    [InlineData("ocr_presets", "OCR 预设编排", "文献加工")]
-    [InlineData("ocr_engines", "OCR 引擎列表", "文献加工")]
-    [InlineData("ocr_textlayer", "文本层提取算法列表", "文献加工")]
-    [InlineData("translation", "文献翻译", "文献加工")]
-    [InlineData("library", "书库与源文件", "书库与本机文件")]
-    [InlineData("update", "更新设置", "更新设置")]
-    [InlineData("local_files", "模型与临时文件", "书库与本机文件")]
-    [InlineData("csl_localization", "题录本地化", "引用与题录")]
-    [InlineData("csl_installed", "已安装样式", "引用与题录")]
-    [InlineData("csl_online", "在线样式", "引用与题录")]
-    public async Task Stable_section_routes_select_the_correct_subpage(string id, string title, string category)
+    [InlineData("mcp", "MCP 服务", "AI 集成")]
+    [InlineData("permissions", "访问权限", "AI 集成")]
+    [InlineData("llm", "模型连接", "AI 集成")]
+    [InlineData("agents", "Agent", "AI 集成")]
+    [InlineData("startup", "启动", "行为")]
+    [InlineData("system_integration", "链接与系统", "行为")]
+    [InlineData("update", "更新", "行为")]
+    [InlineData("import", "导入", "数据")]
+    [InlineData("local_files", "本机存储", "数据")]
+    [InlineData("ocr_presets", "OCR 预设", "文献加工")]
+    [InlineData("ocr_components", "OCR 组件", "文献加工")]
+    [InlineData("translation", "翻译", "文献加工")]
+    [InlineData("metadata", "元数据来源", "文献加工")]
+    [InlineData("search_rewrite", "搜索重写", "搜索")]
+    [InlineData("search_awareness", "页面感知", "搜索")]
+    [InlineData("search_links", "链接解析", "搜索")]
+    [InlineData("csl_localization", "本地化", "引用")]
+    [InlineData("csl_installed", "已安装样式", "引用")]
+    [InlineData("csl_online", "在线样式", "引用")]
+    [InlineData("csl_cayw", "Cite As You Write", "引用")]
+    public async Task Tabbed_section_routes_select_the_correct_subpage(string id, string title, string category)
     {
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch<int>(async () =>
@@ -68,16 +74,120 @@ public sealed class SettingsGroupingTests(AvaloniaSharedSessionFixture headless)
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             await main.OpenSettingsAsync(id);
             main.Settings.ActiveCategory.Title.Should().Be(category);
-            if (id == "update")
-            {
-                main.Settings.ActiveCategory.Content.Should().BeSameAs(main.Settings.UpdateSettings);
-                return 0;
-            }
-
             SettingsSectionGroupViewModel group = (SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!;
             group.SelectedTab.Should().BeSameAs(group.ActiveEntry);
             group.ActiveEntry.Id.Should().Be(id);
             group.ActiveEntry.Title.Should().Be(title);
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("appearance", "主题与阅读", "显示")]
+    [InlineData("library", "文件与扫描", "书库")]
+    [InlineData("sync", "同步", "同步")]
+    public async Task Single_page_categories_select_their_owner(string id, string title, string category)
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await main.OpenSettingsAsync(id);
+            main.Settings.ActiveCategory.Title.Should().Be(category);
+            main.Settings.HasSectionTabs.Should().BeFalse();
+            SettingsSectionEntryViewModel entry = main.Settings.SectionEntries.Single(candidate => candidate.Id == id);
+            entry.Title.Should().Be(title);
+            main.Settings.ActiveCategory.Content.Should().BeSameAs(entry.Content);
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Official_ids_route_directly_and_unknown_ids_fail()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+
+            await main.OpenSettingsAsync("system_integration");
+            ((SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!).ActiveEntry.Id
+                .Should().Be("system_integration");
+            await main.OpenSettingsAsync("ocr_components");
+            ((SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!).ActiveEntry.Id
+                .Should().Be("ocr_components");
+            await main.OpenSettingsAsync("ocr_presets");
+            ((SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!).ActiveEntry.Id
+                .Should().Be("ocr_presets");
+            await main.OpenSettingsAsync("translation");
+            ((SettingsSectionGroupViewModel)main.Settings.ActiveCategory.Content!).ActiveEntry.Id
+                .Should().Be("translation");
+
+            bool missingThrew = false;
+            try
+            {
+                await main.OpenSettingsAsync("missing_settings_section");
+            }
+            catch (ArgumentException)
+            {
+                missingThrew = true;
+            }
+
+            missingThrew.Should().BeTrue();
+
+            bool malformedThrew = false;
+            try
+            {
+                await main.OpenSettingsAsync("settings/unknown");
+            }
+            catch (ArgumentException)
+            {
+                malformedThrew = true;
+            }
+
+            malformedThrew.Should().BeTrue();
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("virtual_links")]
+    [InlineData("extensions")]
+    [InlineData("mineru")]
+    [InlineData("ocr")]
+    [InlineData("layout_models")]
+    [InlineData("ocr_engines")]
+    [InlineData("ocr_textlayer")]
+    [InlineData("network_proxy")]
+    public async Task Removed_section_ids_are_not_aliases(string id)
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            await Assert.ThrowsAsync<ArgumentException>(() => main.Settings.SelectSectionAsync(id));
+            return 0;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Category_icons_use_existing_Lucide_assets_instead_of_the_unknown_icon_fallback()
+    {
+        await headless.Session.Dispatch<int>(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            foreach (NavCategoryViewModel category in main.Settings.Categories)
+            {
+                string name = string.Join('-', System.Text.RegularExpressions.Regex
+                    .Matches(category.IconName, "[A-Z][a-z]*|[0-9]+")
+                    .Select(match => match.Value.ToLowerInvariant()));
+                File.Exists(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Assets", "Lucide", name + ".svg"))
+                    .Should().BeTrue($"{category.Title} must render its declared {category.IconName} icon");
+            }
+
             return 0;
         }, CancellationToken.None);
     }
@@ -91,17 +201,17 @@ public sealed class SettingsGroupingTests(AvaloniaSharedSessionFixture headless)
             using TemporaryAppSettingsFile settings = new();
             await using MainWindowViewModel main = new(settingsPath: settings.Path);
             SettingsViewModel page = main.Settings;
-            page.LibrarySettings.RememberLastDatabase = !page.LibrarySettings.RememberLastDatabase;
+            page.StartupSettings.RememberLastDatabase = !page.StartupSettings.RememberLastDatabase;
             page.ImportSettings.MaxFailedPageRatioPercent = 35;
             page.McpSettings.Port += 1;
-            page.ActiveCategory.Title.Should().Be("外观与阅读");
+            page.ActiveCategory.Title.Should().Be("显示");
             page.HasDirtySections.Should().BeTrue();
 
             (await page.SaveAllDirtySectionsAsync()).Should().BeTrue(page.GlobalStatus);
             page.HasDirtySections.Should().BeFalse();
             main.AppOptions.Import.MaxFailedPageRatio.Should().Be(0.35);
 
-            page.LibrarySettings.RememberLastDatabase = !page.LibrarySettings.RememberLastDatabase;
+            page.StartupSettings.RememberLastDatabase = !page.StartupSettings.RememberLastDatabase;
             page.ImportSettings.MaxFailedPageRatioPercent = 50;
             await page.DiscardCommand.ExecuteAsync();
             page.HasDirtySections.Should().BeFalse();

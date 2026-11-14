@@ -61,6 +61,28 @@ public sealed class SettingsAutoSaveRegressionTests
         store.Written.Select(settings => settings.Ui.ReadingFontSize).Should().Equal(18, 24);
     }
 
+    [Fact]
+    public async Task Startup_edits_during_a_write_remain_dirty_until_the_new_value_is_saved()
+    {
+        using TemporaryAppSettingsFile file = new();
+        PausedSettingsStore store = new(PatchouliAppSettings.Load(file.Path));
+        await using MainWindowViewModel main = new(settingsPath: file.Path, settingsStore: store);
+        StartupSettingsViewModel section = main.Settings.StartupSettings;
+        bool original = section.RememberLastDatabase;
+        section.RememberLastDatabase = !original;
+        Task save = section.SaveAsync();
+        await store.FirstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        section.RememberLastDatabase = original;
+        store.ReleaseFirstWrite.SetResult();
+        await save;
+
+        section.IsDirty.Should().BeTrue();
+        await section.SaveAsync();
+        section.IsDirty.Should().BeFalse();
+        store.Written.Select(settings => settings.Runtime.RememberLastDatabase).Should()
+            .Equal(!original, original);
+    }
+
     [Theory]
     [InlineData("csl-styles", "cite", false)]
     [InlineData("texts", "put", true)]

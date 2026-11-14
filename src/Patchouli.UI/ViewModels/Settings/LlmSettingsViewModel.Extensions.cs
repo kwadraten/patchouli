@@ -123,7 +123,7 @@ public sealed partial class LlmSettingsViewModel
 
     private async Task ConfigureTranslationEngineAsync()
     {
-        await _main.Settings.SelectSectionAsync("extensions");
+        await _main.Settings.SelectSectionAsync("translation");
         ExtensionSettingsViewModel extensions = _main.Settings.ExtensionSettings;
         extensions.SelectedExtension = extensions.Extensions.FirstOrDefault(item => item.Id == TranslationEngineId);
     }

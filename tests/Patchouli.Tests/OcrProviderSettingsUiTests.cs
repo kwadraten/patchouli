@@ -41,7 +41,7 @@ public sealed class OcrProviderSettingsUiTests : IDisposable
             window.Show();
             try
             {
-                await main.Settings.SelectSectionAsync("ocr");
+                await main.Settings.SelectSectionAsync("ocr_presets");
                 await main.Settings.WaitForActiveSectionLoadAsync();
                 Dispatcher.UIThread.RunJobs();
                 window.UpdateLayout();

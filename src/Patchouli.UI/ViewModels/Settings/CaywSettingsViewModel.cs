@@ -20,6 +20,7 @@ public sealed partial class CaywSettingsViewModel : SettingsSectionViewModelBase
     {
         _main = main;
         RestartServiceCommand = new AsyncCommand(RestartServiceAsync);
+        CopyEndpointCommand = new AsyncCommand(CopyEndpointAsync);
         Register(System.Reactive.Linq.Observable
             .FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
                 handler => _main.PropertyChanged += handler,
@@ -34,6 +35,7 @@ public sealed partial class CaywSettingsViewModel : SettingsSectionViewModelBase
     [ObservableProperty] public partial int Port { get; set; } = CitationInteropAppSettings.DefaultPort;
 
     public AsyncCommand RestartServiceCommand { get; }
+    public AsyncCommand CopyEndpointCommand { get; }
 
     /// <summary>The endpoint implied by the current port input.</summary>
     [ExcludeFromDerivedGeneration]
@@ -129,6 +131,20 @@ public sealed partial class CaywSettingsViewModel : SettingsSectionViewModelBase
     {
         await _main.RestartCitationInteropAsync();
         RaiseServiceStatus();
+    }
+
+    private async Task CopyEndpointAsync()
+    {
+        try
+        {
+            await _main.Clipboard.SetTextAsync(RunningEndpoint);
+            _main.Report("CAYW 服务地址已复制到剪贴板。");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(CaywSettingsViewModel), "CopyEndpoint");
+            _main.ReportError($"复制 CAYW 地址失败：{exception.Message}");
+        }
     }
 
     private async Task SaveNowAsync()

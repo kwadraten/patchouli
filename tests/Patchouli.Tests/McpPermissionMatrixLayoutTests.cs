@@ -18,10 +18,9 @@ public sealed class McpPermissionMatrixLayoutTests
 
     private static XElement MatrixRoot()
     {
-        XElement title = XDocument.Load(AxamlPath).Descendants()
-            .Single(element => element.Name.LocalName == "TextBlock" &&
-                               (string?)element.Attribute("Text") == "Agent 资源访问权限");
-        return title.Ancestors().First(element => element.Name.LocalName == "Border");
+        return XDocument.Load(AxamlPath).Descendants()
+            .Single(element => element.Name.LocalName == "SettingsCard" &&
+                               (string?)element.Attribute("AnchorId") == "permissions_resource");
     }
 
     [Fact]

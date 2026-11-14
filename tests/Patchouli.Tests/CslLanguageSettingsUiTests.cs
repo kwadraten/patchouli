@@ -230,7 +230,7 @@ public sealed class CslLanguageSettingsUiTests : IDisposable
                     section.IsDirty.Should().BeTrue();
 
                     (await main.Settings.SaveAllDirtySectionsAsync()).Should().BeTrue();
-                    main.Status.Should().Contain("已保存").And.Contain("题录本地化");
+                    main.Status.Should().Contain("已保存").And.Contain("本地化");
                     window.GetVisualDescendants().OfType<TextBlock>()
                         .Should().NotContain(block => block.Text != null && block.Text.Contains("规则已保存"));
                     Result<CslSettings> persisted = await services.CslStore.GetSettingsAsync();

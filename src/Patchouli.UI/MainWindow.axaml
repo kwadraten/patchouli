@@ -180,6 +180,8 @@
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            <MenuItem Header="永久删除（含本地文件）" Command="{Binding PurgeSelectedItemsWithLocalFilesCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <Separator />
             <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
                       Command="{Binding ImportBiblatexBatchDescriptor}" />
@@ -331,6 +333,12 @@
                         IsChecked="{Binding IsToolbarDocumentFullTextSearch, Mode=OneWay}"
                         Command="{Binding SelectToolbarSearchModeCommand}"
                         CommandParameter="{Binding ToolbarSearchModeOptions[2]}" />
+              <MenuItem Header="{Binding ToolbarSearchModeOptions[3].Label}" ToggleType="Radio"
+                        x:Name="ToolbarSettingsSearchMenuItem" IsVisible="{Binding IsToolbarSettingsSearchAvailable}"
+                        GroupName="ToolbarSearchMode"
+                        IsChecked="{Binding IsToolbarSettingsSearch, Mode=OneWay}"
+                        Command="{Binding SelectToolbarSearchModeCommand}"
+                        CommandParameter="{Binding ToolbarSearchModeOptions[3]}" />
               <Separator />
               <MenuItem x:Name="ToolbarPageAwareMenuItem" Header="页面感知" ToggleType="CheckBox"
                         IsChecked="{Binding IsToolbarSearchPageAware, Mode=TwoWay}" />
@@ -338,7 +346,8 @@
           </Menu>
           <Border BorderThickness="0,0,1,0" BorderBrush="{DynamicResource OutlineVariantBrush}"
                   Height="24" VerticalAlignment="Center" />
-          <TextBox Width="220" Height="24" FontSize="12" CornerRadius="0" BorderThickness="0"
+          <TextBox x:Name="ToolbarSearchTextBox" Width="220" Height="24" FontSize="12" CornerRadius="0"
+                   BorderThickness="0"
                    Background="Transparent"
                    PlaceholderText="搜索"
                    IsEnabled="{Binding IsSearchEnabled}" Text="{Binding ToolbarSearchQuery}"
@@ -431,6 +440,32 @@
                   </StackPanel>
                 </Button>
               </Grid>
+            </Border>
+          </Popup>
+          <Popup x:Name="SettingsSearchPopup" IsOpen="{Binding IsSettingsSearchOpen, Mode=TwoWay}"
+                 PlacementTarget="{Binding #ToolbarSearchPanel}" Placement="BottomEdgeAlignedRight"
+                 VerticalOffset="4" ShouldUseOverlayLayer="True" IsLightDismissEnabled="True"
+                 OverlayDismissEventPassThrough="True">
+            <Border Width="420" Padding="8" CornerRadius="6" BorderThickness="1"
+                    BorderBrush="{DynamicResource OutlineVariantBrush}"
+                    Background="{DynamicResource SurfaceContainerLowestBrush}" BoxShadow="0 4 16 #33000000">
+              <StackPanel Spacing="6">
+                <ListBox x:Name="SettingsSearchResultsList" ItemsSource="{Binding SettingsSearchResults}"
+                         SelectedIndex="{Binding SelectedSettingsSearchIndex, Mode=TwoWay}"
+                         Tapped="OnSettingsSearchResultsTapped" KeyDown="OnToolbarSearchKeyDown"
+                         MaxHeight="280" Background="Transparent"
+                         BorderThickness="0">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="local:SettingsSearchResultViewModel">
+                      <TextBlock Text="{Binding DisplayPath}" FontSize="12" TextWrapping="Wrap" />
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock Text="{Binding SettingsSearchStatus}" Classes="SettingsStatus"
+                           IsVisible="{Binding SettingsSearchStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                <TextBlock Text="↑↓ 选择 · Enter 打开 · Esc 关闭" FontSize="11"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
             </Border>
           </Popup>
         </StackPanel>

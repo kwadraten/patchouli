@@ -49,16 +49,18 @@ public sealed class VirtualLinkSettingsTests
     }
 
     [Fact]
-    public async Task Settings_group_contains_the_named_virtual_links_subpage()
+    public async Task Settings_group_contains_the_named_system_integration_subpage()
     {
         using TemporaryAppSettingsFile settings = new();
         await using MainWindowViewModel main = new(settingsPath: settings.Path);
         SettingsSectionGroupViewModel group = main.Settings.Categories
-            .Single(category => category.Title == "AI集成").Content.Should()
+            .Single(category => category.Title == "行为").Content.Should()
             .BeOfType<SettingsSectionGroupViewModel>().Subject;
-        SettingsSectionEntryViewModel entry = group.Entries.Single(candidate => candidate.Id == "virtual_links");
-        entry.Title.Should().Be("文献虚拟链接解析");
-        entry.Content.Should().BeSameAs(main.Settings.VirtualLinkSettings);
+        SettingsSectionEntryViewModel entry =
+            group.Entries.Single(candidate => candidate.Id == "system_integration");
+        entry.Title.Should().Be("链接与系统");
+        entry.Content.Should().BeSameAs(main.Settings.SystemIntegrationSettings);
+        main.Settings.SystemIntegrationSettings.VirtualLinks.Should().BeSameAs(main.Settings.VirtualLinkSettings);
     }
 
     private sealed class FakeRegistration : IProtocolRegistrationService

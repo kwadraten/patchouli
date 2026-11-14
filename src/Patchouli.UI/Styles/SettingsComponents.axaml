@@ -1,0 +1,59 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="using:Patchouli.UI.Controls">
+  <!-- Reorder the existing switch theme's parts; keep its palette, thumb, hover,
+       focus and disabled states rather than introducing a settings-only switch. -->
+  <Style Selector="ToggleSwitch.SettingsToggle">
+    <Setter Property="HorizontalAlignment" Value="Stretch" />
+    <Setter Property="ContentTemplate">
+      <DataTemplate>
+        <TextBlock Text="{ReflectionBinding}" TextWrapping="Wrap" />
+      </DataTemplate>
+    </Setter>
+  </Style>
+  <Style Selector="ToggleSwitch.SettingsToggle /template/ Grid#SwitchLayout">
+    <Setter Property="ColumnSpacing" Value="12" />
+  </Style>
+  <Style Selector="ToggleSwitch.SettingsToggle /template/ Grid#SwitchControl">
+    <Setter Property="Grid.Column" Value="1" />
+    <Setter Property="HorizontalAlignment" Value="Left" />
+  </Style>
+  <Style Selector="ToggleSwitch.SettingsToggle /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Grid.Column" Value="0" />
+    <Setter Property="Width" Value="180" />
+  </Style>
+  <Style Selector="TextBlock.SettingsStatus">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <Style Selector="TextBlock.SettingsStatusError">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <Style Selector="TextBlock.SettingsStatusSuccess">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <Style Selector="Border.SettingsListRow">
+    <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+    <Setter Property="BorderThickness" Value="0,0,0,1" />
+    <Setter Property="Padding" Value="0,8" />
+  </Style>
+
+  <Style Selector="controls|SettingsCard.highlighted /template/ Border#PART_Card">
+    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="BorderThickness" Value="2" />
+    <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+  </Style>
+
+  <Style Selector="controls|ServiceStatusCard.highlighted /template/ Border#PART_Card">
+    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="BorderThickness" Value="2" />
+  </Style>
+</Styles>

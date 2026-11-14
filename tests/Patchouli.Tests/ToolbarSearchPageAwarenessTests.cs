@@ -40,9 +40,9 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
     public void Mode_options_cover_the_three_search_scopes_in_order()
     {
         SearchPageAwareness.ModeOptions.Select(option => option.Mode).Should().Equal(
-            SearchMode.Bibliographic, SearchMode.FullText, SearchMode.DocumentFullText);
+            SearchMode.Bibliographic, SearchMode.FullText, SearchMode.DocumentFullText, SearchMode.Settings);
         SearchPageAwareness.ModeOptions.Select(option => option.Label).Should().Equal(
-            "元数据检索", "全库全文检索", "全书全文检索");
+            "元数据检索", "全库全文检索", "全书全文检索", "设置");
     }
 
     [Fact]
@@ -59,11 +59,14 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
 
         foreach (WorkspaceTabKind kind in Enum.GetValues<WorkspaceTabKind>()
                      .Where(kind => kind is not (WorkspaceTabKind.Library or WorkspaceTabKind.PdfWorkspace
-                         or WorkspaceTabKind.ItemEditor)))
+                         or WorkspaceTabKind.ItemEditor or WorkspaceTabKind.Settings)))
         {
             SearchPageAwareness.GetMode(preferences, kind).Should().Be(SearchMode.FullText,
                 $"{kind} falls back to the library-wide full-text default");
         }
+
+        SearchPageAwareness.GetMode(preferences, WorkspaceTabKind.Settings).Should()
+            .Be(SearchMode.Settings, "the settings workspace searches settings by default");
     }
 
     [Fact]
@@ -127,7 +130,7 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
 
                 await main.OpenSettingsCommand.ExecuteAsync();
                 main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Settings);
-                main.ToolbarSearchMode.Mode.Should().Be(SearchMode.FullText);
+                main.ToolbarSearchMode.Mode.Should().Be(SearchMode.Settings);
 
                 main.SelectToolbarSearchModeCommand.Execute(SearchPageAwareness.ModeOptions[0]);
                 main.IsToolbarSearchPageAware.Should().BeFalse();
@@ -242,6 +245,7 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
                 filter.Key = SearchFilterKeyOption.For(BibliographicSearchFilterKeys.ItemType);
                 filter.Value = "book";
                 await main.RunToolbarSearchCommand.ExecuteAsync();
+                await WaitForShellRefreshAsync(main);
 
                 main.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
                 main.Layout.Tabs.Should().NotContain(tab => tab.Kind == WorkspaceTabKind.SearchResults);
@@ -521,8 +525,13 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
             main.ActiveTab!.Kind.Should().Be(parseLinks ? WorkspaceTabKind.ItemEditor : WorkspaceTabKind.Library);
             if (!parseLinks)
             {
-                // Without link parsing the URI is plain metadata text; it still resolves the
-                // item because bibliographic search matches canonical item identifiers.
+                await WaitForShellRefreshAsync(main);
+                // The URI is not bibliographic metadata. Parsing off must execute the ordinary
+                // metadata filter (zero matches), not leave the previous unfiltered page intact.
+                main.Shell.Items.Should().BeEmpty();
+                main.ToolbarSearchQuery = "Virtual link test";
+                await main.RunToolbarSearchCommand.ExecuteAsync();
+                await WaitForShellRefreshAsync(main);
                 main.Shell.Items.Select(item => item.ItemId).Should().Equal(imported.CreatedItemId);
             }
 
@@ -533,6 +542,18 @@ public sealed class ToolbarSearchPageAwarenessTests(AvaloniaSharedSessionFixture
                 .Which.PageNumberText.Should().Be("2");
             return true;
         }, CancellationToken.None);
+    }
+
+    private static async Task WaitForShellRefreshAsync(MainWindowViewModel main)
+    {
+        // Sidebar catalog loading can queue a throttled filter refresh after the command returns.
+        // Let it finish before asserting the searched page.
+        await Task.Delay(60);
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        while (main.Shell.IsRefreshingItems)
+        {
+            await main.Shell.CurrentRefreshCompletion.WaitAsync(timeout.Token);
+        }
     }
 
     private sealed class FakeClipboard : IClipboardService

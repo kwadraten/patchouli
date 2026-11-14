@@ -86,7 +86,15 @@ public sealed partial class MainWindow : Window
 
     internal void OpenProtocolUri(string uri)
     {
-        App.ActivateWindow(this);
+        if (_viewModel.AppOptions.Ui.ActivateWindowOnProtocolOpen)
+        {
+            App.ActivateWindow(this);
+        }
+        else if (!IsVisible || WindowState == WindowState.Minimized)
+        {
+            WindowAttentionService.RequestAttention(this);
+        }
+
         _protocolNavigation = OpenProtocolUriAfterAsync(_protocolNavigation, uri);
         _protocolNavigation.Observe("protocol-activation", "open-uri");
     }
@@ -286,6 +294,33 @@ public sealed partial class MainWindow : Window
 
     private void OnToolbarSearchKeyDown(object? sender, KeyEventArgs e)
     {
+        if (_viewModel.ToolbarSearchMode.Mode == SearchMode.Settings)
+        {
+            switch (e.Key)
+            {
+                case Key.Down:
+                    e.Handled = true;
+                    _viewModel.MoveSettingsSearchSelection(1);
+                    return;
+                case Key.Up:
+                    e.Handled = true;
+                    _viewModel.MoveSettingsSearchSelection(-1);
+                    return;
+                case Key.Escape:
+                    e.Handled = true;
+                    _viewModel.DismissSettingsSearch();
+                    return;
+                case Key.Enter when _viewModel.HasSettingsSearchResults &&
+                                    !(_viewModel.AppOptions.Ui.ParseVirtualLinksInSearchBar &&
+                                      _viewModel.ToolbarSearchQuery.TrimStart().StartsWith("patchouli://",
+                                          StringComparison.OrdinalIgnoreCase)):
+                    e.Handled = true;
+                    _viewModel.AcceptSettingsSearchResultAsync()
+                        .Observe("settings-search", "accept-result");
+                    return;
+            }
+        }
+
         if (e.Key != Key.Enter)
         {
             return;
@@ -293,6 +328,16 @@ public sealed partial class MainWindow : Window
 
         e.Handled = true;
         _viewModel.RunToolbarSearchCommand.Execute(null);
+    }
+
+    private void OnSettingsSearchResultsTapped(object? sender, TappedEventArgs e)
+    {
+        if (_viewModel.SelectedSettingsSearchIndex < 0)
+        {
+            return;
+        }
+
+        _viewModel.AcceptSettingsSearchResultAsync().Observe("settings-search", "select-result");
     }
 
     private void OnToolbarSearchFilterOpened(object? sender, EventArgs e)

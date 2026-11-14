@@ -540,21 +540,30 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     private void RefreshCliStatus(HostServices services)
     {
         _cliInstallation = services.CliPath.GetInstallation();
-        if (_cliInstallation.Path is null)
+        CliStatusText = FormatCliStatus(_cliInstallation);
+        IsCliInPath = _cliInstallation.InPath;
+    }
+
+    /// <summary>Refreshes only the CLI installation status without loading the MCP draft. Used by
+    /// the shared 链接与系统 tab, which displays the CLI row but does not own MCP edits.</summary>
+    public async Task RefreshCliStatusAsync()
+    {
+        RefreshCliStatus(await _main.ServicesAsync());
+    }
+
+    internal static string FormatCliStatus(CliInstallation installation)
+    {
+        if (installation.Path is null)
         {
-            CliStatusText = "patchouli-cli 未检测到（未随应用安装）";
-        }
-        else
-        {
-            string version = string.IsNullOrWhiteSpace(_cliInstallation.Version)
-                ? string.Empty
-                : $" v{_cliInstallation.Version}";
-            CliStatusText = _cliInstallation.InPath
-                ? $"patchouli-cli{version} 已就绪，并已加入 PATH"
-                : $"patchouli-cli{version} 已就绪，尚未加入 PATH";
+            return "patchouli-cli 未检测到（未随应用安装）";
         }
 
-        IsCliInPath = _cliInstallation.InPath;
+        string version = string.IsNullOrWhiteSpace(installation.Version)
+            ? string.Empty
+            : $" v{installation.Version}";
+        return installation.InPath
+            ? $"patchouli-cli{version} 已就绪，并已加入 PATH"
+            : $"patchouli-cli{version} 已就绪，尚未加入 PATH";
     }
 
     private Task SaveAndRestartAsync()

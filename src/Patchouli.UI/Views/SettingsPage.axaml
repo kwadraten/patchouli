@@ -17,6 +17,9 @@
     <Style Selector="StackPanel.SettingsContent">
       <Setter Property="Spacing" Value="20" />
     </Style>
+    <Style Selector="TextBox.Monospace">
+      <Setter Property="FontFamily" Value="Consolas, Menlo, monospace" />
+    </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*">
     <!-- Sidebar -->
@@ -93,34 +96,30 @@
             </Grid>
           </DataTemplate>
 
-          <!-- OCR component catalogs (engines / text-layer providers) -->
+          <!-- OCR component catalogs -->
           <DataTemplate DataType="settings:OcrComponentCatalogSettingsViewModel">
             <settingsViews:OcrComponentCatalogView Classes="SettingsContent" />
           </DataTemplate>
 
-          <!-- Appearance Settings -->
+          <!-- Appearance -->
           <DataTemplate DataType="settings:AppearanceSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="外观模式与配色" Classes="CardTitle" />
-
-                  <StackPanel Spacing="6" Margin="0,4,0,4">
-                    <TextBlock Text="明暗模式" FontSize="13" FontWeight="Medium" />
+              <controls:SettingsCard Title="主题与配色" AnchorId="appearance_theme"
+                                     Hint="明暗模式与界面配色，修改后立即应用。">
+                <StackPanel Spacing="12">
+                  <controls:SettingRow Label="明暗模式">
                     <ComboBox ItemsSource="{Binding AvailableThemeModes}" SelectedItem="{Binding SelectedThemeMode}"
-                              MinWidth="200" HorizontalAlignment="Left">
+                              MinWidth="160" HorizontalAlignment="Left">
                       <ComboBox.ItemTemplate>
                         <DataTemplate DataType="settings:ThemeModeOption">
                           <TextBlock Text="{Binding DisplayName}" FontSize="13" VerticalAlignment="Center" />
                         </DataTemplate>
                       </ComboBox.ItemTemplate>
                     </ComboBox>
-                  </StackPanel>
-
-                  <StackPanel Spacing="6" Margin="0,4,0,0">
-                    <TextBlock Text="配色方案" FontSize="13" FontWeight="Medium" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="配色方案">
                     <ComboBox ItemsSource="{Binding Palettes}" SelectedItem="{Binding SelectedPalette}"
-                              MinWidth="280" HorizontalAlignment="Left">
+                              MinWidth="240" HorizontalAlignment="Left">
                       <ComboBox.ItemTemplate>
                         <DataTemplate DataType="settings:PaletteOption">
                           <StackPanel Orientation="Horizontal" Spacing="8">
@@ -132,76 +131,120 @@
                         </DataTemplate>
                       </ComboBox.ItemTemplate>
                     </ComboBox>
-                  </StackPanel>
-                  <StackPanel Orientation="Horizontal" Spacing="6">
-                    <Border Width="40" Height="24" CornerRadius="4"
-                            Background="{Binding SelectedPalette.SurfaceBrush}"
-                            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
-                            ToolTip.Tip="背景" />
+                  </controls:SettingRow>
+                  <StackPanel Orientation="Horizontal" Spacing="6" Margin="192,0,0,0">
+                    <Border Width="40" Height="24" CornerRadius="4" Background="{Binding SelectedPalette.SurfaceBrush}"
+                            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" ToolTip.Tip="背景" />
                     <Border Width="40" Height="24" CornerRadius="4"
                             Background="{Binding SelectedPalette.TertiaryBrush}"
-                            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
-                            ToolTip.Tip="强调底色" />
-                    <Border Width="40" Height="24" CornerRadius="4"
-                            Background="{Binding SelectedPalette.AccentBrush}"
+                            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" ToolTip.Tip="强调底色" />
+                    <Border Width="40" Height="24" CornerRadius="4" Background="{Binding SelectedPalette.AccentBrush}"
                             ToolTip.Tip="主色" />
                     <Border Width="40" Height="24" CornerRadius="4" Background="{Binding SelectedPalette.TextBrush}"
                             ToolTip.Tip="正文文字" />
                   </StackPanel>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="阅读模式" Classes="CardTitle" />
-                  <TextBlock Text="字体" FontSize="13" FontWeight="Medium" />
-                  <ComboBox ItemsSource="{Binding ReadingFontFamilies}"
-                            SelectedItem="{Binding SelectedReadingFontOption}"
-                            MinWidth="280" HorizontalAlignment="Left" />
-                  <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="字号" VerticalAlignment="Center" />
+              <controls:SettingsCard Title="阅读" AnchorId="appearance_reading">
+                <StackPanel Spacing="12">
+                  <controls:SettingRow Label="字体">
+                    <ComboBox ItemsSource="{Binding ReadingFontFamilies}"
+                              SelectedItem="{Binding SelectedReadingFontOption}"
+                              MinWidth="240" HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="字号">
                     <NumericUpDown Value="{Binding ReadingFontSize}" Minimum="10" Maximum="28"
-                                   Increment="1" Width="100" />
-                  </StackPanel>
-                  <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="对照翻译布局" VerticalAlignment="Center" />
+                                   Increment="1" Width="120" HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="对照翻译布局">
                     <ComboBox ItemsSource="{Binding ReadingCompareModes}"
                               SelectedItem="{Binding SelectedReadingCompareMode}"
-                              MinWidth="140" HorizontalAlignment="Left" />
-                  </StackPanel>
+                              MinWidth="160" HorizontalAlignment="Left" />
+                  </controls:SettingRow>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Library Settings -->
+          <!-- Startup -->
+          <DataTemplate DataType="settings:StartupSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <controls:SettingsCard Title="启动行为" AnchorId="startup_database" Status="{Binding Status}">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Classes="SettingsToggle" Content="记住上次打开的数据库"
+                                IsChecked="{Binding RememberLastDatabase, Mode=TwoWay}"
+                                ToolTip.Tip="关闭后每次启动使用默认运行数据库；已保存的路径不会被删除。" />
+                  <TextBlock Text="{Binding RuntimeDatabasePath, StringFormat='运行数据库：{0}'}"
+                             Classes="SettingsStatus" TextWrapping="Wrap" />
+                </StackPanel>
+              </controls:SettingsCard>
+            </StackPanel>
+          </DataTemplate>
+
+          <!-- System integration: protocol, foreground activation, CLI and network proxy -->
+          <DataTemplate DataType="settings:SystemIntegrationSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <controls:SettingsCard Title="patchouli:// 协议" AnchorId="system_protocol"
+                                     Hint="从其他应用打开文献虚拟链接时唤起 Patchouli 并定位资源。"
+                                     Status="{Binding VirtualLinks.RegistrationStatus}">
+                <ToggleSwitch Classes="SettingsToggle" Content="注册 patchouli:// 协议"
+                              IsChecked="{Binding VirtualLinks.RegisterProtocol, Mode=TwoWay}"
+                              IsEnabled="{Binding VirtualLinks.CanChangeRegistration}" />
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="前台显示" AnchorId="system_activation">
+                <ToggleSwitch Classes="SettingsToggle" Content="打开链接时前台显示窗口"
+                              IsChecked="{Binding VirtualLinks.ActivateWindowOnProtocolOpen, Mode=TwoWay}"
+                              ToolTip.Tip="关闭后打开链接不会抢占当前窗口；最小化或托盘状态会显示任务栏或托盘提示。" />
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="命令行工具 (patchouli-cli)" AnchorId="system_cli"
+                                     Status="{Binding Mcp.CliStatusText}">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Content="加入 PATH" Command="{Binding Mcp.AddCliToPathCommand}" />
+                  <Button Command="{Binding Mcp.RemoveCliFromPathCommand}" Classes="Danger"
+                          ToolTip.Tip="从 PATH 移除" AutomationProperties.Name="从 PATH 移除">
+                    <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                  </Button>
+                </StackPanel>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="网络代理" AnchorId="system_proxy"
+                                     Hint="作用于应用发起的下载、模型、样式与更新请求；密码只保存在本机凭据库。">
+                <settingsViews:NetworkProxySettingsView DataContext="{Binding NetworkProxy}" />
+              </controls:SettingsCard>
+            </StackPanel>
+          </DataTemplate>
+
+          <DataTemplate DataType="settings:NetworkProxySettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <settingsViews:NetworkProxySettingsView />
+            </StackPanel>
+          </DataTemplate>
+
+          <!-- Library -->
           <DataTemplate DataType="settings:LibrarySettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="路径信息" Classes="CardTitle" />
-                  <TextBlock Text="{Binding RuntimeDatabasePath, StringFormat='运行数据库：\{0\}'}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  <TextBlock Text="{Binding DefaultSyncRootPath, StringFormat='同步根目录：\{0\}'}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+              <controls:SettingsCard Title="路径信息" AnchorId="library_paths">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="{Binding RuntimeDatabasePath, StringFormat='运行数据库：\{0\}'}"
+                             Classes="SettingsStatus" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding DefaultSyncRootPath, StringFormat='同步根目录：\{0\}'}"
+                             Classes="SettingsStatus" TextWrapping="Wrap" />
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="设备设置" Classes="CardTitle" />
-                  <ToggleSwitch Content="记住上次打开的数据库" IsChecked="{Binding RememberLastDatabase}" />
-                  <TextBlock Text="排除规则" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBox Text="{Binding ExclusionPatternsText}" PlaceholderText="每行一个正则表达式；相对路径使用 / 分隔"
-                           AcceptsReturn="True" MinHeight="120"
-                           FontFamily="Consolas, Menlo, monospace" />
+              <controls:SettingsCard Title="排除规则" AnchorId="library_exclusions" Status="{Binding Status}">
+                <StackPanel Spacing="8">
+                  <TextBox Text="{Binding ExclusionPatternsText}"
+                           PlaceholderText="每行一个正则表达式；相对路径使用 / 分隔"
+                           AcceptsReturn="True" MinHeight="120" Classes="Monospace" />
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <Border Classes="Card">
+              <controls:SettingsCard Title="文件搜索目录" AnchorId="library_roots">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="文件搜索目录" Classes="CardTitle" />
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                     <controls:PathPickerTextBox Path="{Binding FileSearchRootInput}"
                                                 SelectedRoot="{Binding SelectedFileSearchRoot}" PickerMode="Folder"
@@ -214,103 +257,191 @@
                   <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
-                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,4">
-                          <TextBlock Text="{Binding RootPath}" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                     TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
-                          <Button Grid.Column="1" Command="{Binding MoveUpCommand}"
-                                  Padding="10,2" ToolTip.Tip="上移（第一个目录是“移动到第一个文件搜索根”导入的目标）"
-                                  AutomationProperties.Name="上移">
-                            <lucide:Lucide Icon="ChevronUp" Width="16" Height="16" />
-                          </Button>
-                          <Button Grid.Column="2" Command="{Binding MoveDownCommand}"
-                                  Padding="10,2" ToolTip.Tip="下移" AutomationProperties.Name="下移">
-                            <lucide:Lucide Icon="ChevronDown" Width="16" Height="16" />
-                          </Button>
-                          <Button Grid.Column="3" Command="{Binding DeleteCommand}" Classes="Danger"
-                                  Padding="10,2" ToolTip.Tip="移除" AutomationProperties.Name="移除">
-                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                          </Button>
-                        </Grid>
+                        <Border Classes="SettingsListRow">
+                          <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+                            <TextBlock Text="{Binding RootPath}" FontSize="12" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
+                            <Button Grid.Column="1" Command="{Binding MoveUpCommand}" Padding="8,4"
+                                    ToolTip.Tip="上移（第一个目录是“移动到第一个文件搜索根”导入的目标）"
+                                    AutomationProperties.Name="上移">
+                              <lucide:Lucide Icon="ChevronUp" Width="16" Height="16" />
+                            </Button>
+                            <Button Grid.Column="2" Command="{Binding MoveDownCommand}" Padding="8,4"
+                                    ToolTip.Tip="下移" AutomationProperties.Name="下移">
+                              <lucide:Lucide Icon="ChevronDown" Width="16" Height="16" />
+                            </Button>
+                            <Button Grid.Column="3" Command="{Binding DeleteCommand}" Classes="Danger"
+                                    Padding="8,4" ToolTip.Tip="移除" AutomationProperties.Name="移除">
+                              <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                            </Button>
+                          </Grid>
+                        </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Import Settings -->
+          <!-- Import -->
           <DataTemplate DataType="settings:ImportSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="整本失败阈值" Classes="CardTitle" />
-                  <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="失败页比例阈值" ToolTip.Tip="失败页比例超过阈值时回滚整本导入；其余失败页保留为占位页。" VerticalAlignment="Center" />
+              <controls:SettingsCard Title="整本失败阈值" AnchorId="import_threshold" Status="{Binding Status}">
+                <controls:SettingRow Label="失败页比例阈值"
+                                     Hint="失败页比例超过阈值时回滚整本导入；其余失败页保留为占位页。">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
                     <NumericUpDown Value="{Binding MaxFailedPageRatioPercent}" Minimum="0" Maximum="90"
-                                   Increment="5" Width="100" />
+                                   Increment="5" Width="120" />
                     <TextBlock Text="%" VerticalAlignment="Center"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
-                </StackPanel>
-              </Border>
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="文件处理行为" Classes="CardTitle" />
-                  <StackPanel Spacing="4">
-                    <TextBlock Text="MCP add 导入 PDF" ToolTip.Tip="移动操作会改变源文件位置；首个搜索目录不可写时导入失败。" FontWeight="SemiBold" />
-                    <ComboBox ItemsSource="{Binding BehaviorOptions}"
-                              SelectedItem="{Binding McpAddBehaviorOption}"
-                              HorizontalAlignment="Stretch">
+                </controls:SettingRow>
+              </controls:SettingsCard>
+              <controls:SettingsCard Title="文件处理行为" AnchorId="import_behavior">
+                <StackPanel Spacing="12">
+                  <controls:SettingRow Label="MCP add 导入 PDF"
+                                       Hint="移动操作会改变源文件位置；首个搜索目录不可写时导入失败。">
+                    <ComboBox ItemsSource="{Binding BehaviorOptions}" SelectedItem="{Binding McpAddBehaviorOption}"
+                              MinWidth="240" HorizontalAlignment="Left">
                       <ComboBox.ItemTemplate>
                         <DataTemplate DataType="settings:FileHandlingBehaviorOption">
                           <TextBlock Text="{Binding DisplayName}" />
                         </DataTemplate>
                       </ComboBox.ItemTemplate>
                     </ComboBox>
-                  </StackPanel>
-                  <StackPanel Spacing="4">
-                    <TextBlock Text="窗口拖放 PDF" FontWeight="SemiBold" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="窗口拖放 PDF">
                     <ComboBox ItemsSource="{Binding BehaviorOptions}"
                               SelectedItem="{Binding PdfDragDropBehaviorOption}"
-                              HorizontalAlignment="Stretch">
+                              MinWidth="240" HorizontalAlignment="Left">
                       <ComboBox.ItemTemplate>
                         <DataTemplate DataType="settings:FileHandlingBehaviorOption">
                           <TextBlock Text="{Binding DisplayName}" />
                         </DataTemplate>
                       </ComboBox.ItemTemplate>
                     </ComboBox>
-                  </StackPanel>
+                  </controls:SettingRow>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
+          <!-- Local file management -->
+          <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <controls:SettingsCard Title="页面渲染缓存" AnchorId="local_renders"
+                                     IsVisible="{Binding HasPageRenderCache}">
+                <StackPanel Spacing="12">
+                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+                    <StackPanel Spacing="2">
+                      <TextBlock Text="{Binding PageRenderCacheDirectory}" FontSize="11"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding PageRenderCacheDirectory}" />
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding PageRenderCacheSizeDisplay}" FontSize="11"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <TextBlock Text="{Binding PageRenderCacheFileCountDisplay}" FontSize="11"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      </StackPanel>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="打开目录" Command="{Binding OpenPageRenderCacheCommand}"
+                            Padding="12,4" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Command="{Binding ClearPageRenderCacheCommand}" Classes="Danger"
+                            Padding="12,4" VerticalAlignment="Center" ToolTip.Tip="清理"
+                            AutomationProperties.Name="清理">
+                      <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                    </Button>
+                  </Grid>
+                  <controls:SettingRow Label="上限" Hint="超出后按最近使用时间清理旧缓存。">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <NumericUpDown Value="{Binding RenderCacheLimitMiB}" Minimum="32" Maximum="16384"
+                                     Increment="128" FormatString="0" Width="140" />
+                      <TextBlock Text="MiB" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    </StackPanel>
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="PNG 质量" Hint="仅影响新渲染的页面。">
+                    <NumericUpDown Value="{Binding RenderCachePngQuality}" Minimum="1" Maximum="100"
+                                   Increment="5" FormatString="0" Width="120" />
+                  </controls:SettingRow>
+                </StackPanel>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="托管位置" AnchorId="local_managed" Status="{Binding Status}">
+                <controls:SettingsCard.Actions>
+                  <Button Command="{Binding RefreshCommand}" ToolTip.Tip="刷新"
+                          AutomationProperties.Name="刷新">
+                    <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                  </Button>
+                </controls:SettingsCard.Actions>
+                <ItemsControl ItemsSource="{Binding Locations}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="settings:ManagedLocationViewModel">
+                      <Border Classes="SettingsListRow">
+                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="12">
+                          <StackPanel Spacing="2">
+                            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding Path}" FontSize="11"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <TextBlock Text="{Binding SizeDisplay}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              <TextBlock Text="{Binding ItemCountDisplay}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            </StackPanel>
+                          </StackPanel>
+                          <Button Grid.Column="1" Content="下载" Command="{Binding DownloadCommand}"
+                                  IsVisible="{Binding CanDownload}" Padding="12,4" />
+                          <Button Grid.Column="2" Content="打开目录" Command="{Binding OpenCommand}" Padding="12,4" />
+                          <Button Grid.Column="3" Command="{Binding ClearCommand}" Classes="Danger"
+                                  IsVisible="{Binding CanClear}" Padding="12,4" ToolTip.Tip="清理"
+                                  AutomationProperties.Name="清理">
+                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                          </Button>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </controls:SettingsCard>
+            </StackPanel>
+          </DataTemplate>
+
+          <!-- Sync -->
           <DataTemplate DataType="settings:SyncSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
+              <controls:SettingsCard Title="本机同步绑定" AnchorId="sync_binding"
+                                     Hint="MCP 配置、凭据与运行状态仅保存在本机。">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="本机同步绑定" ToolTip.Tip="MCP 配置、凭据与运行状态仅保存在本机。" Classes="CardTitle" />
-                  <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
-                  <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
-                  <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
-                                              DialogTitle="选择本机同步目录" PlaceholderText="本机同步目录" />
+                  <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" Classes="SettingsStatus" />
+                  <controls:SettingRow Label="设备名称">
+                    <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" MinWidth="320"
+                             HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="同步目录" HorizontalContentAlignment="Stretch">
+                    <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
+                                                DialogTitle="选择本机同步目录" PlaceholderText="本机同步目录" />
+                  </controls:SettingRow>
                   <TextBlock Text="{Binding SnapshotOperationStateText, StringFormat='最近同步状态：{0}'}"
-                             FontSize="12" Foreground="{DynamicResource PrimaryBrush}" />
-                  <TextBlock Text="{Binding SnapshotOperationMessage}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <Separator />
-                  <TextBlock Text="随库同步的非秘密设置" Classes="CardTitle" />
-                  <ToggleSwitch Content="随库同步元数据来源优先级" IsChecked="{Binding SyncMetadataLookup}" />
-                  <Separator />
+                             Classes="SettingsStatusSuccess" />
+                  <TextBlock Text="{Binding SnapshotOperationMessage}" Classes="SettingsStatus" TextWrapping="Wrap" />
+                </StackPanel>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="随库同步" AnchorId="sync_scope">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Classes="SettingsToggle" Content="随库同步元数据来源优先级"
+                                IsChecked="{Binding SyncMetadataLookup}" />
                   <Expander Header="同步范围" HorizontalAlignment="Stretch">
                     <Grid Grid.IsSharedSizeScope="True">
                       <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                       </Grid.RowDefinitions>
-
                       <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
                               Padding="0,0,0,6" Margin="0,4,0,0">
                         <Grid ColumnSpacing="12">
@@ -320,17 +451,12 @@
                             <ColumnDefinition SharedSizeGroup="ScopeColC" Width="0.8*" />
                             <ColumnDefinition SharedSizeGroup="ScopeColD" Width="1.2*" />
                           </Grid.ColumnDefinitions>
-                          <TextBlock Text="设置项" FontSize="11" FontWeight="SemiBold"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" />
-                          <TextBlock Grid.Column="1" Text="同步策略" FontSize="11" FontWeight="SemiBold"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" />
-                          <TextBlock Grid.Column="2" Text="存储位置" FontSize="11" FontWeight="SemiBold"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" />
-                          <TextBlock Grid.Column="3" Text="传播方式" FontSize="11" FontWeight="SemiBold"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Text="设置项" FontSize="11" FontWeight="SemiBold" />
+                          <TextBlock Grid.Column="1" Text="同步策略" FontSize="11" FontWeight="SemiBold" />
+                          <TextBlock Grid.Column="2" Text="存储位置" FontSize="11" FontWeight="SemiBold" />
+                          <TextBlock Grid.Column="3" Text="传播方式" FontSize="11" FontWeight="SemiBold" />
                         </Grid>
                       </Border>
-
                       <ItemsControl Grid.Row="1" ItemsSource="{Binding SettingScopeRows}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate DataType="settings:SyncSettingScopeRowViewModel">
@@ -359,8 +485,7 @@
                                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                                 </StackPanel>
                                 <TextBlock Grid.Column="3" Text="{Binding SourceText}" FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                           TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                               </Grid>
                             </Border>
                           </DataTemplate>
@@ -375,610 +500,374 @@
                     <Button Content="导出快照包" Command="{Binding ExportSnapshotPackageCommand}" />
                   </StackPanel>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- MCP Settings -->
-          <DataTemplate DataType="settings:McpSettingsViewModel">
-            <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="运行状态" Classes="CardTitle" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <Button Content="停止" Command="{Binding StopMcpCommand}"
-                              ToolTip.Tip="关闭 MCP 服务。" />
-                      <Button Content="启动" Command="{Binding StartMcpCommand}" Classes="Primary" />
-                    </StackPanel>
-                  </Grid>
-                  <TextBlock Text="{Binding McpStatusText}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                    <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <Button Grid.Column="1" Content="复制" Command="{Binding CopyEndpointCommand}"
-                            ToolTip.Tip="复制端点到剪贴板" Padding="10,2" />
-                  </Grid>
-                  <Border Background="{DynamicResource ErrorContainerBrush}"
-                          BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
-                          Padding="12" IsVisible="{Binding NeedsSaveAndRestart}">
-                    <StackPanel Spacing="6">
-                      <TextBlock Text="{Binding SaveAndRestartBannerText}" FontWeight="Bold"
-                                 Foreground="{DynamicResource OnErrorContainerBrush}" />
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="保存并重启服务" Command="{Binding SaveAndRestartCommand}"
-                                Classes="Primary" />
-                        <Button Content="放弃更改" Command="{Binding DiscardChangesCommand}"
-                                IsVisible="{Binding IsDirty}" />
-                      </StackPanel>
-                    </StackPanel>
-                  </Border>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="监听设置" Classes="CardTitle" />
-                  <TextBlock Text="端口" FontSize="12"
-                             FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <NumericUpDown Value="{Binding Port}" Minimum="1024" Maximum="65535" />
-                  <TextBlock Text="Bind 地址" FontSize="12" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBox Text="{Binding BindAddress}" PlaceholderText="127.0.0.1 或 0.0.0.0" />
-                  <TextBlock Text="协议：Streamable HTTP" FontSize="12" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding TransportDescription}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="MCP 外部访问控制" Classes="CardTitle" />
-                  <ToggleSwitch Content="允许局域网访问" IsChecked="{Binding AllowExternalAccess}" />
-                  <ToggleSwitch Content="JSON-RPC 请求需要 Bearer Token" IsChecked="{Binding AuthRequired}" />
-
-                  <Border Background="{DynamicResource ErrorContainerBrush}"
-                          BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
-                          Padding="12" IsVisible="{Binding IsAllowExternalAccessWarningVisible}">
-                    <StackPanel Spacing="6">
-                      <TextBlock Text="警告：暴露于 0.0.0.0 但未配置鉴权 Token" FontWeight="Bold"
-                                 Foreground="{DynamicResource OnErrorContainerBrush}" />
-                      <TextBlock Text="为了保护您的电脑，外部请求将被阻塞。请生成一个 Server Token 启用鉴权。"
-                                 Foreground="{DynamicResource OnErrorContainerBrush}" TextWrapping="Wrap" />
-                    </StackPanel>
-                  </Border>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="安全鉴权 (Server Token)" Classes="CardTitle" />
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                    <TextBox Text="{Binding ServerToken}" PlaceholderText="留空则无鉴权" />
-                    <Button Grid.Column="1" Content="随机生成" Command="{Binding GenerateTokenCommand}" />
-                  </Grid>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="CORS" Classes="CardTitle" />
-                  <ToggleSwitch Content="启用 CORS" IsChecked="{Binding CorsEnabled}" />
-                  <TextBox Text="{Binding AllowedOriginsText}" AcceptsReturn="True" MinHeight="72"
-                           PlaceholderText="每行一个 allowed origin，例如 http://localhost:3000" />
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="Agent 资源访问权限" ToolTip.Tip="修改后对后续 MCP/CLI 调用生效；MCP 服务需重新加载。" Classes="CardTitle" />
-                  <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="544" Spacing="4">
-                      <Grid ColumnDefinitions="160,64,64,64,64,64,64">
-                        <TextBlock Text="VFS 域" />
-                        <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="3" Text="put" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="4" Text="cite" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
-                        <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
-                      </Grid>
-                      <ItemsControl ItemsSource="{Binding PermissionRows}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
-                            <Grid ColumnDefinitions="160,384" RowDefinitions="Auto,Auto" Margin="0,3">
-                              <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
-                                <ToggleButton IsVisible="{Binding HasChildren}" IsChecked="{Binding IsExpanded}"
-                                              Padding="2,0" MinWidth="0"
-                                              MinHeight="0"
-                                              Width="20" Height="22" Background="Transparent" BorderThickness="0"
-                                              Foreground="{DynamicResource OnSurfaceBrush}"
-                                              AutomationProperties.Name="展开 runs 子域权限">
-                                  <Panel>
-                                    <lucide:Lucide Icon="ChevronRight" Width="14" Height="14"
-                                                   IsVisible="{Binding !IsExpanded}" />
-                                    <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
-                                                   IsVisible="{Binding IsExpanded}" />
-                                  </Panel>
-                                  <ToggleButton.Template>
-                                    <ControlTemplate>
-                                      <ContentPresenter Content="{TemplateBinding Content}" Background="Transparent"
-                                                        HorizontalContentAlignment="Center"
-                                                        VerticalContentAlignment="Center" />
-                                    </ControlTemplate>
-                                  </ToggleButton.Template>
-                                </ToggleButton>
-                              </StackPanel>
-                              <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
-                                <ItemsControl.ItemsPanel>
-                                  <ItemsPanelTemplate>
-                                    <UniformGrid Columns="6" />
-                                  </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                  <DataTemplate DataType="settings:McpDomainPermissionCellViewModel">
-                                    <Grid>
-                                      <ToggleSwitch IsVisible="{Binding !IsAggregate}" IsChecked="{Binding Enabled}"
-                                                    IsEnabled="{Binding IsSupported}"
-                                                    HorizontalAlignment="Center" ToolTip.Tip="{Binding Description}"
-                                                    AutomationProperties.Name="{Binding Description}" />
-                                      <ToggleSwitch IsVisible="{Binding IsAggregate}" IsThreeState="True"
-                                                    IsChecked="{Binding Aggregate.Checked, Mode=OneWay}"
-                                                    Command="{Binding Aggregate.ToggleCommand}"
-                                                    HorizontalAlignment="Center"
-                                                    AutomationProperties.Name="runs 全部子域 send 权限" />
-                                    </Grid>
-                                  </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                              </ItemsControl>
-                              <ItemsControl Grid.Row="1" Grid.ColumnSpan="2" ItemsSource="{Binding Children}"
-                                            IsVisible="{Binding IsExpanded}">
-                                <ItemsControl.ItemTemplate>
-                                  <DataTemplate DataType="settings:RunSendPermissionViewModel">
-                                    <Grid ColumnDefinitions="160,64,64,64,64,64,64" Margin="0,3">
-                                      <TextBlock Text="{Binding Domain}" Margin="16,0,0,0" VerticalAlignment="Center" />
-                                      <ToggleSwitch Grid.Column="5" IsChecked="{Binding Enabled}"
-                                                    HorizontalAlignment="Center"
-                                                    AutomationProperties.Name="{Binding Domain}" />
-                                    </Grid>
-                                  </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                              </ItemsControl>
-                            </Grid>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    </StackPanel>
-                  </ScrollViewer>
-
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="文库可见性" ToolTip.Tip="仅影响本设备的 MCP/CLI；隐藏标签也会隐藏 BibLaTeX keyword。" Classes="CardTitle" />
-                  <ToggleSwitch Content="允许 Agent 访问标签"
-                                IsChecked="{Binding ExposeLibraryTags}" />
-                  <ToggleSwitch Content="允许 Agent 访问集合"
-                                IsChecked="{Binding ExposeLibraryCollections}" />
-                  <Button Content="刷新预览" Command="{Binding RefreshLibraryPreviewCommand}"
-                          HorizontalAlignment="Left" />
-                  <TextBlock Text="{Binding LibraryPreviewHint}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBox Text="{Binding LibraryPreviewText}" IsReadOnly="True" AcceptsReturn="True"
-                           MinHeight="120" FontFamily="Consolas" TextWrapping="NoWrap" />
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="命令行工具 (patchouli-cli)" Classes="CardTitle" />
-                  <TextBlock Text="{Binding CliStatusText}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button Content="加入 PATH" Command="{Binding AddCliToPathCommand}" />
-                    <Button Command="{Binding RemoveCliFromPathCommand}" ToolTip.Tip="从 PATH 移除"
-                            AutomationProperties.Name="从 PATH 移除">
-                      <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                    </Button>
-                  </StackPanel>
-                </StackPanel>
-              </Border>
-            </StackPanel>
-          </DataTemplate>
-
-          <!-- OCR 预设编排 -->
+          <!-- OCR presets -->
           <DataTemplate DataType="settings:OcrProviderSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
+              <controls:SettingsCard Title="预设选择" AnchorId="ocr_presets"
+                                     Hint="「自动」沿用引擎默认；预设变更不影响正在运行的任务。">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="OCR 预设选择" ToolTip.Tip="「自动」沿用引擎默认；预设变更不影响正在运行的任务。" Classes="CardTitle" />
-
-                  <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" VerticalAlignment="Center">
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DocumentPresetPicker.ScopeLabel}"
-                               VerticalAlignment="Center" Margin="0,0,12,8" />
-                    <ComboBox Grid.Row="0" Grid.Column="1"
-                              ItemsSource="{Binding DocumentPresetPicker.Options}"
+                  <controls:SettingRow Label="{Binding DocumentPresetPicker.ScopeLabel}">
+                    <ComboBox ItemsSource="{Binding DocumentPresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
                               SelectedItem="{Binding DocumentPresetPicker.SelectedOption}"
-                              HorizontalAlignment="Stretch" Margin="0,0,0,8" />
-
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding PagePresetPicker.ScopeLabel}"
-                               VerticalAlignment="Center" Margin="0,0,12,8" />
-                    <ComboBox Grid.Row="1" Grid.Column="1"
-                              ItemsSource="{Binding PagePresetPicker.Options}"
+                              HorizontalAlignment="Stretch" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="{Binding PagePresetPicker.ScopeLabel}">
+                    <ComboBox ItemsSource="{Binding PagePresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
                               SelectedItem="{Binding PagePresetPicker.SelectedOption}"
-                              HorizontalAlignment="Stretch" Margin="0,0,0,8" />
-
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="{Binding RegionPresetPicker.ScopeLabel}"
-                               VerticalAlignment="Center" Margin="0,0,12,0" />
-                    <ComboBox Grid.Row="2" Grid.Column="1"
-                              ItemsSource="{Binding RegionPresetPicker.Options}"
+                              HorizontalAlignment="Stretch" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="{Binding RegionPresetPicker.ScopeLabel}">
+                    <ComboBox ItemsSource="{Binding RegionPresetPicker.Options}"
                               DisplayMemberBinding="{Binding DisplayName}"
                               SelectedItem="{Binding RegionPresetPicker.SelectedOption}"
                               HorizontalAlignment="Stretch" />
-                  </Grid>
-                  <ToggleSwitch Content="启用不同OCR预设并行"
+                  </controls:SettingRow>
+                  <ToggleSwitch Classes="SettingsToggle" Content="启用不同OCR预设并行"
                                 IsChecked="{Binding EnableDifferentOcrPresetsParallel}"
                                 AutomationProperties.Name="启用不同OCR预设并行" />
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <Grid ColumnDefinitions="*,Auto,Auto">
-                    <TextBlock Text="OCR 预设编排" Classes="CardTitle" />
-                    <Button Grid.Column="1" Command="{Binding RefreshPresetRowsCommand}"
-                            ToolTip.Tip="刷新预设列表" AutomationProperties.Name="刷新预设列表" Margin="0,0,8,0">
-                      <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
+              <controls:SettingsCard Title="预设编排" AnchorId="ocr_presets_rows" Status="{Binding PresetStatus}">
+                <controls:SettingsCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Command="{Binding RefreshPresetRowsCommand}" ToolTip.Tip="刷新预设列表"
+                            AutomationProperties.Name="刷新预设列表">
+                      <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
                     </Button>
-                    <Button Grid.Column="2" Command="{Binding AddPresetRowCommand}"
-                            ToolTip.Tip="新建 OCR 预设" AutomationProperties.Name="新建 OCR 预设">
-                      <lucide:Lucide Icon="Plus" Width="14" Height="14" />
+                    <Button Command="{Binding AddPresetRowCommand}" ToolTip.Tip="新建 OCR 预设"
+                            AutomationProperties.Name="新建 OCR 预设">
+                      <lucide:Lucide Icon="Plus" Width="16" Height="16" />
                     </Button>
-                  </Grid>
-
-                  <DataGrid ItemsSource="{Binding PresetRows}" AutoGenerateColumns="False"
-                            IsReadOnly="False" GridLinesVisibility="Horizontal"
-                            CanUserResizeColumns="True" MinHeight="140" MaxHeight="360"
-                            HorizontalAlignment="Stretch">
-                    <DataGrid.Columns>
-                      <DataGridTemplateColumn Header="预设名称" Width="1.4*">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <TextBox Text="{Binding Name}" PlaceholderText="预设名称"
-                                     IsEnabled="{Binding CanEdit}" Margin="2"
-                                     VerticalAlignment="Center" />
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                      <DataGridTemplateColumn Header="图像 OCR 引擎" Width="*">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <ComboBox ItemsSource="{Binding EngineOptions}"
-                                      SelectedItem="{Binding SelectedEngine}"
-                                      IsEnabled="{Binding CanEdit}" Margin="2"
-                                      HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                              <ComboBox.ItemTemplate>
-                                <DataTemplate DataType="settings:OcrEngineOption">
-                                  <TextBlock Text="{Binding DisplayName}" />
-                                </DataTemplate>
-                              </ComboBox.ItemTemplate>
-                            </ComboBox>
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                      <DataGridTemplateColumn Header="文本层提供器" Width="*">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <ComboBox ItemsSource="{Binding ProviderOptions}"
-                                      SelectedItem="{Binding SelectedProvider}"
-                                      IsEnabled="{Binding CanEdit}" Margin="2"
-                                      HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                              <ComboBox.ItemTemplate>
-                                <DataTemplate DataType="settings:OcrTextLayerProviderOption">
-                                  <TextBlock Text="{Binding DisplayName}" />
-                                </DataTemplate>
-                              </ComboBox.ItemTemplate>
-                            </ComboBox>
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                      <DataGridTemplateColumn Header="缺文本层回退" Width="Auto">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <ToggleSwitch IsChecked="{Binding MissingTextFallback}"
-                                          IsEnabled="{Binding CanChooseMissingTextFallback}"
-                                          HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Margin="4" ToolTip.Tip="页面没有可用原生文本层时，将该页交给图像 OCR 引擎识别（默认开启）；取消勾选则该页报告错误" />
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                      <DataGridTemplateColumn Header="状态" Width="*">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <TextBlock Text="{Binding StatusText}" FontSize="12" TextWrapping="Wrap"
-                                       VerticalAlignment="Center" Margin="4,2"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                      <DataGridTemplateColumn Header="操作" Width="Auto">
-                        <DataGridTemplateColumn.CellTemplate>
-                          <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
-                            <StackPanel Orientation="Horizontal" Spacing="4" Margin="2"
-                                        VerticalAlignment="Center">
-                              <Button Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"
-                                      ToolTip.Tip="保存预设（组件变更会冻结为新版本）"
-                                      AutomationProperties.Name="保存预设">
-                                <lucide:Lucide Icon="Save" Width="14" Height="14" />
-                              </Button>
-                              <Button Command="{Binding RefreshConfigCommand}"
-                                      IsEnabled="{Binding CanEdit}"
-                                      ToolTip.Tip="重新捕获当前组件配置为新版本"
-                                      AutomationProperties.Name="刷新组件配置">
-                                <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
-                              </Button>
-                              <Button Command="{Binding ArchiveCommand}" Classes="Danger"
-                                      ToolTip.Tip="归档预设（历史版本保留）"
-                                      AutomationProperties.Name="归档预设">
-                                <lucide:Lucide Icon="Archive" Width="14" Height="14" />
-                              </Button>
-                            </StackPanel>
-                          </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                      </DataGridTemplateColumn>
-                    </DataGrid.Columns>
-                  </DataGrid>
-                  <TextBlock Text="{Binding PresetStatus}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                             IsVisible="{Binding PresetStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </StackPanel>
-              </Border>
+                  </StackPanel>
+                </controls:SettingsCard.Actions>
+                <DataGrid ItemsSource="{Binding PresetRows}" AutoGenerateColumns="False"
+                          IsReadOnly="False" GridLinesVisibility="Horizontal"
+                          CanUserResizeColumns="True" MinHeight="140" MaxHeight="360"
+                          HorizontalAlignment="Stretch">
+                  <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="预设名称" Width="1.4*">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <TextBox Text="{Binding Name}" PlaceholderText="预设名称"
+                                   IsEnabled="{Binding CanEdit}" Margin="2" VerticalAlignment="Center" />
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="图像 OCR 引擎" Width="*">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <ComboBox ItemsSource="{Binding EngineOptions}" SelectedItem="{Binding SelectedEngine}"
+                                    IsEnabled="{Binding CanEdit}" Margin="2"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                            <ComboBox.ItemTemplate>
+                              <DataTemplate DataType="settings:OcrEngineOption">
+                                <TextBlock Text="{Binding DisplayName}" />
+                              </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="文本层提供器" Width="*">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <ComboBox ItemsSource="{Binding ProviderOptions}" SelectedItem="{Binding SelectedProvider}"
+                                    IsEnabled="{Binding CanEdit}" Margin="2"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                            <ComboBox.ItemTemplate>
+                              <DataTemplate DataType="settings:OcrTextLayerProviderOption">
+                                <TextBlock Text="{Binding DisplayName}" />
+                              </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="缺文本层回退" Width="Auto">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <ToggleSwitch IsChecked="{Binding MissingTextFallback}"
+                                        IsEnabled="{Binding CanChooseMissingTextFallback}"
+                                        HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4"
+                                        ToolTip.Tip="页面没有可用原生文本层时，将该页交给图像 OCR 引擎识别（默认开启）；取消勾选则该页报告错误" />
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="状态" Width="*">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <TextBlock Text="{Binding StatusText}" FontSize="12" TextWrapping="Wrap"
+                                     VerticalAlignment="Center" Margin="4,2"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="操作" Width="Auto">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate DataType="settings:OcrPresetCompositionRowViewModel">
+                          <StackPanel Orientation="Horizontal" Spacing="4" Margin="2" VerticalAlignment="Center">
+                            <Button Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"
+                                    ToolTip.Tip="保存预设（组件变更会冻结为新版本）"
+                                    AutomationProperties.Name="保存预设">
+                              <lucide:Lucide Icon="Save" Width="16" Height="16" />
+                            </Button>
+                            <Button Command="{Binding RefreshConfigCommand}" IsEnabled="{Binding CanEdit}"
+                                    ToolTip.Tip="重新捕获当前组件配置为新版本"
+                                    AutomationProperties.Name="刷新组件配置">
+                              <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                            </Button>
+                            <Button Command="{Binding ArchiveCommand}" Classes="Danger"
+                                    ToolTip.Tip="归档预设（历史版本保留）"
+                                    AutomationProperties.Name="归档预设">
+                              <lucide:Lucide Icon="Archive" Width="16" Height="16" />
+                            </Button>
+                          </StackPanel>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
+          <!-- OCR components: three catalog cards in one tab -->
+          <DataTemplate DataType="settings:OcrComponentsSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <settingsViews:OcrComponentCatalogView DataContext="{Binding LayoutModels}" />
+              <settingsViews:OcrComponentCatalogView DataContext="{Binding OcrEngines}" />
+              <settingsViews:OcrComponentCatalogView DataContext="{Binding TextLayers}" />
+            </StackPanel>
+          </DataTemplate>
+
+          <!-- Translation -->
           <DataTemplate DataType="settings:TranslationDefaultsViewModel">
             <ContentControl Content="{Binding Settings}">
               <ContentControl.ContentTemplate>
                 <DataTemplate DataType="settings:LlmSettingsViewModel">
                   <StackPanel Classes="SettingsContent">
-                    <!-- Direct translation (issue #20): the persisted "Translation" subsection. -->
-                    <Border Classes="Card">
-                      <StackPanel Spacing="10">
-                        <TextBlock Text="文献翻译" Classes="CardTitle" />
-
-                        <TextBlock Text="默认引擎" FontSize="13" FontWeight="Medium" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
+                    <controls:SettingsCard Title="文献翻译" AnchorId="translation_defaults"
+                                           Status="{Binding TranslationErrorMessage}"
+                                           StatusForeground="{DynamicResource ErrorBrush}">
+                      <StackPanel Spacing="12">
+                        <controls:SettingRow Label="默认引擎">
                           <ComboBox ItemsSource="{Binding TranslationEngineOptions}"
                                     SelectedItem="{Binding SelectedTranslationEngine}"
-                                    DisplayMemberBinding="{Binding Name}" Width="240" />
-                        </StackPanel>
-                        <TextBlock Text="默认目标语言（引擎未覆盖时）" FontSize="13" FontWeight="Medium" />
-                        <ComboBox x:Name="TranslationTargetLanguageSelector"
-                                  ItemsSource="{Binding TranslationLanguageOptions}"
-                                  SelectedItem="{Binding SelectedTranslationLanguage}"
-                                  DisplayMemberBinding="{Binding DisplayName}" Width="280" MaxDropDownHeight="360"
-                                  HorizontalAlignment="Left" AutomationProperties.Name="目标语言" />
-
-                        <TextBlock Text="{Binding TranslationErrorMessage}" FontSize="12" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource ErrorBrush}"
-                                   IsVisible="{Binding TranslationErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                    DisplayMemberBinding="{Binding Name}" MinWidth="240"
+                                    HorizontalAlignment="Left" />
+                        </controls:SettingRow>
+                        <controls:SettingRow Label="默认目标语言"
+                                             Hint="引擎未覆盖时使用。">
+                          <ComboBox x:Name="TranslationTargetLanguageSelector"
+                                    ItemsSource="{Binding TranslationLanguageOptions}"
+                                    SelectedItem="{Binding SelectedTranslationLanguage}"
+                                    DisplayMemberBinding="{Binding DisplayName}" MinWidth="240"
+                                    MaxDropDownHeight="360" HorizontalAlignment="Left"
+                                    AutomationProperties.Name="目标语言" />
+                        </controls:SettingRow>
                       </StackPanel>
-                    </Border>
-                    <Border Classes="Card">
-                      <StackPanel Spacing="12">
-                        <Grid ColumnDefinitions="*,Auto">
-                          <TextBlock Text="翻译引擎" Classes="CardTitle" />
-                          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                            <Button Command="{Binding RefreshTranslationEnginesCommand}"
-                                    ToolTip.Tip="刷新列表" AutomationProperties.Name="刷新列表">
-                              <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
-                            </Button>
-                            <Button Tag="Translation" Click="AddExtensionClicked"
-                                    ToolTip.Tip="添加扩展" AutomationProperties.Name="添加扩展">
-                              <lucide:Lucide Icon="Plus" Width="16" Height="16" />
-                            </Button>
-                          </StackPanel>
-                        </Grid>
-                        <ItemsControl ItemsSource="{Binding TranslationEngineOptions}">
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="settings:ExtensionListItem">
-                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" Margin="0,8">
+                    </controls:SettingsCard>
+
+                    <controls:SettingsCard Title="翻译引擎" AnchorId="translation_engines">
+                      <controls:SettingsCard.Actions>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <Button Command="{Binding RefreshTranslationEnginesCommand}"
+                                  ToolTip.Tip="刷新列表" AutomationProperties.Name="刷新列表">
+                            <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                          </Button>
+                          <Button Tag="Translation" Click="AddExtensionClicked"
+                                  ToolTip.Tip="添加扩展" AutomationProperties.Name="添加扩展">
+                            <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+                          </Button>
+                        </StackPanel>
+                      </controls:SettingsCard.Actions>
+                      <ItemsControl ItemsSource="{Binding TranslationEngineOptions}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate DataType="settings:ExtensionListItem">
+                            <Border Classes="SettingsListRow">
+                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                                 <StackPanel Spacing="4" VerticalAlignment="Center">
                                   <TextBlock Text="{Binding Name}" FontWeight="Medium" />
                                   <TextBlock Text="{Binding Summary}" FontSize="12" TextWrapping="Wrap"
                                              Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                                 </StackPanel>
-                                <Button x:Name="ConfigureExtensionButton" Grid.Column="1" Tag="{Binding Id}"
-                                        Click="ConfigureExtensionClicked" VerticalAlignment="Center"
-                                        ToolTip.Tip="配置引擎" AutomationProperties.Name="配置引擎">
-                                  <lucide:Lucide Icon="Settings" Width="16" Height="16" />
-                                </Button>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                  <Button Tag="{Binding Id}" Click="ExtensionSourceClicked"
+                                          ToolTip.Tip="查看扩展源码" AutomationProperties.Name="扩展源码">
+                                    <lucide:Lucide Icon="BookOpen" Width="16" Height="16" />
+                                  </Button>
+                                  <Button x:Name="ConfigureExtensionButton" Tag="{Binding Id}"
+                                          Click="ConfigureExtensionClicked" VerticalAlignment="Center"
+                                          ToolTip.Tip="配置引擎" AutomationProperties.Name="配置引擎">
+                                    <lucide:Lucide Icon="Settings" Width="16" Height="16" />
+                                  </Button>
+                                </StackPanel>
                               </Grid>
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                      </StackPanel>
-                    </Border>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </controls:SettingsCard>
                   </StackPanel>
                 </DataTemplate>
               </ContentControl.ContentTemplate>
             </ContentControl>
           </DataTemplate>
-          <!-- LLM & Translation Settings -->
+
+          <!-- LLM -->
           <DataTemplate DataType="settings:LlmSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-
-              <Border Classes="Card">
+              <controls:SettingsCard Title="默认模型" AnchorId="llm_default"
+                                     Hint="引擎未指定服务商或模型时使用。">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="默认模型" ToolTip.Tip="引擎未指定服务商或模型时使用。" Classes="CardTitle" />
-                  <Grid ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8">
-                    <TextBlock Grid.Column="0" Text="服务商" VerticalAlignment="Center" />
-                    <ComboBox Grid.Column="1" ItemsSource="{Binding ChatProviderOptions}"
+                  <controls:SettingRow Label="服务商">
+                    <ComboBox ItemsSource="{Binding ChatProviderOptions}"
                               DisplayMemberBinding="{Binding DisplayName}"
                               SelectedItem="{Binding SelectedChatProvider}"
                               PlaceholderText="{Binding ChatProviderPlaceholder}"
                               HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Column="2" Text="模型" VerticalAlignment="Center" />
-                    <ComboBox Grid.Column="3" IsEditable="True"
-                              ItemsSource="{Binding ChatModelOptions}"
-                              SelectedItem="{Binding SelectedChatModel}"
-                              Text="{Binding ChatModel}" HorizontalAlignment="Stretch" />
-                  </Grid>
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="模型">
+                    <ComboBox IsEditable="True" ItemsSource="{Binding ChatModelOptions}"
+                              SelectedItem="{Binding SelectedChatModel}" Text="{Binding ChatModel}"
+                              HorizontalAlignment="Stretch" />
+                  </controls:SettingRow>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <TextBlock Text="服务商配置" FontWeight="SemiBold" FontSize="14" />
-              <TextBlock Text="尚未添加 Provider。选择服务后填写模型和凭据，即可启用。"
-                         IsVisible="{Binding HasNoProviders}" FontSize="12" TextWrapping="Wrap"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                <ComboBox ItemsSource="{Binding AvailableProviderOptions}"
-                          DisplayMemberBinding="{Binding DisplayName}"
-                          SelectedItem="{Binding SelectedProviderToAdd}"
-                          IsEnabled="{Binding !HasPendingProvider}" HorizontalAlignment="Stretch" />
-                <Button Grid.Column="1" Content="添加 Provider" Command="{Binding AddProviderCommand}" />
-                <Button Grid.Column="2" Content="取消添加" Command="{Binding CancelAddProviderCommand}"
-                        IsVisible="{Binding HasPendingProvider}" />
-              </Grid>
-              <ItemsControl ItemsSource="{Binding VisibleProviders}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate DataType="settings:LlmProviderSettingsRowViewModel">
-                    <Border Classes="Card" Margin="0,0,0,12">
-                      <StackPanel Spacing="8">
-                        <Grid ColumnDefinitions="*,Auto">
-                          <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
-                            <Border IsVisible="{Binding RequiresBaseUrl}" Padding="6,0" CornerRadius="4"
-                                    VerticalAlignment="Center"
-                                    Background="{DynamicResource SurfaceContainerHighestBrush}">
-                              <TextBlock Text="必须填写 Base URL" FontSize="11"
+              <controls:SettingsCard Title="服务商配置" AnchorId="llm_providers">
+                <controls:SettingsCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <ComboBox ItemsSource="{Binding AvailableProviderOptions}"
+                              DisplayMemberBinding="{Binding DisplayName}"
+                              SelectedItem="{Binding SelectedProviderToAdd}"
+                              IsEnabled="{Binding !HasPendingProvider}" MinWidth="180" />
+                    <Button Command="{Binding AddProviderCommand}" ToolTip.Tip="添加 Provider"
+                            AutomationProperties.Name="添加 Provider">
+                      <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+                    </Button>
+                    <Button Content="取消添加" Command="{Binding CancelAddProviderCommand}"
+                            IsVisible="{Binding HasPendingProvider}" />
+                  </StackPanel>
+                </controls:SettingsCard.Actions>
+                <StackPanel Spacing="8">
+                  <TextBlock Text="尚未添加 Provider。选择服务后填写模型和凭据，即可启用。"
+                             IsVisible="{Binding HasNoProviders}" Classes="SettingsStatus" TextWrapping="Wrap" />
+                  <ItemsControl ItemsSource="{Binding VisibleProviders}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="settings:LlmProviderSettingsRowViewModel">
+                        <Border Classes="CardTile" Margin="0,0,0,12">
+                          <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="*,Auto">
+                              <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                <Border IsVisible="{Binding RequiresBaseUrl}" Padding="6,0" CornerRadius="4"
+                                        VerticalAlignment="Center"
+                                        Background="{DynamicResource SurfaceContainerHighestBrush}">
+                                  <TextBlock Text="必须填写 Base URL" FontSize="11"
+                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                </Border>
+                                <Border IsVisible="{Binding IsAzure}" Padding="6,0" CornerRadius="4"
+                                        VerticalAlignment="Center"
+                                        Background="{DynamicResource SurfaceContainerHighestBrush}">
+                                  <TextBlock Text="Azure 专属字段" FontSize="11"
+                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                </Border>
+                              </StackPanel>
+                              <TextBlock Grid.Column="1" Text="{Binding CredentialStatusText}" FontSize="11"
+                                         VerticalAlignment="Center"
                                          Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            </Border>
-                            <Border IsVisible="{Binding IsAzure}" Padding="6,0" CornerRadius="4"
-                                    VerticalAlignment="Center"
-                                    Background="{DynamicResource SurfaceContainerHighestBrush}">
-                              <TextBlock Text="Azure 专属字段" FontSize="11"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            </Border>
+                            </Grid>
+                            <controls:SettingRow Label="认证方式" IsVisible="{Binding SupportsSubscription}">
+                              <ComboBox ItemsSource="{Binding AuthenticationOptions}"
+                                        DisplayMemberBinding="{Binding DisplayName}"
+                                        SelectedItem="{Binding SelectedAuthenticationOption}"
+                                        IsEnabled="{Binding !IsSubscriptionBusy}" HorizontalAlignment="Stretch" />
+                            </controls:SettingRow>
+                            <StackPanel IsVisible="{Binding IsSubscription}" Spacing="8">
+                              <TextBlock Text="{Binding SubscriptionStatusText}" FontSize="12" TextWrapping="Wrap" />
+                              <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="登录订阅" Command="{Binding LoginSubscriptionCommand}"
+                                        IsEnabled="{Binding !IsSubscriptionBusy}" />
+                                <Button Content="刷新模型" Command="{Binding RefreshSubscriptionModelsCommand}"
+                                        IsEnabled="{Binding !IsSubscriptionBusy}" />
+                                <Button Content="退出订阅" Command="{Binding LogoutSubscriptionCommand}"
+                                        IsEnabled="{Binding !IsSubscriptionBusy}" />
+                                <Button Content="取消登录" Command="{Binding CancelSubscriptionLoginCommand}"
+                                        IsVisible="{Binding LoginSubscriptionCommand.IsRunning}" />
+                              </StackPanel>
+                              <ComboBox ItemsSource="{Binding SubscriptionModels}"
+                                        SelectedItem="{Binding SelectedSubscriptionModel}"
+                                        PlaceholderText="登录后选择订阅账号可用的模型" HorizontalAlignment="Stretch" />
+                            </StackPanel>
+                            <StackPanel Spacing="8" IsVisible="{Binding !IsSubscription}">
+                              <controls:SettingRow Label="Base URL">
+                                <TextBox Text="{Binding BaseUrl}" PlaceholderText="{Binding DefaultBaseUrl}"
+                                         HorizontalAlignment="Stretch" />
+                              </controls:SettingRow>
+                              <controls:SettingRow Label="API key">
+                                <TextBox Text="{Binding ApiKeyInput}" PasswordChar="•"
+                                         PlaceholderText="{Binding ApiKeyPlaceholder}" HorizontalAlignment="Stretch" />
+                              </controls:SettingRow>
+                            </StackPanel>
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                              <TextBlock Text="{Binding DiagnosticText}" FontSize="11" VerticalAlignment="Center"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                              <Button Grid.Column="1" Classes="Danger" Command="{Binding RemoveConnectionCommand}"
+                                      ToolTip.Tip="移除连接" AutomationProperties.Name="移除连接">
+                                <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                              </Button>
+                            </Grid>
+                            <StackPanel IsVisible="{Binding IsAzure}" Spacing="8">
+                              <Separator />
+                              <controls:SettingRow Label="Subscription"
+                                                   IsVisible="{Binding IsAzureSubscriptionRequired}">
+                                <TextBox Text="{Binding Subscription}" PlaceholderText="Azure 资源（subscription）名称"
+                                         HorizontalAlignment="Stretch" />
+                              </controls:SettingRow>
+                              <controls:SettingRow Label="Deployment" IsVisible="{Binding IsAzureDeploymentRequired}">
+                                <TextBox Text="{Binding Deployment}" PlaceholderText="Azure 部署名称"
+                                         HorizontalAlignment="Stretch" />
+                              </controls:SettingRow>
+                              <controls:SettingRow Label="API Version">
+                                <TextBox Text="{Binding ApiVersion}" PlaceholderText="留空使用默认 api-version"
+                                         HorizontalAlignment="Stretch" />
+                              </controls:SettingRow>
+                            </StackPanel>
                           </StackPanel>
-                          <TextBlock Grid.Column="1" Text="{Binding CredentialStatusText}" FontSize="11"
-                                     VerticalAlignment="Center"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        </Grid>
-                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsVisible="{Binding SupportsSubscription}">
-                          <TextBlock Text="认证方式" VerticalAlignment="Center" />
-                          <ComboBox Grid.Column="1" ItemsSource="{Binding AuthenticationOptions}"
-                                    DisplayMemberBinding="{Binding DisplayName}"
-                                    SelectedItem="{Binding SelectedAuthenticationOption}"
-                                    IsEnabled="{Binding !IsSubscriptionBusy}" HorizontalAlignment="Stretch" />
-                        </Grid>
-                        <StackPanel IsVisible="{Binding IsSubscription}" Spacing="8">
-                          <TextBlock Text="{Binding SubscriptionStatusText}" FontSize="12" TextWrapping="Wrap" />
-                          <TextBlock Text="使用订阅账号的模型额度；当前订阅接口支持文本翻译。"
-                                     FontSize="12" TextWrapping="Wrap" />
-                          <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="登录订阅" Command="{Binding LoginSubscriptionCommand}"
-                                    IsEnabled="{Binding !IsSubscriptionBusy}" />
-                            <Button Content="刷新模型" Command="{Binding RefreshSubscriptionModelsCommand}"
-                                    IsEnabled="{Binding !IsSubscriptionBusy}" />
-                            <Button Content="退出订阅" Command="{Binding LogoutSubscriptionCommand}"
-                                    IsEnabled="{Binding !IsSubscriptionBusy}" />
-                            <Button Content="取消登录" Command="{Binding CancelSubscriptionLoginCommand}"
-                                    IsVisible="{Binding LoginSubscriptionCommand.IsRunning}" />
-                          </StackPanel>
-                          <ComboBox ItemsSource="{Binding SubscriptionModels}"
-                                    SelectedItem="{Binding SelectedSubscriptionModel}"
-                                    PlaceholderText="登录后选择订阅账号可用的模型" HorizontalAlignment="Stretch" />
-                        </StackPanel>
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="8"
-                              RowSpacing="8" IsVisible="{Binding !IsSubscription}">
-                          <TextBlock Grid.Row="0" Grid.Column="0" Text="Base URL" VerticalAlignment="Center" />
-                          <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding BaseUrl}"
-                                   PlaceholderText="{Binding DefaultBaseUrl}" />
-
-                          <TextBlock Grid.Row="1" Grid.Column="0" Text="API key" VerticalAlignment="Center" />
-                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ApiKeyInput}" PasswordChar="•"
-                                   PlaceholderText="{Binding ApiKeyPlaceholder}" />
-                        </Grid>
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                          <TextBlock Text="{Binding DiagnosticText}" FontSize="11" VerticalAlignment="Center"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                     TextWrapping="Wrap" />
-                          <Button Grid.Column="1" Classes="Danger"
-                                  Command="{Binding RemoveConnectionCommand}" ToolTip.Tip="移除连接"
-                                  AutomationProperties.Name="移除连接">
-                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                          </Button>
-                        </Grid>
-                        <StackPanel IsVisible="{Binding IsAzure}" Spacing="8">
-                          <Separator />
-                          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8"
-                                RowSpacing="8">
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Subscription" VerticalAlignment="Center"
-                                       IsVisible="{Binding IsAzureSubscriptionRequired}" />
-                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Subscription}"
-                                     IsVisible="{Binding IsAzureSubscriptionRequired}"
-                                     PlaceholderText="Azure 资源（subscription）名称" />
-
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Deployment" VerticalAlignment="Center"
-                                       IsVisible="{Binding IsAzureDeploymentRequired}" />
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Deployment}"
-                                     IsVisible="{Binding IsAzureDeploymentRequired}"
-                                     PlaceholderText="Azure 部署名称" />
-
-                            <TextBlock Grid.Row="2" Grid.Column="0" Text="API Version" VerticalAlignment="Center" />
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ApiVersion}"
-                                     PlaceholderText="留空使用默认 api-version" />
-                          </Grid>
-                        </StackPanel>
-                      </StackPanel>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Agent Integration Settings -->
+          <!-- Agent -->
           <DataTemplate DataType="settings:AgentIntegrationSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                    <StackPanel Spacing="2">
-                      <TextBlock Text="Agent 集成" Classes="CardTitle" />
-                      <TextBlock Text="关闭后保留检测结果与路径设置，但不会启动 Agent。" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                    </StackPanel>
-                    <ToggleSwitch Grid.Column="1" Content="启用" IsChecked="{Binding Enabled}"
-                                  VerticalAlignment="Center" />
-                  </Grid>
-
-                  <Separator />
-
-                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                    <TextBlock Text="可用 Agent" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Padding="12,4" Command="{Binding DetectAllCommand}"
-                            IsEnabled="{Binding !IsDetecting}">
-                      <StackPanel Orientation="Horizontal" Spacing="6">
-                        <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
-                        <TextBlock Text="重新检测" />
-                      </StackPanel>
+              <controls:SettingsCard Title="Agent 集成" AnchorId="agents_integration" Status="{Binding Status}">
+                <controls:SettingsCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <ToggleSwitch Content="启用" IsChecked="{Binding Enabled}" />
+                    <Button Padding="12,4" Command="{Binding DetectAllCommand}" IsEnabled="{Binding !IsDetecting}"
+                            ToolTip.Tip="重新检测" AutomationProperties.Name="重新检测">
+                      <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
                     </Button>
-                    <Button Grid.Column="2" Padding="12,4" Content="取消"
-                            Command="{Binding CancelOperationCommand}"
-                            IsVisible="{Binding CanCancelOperation}" />
-                  </Grid>
-
+                    <Button Content="取消" Command="{Binding CancelOperationCommand}" IsVisible="False" />
+                  </StackPanel>
+                </controls:SettingsCard.Actions>
+                <StackPanel Spacing="10">
+                  <TextBlock Text="关闭后保留检测结果与路径设置，但不会启动 Agent。"
+                             Classes="SettingsStatus" TextWrapping="Wrap" IsVisible="{Binding !Enabled}" />
                   <ItemsControl ItemsSource="{Binding Agents}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:AgentIntegrationRowViewModel">
@@ -998,11 +887,9 @@
                                   </Border>
                                 </StackPanel>
                                 <TextBlock Text="{Binding Description}" FontSize="11"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                           TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                                 <TextBlock Text="{Binding StatusText}" FontSize="12"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                           TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                                 <TextBlock Text="{Binding VersionText}" FontSize="12" TextWrapping="Wrap"
                                            IsVisible="{Binding VersionText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                 <TextBlock Text="{Binding PathText}" FontSize="11" TextWrapping="Wrap"
@@ -1017,88 +904,72 @@
                                            ToolTip.Tip="设为默认 Agent" />
                               <Button Grid.Column="3" Padding="8,4" Command="{Binding RedetectCommand}"
                                       IsEnabled="{Binding CanManageAgent}" ToolTip.Tip="重新检测">
-                                <lucide:Lucide Icon="RefreshCw" Width="14" Height="14" />
+                                <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
                               </Button>
                               <Button Grid.Column="4" Padding="8,4" Command="{Binding TogglePathEditorCommand}"
-                                      IsEnabled="{Binding CanManageAgent}"
-                                      ToolTip.Tip="自定义路径">
-                                <lucide:Lucide Icon="FolderOpen" Width="14" Height="14" />
+                                      IsEnabled="{Binding CanManageAgent}" ToolTip.Tip="自定义路径">
+                                <lucide:Lucide Icon="FolderOpen" Width="16" Height="16" />
                               </Button>
                               <Button Grid.Column="5" Padding="8,4" Command="{Binding ToggleSkillCommand}"
                                       IsEnabled="{Binding CanManageSkill}" ToolTip.Tip="{Binding SkillToolTip}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                  <lucide:Lucide Icon="{Binding SkillActionIcon}" Width="14" Height="14" />
+                                  <lucide:Lucide Icon="{Binding SkillActionIcon}" Width="16" Height="16" />
                                   <TextBlock Text="{Binding SkillActionText}" />
                                 </StackPanel>
                               </Button>
                             </Grid>
-
                             <TextBlock Text="{Binding SkillErrorText}" FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource ErrorBrush}"
                                        IsVisible="{Binding SkillErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-
                             <StackPanel Spacing="6" IsVisible="{Binding IsInstalling}">
                               <ProgressBar Value="{Binding InstallProgress}" Minimum="0" Maximum="1" Height="6" />
                               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                <TextBlock Text="{Binding InstallStageText}" FontSize="11"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                           TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding InstallStageText}" FontSize="11" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                                 <Button Grid.Column="1" Content="取消" Padding="10,2"
                                         Command="{Binding CancelInstallCommand}" />
                               </Grid>
                             </StackPanel>
-
                             <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding CanInstall}">
                               <Button Padding="12,4" Command="{Binding InstallCommand}"
                                       IsEnabled="{Binding CanManageAgent}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                  <lucide:Lucide Icon="Download" Width="14" Height="14" />
+                                  <lucide:Lucide Icon="Download" Width="16" Height="16" />
                                   <TextBlock Text="一键安装" />
                                 </StackPanel>
                               </Button>
                             </StackPanel>
-
                             <TextBlock Text="{Binding InstallErrorText}" FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource ErrorBrush}"
                                        IsVisible="{Binding InstallErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-
                             <TextBlock Text="{Binding InstallHelpText}" FontSize="11" TextWrapping="Wrap"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                        IsVisible="{Binding ShowInstallHelp}" />
-
                             <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding ShowInstallHelp}">
                               <Button Padding="12,4" Command="{Binding TogglePathEditorCommand}"
                                       IsEnabled="{Binding CanManageAgent}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                  <lucide:Lucide Icon="FolderOpen" Width="14" Height="14" />
+                                  <lucide:Lucide Icon="FolderOpen" Width="16" Height="16" />
                                   <TextBlock Text="自定义路径" />
                                 </StackPanel>
                               </Button>
                               <Button Padding="12,4" Command="{Binding OpenRepositoryCommand}"
-                                      IsEnabled="{Binding CanManageAgent}"
-                                      IsVisible="{Binding HasRepository}">
+                                      IsEnabled="{Binding CanManageAgent}" IsVisible="{Binding HasRepository}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                  <lucide:Lucide Icon="ArrowUpRight" Width="13" Height="13" />
+                                  <lucide:Lucide Icon="ArrowUpRight" Width="16" Height="16" />
                                   <TextBlock Text="官方安装说明" />
                                 </StackPanel>
                               </Button>
                             </StackPanel>
-
                             <StackPanel Spacing="6" IsVisible="{Binding IsPathEditorOpen}"
                                         IsEnabled="{Binding CanManageAgent}">
-                              <TextBlock Text="自定义可执行文件路径（留空则恢复自动检测）" FontSize="11"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                              <controls:PathPickerTextBox Path="{Binding CustomPath}"
-                                                          PickerMode="OpenFile"
+                              <controls:PathPickerTextBox Path="{Binding CustomPath}" PickerMode="OpenFile"
                                                           DialogTitle="选择 Agent 可执行文件"
                                                           PlaceholderText="选择已安装的 Agent 可执行文件" />
                               <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button Content="恢复自动检测" Padding="12,4"
-                                        Command="{Binding ClearCustomPathCommand}"
-                                        IsEnabled="{Binding HasCustomPath}" />
-                                <Button Content="重新检测" Padding="12,4"
-                                        Command="{Binding RedetectCommand}"
+                                        Command="{Binding ClearCustomPathCommand}" IsEnabled="{Binding HasCustomPath}" />
+                                <Button Content="重新检测" Padding="12,4" Command="{Binding RedetectCommand}"
                                         IsEnabled="{Binding CanManageAgent}" />
                               </StackPanel>
                             </StackPanel>
@@ -1107,203 +978,355 @@
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-
-                  <TextBlock Text="{Binding Status}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Local File Management -->
-          <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
+          <!-- MCP service -->
+          <DataTemplate DataType="settings:McpSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <TextBlock Text="管理 OCR 模型、扩展与插件文件及运行时产生的临时文件。删除的文件可重新下载。"
-                         FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+              <controls:ServiceStatusCard Title="服务状态" AnchorId="mcp_service"
+                                          StatusText="{Binding McpStatusText}"
+                                          Endpoint="{Binding McpEndpoint, StringFormat='端点：\{0\}'}">
+                <controls:ServiceStatusCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="停止" Command="{Binding StopMcpCommand}" ToolTip.Tip="关闭 MCP 服务。" />
+                    <Button Content="启动" Command="{Binding StartMcpCommand}" Classes="Primary" />
+                  </StackPanel>
+                </controls:ServiceStatusCard.Actions>
+                <controls:ServiceStatusCard.EndpointActions>
+                  <Button Content="复制" Command="{Binding CopyEndpointCommand}"
+                          ToolTip.Tip="复制端点到剪贴板" Padding="10,2" />
+                </controls:ServiceStatusCard.EndpointActions>
+                <controls:ServiceStatusCard.Banner>
+                  <Border Background="{DynamicResource ErrorContainerBrush}"
+                          BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
+                          Padding="12" IsVisible="{Binding NeedsSaveAndRestart}">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{Binding SaveAndRestartBannerText}" FontWeight="Bold"
+                                 Foreground="{DynamicResource OnErrorContainerBrush}" />
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="保存并重启服务" Command="{Binding SaveAndRestartCommand}" Classes="Primary" />
+                        <Button Content="放弃更改" Command="{Binding DiscardChangesCommand}"
+                                IsVisible="{Binding IsDirty}" />
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </controls:ServiceStatusCard.Banner>
+              </controls:ServiceStatusCard>
 
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="托管位置" Classes="CardTitle" />
-                    <Button Grid.Column="1" Content="刷新" Command="{Binding RefreshCommand}" />
-                  </Grid>
-                  <ItemsControl ItemsSource="{Binding Locations}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="settings:ManagedLocationViewModel">
-                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="12" Margin="0,6">
-                          <StackPanel Spacing="2">
-                            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" />
-                            <TextBlock Text="{Binding Path}" FontSize="11"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                       TextTrimming="CharacterEllipsis"
-                                       ToolTip.Tip="{Binding Path}" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                              <TextBlock Text="{Binding SizeDisplay}" FontSize="11"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                              <TextBlock Text="{Binding ItemCountDisplay}" FontSize="11"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            </StackPanel>
-                          </StackPanel>
-                          <Button Grid.Column="1" Content="下载" Command="{Binding DownloadCommand}"
-                                  IsVisible="{Binding CanDownload}" Padding="12,4" />
-                          <Button Grid.Column="2" Content="打开目录" Command="{Binding OpenCommand}" Padding="12,4" />
-                          <Button Grid.Column="3" Command="{Binding ClearCommand}" Classes="Danger"
-                                  IsVisible="{Binding CanClear}" Padding="12,4" ToolTip.Tip="清理"
-                                  AutomationProperties.Name="清理">
-                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                          </Button>
-                        </Grid>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+              <controls:SettingsCard Title="监听设置" AnchorId="mcp_listen" Status="{Binding Status}">
+                <StackPanel Spacing="10">
+                  <controls:SettingRow Label="端口" Hint="修改后需保存并重启服务。">
+                    <NumericUpDown Value="{Binding Port}" Minimum="1024" Maximum="65535" Width="160"
+                                   HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="Bind 地址">
+                    <TextBox Text="{Binding BindAddress}" PlaceholderText="127.0.0.1 或 0.0.0.0"
+                             MinWidth="320" HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <controls:SettingRow Label="协议">
+                    <TextBlock Text="Streamable HTTP" VerticalAlignment="Center"
+                               ToolTip.Tip="{Binding TransportDescription}" />
+                  </controls:SettingRow>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                         IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <controls:SettingsCard Title="外部访问控制" AnchorId="mcp_external">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Classes="SettingsToggle" Content="允许局域网访问" IsChecked="{Binding AllowExternalAccess}" />
+                  <ToggleSwitch Classes="SettingsToggle" Content="JSON-RPC 请求需要 Bearer Token"
+                                IsChecked="{Binding AuthRequired}" />
+                  <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
+                          BorderThickness="1" CornerRadius="4" Padding="12"
+                          IsVisible="{Binding IsAllowExternalAccessWarningVisible}">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="警告：暴露于 0.0.0.0 但未配置鉴权 Token" FontWeight="Bold"
+                                 Foreground="{DynamicResource OnErrorContainerBrush}" />
+                      <TextBlock Text="为了保护您的电脑，外部请求将被阻塞。请生成一个 Server Token 启用鉴权。"
+                                 Foreground="{DynamicResource OnErrorContainerBrush}" TextWrapping="Wrap" />
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="安全鉴权" AnchorId="mcp_token">
+                <controls:SettingRow Label="Server Token" HorizontalContentAlignment="Stretch">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBox Text="{Binding ServerToken}" PlaceholderText="留空则无鉴权" />
+                    <Button Grid.Column="1" Content="随机生成" Command="{Binding GenerateTokenCommand}" />
+                  </Grid>
+                </controls:SettingRow>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="CORS" AnchorId="mcp_cors">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Classes="SettingsToggle" Content="启用 CORS" IsChecked="{Binding CorsEnabled}" />
+                  <TextBox Text="{Binding AllowedOriginsText}" AcceptsReturn="True" MinHeight="72"
+                           PlaceholderText="每行一个 allowed origin，例如 http://localhost:3000" />
+                </StackPanel>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Metadata Lookup Settings -->
+          <!-- MCP permissions (same owner, separate tab) -->
+          <DataTemplate DataType="settings:McpPermissionsSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <controls:ServiceStatusCard Title="MCP 服务" AnchorId="permissions_matrix"
+                                          StatusText="{Binding Mcp.McpStatusText}">
+                <controls:ServiceStatusCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="停止" Command="{Binding Mcp.StopMcpCommand}" />
+                    <Button Content="启动" Command="{Binding Mcp.StartMcpCommand}" Classes="Primary" />
+                  </StackPanel>
+                </controls:ServiceStatusCard.Actions>
+                <controls:ServiceStatusCard.Banner>
+                  <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
+                          BorderThickness="1" CornerRadius="4" Padding="12"
+                          IsVisible="{Binding Mcp.NeedsSaveAndRestart}">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{Binding Mcp.SaveAndRestartBannerText}" FontWeight="Bold"
+                                 Foreground="{DynamicResource OnErrorContainerBrush}" />
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="保存并重启服务" Command="{Binding Mcp.SaveAndRestartCommand}"
+                                Classes="Primary" />
+                        <Button Content="放弃更改" Command="{Binding Mcp.DiscardChangesCommand}"
+                                IsVisible="{Binding Mcp.IsDirty}" />
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </controls:ServiceStatusCard.Banner>
+              </controls:ServiceStatusCard>
+
+              <controls:SettingsCard Title="资源访问权限" AnchorId="permissions_resource"
+                                     Hint="修改后对后续 MCP/CLI 调用生效；MCP 服务需重新加载。">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                  <StackPanel MinWidth="544" Spacing="4">
+                    <Grid ColumnDefinitions="160,64,64,64,64,64,64">
+                      <TextBlock Text="VFS 域" />
+                      <TextBlock Grid.Column="1" Text="find" HorizontalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="fetch" HorizontalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="put" HorizontalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="cite" HorizontalAlignment="Center" />
+                      <TextBlock Grid.Column="5" Text="send" HorizontalAlignment="Center" />
+                      <TextBlock Grid.Column="6" Text="add" HorizontalAlignment="Center" />
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Mcp.PermissionRows}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="settings:McpDomainPermissionRowViewModel">
+                          <Grid ColumnDefinitions="160,384" RowDefinitions="Auto,Auto" Margin="0,3">
+                            <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding Domain}" VerticalAlignment="Center" />
+                              <ToggleButton IsVisible="{Binding HasChildren}" IsChecked="{Binding IsExpanded}"
+                                            Padding="2,0" MinWidth="0" MinHeight="0" Width="20" Height="22"
+                                            Background="Transparent" BorderThickness="0"
+                                            Foreground="{DynamicResource OnSurfaceBrush}"
+                                            AutomationProperties.Name="展开 runs 子域权限">
+                                <Panel>
+                                  <lucide:Lucide Icon="ChevronRight" Width="14" Height="14"
+                                                 IsVisible="{Binding !IsExpanded}" />
+                                  <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
+                                                 IsVisible="{Binding IsExpanded}" />
+                                </Panel>
+                                <ToggleButton.Template>
+                                  <ControlTemplate>
+                                    <ContentPresenter Content="{TemplateBinding Content}" Background="Transparent"
+                                                      HorizontalContentAlignment="Center"
+                                                      VerticalContentAlignment="Center" />
+                                  </ControlTemplate>
+                                </ToggleButton.Template>
+                              </ToggleButton>
+                            </StackPanel>
+                            <ItemsControl Grid.Column="1" ItemsSource="{Binding Cells}">
+                              <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                  <UniformGrid Columns="6" />
+                                </ItemsPanelTemplate>
+                              </ItemsControl.ItemsPanel>
+                              <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="settings:McpDomainPermissionCellViewModel">
+                                  <Grid>
+                                    <ToggleSwitch IsVisible="{Binding !IsAggregate}" IsChecked="{Binding Enabled}"
+                                                  IsEnabled="{Binding IsSupported}" HorizontalAlignment="Center"
+                                                  ToolTip.Tip="{Binding Description}"
+                                                  AutomationProperties.Name="{Binding Description}" />
+                                    <ToggleSwitch IsVisible="{Binding IsAggregate}" IsThreeState="True"
+                                                  IsChecked="{Binding Aggregate.Checked, Mode=OneWay}"
+                                                  Command="{Binding Aggregate.ToggleCommand}"
+                                                  HorizontalAlignment="Center"
+                                                  AutomationProperties.Name="runs 全部子域 send 权限" />
+                                  </Grid>
+                                </DataTemplate>
+                              </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <ItemsControl Grid.Row="1" Grid.ColumnSpan="2" ItemsSource="{Binding Children}"
+                                          IsVisible="{Binding IsExpanded}">
+                              <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="settings:RunSendPermissionViewModel">
+                                  <Grid ColumnDefinitions="160,64,64,64,64,64,64" Margin="0,3">
+                                    <TextBlock Text="{Binding Domain}" Margin="16,0,0,0" VerticalAlignment="Center" />
+                                    <ToggleSwitch Grid.Column="5" IsChecked="{Binding Enabled}"
+                                                  HorizontalAlignment="Center"
+                                                  AutomationProperties.Name="{Binding Domain}" />
+                                  </Grid>
+                                </DataTemplate>
+                              </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                          </Grid>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </ScrollViewer>
+              </controls:SettingsCard>
+
+              <controls:SettingsCard Title="文库可见性" AnchorId="permissions_library"
+                                     Hint="仅影响本设备的 MCP/CLI；隐藏标签也会隐藏 BibLaTeX keyword。">
+                <StackPanel Spacing="10">
+                  <ToggleSwitch Classes="SettingsToggle" Content="允许 Agent 访问标签"
+                                IsChecked="{Binding Mcp.ExposeLibraryTags}" />
+                  <ToggleSwitch Classes="SettingsToggle" Content="允许 Agent 访问集合"
+                                IsChecked="{Binding Mcp.ExposeLibraryCollections}" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="刷新预览" Command="{Binding Mcp.RefreshLibraryPreviewCommand}" />
+                    <TextBlock Text="{Binding Mcp.LibraryPreviewHint}" Classes="SettingsStatus" TextWrapping="Wrap"
+                               VerticalAlignment="Center" />
+                  </StackPanel>
+                  <TextBox Text="{Binding Mcp.LibraryPreviewText}" IsReadOnly="True" AcceptsReturn="True"
+                           MinHeight="120" Classes="Monospace" TextWrapping="NoWrap" />
+                </StackPanel>
+              </controls:SettingsCard>
+            </StackPanel>
+          </DataTemplate>
+
+          <!-- Metadata -->
           <DataTemplate DataType="settings:MetadataLookupSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Classes="CardTitle" Text="来源优先级" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center"
-                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                      <Button Command="{Binding RestoreDefaultsCommand}" ToolTip.Tip="恢复默认"
-                              AutomationProperties.Name="恢复默认">
-                        <lucide:Lucide Icon="RotateCcw" Width="16" Height="16" />
-                      </Button>
-                      <Button Tag="Metadata" Click="AddExtensionClicked"
-                              ToolTip.Tip="添加扩展" AutomationProperties.Name="添加扩展">
-                        <lucide:Lucide Icon="Plus" Width="16" Height="16" />
-                      </Button>
-                      <Button Command="{Binding RefreshCommand}" ToolTip.Tip="刷新列表" AutomationProperties.Name="刷新列表">
-                        <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
-                      </Button>
-                    </StackPanel>
-                  </Grid>
-                  <ItemsControl ItemsSource="{Binding Sources}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="settings:MetadataSourceSettingsRowViewModel">
-                        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="10" Margin="0,4">
+              <controls:SettingsCard Title="来源优先级" AnchorId="metadata_sources" Status="{Binding Status}">
+                <controls:SettingsCard.Actions>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Command="{Binding RestoreDefaultsCommand}" ToolTip.Tip="恢复默认"
+                            AutomationProperties.Name="恢复默认">
+                      <lucide:Lucide Icon="RotateCcw" Width="16" Height="16" />
+                    </Button>
+                    <Button Command="{Binding RefreshCommand}" ToolTip.Tip="刷新列表"
+                            AutomationProperties.Name="刷新列表">
+                      <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                    </Button>
+                    <Button Tag="Metadata" Click="AddExtensionClicked" ToolTip.Tip="添加扩展"
+                            AutomationProperties.Name="添加扩展">
+                      <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+                    </Button>
+                  </StackPanel>
+                </controls:SettingsCard.Actions>
+                <ItemsControl ItemsSource="{Binding Sources}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="settings:MetadataSourceSettingsRowViewModel">
+                      <Border Classes="SettingsListRow">
+                        <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="10">
                           <ToggleSwitch IsChecked="{Binding Enabled}" VerticalAlignment="Center" />
                           <StackPanel Grid.Column="1" Spacing="2">
                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
                             <TextBlock Text="{Binding Description}" FontSize="11"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                           </StackPanel>
-                          <Button Grid.Column="2" Command="{Binding MoveUpCommand}"
-                                  IsEnabled="{Binding CanMoveUp}" Padding="10,4" ToolTip.Tip="上移"
-                                  AutomationProperties.Name="上移">
+                          <Button Grid.Column="2" Command="{Binding MoveUpCommand}" IsEnabled="{Binding CanMoveUp}"
+                                  Padding="8,4" ToolTip.Tip="上移" AutomationProperties.Name="上移">
                             <lucide:Lucide Icon="ChevronUp" Width="16" Height="16" />
                           </Button>
-                          <Button Grid.Column="3" Command="{Binding MoveDownCommand}"
-                                  IsEnabled="{Binding CanMoveDown}" Padding="10,4" ToolTip.Tip="下移"
-                                  AutomationProperties.Name="下移">
+                          <Button Grid.Column="3" Command="{Binding MoveDownCommand}" IsEnabled="{Binding CanMoveDown}"
+                                  Padding="8,4" ToolTip.Tip="下移" AutomationProperties.Name="下移">
                             <lucide:Lucide Icon="ChevronDown" Width="16" Height="16" />
                           </Button>
-                          <Button Grid.Column="4" Tag="{Binding ExtensionId}" Click="ConfigureExtensionClicked"
-                                  VerticalAlignment="Center"
-                                  ToolTip.Tip="配置来源" AutomationProperties.Name="配置来源">
+                          <Button Grid.Column="4" Tag="{Binding ExtensionId}" Click="ExtensionSourceClicked"
+                                  ToolTip.Tip="查看扩展源码" AutomationProperties.Name="扩展源码">
+                            <lucide:Lucide Icon="BookOpen" Width="16" Height="16" />
+                          </Button>
+                          <Button Grid.Column="5" Tag="{Binding ExtensionId}" Click="ConfigureExtensionClicked"
+                                  VerticalAlignment="Center" ToolTip.Tip="配置来源"
+                                  AutomationProperties.Name="配置来源">
                             <lucide:Lucide Icon="Settings" Width="16" Height="16" />
                           </Button>
                         </Grid>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- CSL Localization Settings -->
+          <!-- CSL localization -->
           <DataTemplate DataType="settings:CslLocalizationSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <TextBlock Classes="CardTitle" Text="默认本地化" ToolTip.Tip="控制术语与回退输出，不改变题录原始语言。" />
-                  <ComboBox x:Name="DefaultCslLocaleEditor" ItemsSource="{Binding DefaultLocaleOptions}"
-                            DisplayMemberBinding="{Binding DisplayName}"
-                            SelectedItem="{Binding SelectedDefaultLocale}" HorizontalAlignment="Stretch" />
-                </StackPanel>
-              </Border>
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <TextBlock Classes="CardTitle" Text="题录本地化规则" />
-                  <ItemsControl ItemsSource="{Binding Rows}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="settings:CslLanguageLocaleMappingRowViewModel">
-                        <Grid ColumnDefinitions="*,Auto,*,Auto" ColumnSpacing="8" Margin="0,2">
-                          <ComboBox x:Name="MappingLanguageEditor" Grid.Column="0"
-                                    ItemsSource="{Binding LanguageOptions}"
-                                    DisplayMemberBinding="{Binding DisplayName}"
-                                    SelectedItem="{Binding SelectedLanguage}"
-                                    MinWidth="120" HorizontalAlignment="Stretch" />
-                          <TextBlock Grid.Column="1" Text="→" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                     VerticalAlignment="Center" />
-                          <ComboBox x:Name="MappingLocaleEditor" Grid.Column="2"
-                                    ItemsSource="{Binding LocaleOptions}"
-                                    DisplayMemberBinding="{Binding DisplayName}"
-                                    SelectedItem="{Binding SelectedLocale}"
-                                    MinWidth="120" HorizontalAlignment="Stretch" />
-                          <Button x:Name="RemoveMappingButton" Grid.Column="3"
-                                  Command="{Binding RemoveCommand}" Padding="8,4" ToolTip.Tip="删除"
-                                  AutomationProperties.Name="删除">
-                            <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                          </Button>
-                        </Grid>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                  <Button x:Name="AddMappingButton" Content="添加语言映射"
-                          Command="{Binding AddMappingCommand}" HorizontalAlignment="Left" Padding="12,6" />
-                </StackPanel>
-              </Border>
+              <controls:SettingsCard Title="默认本地化" AnchorId="csl_localization"
+                                     Hint="控制术语与回退输出，不改变题录原始语言。">
+                <ComboBox x:Name="DefaultCslLocaleEditor" ItemsSource="{Binding DefaultLocaleOptions}"
+                          DisplayMemberBinding="{Binding DisplayName}"
+                          SelectedItem="{Binding SelectedDefaultLocale}" HorizontalAlignment="Stretch" />
+              </controls:SettingsCard>
+              <controls:SettingsCard Title="语言映射" AnchorId="csl_mappings">
+                <controls:SettingsCard.Actions>
+                  <Button x:Name="AddMappingButton" Content="添加语言映射" Command="{Binding AddMappingCommand}"
+                          Padding="12,4" />
+                </controls:SettingsCard.Actions>
+                <ItemsControl ItemsSource="{Binding Rows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="settings:CslLanguageLocaleMappingRowViewModel">
+                      <Grid ColumnDefinitions="*,Auto,*,Auto" ColumnSpacing="8" Margin="0,4">
+                        <ComboBox x:Name="MappingLanguageEditor" Grid.Column="0"
+                                  ItemsSource="{Binding LanguageOptions}"
+                                  DisplayMemberBinding="{Binding DisplayName}"
+                                  SelectedItem="{Binding SelectedLanguage}"
+                                  MinWidth="120" HorizontalAlignment="Stretch" />
+                        <TextBlock Grid.Column="1" Text="→" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                        <ComboBox x:Name="MappingLocaleEditor" Grid.Column="2" ItemsSource="{Binding LocaleOptions}"
+                                  DisplayMemberBinding="{Binding DisplayName}" SelectedItem="{Binding SelectedLocale}"
+                                  MinWidth="120" HorizontalAlignment="Stretch" />
+                        <Button x:Name="RemoveMappingButton" Grid.Column="3" Command="{Binding RemoveCommand}"
+                                Classes="Danger" Padding="8,4" ToolTip.Tip="删除" AutomationProperties.Name="删除">
+                          <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                        </Button>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
           <DataTemplate DataType="csl:CslStyleManagerViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <TextBlock Classes="CardTitle" Text="{Binding InstalledStyles.Count, StringFormat='已安装样式（{0}）'}" />
-                  <ItemsControl ItemsSource="{Binding InstalledStyles}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="csl:CslStyleViewModel">
-                        <Border Classes="CardTile" Margin="0,0,0,8">
-                          <StackPanel Spacing="6">
-                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                            <TextBlock Text="{Binding StyleId}" FontSize="11" TextWrapping="Wrap"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <TextBlock Text="{Binding FormattedUpdated, StringFormat='更新时间：{0}'}" FontSize="11"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                              <TextBlock Text="默认" IsVisible="{Binding IsDefault}" VerticalAlignment="Center"
-                                         Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0" />
-                              <Button Content="设为默认" Command="{Binding SetDefaultCommand}"
-                                      IsVisible="{Binding IsNotDefault}" Padding="10,4" />
-                              <Button Command="{Binding RemoveCommand}" Classes="Danger" Padding="10,4"
-                                      ToolTip.Tip="移除" AutomationProperties.Name="移除">
-                                <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                              </Button>
-                            </StackPanel>
+              <controls:SettingsCard Title="样式列表" AnchorId="csl_installed"
+                                     Status="{Binding InstalledStyles.Count, StringFormat='已安装 \{0\}'}">
+                <ItemsControl ItemsSource="{Binding InstalledStyles}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="csl:CslStyleViewModel">
+                      <Border Classes="SettingsListRow">
+                        <StackPanel Spacing="6">
+                          <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding StyleId}" FontSize="11" TextWrapping="Wrap"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <TextBlock Text="{Binding FormattedUpdated, StringFormat='更新时间：{0}'}" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                            <TextBlock Text="默认" IsVisible="{Binding IsDefault}" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0" />
+                            <Button Content="设为默认" Command="{Binding SetDefaultCommand}"
+                                    IsVisible="{Binding IsNotDefault}" Padding="10,4" />
+                            <Button Command="{Binding RemoveCommand}" Classes="Danger" Padding="10,4"
+                                    ToolTip.Tip="移除" AutomationProperties.Name="移除">
+                              <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                            </Button>
                           </StackPanel>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                  <TextBlock Text="可在“在线样式”中搜索并安装更多 CSL 样式。" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                </StackPanel>
-              </Border>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
@@ -1312,15 +1335,17 @@
               <ContentControl.ContentTemplate>
                 <DataTemplate DataType="csl:CslStyleManagerViewModel">
                   <StackPanel Classes="SettingsContent">
-                    <Border Classes="Card">
+                    <controls:SettingsCard Title="样式目录" AnchorId="csl_online">
                       <StackPanel Spacing="12">
-                        <TextBlock Classes="CardTitle" Text="在线样式" />
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                           <ComboBox x:Name="CslCatalogSourceEditor" ItemsSource="{Binding CatalogSources}"
                                     DisplayMemberBinding="{Binding DisplayName}"
                                     SelectedItem="{Binding SelectedCatalogSource}" HorizontalAlignment="Stretch"
                                     ToolTip.Tip="{Binding SelectedCatalogSource.Description}" />
-                          <Button Grid.Column="1" Content="刷新索引" Command="{Binding RefreshCommand}" />
+                          <Button Grid.Column="1" Command="{Binding RefreshCommand}" ToolTip.Tip="刷新索引"
+                                  AutomationProperties.Name="刷新索引">
+                            <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+                          </Button>
                         </Grid>
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                           <TextBox x:Name="CslCatalogSearchEditor" Text="{Binding SearchQuery}"
@@ -1331,10 +1356,8 @@
                           </TextBox>
                           <Button Grid.Column="1" Content="搜索" Command="{Binding SearchCommand}" />
                         </Grid>
-                        <TextBlock Text="选择样式源后搜索；刷新索引可获取该来源的最新样式。" FontSize="12" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                       </StackPanel>
-                    </Border>
+                    </controls:SettingsCard>
                     <ItemsControl ItemsSource="{Binding RemoteStyles}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="csl:CslCatalogStyleViewModel">
@@ -1360,138 +1383,125 @@
             </ContentControl>
           </DataTemplate>
 
-          <!-- Cite As You Write (CAYW / TexPile compatibility, issue #14) -->
+          <!-- CAYW -->
           <DataTemplate DataType="settings:CaywSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="服务状态" Classes="CardTitle" />
-                    <Button Grid.Column="1" Content="重启服务" Command="{Binding RestartServiceCommand}"
-                            ToolTip.Tip="按当前已保存的设置停止并重新启动兼容服务。" />
-                  </Grid>
-                  <TextBlock Text="{Binding ServiceStatusText}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding ServiceStatusDetail}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding RunningEndpoint, StringFormat='端点：{0}'}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding Status}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <controls:ServiceStatusCard Title="服务状态" AnchorId="csl_cayw"
+                                          StatusText="{Binding ServiceStatusText}"
+                                          Endpoint="{Binding RunningEndpoint, StringFormat='端点：\{0\}'}">
+                <controls:ServiceStatusCard.Actions>
+                  <Button Content="重启服务" Command="{Binding RestartServiceCommand}"
+                          ToolTip.Tip="按当前已保存的设置停止并重新启动兼容服务。" />
+                </controls:ServiceStatusCard.Actions>
+                <controls:ServiceStatusCard.EndpointActions>
+                  <Button Content="复制" Command="{Binding CopyEndpointCommand}"
+                          ToolTip.Tip="复制端点到剪贴板" IsEnabled="{Binding ServiceRunning}" />
+                </controls:ServiceStatusCard.EndpointActions>
+                <StackPanel Spacing="4">
+                  <TextBlock Text="{Binding ServiceStatusDetail}" Classes="SettingsStatus" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding Status}" Classes="SettingsStatus" TextWrapping="Wrap" />
                 </StackPanel>
-              </Border>
+              </controls:ServiceStatusCard>
 
-              <Border Classes="Card">
+              <controls:SettingsCard Title="兼容服务" AnchorId="cayw_service">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="兼容服务" Classes="CardTitle" />
-                  <ToggleSwitch Content="启用 CAYW / TexPile 兼容服务（仅本机 127.0.0.1）" IsChecked="{Binding Enabled}" />
-                  <TextBlock Text="端口" ToolTip.Tip="默认端口 23119 与 Zotero 共用；修改后请同步更新编辑器的连接地址。" FontSize="12"
-                             FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535" />
-                  <TextBlock Text="{Binding Endpoint, StringFormat='当前端点：{0}'}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <ToggleSwitch Classes="SettingsToggle" Content="启用兼容服务"
+                                ToolTip.Tip="CAYW / TexPile 兼容服务仅监听本机 127.0.0.1。"
+                                IsChecked="{Binding Enabled}" />
+                  <controls:SettingRow Label="端口" Hint="默认端口 23119 与 Zotero 共用；修改后请同步更新编辑器的连接地址。">
+                    <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535" Width="160"
+                                   HorizontalAlignment="Left" />
+                  </controls:SettingRow>
+                  <TextBlock Text="{Binding Endpoint, StringFormat='当前端点：{0}'}" Classes="SettingsStatus" />
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
 
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="支持范围" ToolTip.Tip="JSON 返回 Patchouli 条目 ID；搜索最多返回 100 条。" Classes="CardTitle" />
-                  <TextBlock Text="{Binding SupportedText}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding UnsupportedText}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                </StackPanel>
-              </Border>
+              <controls:SettingsCard Title="兼容范围" AnchorId="cayw_scope"
+                                     Hint="{Binding UnsupportedText}">
+                <TextBlock Text="CAYW · TexPile · JSON-RPC" Classes="SettingsStatus"
+                           ToolTip.Tip="{Binding SupportedText}" />
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
-          <!-- Search Settings -->
+          <!-- Search rewrite -->
           <DataTemplate DataType="settings:SearchRewriteSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
-                <ToggleSwitch x:Name="SearchRewriteEnabledSwitch" Content="启用搜索重写"
+              <controls:SettingsCard Title="重写开关" AnchorId="search_rewrite" Status="{Binding Status}">
+                <ToggleSwitch x:Name="SearchRewriteEnabledSwitch" Classes="SettingsToggle" Content="启用搜索重写"
                               IsChecked="{Binding SearchControls.QueryRewriteEnabled, Mode=TwoWay}"
                               IsEnabled="{Binding SearchControls.HasOpenRuntimeDatabase}" />
-              </Border>
-              <Border Classes="Card">
-                <StackPanel Spacing="12">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Classes="CardTitle" Text="重写规则" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center"
-                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                      <Button Content="添加规则" Command="{Binding AddRuleCommand}" />
-                    </StackPanel>
-                  </Grid>
+              </controls:SettingsCard>
+              <controls:SettingsCard Title="重写规则" AnchorId="search_rewrite_rules">
+                <controls:SettingsCard.Actions>
+                  <Button Command="{Binding AddRuleCommand}" ToolTip.Tip="添加规则"
+                          AutomationProperties.Name="添加规则">
+                    <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+                  </Button>
+                </controls:SettingsCard.Actions>
+                <ItemsControl ItemsSource="{Binding Rules}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="settings:SearchRewriteRuleRowViewModel">
+                      <Border Classes="CardTile" Margin="0,0,0,12">
+                        <StackPanel Spacing="10">
+                          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                            <ToggleSwitch IsChecked="{Binding Enabled}" ToolTip.Tip="启用规则"
+                                          AutomationProperties.Name="启用规则" />
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding RuleTypeOptions}"
+                                      SelectedItem="{Binding SelectedRuleType}"
+                                      DisplayMemberBinding="{Binding Label}"
+                                      HorizontalAlignment="Left" MinWidth="220" MaxWidth="300" />
+                            <Button x:Name="DeleteRewriteRuleButton" Grid.Column="2"
+                                    Command="{Binding DeleteCommand}" Classes="Danger"
+                                    ToolTip.Tip="删除规则" AutomationProperties.Name="删除规则">
+                              <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
+                            </Button>
+                          </Grid>
+                          <WrapPanel>
+                            <StackPanel Width="190" Spacing="4" Margin="0,0,12,8">
+                              <TextBlock Text="匹配 / OpenCC 配置" FontSize="12" />
+                              <Grid>
+                                <TextBox Text="{Binding Pattern}" PlaceholderText="匹配内容"
+                                         IsVisible="{Binding IsStandardRule}" />
+                                <ComboBox ItemsSource="{Binding OpenccOptions}" SelectedItem="{Binding Pattern}"
+                                          IsVisible="{Binding IsOpenccRule}" HorizontalAlignment="Stretch" />
+                              </Grid>
+                            </StackPanel>
+                            <StackPanel Width="190" Spacing="4" Margin="0,0,12,8"
+                                        IsVisible="{Binding IsStandardRule}">
+                              <TextBlock Text="替换" FontSize="12" />
+                              <TextBox Text="{Binding Replacement}" PlaceholderText="替换或展开内容" />
+                            </StackPanel>
+                            <StackPanel Width="120" Spacing="4" Margin="0,0,12,8">
+                              <TextBlock Text="方向" FontSize="12" />
+                              <ComboBox ItemsSource="{Binding DirectionOptions}"
+                                        SelectedItem="{Binding SelectedDirection}"
+                                        DisplayMemberBinding="{Binding Label}" HorizontalAlignment="Stretch" />
+                            </StackPanel>
+                            <StackPanel Width="100" Spacing="4" Margin="0,0,12,8">
+                              <TextBlock Text="优先级" FontSize="12" />
+                              <NumericUpDown Value="{Binding Priority}" Minimum="-1000" Maximum="1000" />
+                            </StackPanel>
+                            <StackPanel Width="150" Spacing="4" Margin="0,0,0,8">
+                              <TextBlock Text="归属" FontSize="12" />
+                              <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding SelectedScope}"
+                                        DisplayMemberBinding="{Binding Label}" HorizontalAlignment="Stretch" />
+                            </StackPanel>
+                          </WrapPanel>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </controls:SettingsCard>
 
-                  <ItemsControl ItemsSource="{Binding Rules}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="settings:SearchRewriteRuleRowViewModel">
-                        <Border Classes="CardTile" Margin="0,0,0,12">
-                          <StackPanel Spacing="10">
-                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-                              <ToggleSwitch IsChecked="{Binding Enabled}" ToolTip.Tip="启用规则"
-                                            AutomationProperties.Name="启用规则" />
-                              <ComboBox Grid.Column="1" ItemsSource="{Binding RuleTypeOptions}"
-                                        SelectedItem="{Binding SelectedRuleType}"
-                                        DisplayMemberBinding="{Binding Label}"
-                                        HorizontalAlignment="Left" MinWidth="220" MaxWidth="300" />
-                              <Button x:Name="DeleteRewriteRuleButton" Grid.Column="2"
-                                      Command="{Binding DeleteCommand}"
-                                      Classes="Danger" ToolTip.Tip="删除规则"
-                                      AutomationProperties.Name="删除规则">
-                                <lucide:Lucide Icon="Trash2" Width="16" Height="16" />
-                              </Button>
-                            </Grid>
-                            <WrapPanel>
-                              <StackPanel Width="190" Spacing="4" Margin="0,0,12,8">
-                                <TextBlock Text="匹配 / OpenCC 配置" FontSize="12" />
-                                <Grid>
-                                  <TextBox Text="{Binding Pattern}" PlaceholderText="匹配内容"
-                                           IsVisible="{Binding IsStandardRule}" />
-                                  <ComboBox ItemsSource="{Binding OpenccOptions}" SelectedItem="{Binding Pattern}"
-                                            IsVisible="{Binding IsOpenccRule}" HorizontalAlignment="Stretch" />
-                                </Grid>
-                              </StackPanel>
-                              <StackPanel Width="190" Spacing="4" Margin="0,0,12,8"
-                                          IsVisible="{Binding IsStandardRule}">
-                                <TextBlock Text="替换" FontSize="12" />
-                                <TextBox Text="{Binding Replacement}" PlaceholderText="替换或展开内容" />
-                              </StackPanel>
-                              <StackPanel Width="120" Spacing="4" Margin="0,0,12,8">
-                                <TextBlock Text="方向" FontSize="12" />
-                                <ComboBox ItemsSource="{Binding DirectionOptions}"
-                                          SelectedItem="{Binding SelectedDirection}"
-                                          DisplayMemberBinding="{Binding Label}" HorizontalAlignment="Stretch" />
-                              </StackPanel>
-                              <StackPanel Width="100" Spacing="4" Margin="0,0,12,8">
-                                <TextBlock Text="优先级" FontSize="12" />
-                                <NumericUpDown Value="{Binding Priority}" Minimum="-1000" Maximum="1000" />
-                              </StackPanel>
-                              <StackPanel Width="150" Spacing="4" Margin="0,0,0,8">
-                                <TextBlock Text="归属" FontSize="12" />
-                                <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding SelectedScope}"
-                                          DisplayMemberBinding="{Binding Label}" HorizontalAlignment="Stretch" />
-                              </StackPanel>
-                            </WrapPanel>
-                          </StackPanel>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
+              <controls:SettingsCard Title="预览" AnchorId="search_rewrite_preview">
                 <StackPanel Spacing="10">
-                  <TextBlock Classes="CardTitle" Text="预览" />
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                     <TextBox Text="{Binding PreviewQuery}" PlaceholderText="示例查询，例如 臺灣史" />
                     <Button Grid.Column="1" Content="预览" Command="{Binding PreviewCommand}" />
                   </Grid>
-                  <TextBlock Text="{Binding PreviewSummary}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding PreviewSummary}" Classes="SettingsStatus" TextWrapping="Wrap" />
                   <ItemsControl ItemsSource="{Binding PreviewExpandedQueries}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
@@ -1508,44 +1518,26 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
-          <DataTemplate DataType="settings:VirtualLinkSettingsViewModel">
-            <StackPanel Classes="SettingsContent" AutomationProperties.Name="文献虚拟链接解析">
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <ToggleSwitch Content="在系统中注册 patchouli:// 协议"
-                                IsChecked="{Binding RegisterProtocol, Mode=TwoWay}"
-                                IsEnabled="{Binding CanChangeRegistration}"
-                                ToolTip.Tip="从其他应用打开文献虚拟链接，唤起 Patchouli 并定位资源。" />
-                  <TextBlock Text="{Binding RegistrationStatus}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                </StackPanel>
-              </Border>
-              <Border Classes="Card">
-                <ToggleSwitch Content="搜索栏解析文献虚拟链接"
-                              IsChecked="{Binding ParseLinksInSearchBar, Mode=TwoWay}"
-                              ToolTip.Tip="在搜索栏输入 patchouli:// 链接时直接定位资源；关闭后按普通文本搜索。" />
-              </Border>
-            </StackPanel>
-          </DataTemplate>
+
+          <!-- Search page awareness -->
           <DataTemplate DataType="settings:SearchPageAwarenessSettingsViewModel">
-            <StackPanel Classes="SettingsContent" AutomationProperties.Name="搜索框页面感知">
-              <Border Classes="Card">
-                <ToggleSwitch x:Name="SearchPageAwarenessSwitch" Content="页面感知"
-                              IsChecked="{Binding SearchControls.IsToolbarSearchPageAware, Mode=TwoWay}" />
-              </Border>
-              <Border Classes="Card">
-                <StackPanel Spacing="8">
-                  <Grid ColumnDefinitions="220,*" ColumnSpacing="12" Margin="0,0,0,8">
+            <StackPanel Classes="SettingsContent"
+                        AutomationProperties.Name="搜索框页面感知">
+              <controls:SettingsCard Title="默认搜索模式" AnchorId="search_awareness">
+                <StackPanel Spacing="12">
+                  <ToggleSwitch x:Name="SearchPageAwarenessSwitch" Classes="SettingsToggle" Content="页面感知"
+                                IsChecked="{Binding SearchControls.IsToolbarSearchPageAware, Mode=TwoWay}" />
+                  <Grid ColumnDefinitions="180,*" ColumnSpacing="12">
                     <TextBlock Text="标签页" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="1" Text="搜索范围" FontWeight="SemiBold" />
                   </Grid>
                   <ItemsControl ItemsSource="{Binding Rows}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate DataType="settings:SearchPageModeRowViewModel">
-                        <Grid ColumnDefinitions="220,*" ColumnSpacing="12" Margin="0,4">
+                        <Grid ColumnDefinitions="180,*" ColumnSpacing="12" Margin="0,4">
                           <TextBlock Text="{Binding KindLabel}" FontSize="13" VerticalAlignment="Center"
                                      ToolTip.Tip="{Binding DefaultModeLabel, StringFormat='默认 {0}'}" />
                           <ComboBox Grid.Column="1" ItemsSource="{Binding ModeOptions}"
@@ -1562,30 +1554,41 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
-              </Border>
+              </controls:SettingsCard>
+              <controls:SettingsCard Title="全文检索结果" AnchorId="search_awareness_results"
+                                     AutomationProperties.Name="全库全文检索">
+                <ToggleSwitch x:Name="ExpandFullTextSearchResultsSwitch" Classes="SettingsToggle" Content="默认展开命中结果"
+                              IsChecked="{Binding ExpandFullTextSearchResults, Mode=TwoWay}" />
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 
+          <!-- Search link parsing -->
+          <DataTemplate DataType="settings:SearchLinkSettingsViewModel">
+            <StackPanel Classes="SettingsContent">
+              <controls:SettingsCard Title="搜索栏链接" AnchorId="search_links">
+                <ToggleSwitch Classes="SettingsToggle" Content="搜索栏解析文献虚拟链接"
+                              IsChecked="{Binding VirtualLinks.ParseLinksInSearchBar, Mode=TwoWay}"
+                              ToolTip.Tip="在搜索栏输入 patchouli:// 链接时直接定位资源；关闭后按普通文本搜索。" />
+              </controls:SettingsCard>
+            </StackPanel>
+          </DataTemplate>
+
+
+          <!-- Update -->
           <DataTemplate DataType="settings:UpdateSettingsViewModel">
             <StackPanel Classes="SettingsContent">
-              <Border Classes="Card">
+              <controls:SettingsCard Title="自动检查更新" AnchorId="update_check" Status="{Binding Status}">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="自动检查更新" Classes="CardTitle" />
-                  <ToggleSwitch Content="启动后自动检查更新（每天最多一次）" IsChecked="{Binding AutoCheckEnabled}" />
-                  <TextBlock Text="{Binding LastCheckText}" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource PrimaryBrush}"
-                             IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <ToggleSwitch Classes="SettingsToggle" Content="启动后自动检查更新"
+                                ToolTip.Tip="每天最多检查一次。"
+                                IsChecked="{Binding AutoCheckEnabled}" />
+                  <TextBlock Text="{Binding LastCheckText}" Classes="SettingsStatus" />
                 </StackPanel>
-              </Border>
-
-              <Border Classes="Card">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="手动检查" Classes="CardTitle" />
-                  <Button Content="检查更新" Command="{Binding CheckForUpdatesCommand}" HorizontalAlignment="Left" />
-                </StackPanel>
-              </Border>
+              </controls:SettingsCard>
+              <controls:SettingsCard Title="手动检查" AnchorId="update_manual">
+                <Button Content="检查更新" Command="{Binding CheckForUpdatesCommand}" HorizontalAlignment="Left" />
+              </controls:SettingsCard>
             </StackPanel>
           </DataTemplate>
 

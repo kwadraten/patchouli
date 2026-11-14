@@ -420,6 +420,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [NotifyPropertyChangedFor(nameof(IsToolbarBibliographicSearch))]
     [NotifyPropertyChangedFor(nameof(IsToolbarFullTextSearch))]
     [NotifyPropertyChangedFor(nameof(IsToolbarDocumentFullTextSearch))]
+    [NotifyPropertyChangedFor(nameof(IsToolbarSettingsSearch))]
     public partial SearchModeOption ToolbarSearchMode { get; set; } = SearchPageAwareness.ModeOptions[1];
 
     [ExcludeFromDerivedGeneration]
@@ -430,10 +431,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ExcludeFromDerivedGeneration]
     public bool IsToolbarDocumentFullTextSearch => ToolbarSearchMode.Mode == SearchMode.DocumentFullText;
 
+    [ExcludeFromDerivedGeneration] public bool IsToolbarSettingsSearch => ToolbarSearchMode.Mode == SearchMode.Settings;
+
     [RelayCommand]
     private void SelectToolbarSearchMode(SearchModeOption mode)
     {
         if (mode.Mode == SearchMode.DocumentFullText && !IsToolbarDocumentSearchAvailable)
+        {
+            return;
+        }
+
+        if (mode.Mode == SearchMode.Settings && !IsToolbarSettingsSearchAvailable)
         {
             return;
         }
@@ -444,9 +452,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     partial void OnToolbarSearchModeChanged(SearchModeOption value)
     {
-        if (value.Mode == SearchMode.DocumentFullText)
+        if (value.Mode is SearchMode.DocumentFullText)
         {
             IsToolbarSearchFilterOpen = false;
+        }
+
+        if (value.Mode is SearchMode.Settings)
+        {
+            IsToolbarSearchFilterOpen = false;
+            RefreshSettingsSearch();
+        }
+        else
+        {
+            DismissSettingsSearch();
         }
     }
 
@@ -613,6 +631,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             "IMPORT" => current with { Import = updated.Import },
             "CITATIONINTEROP" => current with { CitationInterop = updated.CitationInterop },
             "LLM" => current with { Llm = updated.Llm },
+            "RENDERCACHE" => current with { RenderCache = updated.RenderCache },
+            "NETWORK" => current with { Network = updated.Network },
             _ => updated with { Sync = MergeSyncFields(current.Sync, updated.Sync) }
         };
     }
@@ -1655,6 +1675,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         if (changeSet.ItemIds.Count > 0)
         {
             await RefreshOpenItemEditorsAsync(changeSet.ItemIds, changeSet.NewRevision);
+            if (_searchEvidenceViewModel is { } search && _services is { } services)
+            {
+                await search.ReconcileHitsAsync(services, changeSet.ItemIds, cancellationToken);
+            }
         }
 
         if (gen != LibraryGeneration)
@@ -3287,6 +3311,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 await NavigateToPatchouliUriAsync(navigation.Target);
                 return;
             }
+        }
+
+        if (ToolbarSearchMode.Mode == SearchMode.Settings)
+        {
+            await RunSettingsSearchAsync();
+            return;
         }
 
         if (ToolbarSearchMode.Mode == SearchMode.DocumentFullText)

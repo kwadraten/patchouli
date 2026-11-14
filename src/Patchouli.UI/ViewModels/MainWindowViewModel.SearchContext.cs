@@ -56,7 +56,13 @@ public sealed partial class MainWindowViewModel
     private void ApplyToolbarSearchContextForActiveTab()
     {
         Raise(nameof(IsToolbarDocumentSearchAvailable));
+        Raise(nameof(IsToolbarSettingsSearchAvailable));
         WorkspaceTabKind kind = Layout.ActiveTab?.Kind ?? WorkspaceTabKind.Library;
+        if (kind != WorkspaceTabKind.Settings && ToolbarSearchMode.Mode == SearchMode.Settings)
+        {
+            DismissSettingsSearch();
+        }
+
         if (_toolbarSearchContextKind == kind)
         {
             return;
@@ -72,6 +78,11 @@ public sealed partial class MainWindowViewModel
         if (!IsToolbarSearchPageAware)
         {
             if (!IsToolbarDocumentSearchAvailable && ToolbarSearchMode.Mode == SearchMode.DocumentFullText)
+            {
+                ToolbarSearchMode = SearchPageAwareness.ModeOptions[1];
+            }
+
+            if (!IsToolbarSettingsSearchAvailable && ToolbarSearchMode.Mode == SearchMode.Settings)
             {
                 ToolbarSearchMode = SearchPageAwareness.ModeOptions[1];
             }

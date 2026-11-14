@@ -7,8 +7,8 @@
     <Setter Property="MinHeight" Value="32" />
     <Setter Property="Template">
       <ControlTemplate>
-        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Background="Transparent">
-          <Grid Width="40" Height="22" VerticalAlignment="Center">
+        <Grid x:Name="SwitchLayout" ColumnDefinitions="Auto,*" ColumnSpacing="8" Background="Transparent">
+          <Grid x:Name="SwitchControl" Width="40" Height="22" VerticalAlignment="Center">
             <Border x:Name="SwitchTrack" CornerRadius="11" BorderThickness="1"
                     Background="{DynamicResource SurfaceContainerHighBrush}"
                     BorderBrush="{DynamicResource OutlineVariantBrush}" />

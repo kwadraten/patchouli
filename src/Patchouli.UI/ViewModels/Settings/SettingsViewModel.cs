@@ -38,6 +38,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private NavCategoryViewModel _activeCategory = null!;
     private string _reportedErrorSummary = "";
     private string? _reportedErrorStatus;
+    private bool _sectionTitlesReady;
     private readonly IReadOnlyList<ISettingsSection> _sections;
 
     private readonly Dictionary<string, NavCategoryViewModel>
@@ -63,6 +64,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _uiScheduler = uiScheduler;
         Register(_autoSaveTriggers);
         AppearanceSettings = new AppearanceSettingsViewModel(main);
+        StartupSettings = new StartupSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         VirtualLinkSettings = new VirtualLinkSettingsViewModel(main);
@@ -71,11 +73,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
         OcrEngineCatalog = new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.Ocr);
         OcrTextLayerCatalog =
             new OcrComponentCatalogSettingsViewModel(main, ExtensionKind.PdfTextLayer);
+        OcrComponents = new OcrComponentsSettingsViewModel(LayoutModelCatalog, OcrEngineCatalog,
+            OcrTextLayerCatalog);
         LlmSettings = new LlmSettingsViewModel(main);
         ExtensionSettings = new ExtensionSettingsViewModel(main);
         AgentIntegrationSettings = new AgentIntegrationSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
+        SearchAwarenessSettings = SearchRewriteSettings.Awareness;
+        SearchLinkSettings = new SearchLinkSettingsViewModel(VirtualLinkSettings);
+        McpPermissionsSettings = new McpPermissionsSettingsViewModel(McpSettings);
         CslLocalizationSettings = new CslLocalizationSettingsViewModel(main);
         CslStyleManager = new CslStyleManagerViewModel(main);
         CslOnlineStyles = new CslOnlineStylesSettingsViewModel(CslStyleManager);
@@ -86,17 +93,20 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Register(CaywSettings);
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
+        NetworkProxySettings = new NetworkProxySettingsViewModel(main);
+        SystemIntegrationSettings = new SystemIntegrationSettingsViewModel(
+            VirtualLinkSettings, NetworkProxySettings, McpSettings);
         ImportSettings = new ImportSettingsViewModel(main);
         UpdateSettings = new UpdateSettingsViewModel(main);
 
         ISettingsSection[] sections =
         [
-            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, VirtualLinkSettings, OcrProviderSettings,
-            OcrEngineCatalog, OcrTextLayerCatalog, LayoutModelCatalog,
+            AppearanceSettings, StartupSettings, LibrarySettings, SyncSettings, McpSettings, VirtualLinkSettings,
+            NetworkProxySettings, OcrProviderSettings, OcrEngineCatalog, OcrTextLayerCatalog, LayoutModelCatalog,
             LlmSettings, AgentIntegrationSettings, MetadataLookupSettings, SearchRewriteSettings,
+            SearchAwarenessSettings,
             LocalFileManagement, ImportSettings, CslLocalizationSettings, CslStyleManager, CslOnlineStyles,
-            CaywSettings,
-            UpdateSettings, ExtensionSettings
+            CaywSettings, UpdateSettings
         ];
 
         _sections = sections;
@@ -119,68 +129,76 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         SectionEntries =
         [
-            new SettingsSectionEntryViewModel("appearance", "外观与阅读", AppearanceSettings),
-            new SettingsSectionEntryViewModel("library", "书库与源文件", LibrarySettings),
-            new SettingsSectionEntryViewModel("local_files", "模型与临时文件", LocalFileManagement),
-            new SettingsSectionEntryViewModel("import", "导入时设置", ImportSettings),
-            new SettingsSectionEntryViewModel("ocr_presets", "OCR 预设编排", OcrProviderSettings),
-            new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
-            new SettingsSectionEntryViewModel("extensions", "其他扩展", ExtensionSettings),
-            new SettingsSectionEntryViewModel("agents", "Agent 集成", AgentIntegrationSettings),
+            new SettingsSectionEntryViewModel("appearance", "主题与阅读", AppearanceSettings),
+            new SettingsSectionEntryViewModel("startup", "启动", StartupSettings),
+            new SettingsSectionEntryViewModel("system_integration", "链接与系统", SystemIntegrationSettings),
+            new SettingsSectionEntryViewModel("update", "更新", UpdateSettings),
+            new SettingsSectionEntryViewModel("library", "文件与扫描", LibrarySettings),
+            new SettingsSectionEntryViewModel("import", "导入", ImportSettings),
+            new SettingsSectionEntryViewModel("local_files", "本机存储", LocalFileManagement),
+            new SettingsSectionEntryViewModel("ocr_presets", "OCR 预设", OcrProviderSettings),
+            new SettingsSectionEntryViewModel("ocr_components", "OCR 组件", OcrComponents),
+            new SettingsSectionEntryViewModel("translation", "翻译",
+                new TranslationDefaultsViewModel(LlmSettings)),
             new SettingsSectionEntryViewModel("metadata", "元数据来源", MetadataLookupSettings),
+            new SettingsSectionEntryViewModel("llm", "模型连接", LlmSettings),
+            new SettingsSectionEntryViewModel("agents", "Agent", AgentIntegrationSettings),
+            new SettingsSectionEntryViewModel("mcp", "MCP 服务", McpSettings),
+            new SettingsSectionEntryViewModel("permissions", "访问权限", McpPermissionsSettings),
             new SettingsSectionEntryViewModel("search_rewrite", "搜索重写", SearchRewriteSettings),
-            new SettingsSectionEntryViewModel("csl_localization", "题录本地化", CslLocalizationSettings),
+            new SettingsSectionEntryViewModel("search_awareness", "页面感知", SearchAwarenessSettings),
+            new SettingsSectionEntryViewModel("search_links", "链接解析", SearchLinkSettings),
+            new SettingsSectionEntryViewModel("csl_localization", "本地化", CslLocalizationSettings),
             new SettingsSectionEntryViewModel("csl_installed", "已安装样式", CslStyleManager),
             new SettingsSectionEntryViewModel("csl_online", "在线样式", CslOnlineStyles),
             new SettingsSectionEntryViewModel("csl_cayw", "Cite As You Write", CaywSettings),
-            new SettingsSectionEntryViewModel("mcp", "MCP 服务与权限", McpSettings),
-            new SettingsSectionEntryViewModel("virtual_links", "文献虚拟链接解析", VirtualLinkSettings),
-            new SettingsSectionEntryViewModel("sync", "同步与快照", SyncSettings),
-            new SettingsSectionEntryViewModel("update", "更新设置", UpdateSettings)
+            new SettingsSectionEntryViewModel("sync", "同步", SyncSettings)
         ];
         foreach (SettingsSectionEntryViewModel entry in SectionEntries)
         {
-            _sectionTitles[(ISettingsSection)entry.Content] = entry.Title;
+            if (entry.Content is ISettingsSection section && !_sectionTitles.ContainsKey(section))
+            {
+                _sectionTitles[section] = entry.Title;
+            }
         }
 
-        // The two catalog tabs live only inside the recognition group (not in SectionEntries);
-        // give them titles so save/validation summaries never hit a missing-key lookup.
-        _sectionTitles[LayoutModelCatalog] = "版面识别模型列表";
-        _sectionTitles[OcrEngineCatalog] = "OCR 引擎列表";
-        _sectionTitles[OcrTextLayerCatalog] = "文本层提取算法列表";
+        // The catalog tabs live inside the OCR component group (not in SectionEntries as
+        // individual entries); give them titles so save/validation summaries never hit a
+        // missing-key lookup.
+        _sectionTitles[LayoutModelCatalog] = "版面识别模型";
+        _sectionTitles[OcrEngineCatalog] = "OCR 引擎";
+        _sectionTitles[OcrTextLayerCatalog] = "文本层提取算法";
+        _sectionTitles[VirtualLinkSettings] = "链接与系统";
+        _sectionTitles[NetworkProxySettings] = "网络代理";
+        _sectionTitlesReady = true;
 
         SettingsSectionEntryViewModel Entry(string id)
         {
             return SectionEntries.Single(entry => entry.Id == id);
         }
 
-        SettingsSectionGroupViewModel library = new(Entry("library"), Entry("local_files"));
-        // User-specified order: import → preset composition → engine catalog → text-layer
-        // provider catalog → translation. The separate multimodal OCR page is gone; its
-        // configuration lives in the engine catalog's extension dialogs.
-        SettingsSectionGroupViewModel recognition = new(Entry("import"), Entry("ocr_presets"),
-            new SettingsSectionEntryViewModel("layout_models", "版面识别模型列表", LayoutModelCatalog),
-            new SettingsSectionEntryViewModel("ocr_engines", "OCR 引擎列表", OcrEngineCatalog),
-            new SettingsSectionEntryViewModel("ocr_textlayer", "文本层提取算法列表",
-                OcrTextLayerCatalog),
-            new SettingsSectionEntryViewModel("translation", "文献翻译",
-                new TranslationDefaultsViewModel(LlmSettings)));
-        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"), Entry("virtual_links"));
+        SettingsSectionGroupViewModel behavior = new(Entry("startup"), Entry("system_integration"),
+            Entry("update"));
+        SettingsSectionGroupViewModel data = new(Entry("import"), Entry("local_files"));
+        SettingsSectionGroupViewModel processing = new(Entry("ocr_presets"), Entry("ocr_components"),
+            Entry("translation"), Entry("metadata"));
+        SettingsSectionGroupViewModel ai = new(Entry("llm"), Entry("agents"), Entry("mcp"),
+            Entry("permissions"));
+        SettingsSectionGroupViewModel search = new(Entry("search_rewrite"), Entry("search_awareness"),
+            Entry("search_links"));
         SettingsSectionGroupViewModel citations = new(Entry("csl_localization"), Entry("csl_installed"),
             Entry("csl_online"), Entry("csl_cayw"));
-        SettingsSectionGroupViewModel search = new(Entry("search_rewrite"),
-            new SettingsSectionEntryViewModel("search_awareness", "搜索框页面感知", SearchRewriteSettings.Awareness));
         Categories =
         [
-            new NavCategoryViewModel("外观与阅读", "Palette", AppearanceSettings),
-            new NavCategoryViewModel("书库与本机文件", "Database", library),
-            new NavCategoryViewModel("文献加工", "ScanText", recognition),
-            new NavCategoryViewModel("AI集成", "Sparkles", ai),
-            new NavCategoryViewModel("元数据来源", "Search", MetadataLookupSettings),
-            new NavCategoryViewModel("搜索", "Filter", search),
-            new NavCategoryViewModel("引用与题录", "Quote", citations),
-            new NavCategoryViewModel("同步与快照", "Cloud", SyncSettings),
-            new NavCategoryViewModel("更新设置", "Download", UpdateSettings)
+            new NavCategoryViewModel("显示", "Palette", AppearanceSettings),
+            new NavCategoryViewModel("行为", "MousePointer2", behavior),
+            new NavCategoryViewModel("书库", "Database", LibrarySettings),
+            new NavCategoryViewModel("数据", "FolderOpen", data),
+            new NavCategoryViewModel("文献加工", "ScanText", processing),
+            new NavCategoryViewModel("AI 集成", "Sparkles", ai),
+            new NavCategoryViewModel("搜索", "Search", search),
+            new NavCategoryViewModel("引用", "Quote", citations),
+            new NavCategoryViewModel("同步", "Cloud", SyncSettings)
         ];
         foreach (NavCategoryViewModel category in Categories)
         {
@@ -223,13 +241,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
     }
 
     public AppearanceSettingsViewModel AppearanceSettings { get; }
+    public StartupSettingsViewModel StartupSettings { get; }
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
+    public McpPermissionsSettingsViewModel McpPermissionsSettings { get; }
     public VirtualLinkSettingsViewModel VirtualLinkSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public OcrComponentCatalogSettingsViewModel LayoutModelCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrEngineCatalog { get; }
     public OcrComponentCatalogSettingsViewModel OcrTextLayerCatalog { get; }
+    public OcrComponentsSettingsViewModel OcrComponents { get; }
     public LlmSettingsViewModel LlmSettings { get; }
     public ExtensionSettingsViewModel ExtensionSettings { get; }
 
@@ -246,12 +267,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public AgentIntegrationSettingsViewModel AgentIntegrationSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
+    public SearchPageAwarenessSettingsViewModel SearchAwarenessSettings { get; }
+    public SearchLinkSettingsViewModel SearchLinkSettings { get; }
     public CslLocalizationSettingsViewModel CslLocalizationSettings { get; }
     public CslStyleManagerViewModel CslStyleManager { get; }
     public CslOnlineStylesSettingsViewModel CslOnlineStyles { get; }
     public CaywSettingsViewModel CaywSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
+    public NetworkProxySettingsViewModel NetworkProxySettings { get; }
+    public SystemIntegrationSettingsViewModel SystemIntegrationSettings { get; }
     public ImportSettingsViewModel ImportSettings { get; }
     public UpdateSettingsViewModel UpdateSettings { get; }
 
@@ -295,7 +320,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
     {
         bool leavesMcp = ActiveSections().Contains(McpSettings) &&
                          (!ReferenceEquals(category, ActiveCategory) ||
-                          (entry is not null && !ReferenceEquals(entry.Content, McpSettings)));
+                          (entry is not null && entry.Content is not
+                              (McpSettingsViewModel or McpPermissionsSettingsViewModel)));
         if (leavesMcp && !await ConfirmLeaveMcpAsync())
         {
             Raise(nameof(ActiveCategory));
@@ -431,12 +457,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public void NotifyRuntimeDatabasePathChanged()
     {
         LibrarySettings.NotifyRuntimeDatabasePathChanged();
+        StartupSettings.NotifyRuntimeDatabasePathChanged();
         SyncSettings.NotifyLibraryContextChanged();
+        NetworkProxySettings.NotifyLibraryContextChanged();
     }
 
     public void NotifyLibraryContextChanged()
     {
         SyncSettings.NotifyLibraryContextChanged();
+        NetworkProxySettings.NotifyLibraryContextChanged();
     }
 
     /// <summary>Saves every dirty section in one pass. On success the aggregated status is reported
@@ -488,7 +517,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         if (savedTitles.Count > 0)
         {
             GlobalStatus = $"已保存：{string.Join("、", savedTitles)}。" +
-                           (requiresReload ? "MCP 服务需重启后生效，可在「AI集成 → MCP 服务与权限」中保存并重启。" : "");
+                           (requiresReload ? "MCP 服务需重启后生效，可在「AI 集成 → MCP 服务」中保存并重启。" : "");
         }
 
         if (failures.Count > 0 || warnings.Count > 0)
@@ -612,7 +641,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private void RaiseActiveSectionState()
     {
         // Construction can emit section changes before their display titles are registered.
-        if (_sectionTitles.Count == _sections.Count)
+        if (_sectionTitlesReady)
         {
             string summary = ValidationSummary;
             if (summary != _reportedErrorSummary)
@@ -640,31 +669,26 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Raise(nameof(HasDirtySections));
     }
 
+    /// <summary>Raised after a settings-search result navigated to its section. The view brings
+    /// the card into view and highlights it briefly; no result tab is created.</summary>
+    public event EventHandler<SettingsCardNavigationEventArgs>? CardNavigationRequested;
+
+    public async Task NavigateToSearchEntryAsync(SettingsSearchEntry entry)
+    {
+        await SelectSectionAsync(entry.SectionId);
+        if (!_sectionCategories.TryGetValue(entry.SectionId, out NavCategoryViewModel? category) ||
+            !ReferenceEquals(ActiveCategory, category) ||
+            (category.Content is SettingsSectionGroupViewModel group && group.ActiveEntry.Id != entry.SectionId))
+        {
+            // A pending MCP draft can cancel navigation. Do not highlight a retained, hidden page.
+            return;
+        }
+
+        CardNavigationRequested?.Invoke(this, new SettingsCardNavigationEventArgs(entry.CardAnchorId));
+    }
+
     public async Task SelectSectionAsync(string id)
     {
-        if (id.Equals("extensions", StringComparison.OrdinalIgnoreCase))
-        {
-            id = "translation";
-        }
-
-        // Legacy ids keep navigating: the old MinerU credential surface lives behind the
-        // built-in row's gear in the engine catalog; the old "ocr" entry is the composition tab.
-        if (id.Equals("mineru", StringComparison.OrdinalIgnoreCase))
-        {
-            id = "ocr_engines";
-        }
-
-        if (id.Equals("ocr", StringComparison.OrdinalIgnoreCase))
-        {
-            id = "ocr_presets";
-        }
-
-        if (id.Equals("ocr_model", StringComparison.OrdinalIgnoreCase) ||
-            id.Equals("multimodal", StringComparison.OrdinalIgnoreCase))
-        {
-            id = "ocr_engines";
-        }
-
         if (!_sectionCategories.TryGetValue(id, out NavCategoryViewModel? category))
         {
             throw new ArgumentException($"未知设置入口：{id}", nameof(id));
@@ -688,6 +712,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
             return group.ActiveEntry.Content switch
             {
                 TranslationDefaultsViewModel translation => [translation.Settings],
+                OcrComponentsSettingsViewModel components => components.Catalogs,
+                McpPermissionsSettingsViewModel permissions => [permissions.Mcp],
+                SystemIntegrationSettingsViewModel integration => [integration.VirtualLinks, integration.NetworkProxy],
+                SearchLinkSettingsViewModel links => [links.VirtualLinks],
                 ISettingsSection selectedSection => [selectedSection],
                 _ => []
             };
@@ -709,6 +737,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             ActiveEntry.Content: TranslationDefaultsViewModel
         };
+        bool refreshCli = ActiveCategory.Content is SettingsSectionGroupViewModel
+        {
+            ActiveEntry.Content: SystemIntegrationSettingsViewModel
+        };
         foreach (ISettingsSection section in ActiveSections().ToArray())
         {
             await section.LoadAsync();
@@ -718,5 +750,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         {
             await LlmSettings.RefreshTranslationEnginesCommand.ExecuteAsync();
         }
+
+        if (refreshCli)
+        {
+            await McpSettings.RefreshCliStatusAsync();
+        }
     }
 }
+
+public sealed record SettingsCardNavigationEventArgs(string AnchorId);

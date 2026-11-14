@@ -14,6 +14,7 @@ public static class SearchPageAwareness
     public const string BibliographicValue = "bibliographic";
     public const string FullTextValue = "full_text";
     public const string DocumentFullTextValue = "document_full_text";
+    public const string SettingsValue = "settings";
 
     /// <summary>Every workspace tab kind the shell can activate, in stable enum order; the
     /// 搜索框页面感知 settings panel lists one row per entry.</summary>
@@ -24,20 +25,34 @@ public static class SearchPageAwareness
     [
         new(SearchMode.Bibliographic, "元数据检索", "在书库题录元数据范围内检索"),
         new(SearchMode.FullText, "全库全文检索", "在整个书库的 OCR 全文索引中检索"),
-        new(SearchMode.DocumentFullText, "全书全文检索", "仅在当前文档的 OCR 全文中检索")
+        new(SearchMode.DocumentFullText, "全书全文检索", "仅在当前文档的 OCR 全文中检索"),
+        new(SearchMode.Settings, "设置", "在设置页面中查找设置项")
     ];
 
     public static IReadOnlyList<SearchModeOption> UnscopedModeOptions { get; } = ModeOptions.Take(2).ToArray();
 
+    /// <summary>Modes selectable for one page-awareness row. Document scope belongs to document
+    /// workspaces and settings scope belongs to the settings workspace.</summary>
+    public static IReadOnlyList<SearchModeOption> ModeOptionsFor(WorkspaceTabKind kind)
+    {
+        return kind switch
+        {
+            WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor => ModeOptions.Take(3).ToArray(),
+            WorkspaceTabKind.Settings => [ModeOptions[0], ModeOptions[1], ModeOptions[3]],
+            _ => UnscopedModeOptions
+        };
+    }
+
     /// <summary>Mode applied when the persisted map has no entry for the kind: the library grid
-    /// searches metadata, document-centric workspaces search the open book, and every other
-    /// surface searches the whole-library full-text index.</summary>
+    /// searches metadata, document-centric workspaces search the open book, the settings workspace
+    /// searches settings, and every other surface searches the whole-library full-text index.</summary>
     public static SearchMode DefaultMode(WorkspaceTabKind kind)
     {
         return kind switch
         {
             WorkspaceTabKind.Library => SearchMode.Bibliographic,
             WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor => SearchMode.DocumentFullText,
+            WorkspaceTabKind.Settings => SearchMode.Settings,
             _ => SearchMode.FullText
         };
     }
@@ -49,10 +64,18 @@ public static class SearchPageAwareness
             modes.TryGetValue(kind.ToString(), out string? persisted) &&
             TryParseMode(persisted, out SearchMode mode))
         {
-            return mode == SearchMode.DocumentFullText &&
-                   kind is not (WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor)
-                ? DefaultMode(kind)
-                : mode;
+            if (mode == SearchMode.DocumentFullText &&
+                kind is not (WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor))
+            {
+                return DefaultMode(kind);
+            }
+
+            if (mode == SearchMode.Settings && kind != WorkspaceTabKind.Settings)
+            {
+                return DefaultMode(kind);
+            }
+
+            return mode;
         }
 
         return DefaultMode(kind);
@@ -71,6 +94,7 @@ public static class SearchPageAwareness
             SearchMode.Bibliographic => BibliographicValue,
             SearchMode.FullText => FullTextValue,
             SearchMode.DocumentFullText => DocumentFullTextValue,
+            SearchMode.Settings => SettingsValue,
             _ => FullTextValue
         };
     }
@@ -87,6 +111,9 @@ public static class SearchPageAwareness
                 return true;
             case DocumentFullTextValue:
                 mode = SearchMode.DocumentFullText;
+                return true;
+            case SettingsValue:
+                mode = SearchMode.Settings;
                 return true;
             default:
                 mode = SearchMode.FullText;

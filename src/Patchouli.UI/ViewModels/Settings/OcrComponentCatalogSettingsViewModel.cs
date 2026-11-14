@@ -73,6 +73,14 @@ public sealed partial class OcrComponentCatalogSettingsViewModel : SettingsSecti
 
     public ExtensionKind Kind { get; }
     public string Title { get; }
+
+    public string CardAnchorId => Kind switch
+    {
+        ExtensionKind.LayoutRecognition => "ocr_components_layout",
+        ExtensionKind.PdfTextLayer => "ocr_components_textlayer",
+        _ => "ocr_components_engines"
+    };
+
     public string Description { get; }
     public ObservableCollection<OcrComponentRowViewModel> Components { get; } = [];
     public AsyncCommand RefreshCommand { get; }

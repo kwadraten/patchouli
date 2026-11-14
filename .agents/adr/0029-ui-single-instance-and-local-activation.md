@@ -42,6 +42,17 @@ This decision governs UI application process single-instance election only. It d
 
 On Unix platforms (Linux and macOS), `PipeOptions.CurrentUserOnly` relies on filesystem permissions and standard Unix domain sockets / FIFOs, which can be affected by process umask configurations. The control pipe accepts only activation and validated Patchouli resource navigation, executes no arbitrary commands and transfers no credentials or host-local file paths; this trade-off is accepted for now.
 
+### Foreground activation preference
+
+`UiPreferences.ActivateWindowOnProtocolOpen` (default `true`, persisted in the `Ui` section) narrows
+only the window-activation side effect of an external `open_uri`/startup URI. When `false`,
+`MainWindow.OpenProtocolUri` skips `App.ActivateWindow`; navigation and `open_uri` ACK semantics are
+unchanged. A minimized or tray-resident window receives non-activating visible feedback: Windows
+flashes the taskbar button, and every platform flashes the window title plus the tray tooltip for a
+short interval. `activate_ui` still activates the primary window. The CAYW
+`DesktopCitationBridge` minimize/restore path is a separate interaction and is not governed by this
+preference. ADR `0033`'s UI-thread rule still applies to the feedback.
+
 ## Headless lifecycle regression (2026-10-14)
 
 GitHub run [38571691325](https://github.com/kwadraten/patchouli/actions/runs/38571691325)

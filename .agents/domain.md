@@ -53,14 +53,18 @@ If output contradicts an existing ADR under `.agents/adr/`, surface it explicitl
 
 ## Virtual link settings
 
-Settings → AI集成 → 文献虚拟链接解析 contains independent system-registration and toolbar-parsing
-switches. Windows registration is current-user `Software/Classes/patchouli`, quotes both the UI
+Settings → 行为 → 链接与系统 contains independent system-registration, foreground-window and
+CLI-registration switches; Settings → 搜索 → 链接解析 contains the toolbar-parsing switch.
+Windows registration is current-user `Software/Classes/patchouli`, quotes both the UI
 executable and `%1`, and carries the `net.patchouli.app` ownership marker shared with Inno Setup.
 Manual cancellation records a device-local opt-out so upgrades do not re-register it. Uninstall
 removes only an association still owned by that installation. Other platforms currently display
 registration as unavailable. Toolbar parsing defaults on (`Ui.ParseVirtualLinksInSearchBar`) and
-is independent of in-app links and external protocol activation. `open_uri` forwarding follows
-[ADR 0029](adr/0029-ui-single-instance-and-local-activation.md).
+is independent of in-app links and external protocol activation. Foreground activation defaults on
+(`Ui.ActivateWindowOnProtocolOpen`); when off, external protocol navigation does not activate the
+window, and a minimized or tray-resident window flashes the taskbar (Windows) plus the window title
+and tray tooltip. CAYW's `DesktopCitationBridge` foreground behavior is not governed by this option.
+`open_uri` forwarding follows [ADR 0029](adr/0029-ui-single-instance-and-local-activation.md).
 
 ## Runtime host layer
 
@@ -74,6 +78,14 @@ is independent of in-app links and external protocol activation. `open_uri` forw
   hosts build it; nothing else should hand-wire domain services.
 - **File watching** — `Watching/FileSearchRootWatcherService` owns the `FileSystemWatcher` fleet
   for configured FileSearchRoots plus the debounced rescan/import pipeline.
+- **Outbound HTTP policy** — `Network/IHttpTransportPolicy` applies the device-local `Network`
+  proxy settings (`System`, `Manual` or `None`) to host-owned external HTTP handlers, including
+  managed downloads, CSL, MinerU, Agent downloads and LLM/subscription transports. Manual mode
+  accepts HTTP(S) and SOCKS5 URLs plus host bypass rules; the password stays in `ICredentialStore`
+  under `network-proxy`, and diagnostics never include the address, username or secret. Loopback
+  runtime/CLI transports do not use this policy. `NetworkConnectionTestService` classifies proxy
+  tunnel, TLS, DNS, connection and authentication failures without relaxing certificate validation.
+  Real-macOS acceptance remains the checklist in `manual-verification/macos-proxy.md`.
 - **MCP lifecycle** — `Mcp/McpServerHost` owns MCP settings validation, listener start/stop/restart,
   and shutdown, surfacing status and failures through events (`McpHttpServer` and
   `McpProtocolHandler` live here).
@@ -85,6 +97,15 @@ is independent of in-app links and external protocol activation. `open_uri` forw
   `Caching/LibraryRevisionMonitor` merges local change scopes and refreshes affected items.
   Unknown or skipped revisions and external writes force a full refresh; failures retry without
   treating an unrefreshed cache as current.
+- **Rebuildable disk-cache maintenance** — `Composition/CacheMaintenanceService` runs at startup
+  and every five minutes. `PageRenderService` enforces the device-local `RenderCache` byte budget
+  (default 512 MiB) by last-access LRU on writes and maintenance passes, removes stale source-hash
+  siblings and applies the configured PNG quality (default 100) to new renders. Lowering the budget
+  schedules immediate convergence; DocumentInstance removal and Item purge clear that document's
+  renders. Fully successful MinerU runs remove their run-scoped work directory, while stale files
+  older than 24 hours are pruned from all four OCR work roots. Inventory, usage and confirmed
+   clearing feed Settings → 数据 → 本机存储. Every cache/work traversal and delete skips reparse
+  points rather than following or unlinking them, so maintenance cannot cross into user directories.
 - **Plugin mounts** — `Patchouli.Host/Plugins` owns `patchouli-plugin.toml` manifest validation
   (including `[[ui.views]]` and root `[[files]]` declarations), the device-local registry
   `allowed_verbs` grant, community store install/rollback, the stdio MCP gateway, and the
@@ -285,7 +306,11 @@ diagnostics separately measure report/snapshot inspection, repository write-leas
 write-lock/transaction acquisition, FTS readiness (including whether recovery rebuilt it), FTS and
 document-history deletion, commit and UI projection. These records contain stages, durations and
 SQLite error codes, not paths, ids or document contents. Batch deletion remains one transaction and
-one LibraryRevision; original source files are never deleted by this operation.
+one LibraryRevision. Ordinary purge preserves original source files. The separate confirmed
+含本地文件 flow subsequently runs candidate-scoped FileAsset GC with `DeleteLocalFiles`: verified
+available, unshared locations are physically deleted (never hydrated/dehydrated), shared and
+snapshot-referenced candidates remain, and any physical deletion failure leaves the asset records
+for retry and is surfaced as a partial outcome rather than success.
 
 ## Document ownership and remaining implementation gaps
 

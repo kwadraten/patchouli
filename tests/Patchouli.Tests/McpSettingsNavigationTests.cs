@@ -26,6 +26,46 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class McpSettingsNavigationTests
 {
+    [Fact]
+    public async Task Service_and_permissions_tabs_share_a_draft_without_a_leave_prompt()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        SettingsViewModel settings = fixture.Main.Settings;
+        settings.McpSettings.ExposeLibraryTags = false;
+        int port = settings.McpSettings.Port;
+        settings.McpSettings.Port = port + 1;
+
+        await settings.SelectSectionAsync("permissions");
+        settings.ActiveTabbedGroup!.ActiveEntry.Id.Should().Be("permissions");
+        await settings.SelectSectionAsync("permissions");
+        await settings.SelectSectionAsync("mcp");
+
+        settings.ActiveTabbedGroup.ActiveEntry.Id.Should().Be("mcp");
+        fixture.Dialogs.Shown.Should().BeEmpty();
+        settings.McpSettings.ExposeLibraryTags.Should().BeFalse();
+        settings.McpSettings.Port.Should().Be(port + 1);
+        settings.McpSettings.IsDirty.Should().BeTrue();
+        (await fixture.ReadSettingsAsync()).ExposeLibraryTags.Should().BeTrue();
+        (await fixture.ReadSettingsAsync()).Port.Should().Be(port);
+    }
+
+    [Fact]
+    public async Task Canceling_settings_search_navigation_does_not_highlight_a_hidden_card()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(ConfirmDialogResult.Cancel);
+        SettingsViewModel settings = fixture.Main.Settings;
+        settings.McpSettings.ExposeLibraryTags = false;
+        string? requestedAnchor = null;
+        settings.CardNavigationRequested += (_, args) => requestedAnchor = args.AnchorId;
+
+        await settings.NavigateToSearchEntryAsync(SettingsSearchIndex.Entries
+            .Single(entry => entry.CardAnchorId == "appearance_theme"));
+
+        settings.ActiveTabbedGroup!.ActiveEntry.Id.Should().Be("mcp");
+        settings.McpSettings.IsDirty.Should().BeTrue();
+        requestedAnchor.Should().BeNull();
+    }
+
     [Theory]
     [InlineData(ConfirmDialogResult.Cancel)]
     [InlineData(null)]

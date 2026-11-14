@@ -92,8 +92,8 @@ public sealed class MetadataLookupSettingsTests
         {
             MainWindowViewModel main = new(settingsPath: path);
             MetadataLookupSettingsViewModel viewModel = main.Settings.MetadataLookupSettings;
-            main.Settings.ActiveCategory =
-                main.Settings.Categories.Single(category => ReferenceEquals(category.Content, viewModel));
+            await main.Settings.SelectSectionAsync("metadata");
+            main.Settings.ActiveTabbedGroup!.ActiveEntry.Id.Should().Be("metadata");
             MetadataSourceSettingsRowViewModel first = viewModel.Sources[0];
             first.Enabled = false;
             viewModel.Sources[1].MoveUpCommand.Execute(null);
@@ -124,10 +124,11 @@ public sealed class MetadataLookupSettingsTests
             await using MainWindowViewModel main = new(settingsPath: path);
             MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
             NavCategoryViewModel metadataCategory = main.Settings.Categories.Single(category =>
-                ReferenceEquals(category.Content, metadata));
+                category.Title == "文献加工");
             NavCategoryViewModel syncCategory = main.Settings.Categories.Single(category =>
                 ReferenceEquals(category.Content, main.Settings.SyncSettings));
-            main.Settings.ActiveCategory = metadataCategory;
+            await main.Settings.SelectSectionAsync("metadata");
+            main.Settings.ActiveCategory.Should().BeSameAs(metadataCategory);
             bool original = metadata.Sources[0].Enabled;
 
             metadata.Sources[0].Enabled = !original;
@@ -157,7 +158,7 @@ public sealed class MetadataLookupSettingsTests
         try
         {
             MainWindowViewModel main = new(settingsPath: path);
-            await main.OpenSettingsAsync("mineru");
+            await main.OpenSettingsAsync("ocr_components");
             MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
             metadata.Sources[0].Enabled = !metadata.Sources[0].Enabled;
 

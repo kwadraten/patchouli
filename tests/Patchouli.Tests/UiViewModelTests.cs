@@ -439,8 +439,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与阅读", "书库与本机文件", "文献加工", "AI集成", "元数据来源", "搜索", "引用与题录",
-            "同步与快照", "更新设置");
+            "显示", "行为", "书库", "数据", "文献加工", "AI 集成", "搜索", "引用", "同步");
         vm.Settings.Categories.Select(category => category.Content)
             .Concat(vm.Settings.SectionEntries.Select(entry => entry.Content))
             .Where(content => content is AboutViewModel)
@@ -450,19 +449,16 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             .Should().BeSameAs(vm.Settings.CslStyleManager);
         vm.OpenCslStyleManagerCommand.Should().NotBeNull();
         vm.ShowAboutCommand.Should().NotBeNull();
-        vm.Settings.SectionEntries.Select(entry => entry.Content)
-            .Should()
-            .AllBeAssignableTo<ISettingsSection>();
-        ((ISettingsSection)vm.Settings.SectionEntries.Single(entry => entry.Id == "extensions").Content)
-            .SupportsEditing.Should().BeFalse("Extensions applies its own configuration and activation actions");
-
-        // 「本地文件」owns its commands instead of the shared settings draft pipeline.
         vm.Settings.SectionEntries
-            .Where(entry =>
-                entry.Id is not ("local_files" or "csl_installed" or "csl_online" or "extensions"))
-            .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
+            .Select(entry => entry.Content is ISettingsSection or TranslationDefaultsViewModel
+                or OcrComponentsSettingsViewModel or McpPermissionsSettingsViewModel
+                or SystemIntegrationSettingsViewModel or SearchLinkSettingsViewModel)
             .Should()
             .OnlyContain(value => value);
+        vm.Settings.SectionEntries.Single(entry => entry.Id == "local_files").Content
+            .Should().BeSameAs(vm.Settings.LocalFileManagement);
+        ((ISettingsSection)vm.Settings.SectionEntries.Single(entry => entry.Id == "local_files").Content)
+            .SupportsEditing.Should().BeFalse("本机存储 owns its commands instead of the settings draft pipeline");
     }
 
     [Fact]
@@ -470,10 +466,10 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
-        vm.Settings.Categories.Single(category => category.Title == "同步与快照").Content
+        vm.Settings.Categories.Single(category => category.Title == "同步").Content
             .Should().BeOfType<SyncSettingsViewModel>();
         SyncSettingsViewModel sync = (SyncSettingsViewModel)vm.Settings.Categories
-            .Single(category => category.Title == "同步与快照").Content!;
+            .Single(category => category.Title == "同步").Content!;
 
         sync.DeviceId.Should().NotBeNullOrWhiteSpace();
         sync.DeviceName.Should().NotBeNullOrWhiteSpace();
@@ -2507,7 +2503,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                              group.Entries.Any(entry =>
                                  ReferenceEquals(entry.Content, vm.Settings.SearchRewriteSettings)));
             category.Title.Should().Be("搜索");
-            category.IconName.Should().Be("Filter");
+            category.IconName.Should().Be("Search");
 
             await vm.OpenSearchRewriteSettingsCommand.ExecuteAsync();
 
@@ -2518,7 +2514,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await vm.Settings.SelectSectionAsync("search_awareness");
             vm.Settings.ActiveCategory.Should().BeSameAs(category);
             vm.Settings.ActiveTabbedGroup.ActiveEntry.Content.Should()
-                .BeSameAs(vm.Settings.SearchRewriteSettings.Awareness);
+                .BeSameAs(vm.Settings.SearchAwarenessSettings);
             await vm.OpenSearchRewriteSettingsCommand.ExecuteAsync();
             vm.Settings.ActiveTabbedGroup.ActiveEntry.Id.Should().Be("search_rewrite");
         }
@@ -2836,7 +2832,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            await vm.OpenSettingsAsync("mineru");
+            await vm.OpenSettingsAsync("ocr_components");
             // MinerU is a component now: its credential/model live on the engine-catalog gear
             // dialog, not on the OCR presets section.
             MinerUConfigurationDialogViewModel dialog = new(vm);
@@ -3164,9 +3160,12 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             client.AcceptedRequests.Should().HaveCount(3);
             client.AcceptedRequests.Should().OnlyContain(request => request.LocalPath != pdfPath);
+            // Page counts are recorded while the ephemeral split chunks still exist: a
+            // successful run deletes its ocr-work artifacts (issue #57), so the chunk
+            // files are gone by the time the coordinator returns.
+            client.AcceptedPdfPageCounts.Should().Equal(1, 1, 1);
             foreach (MinerUUploadRequest request in client.AcceptedRequests)
             {
-                (await new PdfiumDocumentEngine().GetPageCountAsync(request.LocalPath)).Should().Be(1);
                 request.FileSize.Should().BeLessThanOrEqualTo(MinerUUploadLimits.OfficialMaxBytesPerFile);
             }
         }
@@ -3436,8 +3435,8 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
-        await vm.OpenSettingsAsync("mineru");
-        await vm.OpenSettingsAsync("mineru");
+        await vm.OpenSettingsAsync("ocr_components");
+        await vm.OpenSettingsAsync("ocr_components");
         await vm.OpenAboutAsync();
         await vm.OpenAboutAsync();
 
@@ -3634,7 +3633,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 vm.ShowSelectedDocumentTab.Should().BeTrue();
                 vm.IsReaderTabActive.Should().BeTrue();
 
-                await vm.OpenSettingsAsync("mineru");
+                await vm.OpenSettingsAsync("ocr_components");
                 Dispatcher.UIThread.RunJobs();
                 vm.ShowSelectedDocumentTab.Should().BeTrue();
                 vm.ShowSettingsTab.Should().BeTrue();
@@ -3737,21 +3736,21 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         string path = Path.Combine(Path.GetTempPath(), $"ui-settings-lifecycle-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await using MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            await vm.OpenSettingsAsync("library");
-            bool originalRemember = vm.Settings.LibrarySettings.RememberLastDatabase;
-            NavCategoryViewModel libraryCategory = vm.Settings.ActiveCategory;
+            await vm.OpenSettingsAsync("startup");
+            bool originalRemember = vm.Settings.StartupSettings.RememberLastDatabase;
+            NavCategoryViewModel behaviorCategory = vm.Settings.ActiveCategory;
             NavCategoryViewModel syncCategory =
                 vm.Settings.Categories.Single(category => category.IconName == "Cloud");
-            vm.Settings.LibrarySettings.RememberLastDatabase = !originalRemember;
+            vm.Settings.StartupSettings.RememberLastDatabase = !originalRemember;
 
             // Switching sections is allowed now; the draft stays in memory.
             vm.Settings.ActiveCategory = syncCategory;
             vm.Settings.ActiveCategory.Should().BeSameAs(syncCategory);
             vm.Settings.HasDirtySections.Should().BeTrue();
-            vm.Settings.LibrarySettings.RememberLastDatabase.Should().Be(!originalRemember);
+            vm.Settings.StartupSettings.RememberLastDatabase.Should().Be(!originalRemember);
 
             // Closing the settings tab is still blocked while any section is dirty.
             await vm.CloseSettingsTabCommand.ExecuteAsync();
@@ -3760,12 +3759,12 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             // The header discard reverts every dirty section at once.
             await vm.Settings.DiscardCommand.ExecuteAsync();
             vm.Settings.HasDirtySections.Should().BeFalse();
-            vm.Settings.LibrarySettings.RememberLastDatabase.Should().Be(originalRemember);
+            vm.Settings.StartupSettings.RememberLastDatabase.Should().Be(originalRemember);
 
             await vm.CloseSettingsTabCommand.ExecuteAsync();
             vm.ShowSettingsTab.Should().BeFalse();
-            libraryCategory.Should()
-                .BeSameAs(vm.Settings.Categories.Single(category => category.IconName == "Database"));
+            behaviorCategory.Should()
+                .BeSameAs(vm.Settings.Categories.Single(category => category.IconName == "MousePointer2"));
         }
         finally
         {
@@ -4324,6 +4323,13 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
         public bool IsConfigured => true;
         public List<MinerUUploadRequest> AcceptedRequests { get; } = new();
 
+        /// <summary>
+        /// Page counts observed at upload-acceptance time. Successful MinerU runs delete
+        /// their ephemeral work artifacts (issue #57), so the recorded value is what the
+        /// test asserts on instead of reopening the upload path after the run.
+        /// </summary>
+        public List<int> AcceptedPdfPageCounts { get; } = new();
+
         public async Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(
             IReadOnlyList<MinerUUploadRequest> files,
             CancellationToken cancellationToken = default)
@@ -4337,6 +4343,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             }
 
             AcceptedRequests.Add(request);
+            AcceptedPdfPageCounts.Add(pageCount);
             string batchId = $"batch-{AcceptedRequests.Count}";
             return Result<MinerUUploadBatch>.Success(new MinerUUploadBatch(batchId,
             [

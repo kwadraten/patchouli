@@ -8,6 +8,7 @@
     <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/FormStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/CardStyles.axaml" />
+    <StyleInclude Source="avares://Patchouli.UI/Styles/SettingsComponents.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/SidebarStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/HistoryStyles.axaml" />
     <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.v2.xaml" />
@@ -20,6 +21,7 @@
         <ResourceInclude Source="avares://Patchouli.UI/Themes/RadixViolet.axaml" />
         <ResourceInclude Source="avares://Patchouli.UI/Styles/TabStyles.axaml" />
         <ResourceInclude Source="avares://Patchouli.UI/Styles/ToggleSwitchTheme.axaml" />
+        <ResourceInclude Source="avares://Patchouli.UI/Styles/SettingsComponentThemes.axaml" />
         <ResourceInclude Source="avares://Patchouli.UI/Styles/FluentPaletteResources.axaml" />
         <ResourceInclude Source="avares://Patchouli.UI/Styles/ScrollBarTheme.axaml" />
       </ResourceDictionary.MergedDictionaries>

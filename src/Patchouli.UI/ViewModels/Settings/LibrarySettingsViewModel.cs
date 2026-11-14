@@ -29,7 +29,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
     private long _editRevision;
     private readonly SettingsDraftStore _draftStore;
 
-    private sealed record LibraryDraft(bool RememberLastDatabase, string ExclusionPatternsText);
+    private sealed record LibraryDraft(string ExclusionPatternsText);
 
     public LibrarySettingsViewModel(MainWindowViewModel main)
     {
@@ -38,7 +38,6 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         _draftStore = new SettingsDraftStore(main.SettingsFilePath);
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
-        RememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
         _persistedExclusionPatternsText =
             string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
         ExclusionPatternsText = _persistedExclusionPatternsText;
@@ -53,7 +52,6 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         if (!IsDirty && revision == _editRevision && draft is not null)
         {
             _isSyncing = true;
-            RememberLastDatabase = draft.RememberLastDatabase;
             ExclusionPatternsText = draft.ExclusionPatternsText;
             _isSyncing = false;
             ValidationState = SettingsValidationState.Invalid;
@@ -100,18 +98,6 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
 
     [ExcludeFromDerivedGeneration] public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
 
-    [ObservableProperty] public partial bool RememberLastDatabase { get; set; }
-
-    partial void OnRememberLastDatabaseChanged(bool value)
-    {
-        if (_isConstructing || _isSyncing)
-        {
-            return;
-        }
-
-        MarkDirty();
-    }
-
     public void NotifyRuntimeDatabasePathChanged()
     {
         Raise(nameof(RuntimeDatabasePath));
@@ -150,7 +136,6 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         _isSyncing = true;
         try
         {
-            RememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
             ExclusionPatternsText = _persistedExclusionPatternsText;
         }
         finally
@@ -159,7 +144,6 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         }
 
         _isDirty = false;
-        Raise(nameof(RememberLastDatabase));
         Raise(nameof(ExclusionPatternsText));
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -171,7 +155,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
     public override async Task SaveAsync()
     {
         long revision = _editRevision;
-        LibraryDraft draft = new(RememberLastDatabase, ExclusionPatternsText);
+        LibraryDraft draft = new(ExclusionPatternsText);
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         string[] patterns = draft.ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
@@ -189,17 +173,10 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
             return;
         }
 
-        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = draft.RememberLastDatabase };
-        if (draft.RememberLastDatabase)
-        {
-            runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
-        }
-
         SettingsSaveResult saved = await _main.UpdateAppOptionsAsync(_main.AppOptions with
         {
-            Runtime = runtime,
             FileScanning = new FileScanningAppSettings(patterns)
-        });
+        }, "FileScanning");
         if (saved.IsSuccess)
         {
             await _draftStore.WriteAsync<LibraryDraft>("library", null);

@@ -24,6 +24,7 @@ public sealed partial class VirtualLinkSettingsViewModel : SettingsSectionViewMo
 
     [ObservableProperty] public partial bool RegisterProtocol { get; set; }
     [ObservableProperty] public partial bool ParseLinksInSearchBar { get; set; }
+    [ObservableProperty] public partial bool ActivateWindowOnProtocolOpen { get; set; } = true;
     [ObservableProperty] public partial bool RegistrationSupported { get; private set; }
     [ObservableProperty] public partial bool IsRegistering { get; private set; }
     [ObservableProperty] public partial string RegistrationStatus { get; private set; } = "";
@@ -67,6 +68,17 @@ public sealed partial class VirtualLinkSettingsViewModel : SettingsSectionViewMo
         }
     }
 
+    partial void OnActivateWindowOnProtocolOpenChanged(bool value)
+    {
+        if (!_isSyncing)
+        {
+            _main.UpdateAppOptionsDeferred(current => current with
+            {
+                Ui = current.Ui with { ActivateWindowOnProtocolOpen = value }
+            }, "Ui");
+        }
+    }
+
     public override Task LoadAsync(CancellationToken cancellationToken = default)
     {
         if (!IsRegistering)
@@ -93,6 +105,7 @@ public sealed partial class VirtualLinkSettingsViewModel : SettingsSectionViewMo
         try
         {
             ParseLinksInSearchBar = _main.AppOptions.Ui.ParseVirtualLinksInSearchBar;
+            ActivateWindowOnProtocolOpen = _main.AppOptions.Ui.ActivateWindowOnProtocolOpen;
             ProtocolRegistrationState state = _registration.GetState();
             RegistrationSupported = state.IsSupported;
             RegisterProtocol = state.IsRegistered;

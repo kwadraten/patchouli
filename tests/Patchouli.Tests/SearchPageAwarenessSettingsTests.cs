@@ -21,22 +21,25 @@ public sealed class SearchPageAwarenessSettingsTests : IDisposable
         {
             row.ModeOptions.Any(option => option.Mode == SearchMode.DocumentFullText).Should()
                 .Be(row.Kind is WorkspaceTabKind.PdfWorkspace or WorkspaceTabKind.ItemEditor);
+            row.ModeOptions.Any(option => option.Mode == SearchMode.Settings).Should()
+                .Be(row.Kind == WorkspaceTabKind.Settings);
         }
 
         UiPreferences preferences = UiPreferences.Default() with
         {
             SearchPageModes = new Dictionary<string, string> { ["Settings"] = "document_full_text" }
         };
-        SearchPageAwareness.GetMode(preferences, WorkspaceTabKind.Settings).Should().Be(SearchMode.FullText);
+        SearchPageAwareness.GetMode(preferences, WorkspaceTabKind.Settings).Should().Be(SearchMode.Settings);
     }
 
     [Fact]
     public void Mode_options_are_ordered_and_carry_the_documented_labels()
     {
         SearchPageAwareness.ModeOptions.Select(option => option.Mode).Should()
-            .Equal(SearchMode.Bibliographic, SearchMode.FullText, SearchMode.DocumentFullText);
+            .Equal(SearchMode.Bibliographic, SearchMode.FullText, SearchMode.DocumentFullText,
+                SearchMode.Settings);
         SearchPageAwareness.ModeOptions.Select(option => option.Label).Should()
-            .Equal("元数据检索", "全库全文检索", "全书全文检索");
+            .Equal("元数据检索", "全库全文检索", "全书全文检索", "设置");
     }
 
     [Fact]
@@ -51,10 +54,12 @@ public sealed class SearchPageAwarenessSettingsTests : IDisposable
             .Be(SearchMode.DocumentFullText);
         SearchPageAwareness.GetMode(preferences, WorkspaceTabKind.ItemEditor).Should()
             .Be(SearchMode.DocumentFullText);
+        SearchPageAwareness.GetMode(preferences, WorkspaceTabKind.Settings).Should()
+            .Be(SearchMode.Settings, "the settings workspace searches settings");
         foreach (WorkspaceTabKind kind in Enum.GetValues<WorkspaceTabKind>())
         {
             if (kind is WorkspaceTabKind.Library or WorkspaceTabKind.PdfWorkspace
-                or WorkspaceTabKind.ItemEditor)
+                or WorkspaceTabKind.ItemEditor or WorkspaceTabKind.Settings)
             {
                 continue;
             }
@@ -191,6 +196,33 @@ public sealed class SearchPageAwarenessSettingsTests : IDisposable
         reloaded.Ui.ReadingFontSize.Should().Be(20);
         (reloaded.Ui.SearchPageModes ?? new Dictionary<string, string>()).Should()
             .ContainKey("Library").WhoseValue.Should().Be("full_text");
+    }
+
+    [Fact]
+    public async Task Expand_full_text_results_toggle_persists_and_roundtrips()
+    {
+        MainWindowViewModel vm = new(settingsPath: _settings.Path);
+        SearchPageAwarenessSettingsViewModel awareness = vm.Settings.SearchRewriteSettings.Awareness;
+        UiPreferences.Default().ExpandFullTextSearchResults.Should().BeTrue();
+        awareness.ExpandFullTextSearchResults.Should().BeTrue();
+        (await vm.SaveReadingFontImmediatelyAsync("Toggle Test Font", 18)).Should().BeTrue();
+
+        awareness.ExpandFullTextSearchResults = false;
+        vm.AppOptions.Ui.ExpandFullTextSearchResults.Should().BeFalse();
+        await vm.SettingsStore.FlushAsync();
+
+        PatchouliAppSettings reloaded = PatchouliAppSettings.Load(_settings.Path);
+        reloaded.Ui.ExpandFullTextSearchResults.Should().BeFalse();
+        reloaded.Ui.ReadingFontFamily.Should().Be("Toggle Test Font");
+
+        MainWindowViewModel next = new(settingsPath: _settings.Path);
+        next.Settings.SearchRewriteSettings.Awareness.ExpandFullTextSearchResults.Should().BeFalse();
+        next.AppOptions.Ui.ExpandFullTextSearchResults.Should().BeFalse();
+
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+        xaml.Should().Contain("AutomationProperties.Name=\"全库全文检索\"")
+            .And.Contain("Content=\"默认展开命中结果\"");
     }
 
     public void Dispose()

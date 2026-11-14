@@ -343,8 +343,8 @@ public sealed class WorkspaceTabContentHostTests
 
                 NavCategoryViewModel appearance = settings.ActiveCategory;
                 NavCategoryViewModel libraryCategory = settings.Categories
-                    .Single(category => category.Title == "书库与本机文件");
-                NavCategoryViewModel ai = settings.Categories.Single(category => category.Title == "AI集成");
+                    .Single(category => category.Title == "文献加工");
+                NavCategoryViewModel ai = settings.Categories.Single(category => category.Title == "AI 集成");
                 RetainedContentHost categoryHost = page.GetVisualDescendants()
                     .OfType<RetainedContentHost>()
                     .Single(host => ReferenceEquals(host.ItemsSource, settings.Categories));

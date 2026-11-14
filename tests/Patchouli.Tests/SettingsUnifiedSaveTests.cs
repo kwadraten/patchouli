@@ -23,13 +23,13 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
         try
         {
             MainWindowViewModel vm = await OpenMainAsync(path);
-            await vm.Settings.LibrarySettings.LoadAsync();
+            await vm.Settings.StartupSettings.LoadAsync();
             await vm.Settings.McpSettings.LoadAsync();
 
-            vm.Settings.LibrarySettings.RememberLastDatabase =
-                !vm.Settings.LibrarySettings.RememberLastDatabase;
+            vm.Settings.StartupSettings.RememberLastDatabase =
+                !vm.Settings.StartupSettings.RememberLastDatabase;
             vm.Settings.McpSettings.Port = 4599;
-            vm.Settings.LibrarySettings.IsDirty.Should().BeTrue();
+            vm.Settings.StartupSettings.IsDirty.Should().BeTrue();
             vm.Settings.McpSettings.IsDirty.Should().BeTrue();
             vm.Settings.HasDirtySections.Should().BeTrue();
             vm.Settings.CanSaveAll.Should().BeTrue();
@@ -37,7 +37,7 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
             await vm.Settings.SaveCommand.ExecuteAsync();
 
             vm.Settings.HasDirtySections.Should().BeFalse();
-            vm.Settings.LibrarySettings.IsDirty.Should().BeFalse();
+            vm.Settings.StartupSettings.IsDirty.Should().BeFalse();
             vm.Settings.McpSettings.IsDirty.Should().BeFalse();
             vm.Settings.McpSettings.SaveState.Should().Be(SettingsSaveState.Saved);
             vm.Settings.GlobalStatus.Should().Contain("已保存");
@@ -58,12 +58,12 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
         try
         {
             MainWindowViewModel vm = await OpenMainAsync(path);
-            await vm.Settings.LibrarySettings.LoadAsync();
+            await vm.Settings.StartupSettings.LoadAsync();
             await vm.Settings.McpSettings.LoadAsync();
-            bool originalRemember = vm.Settings.LibrarySettings.RememberLastDatabase;
+            bool originalRemember = vm.Settings.StartupSettings.RememberLastDatabase;
             int originalPort = vm.Settings.McpSettings.Port;
 
-            vm.Settings.LibrarySettings.RememberLastDatabase = !originalRemember;
+            vm.Settings.StartupSettings.RememberLastDatabase = !originalRemember;
             vm.Settings.McpSettings.Port = originalPort + 7;
             vm.Settings.HasDirtySections.Should().BeTrue();
             vm.Settings.CanDiscardAll.Should().BeTrue();
@@ -71,7 +71,7 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
             await vm.Settings.DiscardCommand.ExecuteAsync();
 
             vm.Settings.HasDirtySections.Should().BeFalse();
-            vm.Settings.LibrarySettings.RememberLastDatabase.Should().Be(originalRemember);
+            vm.Settings.StartupSettings.RememberLastDatabase.Should().Be(originalRemember);
             vm.Settings.McpSettings.Port.Should().Be(originalPort);
         }
         finally
@@ -87,21 +87,21 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
         try
         {
             MainWindowViewModel vm = await OpenMainAsync(path);
-            await vm.Settings.LibrarySettings.LoadAsync();
-            NavCategoryViewModel libraryCategory = vm.Settings.ActiveCategory;
+            await vm.Settings.StartupSettings.LoadAsync();
+            NavCategoryViewModel behaviorCategory = vm.Settings.ActiveCategory;
             NavCategoryViewModel syncCategory =
                 vm.Settings.Categories.Single(category => category.IconName == "Cloud");
 
-            vm.Settings.LibrarySettings.RememberLastDatabase =
-                !vm.Settings.LibrarySettings.RememberLastDatabase;
+            vm.Settings.StartupSettings.RememberLastDatabase =
+                !vm.Settings.StartupSettings.RememberLastDatabase;
             vm.Settings.ActiveCategory = syncCategory;
 
             vm.Settings.ActiveCategory.Should().BeSameAs(syncCategory);
             vm.Settings.HasDirtySections.Should().BeTrue();
 
             // Switching back shows the in-memory draft, still dirty.
-            vm.Settings.ActiveCategory = libraryCategory;
-            vm.Settings.LibrarySettings.IsDirty.Should().BeTrue();
+            vm.Settings.ActiveCategory = behaviorCategory;
+            vm.Settings.StartupSettings.IsDirty.Should().BeTrue();
         }
         finally
         {

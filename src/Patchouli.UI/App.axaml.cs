@@ -3,6 +3,8 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using System;
+using System.Linq;
 using Patchouli.Core.Diagnostics;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Services;
@@ -103,6 +105,34 @@ public sealed partial class App : Application
         }
 
         window.Activate();
+    }
+
+    private static DispatcherTimer? _trayAttentionTimer;
+
+    internal static void ShowTrayAttention(string message)
+    {
+        if (Current is not App app)
+        {
+            return;
+        }
+
+        TrayIcons? icons = TrayIcon.GetIcons(app);
+        TrayIcon? icon = icons?.FirstOrDefault();
+        if (icon is null)
+        {
+            return;
+        }
+
+        _trayAttentionTimer?.Stop();
+        icon.ToolTipText = message;
+        _trayAttentionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _trayAttentionTimer.Tick += (_, _) =>
+        {
+            _trayAttentionTimer?.Stop();
+            _trayAttentionTimer = null;
+            icon.ToolTipText = "Patchouli.NET";
+        };
+        _trayAttentionTimer.Start();
     }
 
     private void OnTrayIconClicked(object? sender, EventArgs e)

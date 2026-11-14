@@ -7,7 +7,8 @@ public enum SearchMode
 {
     Bibliographic,
     FullText,
-    DocumentFullText
+    DocumentFullText,
+    Settings
 }
 
 public sealed record SearchModeOption
