@@ -146,5 +146,5 @@ SQLite 会把这个 `IN` 子查询选为驱动循环：对文档内每一行逐�
 ## 验证
 
 - 测试侧有现成模式：`BoxTreeReadSurfaceTests`、`DocumentTreeValidationTests`、`LibraryItemQueryServiceTests`、`SearchUnitFtsBoxTreeTests` 用大数据量夹具断言扫描范围与计划行为；
-- 性能回归跑 `scripts/run-tests.ps1 -Suite Performance`（不入常规门禁）；
+- 性能回归跑 `dotnet fsi scripts/run-tests.fsx -- --suite Performance`（不入常规门禁）；
 - 对可疑计划直接在测试库里 `EXPLAIN QUERY PLAN` 对照。

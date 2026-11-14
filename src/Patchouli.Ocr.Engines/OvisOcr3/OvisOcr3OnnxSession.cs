@@ -104,7 +104,7 @@ public sealed class OvisOcr3OnnxSession : IDisposable
             if (!File.Exists(path) || (expected != 0 && new FileInfo(path).Length != expected))
             {
                 return Result.Failure(AppErrorCodes.NotFound,
-                    $"The OvisOCR3 model file '{name}' is missing or incomplete in '{directory}'. Run scripts/prepare-ovisocr3-model.ps1 with this model directory.");
+                    $"The OvisOCR3 model file '{name}' is missing or incomplete in '{directory}'. Run dotnet fsi scripts/prepare-ovisocr3-model.fsx -- --model-directory with this model directory.");
             }
         }
 

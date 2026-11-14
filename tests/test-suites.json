@@ -1,6 +1,6 @@
 {
   "schema": "patchouli/test-suites/v1",
-  "purpose": "Recorded suite buckets for scripts/run-tests.ps1, scoped to the explicitly selected project. Resource batches run sequentially. Counts are not hardcoded; provide ExpectedCasesFile to verify the complete expected case multiset. Run the separate F# test project explicitly as well.",
+  "purpose": "Recorded suite buckets for scripts/run-tests.fsx, scoped to the explicitly selected project. Resource batches run sequentially. Counts are not hardcoded; provide --expected-cases-file to verify the complete expected case multiset. Run the separate F# test project explicitly as well.",
   "trait": {
     "name": "Category",
     "applied_via": "[Trait(\"Category\", \"<value>\")] on a test method or class",
@@ -87,7 +87,7 @@
   },
   "preconditions": {
     "all_suites": [
-      "The target project must be built (or -NoBuild with a verified existing binary) before any batch runs; every batch shares the same build output.",
+       "The target project must be built (or --no-build with a verified existing binary) before any batch runs; every batch shares the same build output.",
       "Test outputs (TRX, summaries, dumps) stay under the repository .tmp directory.",
       "Batches for one suite run sequentially in the declared order; the script must not start two batches of the same suite concurrently on the same machine.",
       "A batch whose filter matches zero discovered cases fails the run (missing TRX or empty results)."

@@ -55,7 +55,7 @@
 
 ### 编译或运行项目
 
-```pwsh
+```text
 dotnet restore Patchouli.sln
 dotnet build Patchouli.sln --no-restore
 dotnet run --project src/Patchouli.UI/Patchouli.UI.csproj
@@ -67,7 +67,7 @@ CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一�
 
 可构建：
 
-```pwsh
+```text
 cargo build --release --locked --manifest-path sidecar/biblatex-helper/Cargo.toml
 ```
 
@@ -77,36 +77,46 @@ Windows、macOS 和 Linux 打包脚本会构建并把该可执行文件复制到
 
 ### 运行单元测试
 
-```pwsh
-dotnet build tests/Patchouli.Tests/Patchouli.Tests.csproj
-$helperName = if ($IsWindows) { 'biblatex-helper.exe' } else { 'biblatex-helper' }
-Copy-Item "sidecar/biblatex-helper/target/release/$helperName" "tests/Patchouli.Tests/bin/Debug/net10.0/$helperName"
-./scripts/run-tests.ps1 -Suite Full -NoBuild -SkipRestore
-./scripts/run-tests.ps1 -Project tests/Patchouli.Extensions.Tests/Patchouli.Extensions.Tests.fsproj -Suite All
+```text
+dotnet fsi scripts/run-tests.fsx -- --suite Full --build-rust-helper
+dotnet fsi scripts/run-tests.fsx -- --project tests/Patchouli.Extensions.Tests/Patchouli.Extensions.Tests.fsproj --suite All
+dotnet fsi --warnaserror+ tests/ScriptAutomationTests.fsx
 ```
 
-先按上述步骤构建应用和真实 Rust helper，并将 helper 暂存到测试输出目录；相关回归不能用缺失 sidecar 的跳过结果代替。`Full` 顺序执行普通、UI 和编译扩展测试，F# SDK 项目单独运行；高计数性能/耐久探测不属于普通正确性门禁。
+`--build-rust-helper` 会构建真实 Rust helper 并暂存到测试输出目录，需要 Cargo；相关回归不能用缺失 sidecar 的跳过结果代替。`Full` 顺序执行普通、UI 和编译扩展测试，F# SDK 项目单独运行；高计数性能/耐久探测不属于普通正确性门禁。已有当前构建可加 `--no-build --skip-restore`。
 
 ### 运行性能回归
 
-```pwsh
-./scripts/run-perf.ps1 -Profile smoke -Check -Ui
+```text
+dotnet fsi scripts/run-perf.fsx -- --profile smoke --check --ui
 ```
 
-性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试可运行 `./scripts/run-perf.ps1 -Profile full -Check -FullBudgetCheck`，更多参数见 `tests/Patchouli.Performance` 的 `--help`。
+性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试可运行 `dotnet fsi scripts/run-perf.fsx -- --profile full --check --full-budget-check`，更多参数见 `tests/Patchouli.Performance` 的 `--help`。
 
 ### 更新 Agent 目录
 
-编译态 Agent 目录 `src/Patchouli.Core/Agents/AgentCatalog.g.cs` 由 `./scripts/update-agent-catalog.ps1` 根据 ACP registry 与脚本内的 TUI 适配表生成；新增或调整 agent 时修改脚本并重新运行，CI 可用 `-Check` 校验生成物是否为最新。
+编译态 Agent 目录 `src/Patchouli.Core/Agents/AgentCatalog.g.cs` 由 `dotnet fsi scripts/update-agent-catalog.fsx` 根据 ACP registry 与 `scripts/lib/AgentCatalog.fsx` 中的 TUI 适配表生成；新增或调整 agent 时修改适配表并重新运行，可用 `-- --check` 校验生成物是否为最新。
 
 ### 代码格式化和静态分析
 
-```pwsh
-./scripts/cleanup-code.ps1
-./scripts/inspect-code.ps1
+```text
+dotnet fsi scripts/cleanup-code.fsx
+dotnet fsi scripts/inspect-code.fsx
 ```
 
 清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `.tmp/inspectcode.sarif`。
+
+### 跨平台脚本与打包
+
+开发自动化在 Windows、Linux、macOS 上统一使用 .NET 10 SDK 的 `dotnet fsi`，不需要额外的 PowerShell、Bash、Python 或 F# SDK。每个入口支持 `-- --help`。
+
+```text
+dotnet fsi scripts/package-windows.fsx
+dotnet fsi scripts/package-linux.fsx -- --format deb
+dotnet fsi scripts/package-macos.fsx
+```
+
+各平台在本机打包，默认选择本机架构（Windows 安装包为 x64）。打包仍需 Cargo 和平台工具：Windows 的 Inno Setup 6，macOS 的 Xcode Command Line Tools，Linux 的 ImageMagick 及所选格式对应的 `ar`/`zstd`、RPM、AppImage、Flatpak 工具。详细依赖、输出和模型工具说明见 [脚本指南](.agents/development-scripts.md)。
 
 临时文件统一放在仓库根目录的 `.tmp/` 下：测试临时文件为 `.tmp/tests/`，记录式测试结果为 `.tmp/test-runs/`，性能报告为 `.tmp/perf/`，界面截图为 `.tmp/previews/`，安装包为 `.tmp/installer/`。请勿重新创建已弃用的 `artifacts/` 或 `scratch/` 临时目录。
 

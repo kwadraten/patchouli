@@ -143,9 +143,7 @@ public sealed class AlphaPackagingTests
         [
             TestPaths.FromRepositoryRoot("Directory.Build.props"),
             TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "BuildInfo.cs"),
-            TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"),
-            TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"),
-            TestPaths.FromRepositoryRoot("scripts", "package-linux.sh"),
+            TestPaths.FromRepositoryRoot("scripts", "lib", "Packaging.fsx"),
             TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.NET.iss")
         ];
 
@@ -162,7 +160,7 @@ public sealed class AlphaPackagingTests
         string changelog = File.ReadAllText(TestPaths.FromRepositoryRoot("Changelog.md"));
 
         readme.Should().Contain($"当前版本：**{BuildInfo.Version}**")
-            .And.Contain("./scripts/run-tests.ps1 -Suite Full")
+            .And.Contain("dotnet fsi scripts/run-tests.fsx -- --suite Full")
             .And.NotContain("“设置 → 更新设置”可控制启动时自动检查更新")
             .And.NotContain("下一版：[MCP / CLI 显式 OCR 任务入口]");
         changelog.Should().Contain($"## {BuildInfo.Version}")
@@ -173,10 +171,12 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void Macos_package_relocates_defaults_validates_plist_and_signs_bundle()
     {
-        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
-        script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
-            .Contain("plutil -lint").And.Contain("codesign --force --sign - \"$app_dir\"").And
-            .Contain("codesign --verify --deep --strict").And.NotContain("--deep --sign");
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.fsx"));
+        script.Should().Contain("File.Move(defaults, Path.Combine(resources, \"appsettings.json\"))")
+            .And.Contain("run \"plutil\" [\"-lint\"; plist]")
+            .And.Contain("run \"codesign\" [\"--force\"; \"--sign\"; \"-\"; appDir]")
+            .And.Contain("[\"--verify\"; \"--deep\"; \"--strict\"")
+            .And.Contain("scripts/verify-macos-dmg.fsx").And.NotContain("--deep --sign");
     }
 
     [Fact]
@@ -184,41 +184,18 @@ public sealed class AlphaPackagingTests
     {
         string[] scripts =
         [
-            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1")),
-            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh")),
-            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-linux.sh"))
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.fsx")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.fsx")),
+            File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-linux.fsx"))
         ];
-        List<string> commands = [];
-
+        string shared = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "lib", "Packaging.fsx"));
+        shared.Should().Contain("\"publish\"; resolve \"src/Patchouli.UI/Patchouli.UI.csproj\"")
+            .And.Contain("-m:1").And.Contain("-p:BuildInParallel=false")
+            .And.Contain("-p:UseSharedCompilation=false").And.NotContain("Patchouli.Cli.csproj");
         foreach (string script in scripts)
         {
-            string[] lines = script.Split('\n');
-            for (int i = 0; i < lines.Length; i++)
-            {
-                if (!lines[i].TrimStart().StartsWith("dotnet publish ", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                List<string> command = [lines[i]];
-                while (command[^1].TrimEnd().EndsWith('`') || command[^1].TrimEnd().EndsWith('\\'))
-                {
-                    command.Add(lines[++i]);
-                }
-
-                commands.Add(string.Join(" ", command));
-            }
-        }
-
-        commands.Should().HaveCount(3);
-        commands.Count(command => command.Contains("Patchouli.UI.csproj", StringComparison.Ordinal))
-            .Should().Be(3);
-        commands.Count(command => command.Contains("Patchouli.Cli.csproj", StringComparison.Ordinal))
-            .Should().Be(0);
-        foreach (string command in commands)
-        {
-            command.Should().Contain("-m:1").And.Contain("-p:BuildInParallel=false")
-                .And.Contain("-p:UseSharedCompilation=false");
+            script.Should().Contain("#load \"lib/Packaging.fsx\"").And
+                .Contain("publish publishDir runtime configuration version");
         }
     }
 
@@ -228,17 +205,15 @@ public sealed class AlphaPackagingTests
         string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "package-smoke.yml"));
 
         workflow.Should().Contain("pull_request:").And.Contain("contents: read")
-            .And.Contain("scripts/package-windows.ps1").And.Contain("-Smoke")
+            .And.Contain("scripts/package-windows.fsx").And.Contain("--smoke")
             .And.Contain("runs-on: macos-15")
-            .And.Contain("VERSION=\"$PACKAGE_VERSION\" bash scripts/package-macos.sh osx-arm64")
-            .And.Contain(
-                "bash scripts/verify-macos-dmg.sh \".tmp/installer/Patchouli.NET-${PACKAGE_VERSION}-osx-arm64.dmg\"")
+            .And.Contain("scripts/package-macos.fsx -- --runtime osx-arm64")
+            .And.Contain("scripts/package-linux.fsx -- --format deb")
             .And.Contain(".github/workflows/release.yml")
-            .And.Contain("scripts/verify-macos-dmg.sh")
+            .And.Contain("scripts/**/*.fsx")
             .And.Contain("scripts/Patchouli.ExtensionSchemas/**")
             .And.Contain("sidecar/Patchouli.Extensions.Compiler/**")
             .And.Contain("src/Patchouli.Extensions*/**")
-            .And.Contain("codesign --verify --deep --strict")
             .And.Contain("actions/checkout@v7").And.Contain("actions/setup-dotnet@v6")
             .And.Contain("actions/upload-artifact@v7").And.NotContain("gh release")
             .And.NotContain("tags:").And.NotContain("contents: write");
@@ -249,8 +224,8 @@ public sealed class AlphaPackagingTests
     {
         string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "release.yml"));
 
-        workflow.Should().Contain("tags:").And.Contain("scripts/package-windows.ps1").And
-            .Contain("scripts/package-macos.sh osx-arm64").And.Contain("gh release create").And
+        workflow.Should().Contain("tags:").And.Contain("scripts/package-windows.fsx").And
+            .Contain("scripts/package-macos.fsx -- --runtime osx-arm64").And.Contain("scripts/publish-release.fsx").And
             .Contain("contents: write").And.Contain("GH_REPO: ${{ github.repository }}").And
             .Contain("actions/checkout@v7").And.Contain("actions/setup-dotnet@v6").And
             .Contain("actions/upload-artifact@v7").And.Contain("actions/download-artifact@v8");
@@ -277,37 +252,38 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void Windows_package_cleans_publish_dir_and_install_migrations()
     {
-        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.fsx"));
+        string shared = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "lib", "Packaging.fsx"));
         string iss = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.NET.iss"));
 
-        script.Should().Contain("Remove-Item -LiteralPath $publishDir -Recurse -Force");
-        script.Should().Contain("legacy layout schema files");
+        script.Should().Contain("cleanOutput publishDir");
+        shared.Should().Contain("legacy layout schema files").And.Contain("Directory.Delete(path, true)");
         iss.Should().Contain("[InstallDelete]").And.Contain(@"{app}\migrations");
     }
 
     [Fact]
     public void Windows_smoke_package_uses_an_isolated_installer_identity()
     {
-        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.fsx"));
         string iss = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.NET.iss"));
 
-        script.Should().Contain("[switch]$Smoke")
-            .And.Contain("$productionAppId")
-            .And.Contain("$smokeAppId")
-            .And.Contain("/DAppId=$appId")
-            .And.Contain("$Runtime-smoke-setup");
+        script.Should().Contain("has \"--smoke\" args")
+            .And.Contain("productionAppId")
+            .And.Contain("smokeAppId")
+            .And.Contain("/DAppId={appId}")
+            .And.Contain("-smoke-setup");
         iss.Should().Contain("AppId={#AppId}")
             .And.Contain("UsePreviousAppDir=yes");
 
-        string productionAppId = ExtractPowerShellAssignment(script, "$productionAppId");
-        string smokeAppId = ExtractPowerShellAssignment(script, "$smokeAppId");
+        string productionAppId = ExtractFSharpAssignment(script, "productionAppId");
+        string smokeAppId = ExtractFSharpAssignment(script, "smokeAppId");
         smokeAppId.Should().NotBe(productionAppId);
     }
 
-    private static string ExtractPowerShellAssignment(string script, string variable)
+    private static string ExtractFSharpAssignment(string script, string variable)
     {
         string line = script.Split('\n', StringSplitOptions.TrimEntries)
-            .Single(candidate => candidate.StartsWith(variable + " =", StringComparison.Ordinal));
+            .Single(candidate => candidate.StartsWith("let " + variable + " =", StringComparison.Ordinal));
         return line[(line.IndexOf('"') + 1)..line.LastIndexOf('"')];
     }
 
@@ -317,8 +293,8 @@ public sealed class AlphaPackagingTests
         string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
         string infrastructure = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.Infrastructure", "Patchouli.Infrastructure.csproj"));
-        string windowsPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
-        string macosPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        string windowsPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.fsx"));
+        string macosPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.fsx"));
         string rustTools = File.ReadAllText(TestPaths.FromRepositoryRoot("sidecar", "README.md"));
 
         packages.Should().Contain("Fsharp.Citeproc");
@@ -548,12 +524,12 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void Macos_package_builds_and_bundles_filesystem_helper()
     {
-        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.fsx"));
         string project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure",
             "Patchouli.Infrastructure.csproj"));
         script.Should().Contain("patchouli-macos-fs").And.Contain("libpatchouli-macos-fs.dylib");
-        script.Should().Contain("osx-arm64").And.Contain("fs_helper_arch=\"arm64\"").And
-            .Contain("osx-x64").And.Contain("fs_helper_arch=\"x86_64\"");
+        script.Should().Contain("osx-arm64").And.Contain("then \"arm64\" else \"x86_64\"").And
+            .Contain("osx-x64").And.Contain("\"-arch\"; architecture");
         project.Should().Contain("'$(RuntimeIdentifier)' == 'osx-arm64'").And.Contain("arm64").And
             .Contain("'$(RuntimeIdentifier)' == 'osx-x64'").And.Contain("x86_64").And
             .Contain("-arch $(MacOSFsHelperArchitecture)");

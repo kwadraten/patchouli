@@ -23,7 +23,7 @@ clang -dynamiclib -framework Foundation \
   patchouli_macos_fs.m
 ```
 
-`scripts/package-macos.sh` builds the helper for the requested architecture (or as a universal binary) and copies it into `Patchouli.NET.app/Contents/MacOS/`.
+`dotnet fsi scripts/package-macos.fsx` builds the helper for the requested architecture and copies it into `Patchouli.NET.app/Contents/MacOS/`.
 
 ## License
 

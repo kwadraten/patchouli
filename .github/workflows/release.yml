@@ -17,18 +17,8 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
-      - name: Resolve release version
-        id: version
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          if ([string]::IsNullOrWhiteSpace($version)) {
-            throw "A release tag must contain a version."
-          }
-          "value=$version" >> $env:GITHUB_OUTPUT
       - name: Build Windows installer
-        shell: pwsh
-        run: ./scripts/package-windows.ps1 -Runtime win-x64 -Version "${{ steps.version.outputs.value }}"
+        run: dotnet fsi --warnaserror+ scripts/package-windows.fsx -- --runtime win-x64 --version "${{ github.ref_name }}"
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
@@ -45,23 +35,8 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          test -n "$version"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
       - name: Build ad-hoc signed macOS disk image
-        shell: bash
-        run: bash scripts/package-macos.sh osx-arm64
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-      - name: Verify app bundle signature inside final disk image
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        run: bash scripts/verify-macos-dmg.sh ".tmp/installer/Patchouli.NET-$VERSION-osx-arm64.dmg"
+        run: dotnet fsi --warnaserror+ scripts/package-macos.fsx -- --runtime osx-arm64 --version "${{ github.ref_name }}"
       - name: Upload macOS disk image
         uses: actions/upload-artifact@v7
         with:
@@ -79,13 +54,6 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          test -n "$version"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
       - name: Install Linux packaging tools
         run: |
           sudo apt-get update
@@ -96,20 +64,7 @@ jobs:
           sudo flatpak install --system --noninteractive -y --arch=x86_64 flathub \
             org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
       - name: Build Linux packages
-        shell: bash
-        run: bash scripts/package-linux.sh deb rpm appimage flatpak
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-          RUNTIME: linux-x64
-      - name: Verify Linux packages
-        shell: bash
-        run: |
-          shopt -s nullglob
-          for extension in deb rpm AppImage flatpak; do
-            packages=(.tmp/installer/*."$extension")
-            test "${#packages[@]}" -eq 1
-            test -s "${packages[0]}"
-          done
+        run: dotnet fsi --warnaserror+ scripts/package-linux.fsx -- --runtime linux-x64 --version "${{ github.ref_name }}"
       - name: Upload Linux packages
         uses: actions/upload-artifact@v7
         with:
@@ -130,32 +85,16 @@ jobs:
       - package-linux
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
           path: .tmp/release-assets
       - name: Create or update release
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          mapfile -d '' assets < <(find .tmp/release-assets -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.flatpak' \) -print0)
-          test "${#assets[@]}" -eq 6
-
-          # Issue #15: publish a "<asset>.sha256" sidecar next to every installer
-          # so the in-app updater can verify downloads against SHA256.
-          checksums=()
-          for asset in "${assets[@]}"; do
-            checksum="$asset.sha256"
-            ( cd "$(dirname "$asset")" && sha256sum "$(basename "$asset")" > "$(basename "$checksum")" )
-            checksums+=("$checksum")
-          done
-
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" "${checksums[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" "${checksums[@]}" \
-              --title "Patchouli.NET $GITHUB_REF_NAME" \
-              --generate-notes
-          fi
+        run: dotnet fsi --warnaserror+ scripts/publish-release.fsx -- --tag "${{ github.ref_name }}"

@@ -67,7 +67,7 @@ Borrow from DeepSeek Harness: production-versus-test consumer proof, strong-cand
 4. Do not add automatic or broad suppressions. A verified false positive may use only the narrowest ReSharper suppression at the affected location, with a short comment explaining the dynamic consumer and why it is safe.
 5. Historical migrations and compatibility readers are not dead just because current C# has no ordinary caller. Patchouli opens user libraries and preserves snapshots, revisions, evidence identities, and schema epochs. This skill never deletes or rewrites an existing migration. Changes to current tables, columns, triggers, FTS objects, indexes, snapshot allow-lists, schema inspection, or compatibility readers are decision-required: audit and report them, but do not mutate them without separate explicit user approval and the relevant ADR/compatibility analysis.
 6. MCP remains text-only and respects the standing path, image, secret, OCR, index, and limited-write boundaries. Simplification never weakens these constraints.
-7. After changing non-document code or configuration, run `scripts/cleanup-code.ps1` with an explicit `-Include` list containing only the changed C#/AXAML files before tests. Never run the script with its repository-wide default against a dirty worktree. Before any non-document commit, run `scripts/inspect-code.ps1`. Do not use Full Cleanup or personal ReSharper settings.
+7. After changing non-document code or configuration, run `dotnet fsi scripts/cleanup-code.fsx -- --include '<files separated by semicolons>'` containing only the changed C#/AXAML files before tests. Never run the script with its repository-wide default against a dirty worktree. Before any non-document commit, run `dotnet fsi scripts/inspect-code.fsx`. Do not use Full Cleanup or personal ReSharper settings.
 8. Do not create an ADR or GitHub issue, edit issue state, commit, or publish merely because this skill was invoked. Do so only when the user explicitly asks. Local mechanical deletion does not need an ADR; changing a durable product boundary, public protocol, schema policy, or architectural decision does. A surface reserved or required by an accepted ADR is not dead merely because its implementation or first producer has not shipped yet.
 
 ## Liveness Model
@@ -157,7 +157,7 @@ Use multiple signals; none is sufficient alone:
 
 1. CodeGraph `search`, `node`, `callers`, `impact`, or `explore` for symbols and production flow.
 2. Exact `rg` searches for the symbol and serialized/string forms.
-3. ReSharper SARIF from `.tmp/inspectcode.sarif`; run `scripts/inspect-code.ps1` only when a fresh full-solution result is appropriate for the worktree.
+3. ReSharper SARIF from `.tmp/inspectcode.sarif`; run `dotnet fsi scripts/inspect-code.fsx` only when a fresh full-solution result is appropriate for the worktree.
 4. Project references, `HostServices` (the Patchouli.Host composition root), MCP/CLI dispatch, XAML, JSON/Dapper mappings, SQL, settings, snapshot lists, package manifests, and packaging scripts.
 5. Tests and docs, explicitly separated from production consumers.
 6. Git history only when it explains whether a path is an unfinished migration, a superseded implementation, or an intentional compatibility commitment. History is supporting evidence, not the only source of rationale.
@@ -266,11 +266,11 @@ After deletion:
 4. Run cleanup on changed C#/AXAML before tests:
 
 ```powershell
-./scripts/cleanup-code.ps1 -Include @('<changed-file-1>', '<changed-file-2>')
+dotnet fsi scripts/cleanup-code.fsx -- --include '<changed-file-1>;<changed-file-2>'
 ```
 
 5. Run focused tests that exercise the surviving real entry path. Add broader build/test commands only when the impact requires them. Coverage can identify unexecuted paths but does not prove deadness or correctness.
-6. Run `./scripts/inspect-code.ps1` before a non-document commit. It inspects the full solution and may fail because of unrelated pre-existing worktree findings; if so, do not fix outside scope or claim a clean delta. Preserve the SARIF path, report that the global signal is contaminated, and separately report the changed-file findings you can attribute.
+6. Run `dotnet fsi scripts/inspect-code.fsx` before a non-document commit. It inspects the full solution and may fail because of unrelated pre-existing worktree findings; if so, do not fix outside scope or claim a clean delta. Preserve the SARIF path, report that the global signal is contaminated, and separately report the changed-file findings you can attribute.
 7. Run `git diff --check` and inspect the final diff for unrelated churn.
 
 A simplification is complete only when the removed behavior is absent from production code, configuration, current schema, wire output, packaging, and supported tests, or when each surviving compatibility artifact has an explicit reason.

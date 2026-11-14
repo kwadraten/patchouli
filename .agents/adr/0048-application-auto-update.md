@@ -144,7 +144,7 @@ download. A second check/download attempt while one is in flight returns
   `UpdateCoordinator` (constructed with `BuildInfo.Version`).
 - UI dialog and close behavior are covered by headless tests; update installation
   has not been exercised by running a real installer.
-- `scripts/cleanup-code.ps1` ran with JetBrains Command Line Tools 2026.1.4.
+- The cleanup entry point (now `scripts/cleanup-code.fsx`) ran with JetBrains Command Line Tools 2026.1.4.
   The final targeted update/UI regression filter passed 219/219 tests. The final
   JetBrains InspectCode 2026.1.4 run passed with no blocking issues; its SARIF
   report is `.tmp/issue-15-fixes-20261020/inspectcode-final.sarif`.

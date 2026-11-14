@@ -12,7 +12,7 @@ Patchouli desktop on macOS will not use App Sandbox entitlements and will not ta
 
 **Consequences**
 
-- Packaging does not need a sandbox entitlements file or an App Store provisioning profile. `scripts/package-macos.sh` ad-hoc signs native binaries, then the completed app bundle and DMG for testing.
+- Packaging does not need a sandbox entitlements file or an App Store provisioning profile. `scripts/package-macos.fsx` ad-hoc signs native binaries, then the completed app bundle and DMG for testing.
 - `packaging/macos/Info.plist.template` must keep `NSDocumentsFolderUsageDescription`, `NSDesktopFolderUsageDescription`, `NSDownloadsFolderUsageDescription`, `NSNetworkVolumesUsageDescription`, and `NSRemovableVolumesUsageDescription` so the TCC prompt shows a useful message.
 - `FileSearchRoot` records created from a macOS picker selection should use `AuthorizationKind = "tcc_picker"` to record provenance. No security-scoped bookmark payload is required because the app is not sandboxed.
 - A macOS-specific `INativeFileAccessAdapter` implementation must handle Finder aliases, iCloud placeholder materialization, mount-point/unmount detection, TCC/ACL denial classification, and symlink canonicalization. The portable adapter is intentionally incomplete for these cases.
@@ -27,7 +27,7 @@ Patchouli desktop on macOS will not use App Sandbox entitlements and will not ta
    - Ad-hoc sign native Mach-O files explicitly, then the completed app bundle and DMG; use `--deep` only for verification.
    - Preserve native dependencies' existing entitlements without adding App Sandbox entitlements or provisioning.
    - Verify the signed app inside the final mounted DMG in the release workflow.
-   - Keep `NS*FolderUsageDescription` keys in `Info.plist.template`; add a comment in `scripts/package-macos.sh` explaining why they are still required outside the sandbox.
+   - Keep `NS*FolderUsageDescription` keys in `Info.plist.template`; add a comment in `scripts/package-macos.fsx` explaining why they are still required outside the sandbox.
 
 2. Picker-based root selection
    - `PathPickerTextBox` on macOS already uses `IStorageProvider.OpenFolderPickerAsync`. Ensure it produces a `SelectedFileSearchRoot` with `AuthorizationKind = "tcc_picker"`, `ProviderIdentity = "avalonia_storage_provider"`, and a UTC `SelectedAt` timestamp.
@@ -63,4 +63,4 @@ Patchouli desktop on macOS will not use App Sandbox entitlements and will not ta
 7. Verification checklist
    - Add an integration test that creates a picker-originated `SelectedFileSearchRoot` under `~/Documents` and verifies PDF discovery can enumerate at least one PDF.
    - Add unit tests for `MacOSNativeFileAccessAdapter` using mock `NSURL` behavior where possible; at minimum test the classification of `UnauthorizedAccessException`, `DirectoryNotFoundException`, and iCloud placeholder detection.
-   - Update `AlphaPackagingTests` to assert that `Info.plist.template` contains the TCC usage descriptions and that `scripts/package-macos.sh` does not reference an entitlements file.
+   - Update `AlphaPackagingTests` to assert that `Info.plist.template` contains the TCC usage descriptions and that `scripts/package-macos.fsx` does not reference an entitlements file.

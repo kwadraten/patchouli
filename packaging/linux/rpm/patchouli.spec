@@ -6,7 +6,7 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/kwadraten/patchouli
 Source0:        %{name}-%{version}.tar.gz
 
-BuildArch:      x86_64
+BuildArch:      %{_target_cpu}
 # Runtime deps mirror the DEB (Avalonia X11 + .NET 10 self-contained).
 # libicu/openssl/krb5 names vary by distro; use unversioned where possible.
 Requires:       fontconfig
@@ -26,7 +26,7 @@ page-level bounding-box tree, and ships an MCP server so AI agents can
 explore and maintain your library.
 
 %install
-# The staging tree is prepared by scripts/package-linux.sh and passed as Source0.
+# The staging tree is prepared by scripts/package-linux.fsx and passed as Source0.
 # --no-same-owner: containers often block chown even for root.
 tar -xzf %{SOURCE0} -C "$RPM_BUILD_ROOT" --no-same-owner
 mkdir -p "$RPM_BUILD_ROOT/usr/share/licenses/%{name}-%{version}"

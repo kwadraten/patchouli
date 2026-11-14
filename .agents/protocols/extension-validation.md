@@ -125,7 +125,7 @@ Historical Windows correctness gates over the foundation-only working snapshot (
 | Full aggregate | 4,200 passed, 0 failed, 8 allowlisted skips; `issue43-foundation-20261025-113235659-032ef5-full` |
 | Inspection over built F# metadata and C# callers | Zero errors and zero blocking findings, no added ReSharper suppressions |
 
-Runs use `scripts/run-tests.ps1`; Full batches execute sequentially, with no performance suite
+Runs use `dotnet fsi scripts/run-tests.fsx`; Full batches execute sequentially, with no performance suite
 mixed into correctness. Evidence, worker/model audit and review notes are under
 `.tmp/issue43-implementation-20261025/`; recorded TRX/summaries are under the corresponding
 `.tmp/test-runs/<run-id>/` directories. Earlier failed build/focused/inspection attempts remain
@@ -496,8 +496,8 @@ it does not replace the contracts in [extension-contracts](extension-contracts.m
   - `dotnet build src/Patchouli.Infrastructure`
   - `dotnet build src/Patchouli.Extensions.Worker`
 - 代码风格与静态分析：
-  - `pwsh scripts/cleanup-code.ps1`
-  - `pwsh scripts/inspect-code.ps1 -UseExistingBuild`
+  - `dotnet fsi scripts/cleanup-code.fsx`
+  - `dotnet fsi scripts/inspect-code.fsx -- --use-existing-build`
 - 核心功能与回归测试：
   - `dotnet test tests/Patchouli.Tests --filter "FullyQualifiedName~TranslationJob"`
   - `dotnet test tests/Patchouli.Tests --filter "FullyQualifiedName~TranslationRunEngine"`

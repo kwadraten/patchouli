@@ -2,7 +2,7 @@
   <!-- The command-line JetBrains host has no F# source model. In no-build analysis,
        consume the normally built public metadata instead of empty source stubs.
        F# source analysis is owned by the F# compiler (TreatWarningsAsErrors in each
-       .fsproj) and tests, so scripts/cleanup-code.ps1 and scripts/inspect-code.ps1
+       .fsproj) and tests, so scripts/cleanup-code.fsx and scripts/inspect-code.fsx
        cover .cs/.axaml only. -->
   <ItemGroup Condition="'$(PatchouliUseBuiltExtensionAssembly)' == 'true' and ('$(MSBuildProjectName)' == 'Patchouli.Infrastructure' or '$(MSBuildProjectName)' == 'Patchouli.Host' or '$(MSBuildProjectName)' == 'Patchouli.Tests' or '$(MSBuildProjectName)' == 'Patchouli.ExtensionSchemas')">
     <ProjectReference Remove="..\Patchouli.Extensions\Patchouli.Extensions.fsproj;..\..\src\Patchouli.Extensions\Patchouli.Extensions.fsproj" />

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Synthetic fixture: runner finished with exit 0 but produced ZERO results.
-     run-tests.ps1 must fail on this even though the process exit code was 0. -->
+     run-tests.fsx must fail on this even though the process exit code was 0. -->
 <TestRun id="22222222-2222-2222-2222-222222222222" name="synthetic-empty" runUser="FIXTURE\agent"
          xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
   <Times creation="2026-10-23T11:00:00.0000000+00:00" queuing="2026-10-23T11:00:00.5000000+00:00"

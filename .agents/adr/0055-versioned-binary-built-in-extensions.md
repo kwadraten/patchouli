@@ -187,6 +187,6 @@ Required regression coverage:
 
 Run repository cleanup on changed C#/AXAML before tests. Public F# SDK changes require normal
 F# build, C# consumer rebuild, interop and SDK tests, and JetBrains inspection as specified in
-AGENTS.md. Use recorded `scripts/run-tests.ps1` runs and Full acceptance after integration;
+AGENTS.md. Use recorded `scripts/run-tests.fsx` runs and Full acceptance after integration;
 packaging verification must exercise actual publish outputs. No new-protocol acceptance is
 claimed by the earlier 40-test bundle regression run.

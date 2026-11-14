@@ -33,14 +33,17 @@ public sealed class TestRunSummarizerTests
                         "Tests.Cancellation_timeout_is_retried [Passed]")),
                     new XElement("RunInfos", new XElement("RunInfo", new XElement("Text", runInfo))))));
             await File.WriteAllTextAsync(trx, document.ToString());
-            ProcessStartInfo start = new("python")
+            ProcessStartInfo start = new("dotnet")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
-            start.ArgumentList.Add(TestPaths.FromRepositoryRoot("scripts", "summarize-test-run.py"));
+            start.ArgumentList.Add("fsi");
+            start.ArgumentList.Add("--warnaserror+");
+            start.ArgumentList.Add(TestPaths.FromRepositoryRoot("scripts", "summarize-test-run.fsx"));
+            start.ArgumentList.Add("--");
             start.ArgumentList.Add("--trx");
             start.ArgumentList.Add(trx);
             using Process process = new() { StartInfo = start };
