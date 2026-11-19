@@ -63,7 +63,8 @@ public sealed class DesktopInstanceActivationTests(AvaloniaSharedSessionFixture 
         HeadlessUnitTestSession session = headless.Session;
         await session.Dispatch(() =>
         {
-            MainWindow window = new(new MainWindowViewModel(), true);
+            // Confirmed tray host: close-to-tray stays the historical behavior.
+            MainWindow window = new(new MainWindowViewModel(), true, () => Task.FromResult(true));
             bool closed = false;
             window.Closed += (_, _) => closed = true;
 
@@ -75,6 +76,122 @@ public sealed class DesktopInstanceActivationTests(AvaloniaSharedSessionFixture 
 
             window.RequestExit();
             closed.Should().BeTrue();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    // Issue #74: hiding is only safe while a tray host can reach the app. On hosts like Sway
+    // without a StatusNotifierWatcher the window must close for real so the process exits.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Closing_without_confirmed_tray_host_exits_instead_of_hiding(bool probeFails)
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
+        {
+            MainWindow window = new(new MainWindowViewModel(), true,
+                () => probeFails
+                    ? Task.FromException<bool>(new InvalidOperationException("probe failure"))
+                    : Task.FromResult(false));
+            TaskCompletionSource closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closedSignal.TrySetResult();
+
+            window.Show();
+            window.Close();
+            await closedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            window.IsVisible.Should().BeFalse();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Closing_before_probe_settles_waits_then_hides_when_host_exists()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
+        {
+            TaskCompletionSource<bool> probe = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MainWindow window = new(new MainWindowViewModel(), true, () => probe.Task);
+            bool closed = false;
+            window.Closed += (_, _) => closed = true;
+
+            window.Show();
+            window.Close();
+            await Task.Delay(50);
+            window.IsVisible.Should().BeTrue("an undecided close must not hide yet");
+            closed.Should().BeFalse();
+
+            probe.TrySetResult(true);
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (window.IsVisible && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(10);
+            }
+
+            window.IsVisible.Should().BeFalse();
+            closed.Should().BeFalse();
+
+            window.RequestExit();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Closing_before_probe_settles_waits_then_exits_when_no_host()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
+        {
+            TaskCompletionSource<bool> probe = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MainWindow window = new(new MainWindowViewModel(), true, () => probe.Task);
+            TaskCompletionSource closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closedSignal.TrySetResult();
+
+            window.Show();
+            window.Close();
+            await Task.Delay(50);
+            window.IsVisible.Should().BeTrue("an undecided close must not exit yet");
+
+            probe.TrySetResult(false);
+            await closedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Closing_with_never_settling_probe_exits_once_without_reentry()
+    {
+        HeadlessUnitTestSession session = headless.Session;
+        await session.Dispatch<bool>(async () =>
+        {
+            // The probe never completes and the wait bound (2 s) is shorter than the
+            // probe's own bound, so the deferred close must time out into exactly one
+            // real exit path: a synchronous Close() re-entering OnClosing would loop
+            // on the still-pending probe.
+            TaskCompletionSource<bool> probe = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MainWindow window = new(new MainWindowViewModel(), true, () => probe.Task);
+            List<bool> cancels = [];
+            int closedCount = 0;
+            window.Closing += (_, e) => cancels.Add(e.Cancel);
+            window.Closed += (_, _) => closedCount++;
+
+            window.Show();
+            window.Close();
+            window.IsVisible.Should().BeTrue("the first close is deferred to the probe wait");
+            cancels.Should().Equal(true);
+
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (closedCount == 0 && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(20);
+            }
+
+            closedCount.Should().Be(1,
+                "the timed-out probe closes for real exactly once instead of re-entering OnClosing");
+            cancels.Should().Equal([true, false],
+                "the posted follow-up close must pass through OnClosing uncancelled");
             return true;
         }, CancellationToken.None);
     }

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Patchouli.Core.Agents;
 using Patchouli.Host.Agents;
+using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
@@ -494,6 +495,139 @@ public sealed class AgentSkillServiceTests : IDisposable
         finally
         {
             Directory.Delete(link);
+        }
+    }
+
+    // Issue #73: OS-owned ancestors of the trusted home/state roots (Fedora Atomic's
+    // /home -> /var/home) are normalized instead of rejected; only components at or below the
+    // trusted root may not be links.
+    [Fact]
+    public async Task System_owned_link_above_home_is_normalized_not_rejected()
+    {
+        string realBase = _directory.Combine("var-home");
+        string linkedBase = _directory.Combine("home");
+        string home = Path.Combine(linkedBase, "user");
+        Directory.CreateDirectory(Path.Combine(realBase, "user"));
+        CreateDirectoryLink(linkedBase, realBase);
+        try
+        {
+            AgentSkillService service = new(new AgentSkillLocations(home, State), "1");
+            service.GetStatus("opencode").IsSuccess.Should().BeTrue();
+            (await service.InstallAsync("opencode")).IsSuccess.Should().BeTrue();
+            string installed = Path.Combine(realBase, "user", ".config", "opencode", "skills", "patchouli");
+            File.Exists(Path.Combine(installed, "SKILL.md")).Should().BeTrue();
+            (await service.UpdateUserInstallationsAsync()).IsSuccess.Should().BeTrue();
+            (await service.ClearAsync("opencode")).IsSuccess.Should().BeTrue();
+            Directory.Exists(installed).Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(linkedBase);
+        }
+    }
+
+    [Fact]
+    public async Task Read_only_registration_read_tolerates_system_link_above_state_root()
+    {
+        string realBase = _directory.Combine("real-state-base");
+        string linkedBase = _directory.Combine("state-link");
+        Directory.CreateDirectory(Path.Combine(realBase, "patchouli"));
+        await File.WriteAllTextAsync(Path.Combine(realBase, "patchouli", "agent-skills.json"), "{}");
+        CreateDirectoryLink(linkedBase, realBase);
+        try
+        {
+            AgentSkillService service = new(new AgentSkillLocations(Home,
+                Path.Combine(linkedBase, "patchouli")), "1");
+            // ReadRegistrations is the path Fedora Atomic hit on every startup maintenance pass.
+            (await service.UpdateUserInstallationsAsync()).IsSuccess.Should().BeTrue();
+            (await service.InstallAsync("opencode")).IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(linkedBase);
+        }
+    }
+
+    [Theory]
+    [InlineData("skills-parent")]
+    [InlineData("target")]
+    public async Task Managed_internal_link_still_fails_closed_under_linked_home(string kind)
+    {
+        string realBase = _directory.Combine("var-home");
+        string linkedBase = _directory.Combine("home");
+        string home = Path.Combine(linkedBase, "user");
+        string skills = Path.Combine(realBase, "user", ".config", "opencode", "skills");
+        Directory.CreateDirectory(skills);
+        CreateDirectoryLink(linkedBase, realBase);
+        string external = _directory.Combine("external-target");
+        Directory.CreateDirectory(external);
+        string link = kind == "target" ? Path.Combine(skills, "patchouli") : skills;
+        try
+        {
+            if (kind == "skills-parent")
+            {
+                // Point the catalog skills directory itself at a location outside the root.
+                Directory.Delete(skills);
+            }
+
+            CreateDirectoryLink(link, external);
+            AgentSkillService service = new(new AgentSkillLocations(home, State), "1");
+            (await service.InstallAsync("opencode")).IsFailure.Should().BeTrue();
+            (await service.ClearAsync("opencode")).IsFailure.Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(link);
+            Directory.Delete(linkedBase);
+        }
+    }
+
+    [Fact]
+    public async Task Attribute_read_failures_fail_closed()
+    {
+        AgentSkillService denied = new(Locations, "1",
+            attributes: _ => throw new UnauthorizedAccessException("simulated attribute failure"));
+        denied.GetStatus("opencode").IsFailure.Should().BeTrue();
+        (await denied.InstallAsync("opencode")).IsFailure.Should().BeTrue();
+        Directory.Exists(Locations.GetUserDirectory("opencode")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Real_path_resolution_failures_fail_closed()
+    {
+        AgentSkillService denied = new(Locations, "1",
+            realPathResolver: new ThrowingRealPathResolver());
+        denied.GetStatus("opencode").IsFailure.Should().BeTrue();
+        (await denied.InstallAsync("opencode")).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Resolver_reported_redirect_below_root_fails_closed()
+    {
+        // A component under the trusted root that the attribute probe cannot see but the
+        // canonicalization layer reports as redirected must not be silently followed.
+        AgentSkillService service = new(Locations, "1",
+            realPathResolver: new RedirectingRealPathResolver());
+        (await service.InstallAsync("opencode")).IsFailure.Should().BeTrue();
+        Directory.Exists(Locations.GetUserDirectory("opencode")).Should().BeFalse();
+    }
+
+    private sealed class ThrowingRealPathResolver : IRealPathResolver
+    {
+        public string Resolve(string path)
+        {
+            throw new IOException("simulated resolver failure");
+        }
+    }
+
+    private sealed class RedirectingRealPathResolver : IRealPathResolver
+    {
+        public string Resolve(string path)
+        {
+            return path.Contains($".config{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                ? path.Replace($".config{Path.DirectorySeparatorChar}",
+                    $".redirected{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                : path;
         }
     }
 

@@ -36,6 +36,9 @@
         <PackageVersion Include="PDFiumCore" Version="151.0.7920" />
         <PackageVersion Include="SkiaSharp" Version="3.119.4" />
         <PackageVersion Include="System.Reactive" Version="7.0.0" />
+        <!-- Same version Avalonia.FreeDesktop 12.1.3 resolves transitively; pinned directly
+             because the tray-host probe calls its public API. -->
+        <PackageVersion Include="Tmds.DBus.Protocol" Version="0.94.1" />
         <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
         <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
         <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" />

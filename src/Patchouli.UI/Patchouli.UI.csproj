@@ -41,6 +41,7 @@
     <PackageReference Include="LiveMarkdown.Avalonia" />
     <PackageReference Include="LiveMarkdown.Avalonia.Mermaid" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Tmds.DBus.Protocol" />
     <ProjectReference Include="..\Patchouli.UI.Generators\Patchouli.UI.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="ProDataGrid" />
     <PackageReference Include="System.Reactive" />

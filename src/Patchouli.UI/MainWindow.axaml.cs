@@ -25,6 +25,10 @@ public sealed partial class MainWindow : Window
     private Task _protocolNavigation = Task.CompletedTask;
     private CatStatusIndicator? _catIndicator;
     private DispatcherTimer? _geometryClampDebounce;
+    private Task<bool>? _trayProbe;
+    private bool _trayProbeResolving;
+    private bool _trayProbeFinished;
+    private bool _trayHostAvailable;
 
     private CatStatusIndicator? CatIndicatorControl =>
         _catIndicator ??= this.FindControl<CatStatusIndicator>("CatIndicator");
@@ -40,10 +44,33 @@ public sealed partial class MainWindow : Window
     }
 
     internal MainWindow(MainWindowViewModel viewModel, bool closeToTray)
+        : this(viewModel, closeToTray, null)
+    {
+    }
+
+    internal MainWindow(MainWindowViewModel viewModel, bool closeToTray,
+        Func<Task<bool>>? trayHostProbe)
     {
         ArgumentNullException.ThrowIfNull(viewModel);
         _closeToTray = closeToTray;
         _viewModel = viewModel;
+        if (closeToTray)
+        {
+            // Hiding the only window is only safe while a tray host can still reach the app.
+            // The probe starts now so a normal user close sees a settled answer; a close that
+            // lands earlier waits briefly and then falls back to a real exit instead of a zombie.
+            Task<bool> probe = (trayHostProbe ?? TrayHostAvailability.IsAvailableAsync)();
+            if (probe.IsCompletedSuccessfully)
+            {
+                _trayProbeFinished = true;
+                _trayHostAvailable = probe.Result;
+            }
+            else
+            {
+                _trayProbe = probe;
+            }
+        }
+
         DataContext = _viewModel;
         InitializeComponent();
         Opened += OnFirstOpened;
@@ -459,10 +486,37 @@ public sealed partial class MainWindow : Window
         if (_closeToTray && !_exitRequested &&
             e.CloseReason is not WindowCloseReason.ApplicationShutdown and not WindowCloseReason.OSShutdown)
         {
-            e.Cancel = true;
-            Hide();
-            base.OnClosing(e);
-            return;
+            if (!_trayProbeFinished && _trayProbe is { IsCompleted: false })
+            {
+                // A user close arrived before the host probe settled. Bound the wait so the
+                // close gesture is never swallowed: a confirmed host hides the window, and a
+                // negative or timed-out probe closes for real on the follow-up. Additional
+                // closes during the wait are cancelled; the resolver already in flight owns
+                // the final decision and posts the real close itself.
+                e.Cancel = true;
+                base.OnClosing(e);
+                if (!_trayProbeResolving)
+                {
+                    _trayProbeResolving = true;
+                    ResolveTrayProbeThenCloseAsync().Observe("window-lifecycle", "tray-probe-close");
+                }
+
+                return;
+            }
+
+            // _trayProbeFinished/_trayHostAvailable is the single source of truth once the probe
+            // resolved (synchronously at startup or through the bounded wait below); a completed
+            // faulted probe and an awaited-but-unfinished one both read as "no confirmed host".
+            if ((_trayProbeFinished && _trayHostAvailable)
+                || (!_trayProbeFinished && _trayProbe is { IsCompletedSuccessfully: true, Result: true }))
+            {
+                e.Cancel = true;
+                _trayProbeFinished = true;
+                _trayHostAvailable = true;
+                Hide();
+                base.OnClosing(e);
+                return;
+            }
         }
 
         if (_exitConfirmed)
@@ -514,6 +568,38 @@ public sealed partial class MainWindow : Window
         }
 
         await CompleteConfirmedExitAsync();
+    }
+
+    private async Task ResolveTrayProbeThenCloseAsync()
+    {
+        try
+        {
+            _trayHostAvailable = await _trayProbe!.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception)
+        {
+            // Fail closed toward a real exit: a failed or timed-out probe means
+            // close-to-tray could strand the process without UI. The probe may still
+            // be running (the wait bound is shorter than the probe's own bound), which
+            // is exactly why OnClosing consults _trayProbeFinished/_trayHostAvailable
+            // instead of the task once this method ran.
+            _trayHostAvailable = false;
+        }
+
+        _trayProbeFinished = true;
+
+        if (_trayHostAvailable)
+        {
+            Hide();
+        }
+        else
+        {
+            // A missing host would strand the process with no UI to recover it. Post the
+            // close instead of calling it inline: when this continuation resumed on the
+            // original OnClosing stack, a synchronous Close() would re-enter OnClosing
+            // mid-handler.
+            Dispatcher.UIThread.Post(Close);
+        }
     }
 
     internal void RequestExit()

@@ -44,34 +44,73 @@ public sealed class AgentSkillLocations
     /// <summary>Known user-scope directories that this agent documents as compatible.</summary>
     public IReadOnlyList<string> GetVisibleUserDirectories(string agentId)
     {
-        List<string> roots = agentId switch
+        return VisibleUserEntries(agentId).Select(entry => entry.Target).ToArray();
+    }
+
+    /// <summary>
+    /// The configured trusted root of the native user-level target: the home directory for
+    /// catalog-relative locations, or the fully-qualified override base for environment-rooted
+    /// locations. Components at or below this root along a target path are managed-adjacent and
+    /// must not be links; ancestors above it belong to the operating system or to explicit
+    /// environment configuration (for example a distribution-level <c>/home -> /var/home</c>
+    /// indirection) and are normalized instead of rejected.
+    /// </summary>
+    internal string GetUserTrustedRoot(string agentId)
+    {
+        return VisibleUserEntries(agentId)[0].Root;
+    }
+
+    private IReadOnlyList<(string Root, string Target)> VisibleUserEntries(string agentId)
+    {
+        List<(string Root, string Target)> pairs = agentId switch
         {
-            "opencode" => [".config/opencode/skills", ".agents/skills", ".claude/skills"],
-            "claude-acp" => [".claude/skills"],
-            "codex-acp" => [".agents/skills"],
-            "kimi" => [".kimi/skills", ".agents/skills", ".claude/skills", ".codex/skills"],
-            "antigravity-acp" => [".gemini/config/skills"],
-            "gemini" => [".gemini/skills", ".agents/skills"],
-            "github-copilot-cli" => [".copilot/skills", ".agents/skills"],
-            "qwen-code" => [".qwen/skills", ".agents/skills"],
-            "cline" => [".cline/skills"],
+            "opencode" =>
+            [
+                (".config/opencode", "skills/patchouli"), (".agents", "skills/patchouli"),
+                (".claude", "skills/patchouli")
+            ],
+            "claude-acp" => [(".claude", "skills/patchouli")],
+            "codex-acp" => [(".agents", "skills/patchouli")],
+            "kimi" =>
+            [
+                (".kimi", "skills/patchouli"), (".agents", "skills/patchouli"),
+                (".claude", "skills/patchouli"), (".codex", "skills/patchouli")
+            ],
+            "antigravity-acp" => [(".gemini/config", "skills/patchouli")],
+            "gemini" => [(".gemini", "skills/patchouli"), (".agents", "skills/patchouli")],
+            "github-copilot-cli" => [(".copilot", "skills/patchouli"), (".agents", "skills/patchouli")],
+            "qwen-code" => [(".qwen", "skills/patchouli"), (".agents", "skills/patchouli")],
+            "cline" => [(".cline", "skills/patchouli")],
             _ => throw Unknown(agentId)
         };
 
         if (agentId == "opencode" && TryGetEnvironment("XDG_CONFIG_HOME", out string? xdg) &&
             !string.IsNullOrWhiteSpace(xdg) && Path.IsPathFullyQualified(xdg))
         {
-            roots[0] = Path.Combine(Path.GetFullPath(xdg), "opencode", "skills");
+            pairs[0] = (Path.GetFullPath(xdg), "opencode/skills/patchouli");
         }
 
         if (agentId == "claude-acp" && TryGetEnvironment("CLAUDE_CONFIG_DIR", out string? claudeConfig) &&
             !string.IsNullOrWhiteSpace(claudeConfig) && Path.IsPathFullyQualified(claudeConfig))
         {
-            roots[0] = Path.Combine(Path.GetFullPath(claudeConfig), "skills");
+            pairs[0] = (Path.GetFullPath(claudeConfig), "skills/patchouli");
         }
 
-        return Distinct(roots.Select(root => Path.Combine(
-            Path.IsPathRooted(root) ? root : Path.Combine(_home, root), "patchouli")));
+        List<(string Root, string Target)> resolved = pairs
+            .Select(pair =>
+            {
+                string root = Path.IsPathRooted(pair.Root) ? pair.Root : Path.Combine(_home, pair.Root);
+                // The trusted root is the configured base (home or override base): the catalog
+                // scope directories themselves (e.g. ~/.config/opencode) stay below it and are
+                // therefore still link-checked.
+                string trusted = Path.IsPathRooted(pair.Root) ? pair.Root : _home;
+                return (Path.GetFullPath(trusted), Path.GetFullPath(Path.Combine(root, pair.Target)));
+            })
+            .ToList();
+        return resolved
+            .GroupBy(entry => entry.Target, PathComparer)
+            .Select(group => group.First())
+            .ToArray();
     }
 
     /// <summary>Known workspace-scope directories visible to this agent.</summary>

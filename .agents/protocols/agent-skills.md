@@ -35,7 +35,12 @@ compatibility roots must not be described as global user-level paths. Coordinati
 every compatible managed copy visible to the selected Agent, not just its native path. If cleanup
 of any visible duplicate fails, launch preparation fails rather than knowingly starting with
 duplicates. Unknown ids and traversal are rejected; directory operations reject links/reparse
-points and report errors.
+points and report errors. Rejection is scoped to a trusted root per operation (the Agent's
+user-location root, the env-override base, the state directory, or the workspace directory): a
+link at or below that root is always refused, while links above it — OS layout indirection such
+as Fedora Atomic's `/home -> /var/home` — are tolerated only when real-path normalization keeps
+the path under the resolved root with an identical relative suffix. Any normalization that
+redirects the path outside the resolved root, or any IO failure during the check, fails closed.
 
 For Antigravity, the native user-level target is `~/.gemini/config/skills/patchouli/SKILL.md`.
 This does not change its managed workspace mapping. Existing user files at the former
