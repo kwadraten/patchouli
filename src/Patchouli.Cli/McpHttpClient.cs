@@ -25,8 +25,18 @@ internal sealed class McpHttpClient : IDisposable
     private string? _sessionId;
 
     public McpHttpClient(string endpoint, string? token)
-        : this(endpoint, token, new HttpClientHandler())
+        : this(endpoint, token, CreateLoopbackHandler())
     {
+    }
+
+    /// <summary>
+    /// The MCP endpoint is a same-machine loopback service. Disable proxy use so environment
+    /// proxy variables can never route the bearer token through a third party; .NET does not
+    /// understand CIDR <c>no_proxy</c> entries such as <c>127.0.0.0/8</c>.
+    /// </summary>
+    internal static HttpMessageHandler CreateLoopbackHandler()
+    {
+        return new SocketsHttpHandler { UseProxy = false };
     }
 
     internal McpHttpClient(string endpoint, string? token, HttpMessageHandler handler)
