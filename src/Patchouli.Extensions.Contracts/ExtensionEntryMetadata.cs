@@ -195,9 +195,13 @@ public sealed record ExtensionEntryMetadata(
             int sourceLine = 1, sourceColumn = 0;
             for (int i = 0; i < sourceOffset; i++)
             {
-                if (Source[i] == '\n')
+                if (Source[i] is '\r' or '\n')
                 {
-                    sourceLine++;
+                    if (Source[i] == '\r' || i == 0 || Source[i - 1] != '\r')
+                    {
+                        sourceLine++;
+                    }
+
                     sourceColumn = 0;
                 }
                 else
@@ -245,7 +249,7 @@ public sealed record ExtensionEntryMetadata(
         int lineStart = 0;
         for (int i = 0; i <= source.Length; i++)
         {
-            if (i != source.Length && source[i] != '\n')
+            if (i != source.Length && source[i] is not ('\r' or '\n'))
             {
                 continue;
             }
@@ -311,6 +315,11 @@ public sealed record ExtensionEntryMetadata(
             if (i == source.Length)
             {
                 break;
+            }
+
+            if (source[i] == '\r' && i + 1 < source.Length && source[i + 1] == '\n')
+            {
+                i++;
             }
 
             lineStart = i + 1;
@@ -535,7 +544,7 @@ public sealed record ExtensionEntryMetadata(
         int count = 1;
         for (int i = 0; i < end; i++)
         {
-            if (source[i] == '\n')
+            if (source[i] == '\r' || (source[i] == '\n' && (i == 0 || source[i - 1] != '\r')))
             {
                 count++;
             }

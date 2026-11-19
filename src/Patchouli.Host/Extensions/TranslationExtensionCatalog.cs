@@ -30,6 +30,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
     private readonly FileExtensionStore _fileStore;
     private readonly string _root;
     private readonly Func<LlmAppSettings> _settings;
+    private readonly IAppLogger? _logger;
     private bool _initialized;
     private int _disposed;
     private readonly CancellationTokenSource _watchLifetime = new();
@@ -58,11 +59,12 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             .ToArray());
 
     public TranslationExtensionCatalog(string runtimeDirectory, Func<LlmAppSettings> settings,
-        IExtensionResources resources)
+        IExtensionResources resources, IAppLogger? logger = null)
     {
         _root = runtimeDirectory;
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         Resources = resources;
+        _logger = logger;
         _fileStore = new FileExtensionStore(runtimeDirectory);
         Manager = new ExtensionManager(runtimeDirectory, resources, _fileStore,
             new CompiledExtensionGenerationLoader(runtimeDirectory));
@@ -384,6 +386,83 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
 
         return check;
+    }
+
+    /// <summary>Version-guarded community installation, distinct from explicit author edits.</summary>
+    public async Task<ExtensionCheckResult> InstallAsync(ExtensionPackageSnapshot package,
+        CancellationToken cancellationToken = default)
+    {
+        ExtensionPackageSnapshot? installed = null;
+        try
+        {
+            ExtensionPackageSnapshot source = await Manager.ReadSourceAsync(package.Id, cancellationToken)
+                .ConfigureAwait(false);
+            if (source.Sources.Count > 0 || source.BinaryFiles.Count > 0)
+            {
+                installed = source;
+            }
+        }
+        catch (Exception error) when (error is DirectoryNotFoundException or FileNotFoundException)
+        {
+            // First installation, or a configuration-only overlay.
+        }
+
+        if (installed is null)
+        {
+            IPersistentExtensionFileStore persistent = _fileStore;
+            FSharpOption<string>? fingerprint =
+                await persistent.ReadActiveFingerprintAsync(package.Id, cancellationToken).ConfigureAwait(false);
+            if (fingerprint is not null)
+            {
+                FSharpOption<ExtensionPackageSnapshot>? saved =
+                    await persistent.ReadSnapshotAsync(package.Id, fingerprint.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                installed = saved?.Value;
+            }
+        }
+
+        if (installed is not null)
+        {
+            ExtensionUpgradeDecision decision = ExtensionUpgrade.Decide(installed, package);
+            if (decision == ExtensionUpgradeDecision.RejectDowngrade)
+            {
+                return new ExtensionCheckResult(false, [],
+                [
+                    new ExtensionDiagnostic(ExtensionDiagnosticSeverity.Error, "extension_downgrade_rejected",
+                        $"Extension '{package.Id}' cannot be silently downgraded.",
+                        new ExtensionSourceLocation("main.fsx", 1, 1, 1, 1))
+                ]);
+            }
+
+            if (decision == ExtensionUpgradeDecision.RetainModified)
+            {
+                string warning = ExtensionUpgrade.RetainedWarning(package.Id);
+                await LogRetainedWarningAsync(package.Id).ConfigureAwait(false);
+                ExtensionCheckResult retained = await ActivateAsync(installed, cancellationToken).ConfigureAwait(false);
+                return retained with
+                {
+                    Diagnostics = retained.Diagnostics.Concat(
+                    [
+                        new ExtensionDiagnostic(ExtensionDiagnosticSeverity.Warning, "extension_content_conflict",
+                            warning, new ExtensionSourceLocation("main.fsx", 1, 1, 1, 1))
+                    ]).ToArray()
+                };
+            }
+        }
+
+        if (installed is not null && installed.Fingerprint != package.Fingerprint)
+        {
+            await ((IPersistentExtensionFileStore)_fileStore).PersistSnapshotAsync(installed, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        ExtensionCheckResult result = await ActivateAsync(package, cancellationToken).ConfigureAwait(false);
+        if (result.Succeeded)
+        {
+            await Manager.SavePackageAsync(package, cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
     }
 
     public async Task<bool> RollbackAsync(string id, CancellationToken cancellationToken = default)
@@ -818,8 +897,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         FSharpOption<ExtensionPackageSnapshot>? saved = savedFingerprint is null
             ? null
             : await persistent.ReadSnapshotAsync(bundled.Id, savedFingerprint.Value, token).ConfigureAwait(false);
-        ExtensionPackageSnapshot? installed = saved?.Value ?? working;
-        ExtensionEntryMetadata incoming = ExtensionEntryMetadata.Parse(bundled);
+        ExtensionPackageSnapshot? installed = working ?? saved?.Value;
         ExtensionDescriptor? activeDescriptor;
         string? activeFingerprint;
         await using (IExtensionLease? lease = await Manager.AcquireAsync(bundled.Id, token).ConfigureAwait(false))
@@ -829,13 +907,7 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
 
         ExtensionEntryMetadata? previous = null;
-        if (activeDescriptor is not null)
-        {
-            previous = new ExtensionEntryMetadata(activeDescriptor.Id, activeDescriptor.Kind,
-                activeDescriptor.Version, activeDescriptor.HostApi, activeDescriptor.Name,
-                activeDescriptor.Description);
-        }
-        else if (installed is not null)
+        if (installed is not null)
         {
             try
             {
@@ -846,12 +918,18 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
                 // Only a reserved built-in registration can migrate the retired YAML baseline.
             }
         }
+        else if (activeDescriptor is not null)
+        {
+            previous = new ExtensionEntryMetadata(activeDescriptor.Id, activeDescriptor.Kind,
+                activeDescriptor.Version, activeDescriptor.HostApi, activeDescriptor.Name,
+                activeDescriptor.Description);
+        }
 
-        string? previousFingerprint = activeFingerprint ?? installed?.Fingerprint;
+        string? previousFingerprint = installed?.Fingerprint ?? activeFingerprint;
         bool useBundled = previousFingerprint is null || previousFingerprint == bundled.Fingerprint || previous is null;
         if (!useBundled && previous is not null)
         {
-            if (!ExtensionVersion.TryParse(previous.Version, out ExtensionVersion? previousVersion))
+            if (!ExtensionVersion.TryParse(previous.Version, out _))
             {
                 if (previous.HostApi != ExtensionHostApi.Legacy)
                 {
@@ -862,20 +940,20 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
             }
             else
             {
-                int precedence = ExtensionVersion.Parse(incoming.Version).CompareTo(previousVersion);
-                if (precedence == 0)
+                ExtensionUpgradeDecision decision = ExtensionUpgrade.Decide(
+                    installed ?? throw new InvalidOperationException("The installed package is unavailable."), bundled);
+                if (decision == ExtensionUpgradeDecision.RetainModified)
                 {
-                    throw new InvalidOperationException(
-                        $"Extension '{bundled.Id}' has conflicting package contents at version {incoming.Version}.");
+                    await LogRetainedWarningAsync(bundled.Id).ConfigureAwait(false);
                 }
 
-                useBundled = precedence > 0;
+                useBundled = decision is ExtensionUpgradeDecision.Upgrade or ExtensionUpgradeDecision.Normalize;
             }
         }
 
         if (!useBundled)
         {
-            if (activeDescriptor is null)
+            if (activeDescriptor is null || activeFingerprint != installed?.Fingerprint)
             {
                 ExtensionCheckResult retained = await Manager.ActivateAsync(bundled.Id,
                         installed ?? throw new InvalidOperationException("The newer installed package is unavailable."),
@@ -902,6 +980,26 @@ public sealed class TranslationExtensionCatalog : IAsyncDisposable
         }
 
         await Manager.SavePackageAsync(bundled, token).ConfigureAwait(false);
+    }
+
+    private async Task LogRetainedWarningAsync(string id)
+    {
+        string warning = ExtensionUpgrade.RetainedWarning(id);
+        Trace.TraceWarning(warning);
+        if (_logger is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _logger.LogAsync("extension_content_conflict", "Warning: " + warning).ConfigureAwait(false);
+        }
+        catch (Exception error) when (UnexpectedExceptionReporter.ReportCatch(error,
+                                          "host.extensions.upgrade-warning", id))
+        {
+            // A diagnostic sink failure must not disable a retained, runnable package.
+        }
     }
 
     private static void ThrowIfActivationFailed(string id, ExtensionCheckResult result)

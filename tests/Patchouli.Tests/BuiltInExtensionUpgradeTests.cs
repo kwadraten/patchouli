@@ -330,41 +330,33 @@ public sealed class BuiltInExtensionUpgradeTests
 
     [Theory]
     [InlineData("1.10.0", false)]
+    [InlineData("1.1.0", false)]
+    [InlineData("1.1.0+alternate", false)]
     [InlineData("1.1.0", true)]
-    [InlineData("1.1.0+alternate", true)]
-    public async Task Newer_versions_are_retained_and_equal_precedence_conflicts_are_rejected(string version,
-        bool conflict)
+    public async Task Newer_versions_and_equal_precedence_user_edits_are_retained(string version, bool alreadyActive)
     {
         string root = NewRuntimeDirectory();
         try
         {
+            UpgradeLogger logger = new();
             await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
-                TestExtensionResources.Unavailable());
+                TestExtensionResources.Unavailable(), logger);
             ExtensionPackageSnapshot installed = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
                 pair => pair.Key == "main.fsx"
                     ? pair.Value.Replace("version=\"1.1.0\"", $"version=\"{version}\"") + "\n// different content"
                     : pair.Value));
             await catalog.Manager.SavePackageAsync(installed, CancellationToken.None);
-            if (conflict)
+            if (alreadyActive)
             {
-                InvalidOperationException? failure = null;
-                try
-                {
-                    await catalog.EnsureExtensionAsync(EngineId);
-                }
-                catch (InvalidOperationException error)
-                {
-                    failure = error;
-                }
-
-                failure.Should().NotBeNull();
-                failure!.Message.Should().Contain("conflicting");
-                catalog.Manager.List().Should().BeEmpty();
+                (await catalog.ActivateAsync(installed)).Succeeded.Should().BeTrue();
             }
-            else
+
+            await catalog.EnsureExtensionAsync(EngineId);
+            catalog.Manager.List().Single().Fingerprint.Should().Be(installed.Fingerprint);
+            if (version != "1.10.0")
             {
-                await catalog.EnsureExtensionAsync(EngineId);
-                catalog.Manager.List().Single().Fingerprint.Should().Be(installed.Fingerprint);
+                logger.Messages.Should().ContainSingle(message =>
+                    message.Contains("extension_content_conflict") && message.Contains("retained"));
             }
 
             (await catalog.Manager.ReadSourceAsync(EngineId, CancellationToken.None)).Fingerprint
@@ -373,6 +365,124 @@ public sealed class BuiltInExtensionUpgradeTests
         finally
         {
             TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
+        }
+    }
+
+    [Theory]
+    [InlineData("\r\n", false)]
+    [InlineData("\r", false)]
+    [InlineData("\r\n", true)]
+    [InlineData("\r", true)]
+    public async Task Same_version_line_endings_self_heal_to_bundled_sources(string lineEnding, bool community)
+    {
+        string root = NewRuntimeDirectory();
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
+                TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot drifted = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Value.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", lineEnding)));
+            await catalog.Manager.SavePackageAsync(drifted);
+
+            if (community)
+            {
+                (await catalog.InstallAsync(Bundled)).Succeeded.Should().BeTrue();
+            }
+            else
+            {
+                await catalog.EnsureExtensionAsync(EngineId);
+            }
+
+            catalog.Manager.List().Single().Fingerprint.Should().Be(Bundled.Fingerprint);
+            (await catalog.Manager.ReadSourceAsync(EngineId)).Sources.Should().BeEquivalentTo(Bundled.Sources);
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
+        }
+    }
+
+    [Theory]
+    [InlineData("1.0.0", false, false)]
+    [InlineData("1.1.0", true, true)]
+    [InlineData("1.2.0", true, false)]
+    public async Task Community_install_uses_shared_version_policy(string incomingVersion, bool succeeds,
+        bool retainsEdits)
+    {
+        string root = NewRuntimeDirectory();
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
+                TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot installed = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Key == "main.fsx" ? pair.Value + "\n// user edit" : pair.Value));
+            await catalog.Manager.SavePackageAsync(installed);
+            ExtensionPackageSnapshot incoming = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Value.Replace("version=\"1.1.0\"", $"version=\"{incomingVersion}\"")));
+
+            ExtensionCheckResult result = await catalog.InstallAsync(incoming);
+
+            result.Succeeded.Should().Be(succeeds);
+            if (retainsEdits)
+            {
+                result.Diagnostics.Should().Contain(d => d.Code == "extension_content_conflict" &&
+                                                         d.Severity == ExtensionDiagnosticSeverity.Warning);
+            }
+
+            if (!succeeds)
+            {
+                result.Diagnostics.Should().Contain(d => d.Code == "extension_downgrade_rejected");
+                catalog.Manager.List().Should().BeEmpty();
+            }
+            else
+            {
+                catalog.Manager.List().Single().Fingerprint.Should()
+                    .Be(retainsEdits ? installed.Fingerprint : incoming.Fingerprint);
+            }
+
+            (await catalog.Manager.ReadSourceAsync(EngineId)).Fingerprint.Should()
+                .Be(retainsEdits || !succeeds ? installed.Fingerprint : incoming.Fingerprint);
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
+        }
+    }
+
+    [Fact]
+    public async Task Community_install_rejects_downgrade_of_a_snapshot_only_installation()
+    {
+        string root = NewRuntimeDirectory();
+        try
+        {
+            await using TranslationExtensionCatalog catalog = new(root, LlmAppSettings.Default,
+                TestExtensionResources.Unavailable());
+            ExtensionPackageSnapshot installed = new(EngineId, Bundled.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Value.Replace("version=\"1.1.0\"", "version=\"1.2.0\"")));
+            (await catalog.ActivateAsync(installed)).Succeeded.Should().BeTrue();
+            File.Exists(Path.Combine(root, "extensions", EngineId, "main.fsx")).Should().BeFalse();
+
+            ExtensionCheckResult rejected = await catalog.InstallAsync(Bundled);
+
+            rejected.Succeeded.Should().BeFalse();
+            rejected.Diagnostics.Should().Contain(d => d.Code == "extension_downgrade_rejected");
+            catalog.Manager.List().Single().Fingerprint.Should().Be(installed.Fingerprint);
+            File.Exists(Path.Combine(root, "extensions", EngineId, "main.fsx")).Should().BeFalse();
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryForcingExtensionUnload(root);
+        }
+    }
+
+    private sealed class UpgradeLogger : Core.Diagnostics.IAppLogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public Task LogAsync(string operation, string message)
+        {
+            Messages.Add(operation + ": " + message);
+            return Task.CompletedTask;
         }
     }
 

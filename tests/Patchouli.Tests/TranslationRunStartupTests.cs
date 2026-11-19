@@ -248,9 +248,47 @@ public sealed class TranslationRunStartupTests
         }
 
         failed.State.Should().Be(TranslationRunLifecycle.Failed);
-        failed.ErrorCode.Should().Be("extension_binding_failed");
+        failed.ErrorCode.Should().Be("extension_unavailable");
         failed.ErrorMessage.Should()
             .Contain("Compiled extension initialization failed: extension crashed during initialization");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Configuration_binding_failure_is_distinct_from_activation_failure(bool invalidJson)
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        Exception error = invalidJson
+            ? new System.Text.Json.JsonException("Invalid model configuration")
+            : new ArgumentException("Invalid extension configuration");
+        await using TranslationRunService service = new(
+            new PageService(context.ConnectionFactory, context.Clock),
+            context.Trees, context.Translations, () => LlmAppSettings.Default(),
+            TranslationTestExtensionHarness.CreateBindingFailureRunner(error),
+            (_, _) => Task.CompletedTask);
+
+        Result<TranslationRunStatus> started =
+            await service.StartAsync(new TranslationRunStartRequest(context.DocumentId, []));
+        TranslationRunStatus failed = await WaitForTerminalAsync(service, started.Value.RunId);
+        failed.State.Should().Be(TranslationRunLifecycle.Failed);
+        failed.ErrorCode.Should().Be("extension_config_invalid");
+        failed.ErrorMessage.Should().Be(error.Message);
+    }
+
+    [Fact]
+    public async Task Missing_active_extension_is_reported_as_unavailable()
+    {
+        await using TranslationTestContext context = await TranslationTestContext.CreateAsync();
+        await using TranslationRunService service = new(
+            new PageService(context.ConnectionFactory, context.Clock),
+            context.Trees, context.Translations, () => LlmAppSettings.Default(),
+            TranslationTestExtensionHarness.CreateRunner((_, _, _) => Task.CompletedTask, false, null));
+
+        Result<TranslationRunStatus> started =
+            await service.StartAsync(new TranslationRunStartRequest(context.DocumentId, []));
+        TranslationRunStatus failed = await WaitForTerminalAsync(service, started.Value.RunId);
+        failed.ErrorCode.Should().Be("extension_unavailable");
     }
 
     [Fact]
@@ -497,7 +535,7 @@ public sealed class TranslationRunStartupTests
         first.IsSuccess.Should().BeTrue();
         TranslationRunStatus failedTerminal = await WaitForTerminalAsync(service, first.Value.RunId);
         failedTerminal.State.Should().Be(TranslationRunLifecycle.Failed);
-        failedTerminal.ErrorCode.Should().Be("extension_binding_failed");
+        failedTerminal.ErrorCode.Should().Be("extension_unavailable");
 
         // The next run retries initialization instead of inheriting the previous failure.
         Result<TranslationRunStatus> retried = await service.StartAsync(

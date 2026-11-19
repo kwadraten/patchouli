@@ -1,5 +1,71 @@
 # FSX extension and HTML table validation
 
+## Equal-version recovery and community install policy (#71/#72)
+
+The shared contracts-layer upgrade decision now distinguishes upgrade, semantic normalization,
+retained local edits, and downgrade rejection. Equal-version true differences keep the installed
+working copy runnable and emit `extension_content_conflict` warnings through the application log;
+the historical “equal-version conflict rejected” results below describe the previous policy.
+Community installs use the guarded catalog entry point, including snapshot-only older installations,
+while explicit author edits/recovery remain independent.
+
+Text identity normalizes CRLF/CR to LF; binary assets remain byte-exact. Embedded extension sources
+have LF Git attributes. Historical byte-digest snapshot labels remain readable after integrity
+validation without directory renames. Startup migration/activation failures report
+`extension_unavailable`, separately from configuration/resource binding failures
+(`extension_config_invalid`).
+
+Recorded verification (2026-11-19):
+
+- Final normal SDK/C# consumer build: **0 warnings, 0 errors**; scoped JetBrains cleanup uses
+  **2026.1.4** and the fixed repository profile. Final inspection with `--use-existing-build`
+  passed with **0 blocking items** (`.tmp/issue-71-72-inspect.log`, `.tmp/inspectcode.sarif`).
+- Focused `issue-71-72-focused-verified`: **128 passed, 0 failed/skipped**, covering both
+  installation paths, EOL/binary identity, historical labels, metadata, store, protocol and startup.
+  The initial focused attempt had six invalid test fixtures missing required `<summary>` metadata
+  and one stale error-code assertion; these were corrected without removing or weakening cases.
+- Separate compiled F# SDK `issue-71-72-sdk`: **113 passed, 0 failed/skipped**.
+- Full `issue-71-72-full` completed all batches: ordinary **5295 passed / 68 failed / 9 allowed
+  terminal skips**; UI **213 passed**; compiled-extension/FCS **272 passed**, no failures/skips
+  in those latter two batches. Full is **not** recorded as green.
+- Full failure audit: 67 cases depended on the missing `biblatex-helper.exe` (including cascading
+  MCP failures); one real `.invalid` DNS test transiently reported TLS. The repository
+  `--build-rust-helper` option built/staged the prerequisite, then **all 68 original failed cases
+  passed, 0 failed/skipped** in `issue-71-72-environment-retest`. Original Full and retest manifests
+  have identical workspace fingerprints and test-DLL SHA-256
+  `f9cefd811a3cf72d69ee93da144d846065e24fe7bc3bf410617184ad22e8b172`.
+  No application/test source or assertions changed for this environment retest. The original
+  failure messages/stacks are retained in `.tmp/issue-71-72-full-failures.log`; exact filters,
+  phases and TRX files are under `.tmp/test-runs/<run-id>/`.
+
+This is not a second complete Full acceptance run after staging the helper, nor a live-provider
+or packaging acceptance claim. Earlier exploratory cleanup/build attempts and their diagnostics
+remain under `.tmp/issue-71-72-*.log`; the final stable-source gates above supersede those attempts.
+
+Mixed historical-package follow-up (2026-11-19): two fake-loader/checker lifecycle cases in
+`ExtensionManagerLifecycleTests` independently encode old CRLF text + binary byte digests.
+They cover existing historical Active and missing Active with independent `.lkg` fallback,
+then upgrade/rollback and another manager lifetime's restore/rollback. Each step validates
+the canonical Active state pointer, readable Active/LKG snapshots, exact source/binary content,
+and unchanged original `.lkg` files. No additional production change was required.
+
+- Cleanup 2026.1.4: `.tmp/issue-71-72-mixed-history-cleanup.log`; normal build:
+  `.tmp/issue-71-72-mixed-history-build.log` (**0 warnings/errors**).
+- Final recorded focused run `.tmp/test-runs/issue-71-72-mixed-history-verified/`:
+  **77 passed, 0 failed/skipped**. Initial `.tmp/test-runs/issue-71-72-mixed-history/`:
+  **75 passed / 2 failed**, both existing real-compiler tests, with an OS file lock on `check.json`
+  during cleanup and denied state-file replacement during LKG promotion, respectively.
+  The two new mixed-package cases passed even in that first run.
+- The exact two failed tests plus the two new cases passed **4/4** in
+  `.tmp/test-runs/issue-71-72-mixed-history-lock-recheck/`; the subsequent complete focused run
+  above passed **77/77** without source/binary changes. Both initial and final manifests record
+  test-DLL SHA-256 `d8171466c12d92be92cb854b9b022cab719016f0f7d180d3355f1deacc5b97b1`
+  and workspace fingerprint `173baf34246820126c9e4e9a8192f6aa65d1bcdedd0612230ce5aae4e8d226a0`.
+- Final inspection: `.tmp/issue-71-72-mixed-history-inspect.log`, `.tmp/inspectcode.sarif`,
+  **0 blocking items**. No Full rerun was performed for this test-only follow-up.
+
+These verification results belong to the `issue-71-72` worktree, not the main workspace; retained evidence has been archived in the main workspace at `.tmp/integration-evidence/issue-71-72/`.
+
 ## Read-only built-in sources and template creation UI (2026-11-05)
 
 Implemented in the working tree: translation, metadata, OCR and PDF text-layer lists expose

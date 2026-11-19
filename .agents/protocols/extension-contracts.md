@@ -22,7 +22,12 @@ recorded in the validation document.
 - `/4` entrypoint XML declares a strict [SemVer 2.0.0](https://semver.org/) package `version`.
   Higher versions replace lower versions of the same ID after candidate validation;
   comparison is numeric with prerelease ordering, ignoring build metadata for precedence.
-  Equal-precedence/different published content is a conflict. Preserve `/3` validation.
+   Equal-precedence/different published content is a conflict. Automatic bundled/community
+   installation retains the editable installed copy, keeps it runnable, and records a warning.
+   Equal-precedence equivalent content self-heals to the incoming package: textual source CRLF/CR
+   is normalized to LF for identity, while binary assets remain byte-exact. Community installs
+   reject silent downgrades; bundled ensure retains newer installed versions. Explicit author
+   edits and recovery are separate from this shared upgrade policy (#71/#72). Preserve `/3` validation.
 - Built-ins ship compiled binaries, read-only FSX/helper templates and build-derived entrypoint/configuration
   metadata; their FSX also remains in Git. Do not allow source save/apply for built-ins or rebuild their
   identities from the current deployment directory. Reserve built-in IDs; custom extensions

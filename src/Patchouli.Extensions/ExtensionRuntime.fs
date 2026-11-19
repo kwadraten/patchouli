@@ -112,7 +112,7 @@ type FileExtensionStore(runtimeDirectory: string) =
                     let! content = File.ReadAllTextAsync(filePath)
                     sources[relative] <- content
             let package = ExtensionPackageSnapshot(id, sources, binaryFiles)
-            return if package.Fingerprint = fingerprint then Some package else None
+            return if PackageFingerprint.MatchesSnapshot(package, fingerprint) then Some package else None
     }
     let readPackage id fingerprint = readPackageAt id fingerprint (generationDirectory id fingerprint)
     let readLastKnownGoodPackage id fingerprint =

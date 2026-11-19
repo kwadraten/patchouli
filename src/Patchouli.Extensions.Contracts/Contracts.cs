@@ -210,6 +210,11 @@ public static class PackageFingerprint
 {
     public static string Compute(IReadOnlyDictionary<string, string> sources)
     {
+        return ComputeSources(sources, true);
+    }
+
+    private static string ComputeSources(IReadOnlyDictionary<string, string> sources, bool normalizeEol)
+    {
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, System.Text.Encoding.UTF8, true);
         HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
@@ -223,7 +228,10 @@ public static class PackageFingerprint
             }
 
             byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(canonicalPath);
-            byte[] contentBytes = System.Text.Encoding.UTF8.GetBytes(content);
+            byte[] contentBytes = System.Text.Encoding.UTF8.GetBytes(
+                normalizeEol && ExtensionPackageSnapshot.IsTextSourcePath(canonicalPath)
+                    ? content.Replace("\r\n", "\n").Replace('\r', '\n')
+                    : content);
             writer.Write(pathBytes.Length);
             writer.Write(pathBytes);
             writer.Write(contentBytes.Length);
@@ -237,11 +245,24 @@ public static class PackageFingerprint
     public static string Compute(IReadOnlyDictionary<string, string> sources,
         IReadOnlyDictionary<string, ReadOnlyMemory<byte>> binaryFiles)
     {
+        return ComputePackage(sources, binaryFiles, true);
+    }
+
+    /// <summary>Historical snapshot directory labels retain their original byte-based digest.</summary>
+    public static bool MatchesSnapshot(ExtensionPackageSnapshot package, string fingerprint)
+    {
+        return package.Fingerprint == fingerprint ||
+               ComputePackage(package.Sources, package.BinaryFiles, false) == fingerprint;
+    }
+
+    private static string ComputePackage(IReadOnlyDictionary<string, string> sources,
+        IReadOnlyDictionary<string, ReadOnlyMemory<byte>> binaryFiles, bool normalizeEol)
+    {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(binaryFiles);
         if (binaryFiles.Count == 0)
         {
-            return Compute(sources);
+            return ComputeSources(sources, normalizeEol);
         }
 
         Dictionary<string, (bool IsBinary, byte[] Content)> entries = new(StringComparer.OrdinalIgnoreCase);
@@ -249,7 +270,10 @@ public static class PackageFingerprint
         {
             string canonicalPath = ExtensionPackageSnapshot.NormalizeSourcePath(path);
             ArgumentNullException.ThrowIfNull(content);
-            if (!entries.TryAdd(canonicalPath, (false, System.Text.Encoding.UTF8.GetBytes(content))))
+            if (!entries.TryAdd(canonicalPath, (false, System.Text.Encoding.UTF8.GetBytes(
+                    normalizeEol && ExtensionPackageSnapshot.IsTextSourcePath(canonicalPath)
+                        ? content.Replace("\r\n", "\n").Replace('\r', '\n')
+                        : content))))
             {
                 throw new ArgumentException($"Duplicate package path after normalization: {canonicalPath}",
                     nameof(sources));

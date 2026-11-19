@@ -290,7 +290,7 @@ public sealed class HostServices
         TranslationExtensions = new TranslationExtensionCatalog(
             DeviceExtensionRuntimeMigration.MigrateRuntime(runtimeDatabasePath, storagePaths.DataDirectory,
                 _logger),
-            () => LlmSettings, ExtensionResources);
+            () => LlmSettings, ExtensionResources, _logger);
         LayoutRecognition = new LayoutRecognitionService(TranslationExtensions, ExtensionFiles);
         ExtensionResources.BindLayoutRecognition(LayoutRecognition);
         // The lease registry pins engine and text-provider generations at queue acceptance.
@@ -390,7 +390,7 @@ public sealed class HostServices
                 {
                     _ = Plugins.Mounts;
                 }
-            }), extensionActivator: (package, token) => TranslationExtensions.ActivateAsync(package, token),
+            }), extensionActivator: (package, token) => TranslationExtensions.InstallAsync(package, token),
             extensionInstalledVersions: ReadInstalledExtensionVersionsAsync);
         _ownsPluginStore = infrastructure?.PluginStore is null;
         Mcp = new McpReadApi(

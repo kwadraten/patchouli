@@ -54,6 +54,14 @@ not new authored package content. Released source/declared dependencies must not
 same package version. New built-ins must receive versions higher than the outgoing packages;
 the current `1.0.0` built-ins can migrate to `1.1.0` where their public contract remains compatible.
 
+Issue #71/#72 clarification: automatic installation must not turn an equal-version conflict
+into an activation failure. Retain the editable installed working copy and log a diagnostic
+warning instead of overwriting it. Equivalent packages self-heal to the incoming package;
+text source identity normalizes CRLF/CR to LF and binary identity remains byte-exact.
+Bundled ensure and community installation share this decision; community downgrades are
+rejected by default. Explicit draft edits/recovery remain separate. Embedded extension source
+EOL is fixed to LF by `.gitattributes`; historical generation directory labels are not renamed.
+
 ### Built-ins keep read-only sources, user extensions have independent IDs
 
 Keep built-in FSX and helper sources in Git and in the installed application for development,

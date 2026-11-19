@@ -1,0 +1,5 @@
+# Embedded extension sources must be identical regardless of core.autocrlf.
+src/**/Extensions/**/*.fsx text eol=lf
+src/**/Extensions/**/*.fs text eol=lf
+src/**/Extensions/**/*.fsi text eol=lf
+tests/**/Fixtures/Extensions/**/*.fsx text eol=lf

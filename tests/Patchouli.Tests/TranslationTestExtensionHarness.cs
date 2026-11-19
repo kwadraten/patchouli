@@ -70,6 +70,14 @@ internal static class TranslationTestExtensionHarness
         return new TranslationExtensionRunner(manager, TestExtensionResources.Unavailable());
     }
 
+    public static TranslationExtensionRunner CreateBindingFailureRunner(Exception error)
+    {
+        FakeTranslationExtension extension = new(static (_, _, _) => Task.CompletedTask);
+        FakeExtensionManager manager = new(extension, true);
+        return new TranslationExtensionRunner(manager,
+            (ExtensionConfigSnapshot _, TranslationExecutionGate? _) => throw error);
+    }
+
     private sealed class FakeTranslationExtension(
         Func<ITranslationJob, IExtensionResources, CancellationToken, Task> run) : ITranslationExtension
     {

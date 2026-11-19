@@ -381,6 +381,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         bool hasExplicitTargetLanguage)
     {
         CancellationToken cancellationToken = state.Token;
+        string failureCode = "extension_unavailable";
         try
         {
             if (cancellationToken.IsCancellationRequested || state.IsCancellationRequested)
@@ -407,6 +408,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 return;
             }
 
+            failureCode = "extension_config_invalid";
             state.ExtensionRun = await _extensionRunner.AcquireAsync(
                 initialSettings.EngineId,
                 state.ExecutionGate,
@@ -414,7 +416,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
 
             if (state.ExtensionRun is null)
             {
-                state.Fail(AppErrorCodes.InvalidState,
+                state.Fail("extension_unavailable",
                     $"Translation engine '{initialSettings.EngineId}' is not active.");
                 return;
             }
@@ -425,6 +427,7 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
                 return;
             }
 
+            failureCode = AppErrorCodes.InvalidState;
             TranslationSettings settings = initialSettings;
             if (!hasExplicitTargetLanguage &&
                 state.ExtensionRun.Config.Values.TryGetValue("target-language", out string? language) &&
@@ -456,12 +459,12 @@ public sealed class TranslationRunService : ITranslationRunService, ITranslation
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
                                               or System.Text.Json.JsonException)
         {
-            state.Fail("extension_binding_failed", exception.Message);
+            state.Fail(failureCode, exception.Message);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
                                               exception, "host.translation-run"))
         {
-            state.Fail(AppErrorCodes.InvalidState, $"The translation run failed: {exception.Message}");
+            state.Fail(failureCode, $"The translation run failed: {exception.Message}");
         }
         finally
         {

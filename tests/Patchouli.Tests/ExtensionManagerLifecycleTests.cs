@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.FSharp.Core;
 using FluentAssertions;
 using Patchouli.Extensions;
 using Patchouli.Extensions.Contracts;
@@ -488,6 +489,148 @@ public sealed class ExtensionManagerLifecycleTests
                 Directory.Delete(runtimeDirectory, true);
             }
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Historical_mixed_package_restores_and_rolls_back_through_independent_lkg(
+        bool missingActiveSnapshot)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"extension-historical-mixed-{Guid.NewGuid():N}");
+        ExtensionPackageSnapshot source = Package("let marker = 1");
+        ExtensionPackageSnapshot historical = new(source.Id,
+            source.Sources.ToDictionary(pair => pair.Key,
+                pair => pair.Value.Replace("\r\n", "\n").Replace("\n", "\r\n")),
+            new Dictionary<string, ReadOnlyMemory<byte>>
+            {
+                ["lib/dependency.dll"] = new byte[] { 0, 13, 10, 255, 128, 42 },
+                ["models/data.bin"] = new byte[] { 13, 0, 10, 255 }
+            });
+        try
+        {
+            string legacy = await WriteHistoricalMixedSnapshotAsync(root, ".lkg", historical);
+            legacy.Should().NotBe(historical.Fingerprint);
+            if (!missingActiveSnapshot)
+            {
+                (await WriteHistoricalMixedSnapshotAsync(root, ".generations", historical)).Should().Be(legacy);
+            }
+
+            IPersistentExtensionFileStore store = new FileExtensionStore(root);
+            await store.SaveStateAsync(historical.Id,
+                FSharpOption<string>.Some(missingActiveSnapshot ? new string('0', 64) : legacy),
+                FSharpOption<string>.Some(legacy), CancellationToken.None);
+            RecordingSourceChecker checker = new();
+            await using (IExtensionManager manager =
+                         CreatePersistentStateMachineManager(root, new CountingGenerationLoader(), checker))
+            {
+                (await manager.RestoreAsync(historical.Id)).Should().BeTrue();
+                await AssertRecoveredMixedStateAsync(manager, root, historical);
+                checker.Calls.Last().BinaryFiles["lib/dependency.dll"].ToArray()
+                    .Should().Equal(historical.BinaryFiles["lib/dependency.dll"].ToArray());
+
+                ExtensionPackageSnapshot newer = Package("let marker = 2", "1.1.0");
+                (await manager.ActivateAsync(newer.Id, newer)).Succeeded.Should().BeTrue();
+                (await manager.RollbackAsync(historical.Id)).Should().BeTrue();
+                await AssertRecoveredMixedStateAsync(manager, root, historical);
+            }
+
+            // The rewritten Active pointer must survive a second process lifetime, while LKG
+            // still resolves through its original, independently stored byte-digest label.
+            await using (IExtensionManager restarted =
+                         CreatePersistentStateMachineManager(root, new CountingGenerationLoader(),
+                             new RecordingSourceChecker()))
+            {
+                (await restarted.RestoreAsync(historical.Id)).Should().BeTrue();
+                (await restarted.RollbackAsync(historical.Id)).Should().BeTrue();
+                await AssertRecoveredMixedStateAsync(restarted, root, historical);
+            }
+
+            string oldLkg = Path.Combine(root, "extensions", historical.Id, ".lkg", legacy);
+            (await File.ReadAllTextAsync(Path.Combine(oldLkg, "main.fsx")))
+                .Should().Be(historical.Sources["main.fsx"]);
+            foreach ((string path, ReadOnlyMemory<byte> bytes) in historical.BinaryFiles)
+            {
+                (await File.ReadAllBytesAsync(Path.Combine(oldLkg, path))).Should().Equal(bytes.ToArray());
+            }
+        }
+        finally
+        {
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    private static async Task AssertRecoveredMixedStateAsync(IExtensionManager manager, string root,
+        ExtensionPackageSnapshot expected)
+    {
+        await using IExtensionLease lease = (await manager.AcquireAsync(expected.Id))!;
+        lease.Fingerprint.Should().Be(expected.Fingerprint);
+        FileExtensionStore files = new(root);
+        IPersistentExtensionFileStore store = files;
+        FSharpOption<string>? active = await store.ReadActiveFingerprintAsync(expected.Id, CancellationToken.None);
+        active.Should().NotBeNull();
+        active.Value.Should().Be(expected.Fingerprint, "activation rewrites Active to its canonical identity");
+        FSharpOption<ExtensionPackageSnapshot>? snapshot =
+            await store.ReadSnapshotAsync(expected.Id, active.Value, CancellationToken.None);
+        FSharpOption<string>? lkg = await store.ReadLastKnownGoodFingerprintAsync(expected.Id, CancellationToken.None);
+        lkg.Should().NotBeNull();
+        FSharpOption<ExtensionPackageSnapshot>? recovery =
+            await ((ILastKnownGoodExtensionFileStore)files)
+                .ReadLastKnownGoodSnapshotAsync(expected.Id, lkg.Value, CancellationToken.None);
+        snapshot.Should().NotBeNull();
+        recovery.Should().NotBeNull();
+        foreach (ExtensionPackageSnapshot saved in new[] { snapshot.Value, recovery.Value })
+        {
+            saved.Fingerprint.Should().Be(expected.Fingerprint);
+            saved.Sources.Should().BeEquivalentTo(expected.Sources);
+            saved.BinaryFiles.Keys.Should().BeEquivalentTo(expected.BinaryFiles.Keys);
+            foreach ((string path, ReadOnlyMemory<byte> bytes) in expected.BinaryFiles)
+            {
+                saved.BinaryFiles[path].ToArray().Should().Equal(bytes.ToArray());
+            }
+        }
+    }
+
+    private static async Task<string> WriteHistoricalMixedSnapshotAsync(string root, string area,
+        ExtensionPackageSnapshot package)
+    {
+        // Independently reproduce the pre-normalization, globally sorted mixed-package encoding.
+        Dictionary<string, (bool Binary, byte[] Bytes)> entries = new(StringComparer.Ordinal);
+        foreach ((string path, string content) in package.Sources)
+        {
+            entries.Add(path, (false, System.Text.Encoding.UTF8.GetBytes(content)));
+        }
+
+        foreach ((string path, ReadOnlyMemory<byte> bytes) in package.BinaryFiles)
+        {
+            entries.Add(path, (true, bytes.ToArray()));
+        }
+
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, System.Text.Encoding.UTF8, true))
+        {
+            foreach ((string path, (bool binary, byte[] bytes)) in entries.OrderBy(pair => pair.Key,
+                         StringComparer.Ordinal))
+            {
+                byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(path);
+                writer.Write(binary ? -pathBytes.Length : pathBytes.Length);
+                writer.Write(pathBytes);
+                writer.Write(bytes.Length);
+                writer.Write(bytes);
+            }
+        }
+
+        string fingerprint = Convert.ToHexString(Blake3.Hasher.Hash(stream.ToArray()).AsSpan().ToArray())
+            .ToLowerInvariant();
+        string directory = Path.Combine(root, "extensions", package.Id, area, fingerprint);
+        foreach ((string path, (bool _, byte[] bytes)) in entries)
+        {
+            string file = Path.Combine(directory, path);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            await File.WriteAllBytesAsync(file, bytes);
+        }
+
+        return fingerprint;
     }
 
     // State-machine fake-checker path: the recording checker supplies preset results while the real
