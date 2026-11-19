@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.4.2
+
+发布：2026-11-19 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.4.2) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.4.1...0.4.2)
+
+- 书库版本门禁（#62）：书库记录所需的最低 Patchouli 版本（新建库为 0.4.2，已有库迁移时记为 0.4.1）。打开前以只读方式检查，版本过低、书库过旧或结构损坏时拒绝打开且不改动数据库文件，并给出对应提示；CLI 与 headless 宿主直接报告原因。快照清单升至 v2 并记录最低版本，导入时同时校验清单与各分片；旧版 v1 快照仍可导入。
+- 扩展升级（#71、#72）：内置扩展只有行尾差异时自动修复，不再因此无法绑定；同版本但内容确有修改时保留用户副本并记录警告。社区扩展安装遵循 SemVer：默认拒绝静默降级，同版本不覆盖不同内容；内置扩展检查保留已安装的更新版本。
+- CLI（#75）：访问本机 MCP 时不再经过环境变量中的 HTTP 代理。
+- Linux：Fedora Atomic/Silverblue 等 `/home -> /var/home` 布局下 Agent Skill 维护不再失败，受管目录内的链接仍被拒绝（#73）；Sway 等没有托盘宿主的环境中，关闭窗口会真正退出，不再留下无法恢复的后台进程（#74）。
+- 设置页重组分类并支持设置搜索（#53）；统一出站代理设置，修复 macOS 代理环境下下载出现 SSL 错误（#56）；页面渲染与 OCR 磁盘缓存设置上限并自动清理（#57）。
+- 全文搜索结果交互改进；彻底删除条目时可选择同时删除本地文件；Historical Research 引用格式细节修正。
+- 开发与发布自动化统一为跨平台 F# 脚本，Linux 打包新增 arm64。
+
 ## 0.4.1
 
 发布：2026-11-14 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.4.1) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.4.0...0.4.1)

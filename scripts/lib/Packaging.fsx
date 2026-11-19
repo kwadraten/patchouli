@@ -4,7 +4,7 @@ open System.IO
 open System.Runtime.InteropServices
 open Common
 
-let version = "0.4.1"
+let version = "0.4.2"
 let nativeArchitecture =
     match RuntimeInformation.ProcessArchitecture with Architecture.X64 -> "x64" | Architecture.Arm64 -> "arm64" | arch -> failwith $"Unsupported architecture: {arch}"
 let configuration args = choice "--configuration" "Release" ["Debug"; "Release"] args
