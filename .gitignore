@@ -15,3 +15,16 @@ sidecar/**/target/
 .codegraph/
 .mcp.json
 .pi/
+
+# Local-only performance investigation (never publish machine/network details).
+/.agents/perf/patchouli-zotero-20261115.md
+/scripts/acquire-performance-corpus.fsx
+/scripts/measure-library-performance.fsx
+/scripts/diagnose-performance-library.fsx
+/scripts/summarize-library-performance.fsx
+/scripts/probe-platform-performance.fsx
+/scripts/lib/PerformanceLinux.fsx
+/scripts/lib/PerformanceMcp.fsx
+/scripts/lib/PerformancePatchouliBootstrap.fsx
+/scripts/lib/PerformanceZotero.fsx
+/tests/PerformanceSamplingTests.fsx
