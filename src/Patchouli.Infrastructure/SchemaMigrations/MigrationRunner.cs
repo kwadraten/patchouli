@@ -1,7 +1,6 @@
 using System.Data.Common;
 using Dapper;
 using Microsoft.Data.Sqlite;
-using Patchouli.Core;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Migrations;
@@ -32,13 +31,13 @@ public sealed class MigrationRunner
             .Select(MigrationFile.FromPath)
             .ToArray();
 
+        await LibraryCompatibilityGuard.CheckAsync(_connectionFactory.DatabasePath, cancellationToken);
         await new SqliteWalBootstrapper(_connectionFactory).EnableWalAsync(cancellationToken);
 
         await using SqliteConnection connection = _connectionFactory.CreateAdminConnection();
         await connection.OpenAsync(cancellationToken);
         await connection.ExecuteAsync("pragma busy_timeout = 30000;");
 
-        await EnsureSupportedSchemaEpochAsync(connection);
         await EnsureSchemaMigrationsTableAsync(connection);
 
         // Issues #4 and #11 used these IDs before main assigned them to document types and CSL.
@@ -75,6 +74,14 @@ public sealed class MigrationRunner
             try
             {
                 progress?.Report(new MigrationProgress(file.Id, file.Name, i + 1, pending.Count));
+                if (file.Id == "061" && await connection.ExecuteScalarAsync<long>(
+                        "select count(*) from pragma_table_info('library_metadata') where name = 'min_host_version';",
+                        transaction: transaction) == 0)
+                {
+                    await connection.ExecuteAsync("alter table library_metadata add column min_host_version text;",
+                        transaction: transaction);
+                }
+
                 if (file.Id == "048")
                 {
                     await DocumentBoxTypeMigration.ApplyAsync(connection, transaction, sql);
@@ -125,42 +132,6 @@ public sealed class MigrationRunner
         return ids.ToHashSet(StringComparer.Ordinal);
     }
 
-    private static async Task EnsureSupportedSchemaEpochAsync(SqliteConnection connection)
-    {
-        int hasLibraryMetadata = await connection.ExecuteScalarAsync<int>(
-            "select count(1) from sqlite_master where type = 'table' and name = 'library_metadata';");
-
-        if (hasLibraryMetadata > 0)
-        {
-            int[] versions = (await connection.QueryAsync<int>(
-                "select distinct schema_version from library_metadata;")).ToArray();
-            if (versions.Any(version => version != AppSchemaVersion.Current))
-            {
-                throw new UnsupportedLibrarySchemaException(versions);
-            }
-        }
-
-        int nonMigrationTableCount = await connection.ExecuteScalarAsync<int>(
-            "select count(1) from sqlite_master where type = 'table' and name not in ('schema_migrations');");
-        int hasSchemaMigrations = await connection.ExecuteScalarAsync<int>(
-            "select count(1) from sqlite_master where type = 'table' and name = 'schema_migrations';");
-        if (hasLibraryMetadata == 0 && hasSchemaMigrations == 0 && nonMigrationTableCount > 0)
-        {
-            throw new UnsupportedLibrarySchemaException([]);
-        }
-
-        int legacyTableCount = await connection.ExecuteScalarAsync<int>(
-            """
-            select count(1)
-            from sqlite_master
-            where type = 'table' and name in ('layout_revisions', 'layout_nodes');
-            """);
-        if (legacyTableCount > 0)
-        {
-            throw new UnsupportedLibrarySchemaException([1]);
-        }
-    }
-
     private static Task EnsureSchemaMigrationsTableAsync(SqliteConnection connection)
     {
         return connection.ExecuteAsync(
@@ -190,24 +161,6 @@ public sealed class MigrationRunner
                 fileName[..separatorIndex],
                 fileName);
         }
-    }
-}
-
-public sealed class UnsupportedLibrarySchemaException : Exception
-{
-    public UnsupportedLibrarySchemaException(IReadOnlyCollection<int> schemaVersions)
-        : base(BuildMessage(schemaVersions))
-    {
-        SchemaVersions = schemaVersions;
-    }
-
-    public IReadOnlyCollection<int> SchemaVersions { get; }
-
-    private static string BuildMessage(IReadOnlyCollection<int> schemaVersions)
-    {
-        string found = schemaVersions.Count == 0 ? "unknown" : string.Join(", ", schemaVersions.Order());
-        return $"Library schema epoch {found} is not supported by Patchouli 0.3.9. " +
-               "Create a new library and re-import the source documents.";
     }
 }
 

@@ -12,7 +12,9 @@ public sealed class MigrationRunnerTransactionTests
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
         using TemporaryMigrationDirectory migrations = TemporaryMigrationDirectory.Create();
-        migrations.Write("0001_create_attempt_marker.sql", "create table attempt_marker (id integer not null);");
+        migrations.Write("0001_create_attempt_marker.sql",
+            "create table library_metadata(schema_version integer);" +
+            "create table attempt_marker (id integer not null);");
         migrations.Write("0002_failing_migration.sql",
             "insert into attempt_marker (id) values (1); select * from missing_table;");
 

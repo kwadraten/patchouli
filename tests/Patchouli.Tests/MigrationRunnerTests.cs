@@ -41,7 +41,7 @@ public sealed class MigrationRunnerTests
 
         MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
         Func<Task> run = () => runner.RunAsync();
-        await run.Should().ThrowAsync<UnsupportedLibrarySchemaException>();
+        await run.Should().ThrowAsync<InvalidDataException>();
     }
 
     [Fact]

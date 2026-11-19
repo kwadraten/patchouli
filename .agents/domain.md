@@ -147,6 +147,16 @@ Rule: runtime logic belongs in `Patchouli.Host`, not in ViewModels. ViewModels s
 host's services and marshal events to the UI dispatcher; they never own watchers, timers, server
 lifecycles, or cache invalidation.
 
+Library compatibility is checked read-only on a worker before `HostServices` composition, and
+again before migration WAL bootstrap. The preflight reads only SQLite schema metadata and the
+single Library identity; it does not create operational records or run integrity checks.
+Rejected opens leave the main database unchanged (SQLite may create WAL/SHM sidecars).
+`library_metadata.min_host_version` and schema epoch independently gate admission: malformed or
+mixed identity fails closed, higher minimum/epoch requires a newer host, and unsupported old
+epochs require reimport. New identities transactionally write the compatibility-generation
+constant `0.4.2`; migration 061 backfills only empty legacy values to `0.4.1`. Epoch remains 2;
+the already shipped 0.4.x binaries do not understand this minimum until the later epoch change (#51).
+
 Runtime composition seams:
 - `HostServices` retains its public facade; `HostLibraryServices` composes the catalog over one
   connection factory and revision stream. `HostInfrastructureOptions` supplies optional clock,

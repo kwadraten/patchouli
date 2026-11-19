@@ -1067,13 +1067,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                         services = await CreateOwnedHostServicesAsync(RuntimeDatabasePath);
                         SetServices(services);
                     }
-                    catch (UnsupportedLibrarySchemaException exception)
+                    catch (Exception exception) when (IsLibraryCompatibilityError(exception))
                     {
-                        string epochs = exception.SchemaVersions.Count == 0
-                            ? "未知"
-                            : string.Join("、", exception.SchemaVersions.Order());
-                        ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.9 支持的数据库 schema epoch（{epochs}）。" +
-                                    "0.3.9 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                        ReportError(FormatLibraryCompatibilityError(exception));
                         return;
                     }
 
@@ -1424,10 +1420,34 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             // startup and never throws; stays silent unless an update is found.
             UpdateFlow.StartAutomaticCheckOnStartup();
         }
+        catch (Exception exception) when (IsLibraryCompatibilityError(exception))
+        {
+            ReportError(FormatLibraryCompatibilityError(exception));
+        }
         finally
         {
             IsStartupLoadingVisible = false;
         }
+    }
+
+    private static bool IsLibraryCompatibilityError(Exception exception)
+    {
+        return exception is LibraryRequiresNewerHostException or UnsupportedLibrarySchemaException
+            or InvalidDataException;
+    }
+
+    private static string FormatLibraryCompatibilityError(Exception exception)
+    {
+        return exception switch
+        {
+            LibraryRequiresNewerHostException newer when newer.FoundSchemaEpoch > newer.SupportedSchemaEpoch =>
+                $"无法打开资料库：书库 schema epoch（{newer.FoundSchemaEpoch}）高于当前支持的 {newer.SupportedSchemaEpoch}。请升级应用（当前 {newer.CurrentHostVersion}）。",
+            LibraryRequiresNewerHostException newer =>
+                $"无法打开资料库：需要更新的 Patchouli（最低 {newer.RequiredHostVersion}，当前 {newer.CurrentHostVersion}）。请升级应用。",
+            UnsupportedLibrarySchemaException =>
+                "无法打开资料库：书库版本过旧。请新建资料库并重新导入源文档。",
+            _ => "无法打开资料库：结构无法识别或已损坏。请检查文件或从备份恢复。"
+        };
     }
 
     private Progress<MigrationProgress> CreateMigrationProgress()

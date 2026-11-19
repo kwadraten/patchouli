@@ -690,8 +690,7 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.3.9 支持");
-            vm.Status.Should().Contain("schema epoch（1）");
+            vm.Status.Should().Contain("书库版本过旧");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
         finally
@@ -702,6 +701,46 @@ public sealed class UiViewModelTests(AvaloniaSharedSessionFixture headless) : ID
                 SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 2, "99.0.0", "请升级应用")]
+    [InlineData(false, 2, "bad", "结构无法识别或已损坏")]
+    [InlineData(true, 1, "0.4.1", "书库版本过旧")]
+    [InlineData(true, 2, "99.0.0", "请升级应用")]
+    [InlineData(true, 2, "bad", "结构无法识别或已损坏")]
+    public async Task Library_compatibility_errors_use_same_status_for_startup_and_switch(
+        bool startup, int epoch, string minimum, string expected)
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "create table library_metadata(schema_version integer, min_host_version text);" +
+                "insert into library_metadata values(@epoch, @minimum);", new { epoch, minimum });
+        }
+
+        MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database.Path);
+        try
+        {
+            if (startup)
+            {
+                await vm.RunStartupAsync(false);
+            }
+            else
+            {
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+            }
+
+            vm.StatusIsError.Should().BeTrue();
+            vm.Status.Should().Contain(expected);
+            vm.IsStartupLoadingVisible.Should().BeFalse();
+        }
+        finally
+        {
+            await vm.ShutdownAsync();
         }
     }
 

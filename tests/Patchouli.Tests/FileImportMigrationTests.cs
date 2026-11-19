@@ -143,7 +143,8 @@ public sealed class FileImportMigrationTests : IDisposable
             new AppliedMigration("057", "057_sql_browse_indexes"),
             new AppliedMigration("058", "058_create_library_tag_definitions"),
             new AppliedMigration("059", "059_pages_user_rotation"),
-            new AppliedMigration("060", "060_remove_legacy_document_tree_revisions"));
+            new AppliedMigration("060", "060_remove_legacy_document_tree_revisions"),
+            new AppliedMigration("061", "061_library_min_host_version"));
         (await connection.QueryAsync<string>(
                 "select name from pragma_index_info('idx_known_file_locations_path_file_asset_id') order by seqno;"))
             .Should().Equal("path", "file_asset_id");

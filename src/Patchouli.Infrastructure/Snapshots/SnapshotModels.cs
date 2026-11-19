@@ -58,6 +58,8 @@ public sealed record SnapshotManifest(
     string? RuntimeDatabaseHash,
     string? Notes)
 {
+    public string? MinHostVersion { get; init; }
+
     /// <summary>
     /// Optional file-tree payloads carried by older snapshots. Their kinds are no longer produced or
     /// applied, but the field stays on the wire model so an old snapshot still validates and imports

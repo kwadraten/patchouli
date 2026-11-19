@@ -1031,6 +1031,7 @@ public sealed class HostServices
         startupProgress?.Report(StartupStage.ValidatingPaths);
         AppPathGuard.ValidateDatabasePath(path, settings.Runtime.DefaultSyncRoot);
         AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
+        await Task.Run(() => LibraryCompatibilityGuard.CheckAsync(path));
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         IAppLogger startupLogger = logger ?? new SimpleFileLogger(settings.Runtime.LogDirectory);
         try

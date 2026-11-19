@@ -74,7 +74,7 @@ public sealed class DocumentTreeValidationTests
                 await connection.OpenAsync();
                 await connection.ExecuteAsync(
                     """
-                    insert into library_metadata values (@LibraryId, 'Test', 2, @Now, @Now, 1);
+                    insert into library_metadata values (@LibraryId, 'Test', 2, @Now, @Now, 1, '0.4.2');
                     insert into items (
                         item_id, library_id, item_type, title, creators_json, tags_json,
                         collections_json, custom_fields_json, created_at, updated_at)

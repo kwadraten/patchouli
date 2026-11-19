@@ -188,7 +188,6 @@ Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Host!Patchouli.UI.SyncA
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Host!Patchouli.UI.Themes.UiColorPalettes
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Host!Patchouli.UI.UiPreferences
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Infrastructure!Patchouli.Infrastructure.Migrations.MigrationProgress
-Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Infrastructure!Patchouli.Infrastructure.Migrations.UnsupportedLibrarySchemaException
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Infrastructure!Patchouli.Infrastructure.Snapshots.SnapshotSyncLocalState
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Infrastructure!Patchouli.Infrastructure.Snapshots.SnapshotSyncOperationState
 Patchouli.UI.ViewModels.MainWindowViewModel -> Patchouli.Infrastructure!Patchouli.Infrastructure.Update.UpdateDownloader

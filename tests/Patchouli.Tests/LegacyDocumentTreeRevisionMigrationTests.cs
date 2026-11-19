@@ -109,7 +109,7 @@ public sealed class LegacyDocumentTreeRevisionMigrationTests
 
         IReadOnlyList<AppliedMigration> applied =
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        applied.Should().ContainSingle().Which.Id.Should().Be("060");
+        applied.Select(migration => migration.Id).Should().Equal("060", "061");
 
         await using SqliteConnection upgraded = database.ConnectionFactory.CreateConnection();
         await upgraded.OpenAsync();

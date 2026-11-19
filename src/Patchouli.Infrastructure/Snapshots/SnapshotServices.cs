@@ -13,6 +13,7 @@ using Patchouli.Infrastructure.Hashing;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Update;
 
 namespace Patchouli.Infrastructure.Snapshots;
 
@@ -140,10 +141,14 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 }
             }
 
-            SnapshotManifest manifest = new(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
+            SnapshotManifest manifest = new(2, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
                 AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards,
                 Array.Empty<SnapshotShard>(),
-                await Blake3FileAsync(sourceSnapshotPath), request.Notes);
+                await Blake3FileAsync(sourceSnapshotPath), request.Notes)
+            {
+                MinHostVersion = Core.Library.LibraryCompatibility.SnapshotMinimum(
+                    await ReadLibraryMinimumAsync(sourceSnapshotPath))
+            };
             string manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             SnapshotCurrentPointer pointer = new(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId,
@@ -821,11 +826,21 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                string.Equals(await Blake3FileAsync(path), shard.Blake3, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static async Task ValidateDatabaseSchemaAsync(string path, bool checkForeignKeys = true)
+    public static async Task<string> ReadLibraryMinimumAsync(string path)
     {
         await using SqliteConnection connection = new(BuildConnectionString(path, SqliteOpenMode.ReadOnly));
         await connection.OpenAsync();
-        IReadOnlyList<string> errors = await SchemaInspector.InspectAsync(connection, checkForeignKeys);
+        return await LibraryCompatibilityGuard.ReadMinimumAsync(connection);
+    }
+
+    public static async Task ValidateDatabaseSchemaAsync(string path, bool checkForeignKeys = true,
+        bool allowOlderEpoch = false)
+    {
+        await using SqliteConnection connection = new(BuildConnectionString(path, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync();
+        await LibraryCompatibilityGuard.CheckConnectionAsync(connection);
+        IReadOnlyList<string> errors =
+            await SchemaInspector.InspectAsync(connection, checkForeignKeys, allowOlderEpoch);
         if (errors.Count > 0)
         {
             throw new InvalidDataException(string.Join(" ", errors));
@@ -893,14 +908,28 @@ public sealed class SnapshotImporter : ISnapshotImporter
                     new SnapshotValidationResult(false, null, new[] { "Manifest could not be read." }));
             }
 
-            if (manifest.ManifestVersion != 1)
+            if (manifest.ManifestVersion is < 1 or > 2)
             {
                 errors.Add("Unsupported manifest version.");
             }
 
-            if (manifest.SchemaVersion != AppSchemaVersion.Current)
+            if (manifest.SchemaVersion < Core.Library.LibraryCompatibility.MinimumSchemaEpoch ||
+                manifest.SchemaVersion > AppSchemaVersion.Current)
             {
                 errors.Add("Unsupported snapshot schema version.");
+            }
+
+            if (manifest.ManifestVersion == 2 || manifest.MinHostVersion is not null)
+            {
+                if (!UpdateVersion.TryParse(manifest.MinHostVersion, out UpdateVersion? minimum))
+                {
+                    errors.Add("Manifest MinHostVersion is missing or invalid.");
+                }
+                else if (UpdateVersion.Parse(BuildInfo.Version).CompareTo(minimum) < 0)
+                {
+                    errors.Add(
+                        $"Snapshot requires Patchouli {manifest.MinHostVersion} or newer (current {BuildInfo.Version}).");
+                }
             }
 
             if (string.IsNullOrWhiteSpace(manifest.LibraryId))
@@ -951,7 +980,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
 
                     try
                     {
-                        await SnapshotPublisher.ValidateDatabaseSchemaAsync(path, false);
+                        await SnapshotPublisher.ValidateDatabaseSchemaAsync(path, false, true);
                         IReadOnlyList<string> settingErrors =
                             await ValidateSnapshotSettingRecordsAsync(path, cancellationToken);
                         errors.AddRange(settingErrors.Select(error =>

@@ -5,6 +5,7 @@ using Patchouli.Core.Results;
 using Patchouli.Host.CitationInterop;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
+using Patchouli.Infrastructure.Migrations;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.UI.Diagnostics;
@@ -128,6 +129,12 @@ public static class HeadlessRuntimeHost
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return 0;
+        }
+        catch (Exception exception) when (exception is LibraryRequiresNewerHostException
+                                              or UnsupportedLibrarySchemaException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"[headless-host] {exception.Message}");
+            return 1;
         }
         catch (Exception exception)
         {

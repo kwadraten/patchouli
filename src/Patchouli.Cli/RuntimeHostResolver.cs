@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Patchouli.Host.Lifecycle;
 using Patchouli.UI;
+using Patchouli.Infrastructure.Migrations;
+using Patchouli.Core.Library;
 
 namespace Patchouli.Cli;
 
@@ -53,6 +55,17 @@ internal static class RuntimeHostResolver
         if (record is not null)
         {
             return (record.Endpoint, token);
+        }
+
+        try
+        {
+            await Task.Run(() => LibraryCompatibilityGuard.CheckAsync(databasePath, cancellationToken),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is LibraryRequiresNewerHostException
+                                              or UnsupportedLibrarySchemaException or InvalidDataException)
+        {
+            throw new CliUnavailableException(exception.Message, exception);
         }
 
         using Process startedHost = StartHeadlessHost(databasePath);

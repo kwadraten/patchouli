@@ -7,7 +7,7 @@ namespace Patchouli.Infrastructure.Migrations;
 public static class SchemaInspector
 {
     public static async Task<IReadOnlyList<string>> InspectAsync(SqliteConnection connection,
-        bool checkForeignKeys = true)
+        bool checkForeignKeys = true, bool allowOlderEpoch = false)
     {
         List<string> errors = new();
         string[] integrity = (await connection.QueryAsync<string>("pragma integrity_check;")).ToArray();
@@ -34,7 +34,10 @@ public static class SchemaInspector
 
         int[] epochs = (await connection.QueryAsync<int>(
             "select distinct schema_version from library_metadata where schema_version is not null;")).ToArray();
-        if (epochs.Length != 1 || epochs[0] != AppSchemaVersion.Current)
+        if (epochs.Length != 1 || epochs[0] > AppSchemaVersion.Current ||
+            epochs[0] < (allowOlderEpoch
+                ? Core.Library.LibraryCompatibility.MinimumSchemaEpoch
+                : AppSchemaVersion.Current))
         {
             errors.Add($"Library schema epoch is unknown, empty, or mixed: " +
                        (epochs.Length == 0 ? "unknown" : string.Join(", ", epochs.Order())));

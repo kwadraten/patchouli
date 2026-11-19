@@ -69,6 +69,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                     library_id,
                     display_name,
                     schema_version,
+                    min_host_version,
                     created_at,
                     updated_at
                 )
@@ -76,6 +77,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                     @LibraryId,
                     @DisplayName,
                     @SchemaVersion,
+                    @MinHostVersion,
                     @CreatedAt,
                     @UpdatedAt
                 );
@@ -261,6 +263,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
             LibraryId = metadata.LibraryId.ToString(),
             metadata.DisplayName,
             metadata.SchemaVersion,
+            MinHostVersion = LibraryCompatibility.NewLibraryMinHostVersion,
             CreatedAt = FormatUtc(metadata.CreatedAt),
             UpdatedAt = FormatUtc(metadata.UpdatedAt)
         };
