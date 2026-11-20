@@ -34,11 +34,13 @@ public sealed partial class App : Application
         try
         {
             RichEditorChineseLocalization.Apply();
-            PatchouliAppSettings settings = PatchouliAppSettings.Load();
-            ThemePaletteApplier.Apply(settings.Ui.PaletteId, settings.Ui.ThemeMode);
 
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
+                // MainWindowViewModel loads the same platform settings and applies the palette in
+                // its constructor, before the window's XAML is built; doing it here as well only
+                // parsed the settings files and rebuilt the palette resources twice before the
+                // first frame.
                 MainWindow mainWindow = new();
                 desktop.MainWindow = mainWindow;
                 SubscribeToActivation(mainWindow);
@@ -50,6 +52,11 @@ public sealed partial class App : Application
                 }
 
                 desktop.Exit += OnDesktopExit;
+            }
+            else
+            {
+                PatchouliAppSettings settings = PatchouliAppSettings.Load();
+                ThemePaletteApplier.Apply(settings.Ui.PaletteId, settings.Ui.ThemeMode);
             }
         }
         catch (Exception exception)

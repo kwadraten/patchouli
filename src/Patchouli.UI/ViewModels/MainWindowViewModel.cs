@@ -1318,11 +1318,30 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 return _startupTask;
             }
 
-            return _startupTask = RunStartupSerializedAsync(startMcpServer);
+            return _startupTask = RunStartupSerializedAsync(startMcpServer, false);
         }
     }
 
-    private async Task RunStartupSerializedAsync(bool startMcpServer)
+    /// <summary>
+    /// The desktop window's first startup. Identical to <see cref="RunStartupAsync"/> except that a
+    /// profile without a runtime database shows the first-run page immediately instead of creating
+    /// and composing a database at the default path first; the first-run page opens the session at
+    /// the location the user picks. <see cref="ServicesAsync"/> keeps its lazy-open behaviour.
+    /// </summary>
+    public Task RunInitialStartupAsync(bool startMcpServer)
+    {
+        lock (_startupGate)
+        {
+            if (_startupTask is { IsCompleted: false })
+            {
+                return _startupTask;
+            }
+
+            return _startupTask = RunStartupSerializedAsync(startMcpServer, true);
+        }
+    }
+
+    private async Task RunStartupSerializedAsync(bool startMcpServer, bool deferSessionWithoutDatabase)
     {
         // Publish the shared task before callbacks can reenter initialization.
         await Task.Yield();
@@ -1336,7 +1355,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
             if (_services is null)
             {
-                await RunStartupCoreAsync(startMcpServer);
+                await RunStartupCoreAsync(startMcpServer, deferSessionWithoutDatabase);
             }
         }
         finally
@@ -1345,7 +1364,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
-    private async Task RunStartupCoreAsync(bool startMcpServer)
+    private async Task RunStartupCoreAsync(bool startMcpServer, bool deferSessionWithoutDatabase)
     {
         string databasePath = RuntimeDatabasePath;
         bool hadDatabase = File.Exists(databasePath) && new FileInfo(databasePath).Length > 0;
@@ -1366,6 +1385,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 {
                     ReportError(pendingSettings.ErrorMessage ?? "无法保存启动设置。");
                 }
+            }
+
+            if (deferSessionWithoutDatabase && !hadDatabase)
+            {
+                // First-run fast path: nothing to compose yet. The first-run page decides where
+                // the database lives and opens the session itself (OpenFirstRunDatabaseAsync).
+                await ShowInlineFirstRunAsync();
+                return;
             }
 
             OwnedLibrarySession session = await OpenLibrarySessionAsync(databasePath);
@@ -1395,7 +1422,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
             if (library.IsFailure)
             {
-                await ShowInlineFirstRunAsync();
+                // A lazy open while the deferred first-run page is already showing must not
+                // replace that page's view model (and the user's in-progress input).
+                if (!IsFirstRunVisible)
+                {
+                    await ShowInlineFirstRunAsync();
+                }
+
                 if (hadDatabase && _importOrchestrator is not null)
                 {
                     FirstRun.Resume(_importOrchestrator, null);
@@ -2300,35 +2333,72 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
+    /// <summary>Upper bound for one application-shutdown step; a hung step is reported and skipped.</summary>
+    private static readonly TimeSpan ShutdownStepTimeout = TimeSpan.FromSeconds(15);
+
     private async Task ShutdownLibraryCoreAsync()
     {
         Interlocked.Exchange(ref _librarySwitchInProgress, 1);
-        CloseAllPluginViewWindows();
-        await Shell.CancelAndDrainItemPurgeAsync();
+        // Every step is failure- and hang-isolated: one failing or stuck component must not
+        // skip the remaining teardown, and above all must not skip the final settings flush.
+        await RunShutdownStepAsync("close-plugin-windows", () =>
+        {
+            CloseAllPluginViewWindows();
+            return Task.CompletedTask;
+        });
+        await RunShutdownStepAsync("drain-item-purge", () => Shell.CancelAndDrainItemPurgeAsync());
         foreach (PdfWorkspaceViewModel pdf in Layout.Tabs.Select(tab => tab.Content).OfType<PdfWorkspaceViewModel>()
                      .ToArray())
         {
-            await pdf.StopAsync();
+            await RunShutdownStepAsync("stop-pdf-workspace", () => pdf.StopAsync());
         }
 
         foreach (ItemEditorViewModel editor in Layout.Tabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>()
                      .ToArray())
         {
-            await editor.DisposeAsync();
+            await RunShutdownStepAsync("dispose-item-editor", () => editor.DisposeAsync().AsTask());
         }
 
-        await StopFileSearchRootWatchersAsync();
-        DetachLibraryChangeNotifications();
-        await Shell.DisposeAsync();
-        if (_agentWorkspace is not null)
+        await RunShutdownStepAsync("stop-root-watchers", StopFileSearchRootWatchersAsync);
+        await RunShutdownStepAsync("detach-library-notifications", () =>
         {
-            await _agentWorkspace.ShutdownAsync();
+            DetachLibraryChangeNotifications();
+            return Task.CompletedTask;
+        });
+        await RunShutdownStepAsync("dispose-shell", () => Shell.DisposeAsync().AsTask());
+        if (_agentWorkspace is { } agentWorkspace)
+        {
+            await RunShutdownStepAsync("shutdown-agent-workspace", () => agentWorkspace.ShutdownAsync());
         }
 
-        await StopMcpServerAsync();
-        await DisposeLibrarySessionAsync();
-        await DisposeSettingsStoreAsync();
+        await RunShutdownStepAsync("stop-mcp", () => StopMcpServerAsync());
+        await RunShutdownStepAsync("dispose-library-session", DisposeLibrarySessionAsync);
+        await RunShutdownStepAsync("flush-settings", DisposeSettingsStoreAsync);
         DisposeActivityTracker();
+    }
+
+    private static Task RunShutdownStepAsync(string step, Func<Task> action)
+    {
+        return RunShutdownStepAsync(step, action, ShutdownStepTimeout, UnexpectedExceptions.Sink);
+    }
+
+    /// <summary>Runs one shutdown step; failures and timeouts are reported, never rethrown.</summary>
+    internal static async Task RunShutdownStepAsync(string step, Func<Task> action, TimeSpan timeout,
+        IUnexpectedExceptionSink sink)
+    {
+        try
+        {
+            await action().WaitAsync(timeout);
+        }
+        catch (TimeoutException exception)
+        {
+            sink.Report(new TimeoutException($"Shutdown step '{step}' did not finish within {timeout}.",
+                exception), "application-shutdown", step);
+        }
+        catch (Exception exception)
+        {
+            sink.Report(exception, "application-shutdown", step);
+        }
     }
 
     protected override void Dispose(bool disposing)

@@ -85,4 +85,74 @@ public sealed class FirstRunRecoveryTests
         viewModel.IsFirstRunVisible.Should().BeTrue();
         viewModel.FirstRun.CurrentStep.Should().Be(FirstRunStep.Database);
     }
+
+    [Fact]
+    public async Task Initial_startup_without_a_database_shows_first_run_without_composing_a_library()
+    {
+        using TemporaryAppSettingsFile profile = new();
+        string defaultDatabase = PatchouliAppSettings.Load(profile.Path).Runtime.RuntimeDatabasePath;
+        await using MainWindowViewModel viewModel = new(settingsPath: profile.Path, autoStartMcpServer: false);
+
+        await viewModel.RunInitialStartupAsync(false);
+
+        viewModel.IsFirstRunVisible.Should().BeTrue();
+        viewModel.IsStartupLoadingVisible.Should().BeFalse();
+        viewModel.FirstRun.CurrentStep.Should().Be(FirstRunStep.Database);
+        viewModel.HasOpenRuntimeDatabase.Should().BeFalse("no session is opened before the user picks a location");
+        File.Exists(defaultDatabase).Should().BeFalse("the fast path must not create a database at the default path");
+    }
+
+    [Fact]
+    public async Task Deferred_first_run_opens_the_session_at_the_picked_location_and_keeps_its_page()
+    {
+        using TemporaryAppSettingsFile profile = new();
+        string picked = profile.CreateDatabasePath("picked");
+        await using MainWindowViewModel viewModel = new(settingsPath: profile.Path, autoStartMcpServer: false);
+        await viewModel.RunInitialStartupAsync(false);
+        FirstRunViewModel firstRun = viewModel.FirstRun;
+
+        firstRun.DatabasePath = picked;
+        await firstRun.OpenDatabaseCommand.ExecuteAsync();
+
+        viewModel.HasOpenRuntimeDatabase.Should().BeTrue();
+        viewModel.RuntimeDatabasePath.Should().Be(picked);
+        viewModel.IsFirstRunVisible.Should().BeTrue();
+        viewModel.FirstRun.Should().BeSameAs(firstRun);
+        firstRun.CurrentStep.Should().Be(FirstRunStep.Library);
+        await firstRun.CreateLibraryCommand.ExecuteAsync();
+        firstRun.CurrentStep.Should().Be(FirstRunStep.Scan);
+    }
+
+    [Fact]
+    public async Task Lazy_service_request_during_deferred_first_run_keeps_the_page_and_its_input()
+    {
+        using TemporaryAppSettingsFile profile = new();
+        await using MainWindowViewModel viewModel = new(settingsPath: profile.Path, autoStartMcpServer: false);
+        await viewModel.RunInitialStartupAsync(false);
+        FirstRunViewModel firstRun = viewModel.FirstRun;
+        firstRun.LibraryName = "Typed before a lazy open";
+
+        await viewModel.ServicesAsync(false);
+
+        viewModel.IsFirstRunVisible.Should().BeTrue();
+        viewModel.FirstRun.Should().BeSameAs(firstRun);
+        firstRun.LibraryName.Should().Be("Typed before a lazy open");
+    }
+
+    [Fact]
+    public async Task Initial_startup_with_an_existing_database_still_resumes_unfinished_setup()
+    {
+        using TemporaryAppSettingsFile profile = new();
+        PatchouliAppSettings settings = PatchouliAppSettings.Load(profile.Path);
+        HostServices services =
+            await HostServices.CreateAsync(settings.Runtime.RuntimeDatabasePath, settings, profile.Path);
+        await services.ShutdownAsync();
+
+        await using MainWindowViewModel viewModel = new(settingsPath: profile.Path, autoStartMcpServer: false);
+        await viewModel.RunInitialStartupAsync(false);
+
+        viewModel.HasOpenRuntimeDatabase.Should().BeTrue();
+        viewModel.IsFirstRunVisible.Should().BeTrue();
+        viewModel.FirstRun.CurrentStep.Should().Be(FirstRunStep.Library);
+    }
 }

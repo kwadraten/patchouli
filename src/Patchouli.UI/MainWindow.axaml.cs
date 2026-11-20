@@ -296,15 +296,25 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            Core.Results.Result skillMaintenance =
-                await _viewModel.AgentSkills.UpdateUserInstallationsAsync();
-            await _viewModel.RunStartupAsync(false);
+            // Skill maintenance is independent file I/O under its own gate; run it beside the
+            // library open instead of in front of it, and report its outcome afterwards.
+            Task<Core.Results.Result> skillMaintenance =
+                Task.Run(() => _viewModel.AgentSkills.UpdateUserInstallationsAsync());
+            await _viewModel.RunInitialStartupAsync(false);
             LlmModelCatalog.Shared.RefreshInBackgroundAsync(new PlatformAppPaths().Resolve().CacheDirectory)
                 .Observe("models-dev", "refresh");
-            _viewModel.StartMcpServerInBackground();
-            if (skillMaintenance.IsFailure)
+            // The first-run fast path leaves no session open; starting MCP here would compose a
+            // database at the default path behind the first-run page. The first-run database
+            // open starts MCP itself.
+            if (_viewModel.HasOpenRuntimeDatabase)
             {
-                _viewModel.ReportError($"升级维护 Agent 用户级 Patchouli Skill 失败：{skillMaintenance.ErrorMessage}");
+                _viewModel.StartMcpServerInBackground();
+            }
+
+            Core.Results.Result skillResult = await skillMaintenance;
+            if (skillResult.IsFailure)
+            {
+                _viewModel.ReportError($"升级维护 Agent 用户级 Patchouli Skill 失败：{skillResult.ErrorMessage}");
             }
         }
         catch (Exception exception)
