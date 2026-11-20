@@ -37,11 +37,9 @@ using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Agents;
 using Patchouli.Host.Settings;
-using Patchouli.Host.Caching;
 using Patchouli.Host.CitationInterop;
 using Patchouli.UI.CitationInterop;
 using Patchouli.Host.Import;
-using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Watching;
 using System.Reactive;
@@ -50,6 +48,16 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Patchouli.UI;
+
+// The Host-owned Library session closed with this ViewModel's own component types, so
+// AttachHostServices consumes the session without casts. The single cast from the Core
+// runtime seam lives in the default opener below.
+using OwnedLibrarySession = Patchouli.Core.Library.ILibrarySession<
+    Patchouli.Host.Composition.HostServices,
+    Patchouli.Host.Mcp.McpServerHost,
+    Patchouli.Host.CitationInterop.CitationInteropHost,
+    Patchouli.Host.Watching.FileSearchRootWatcherService,
+    Patchouli.Host.Import.LibraryImportOrchestrator>;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -89,8 +97,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private readonly SerialDisposable _citationInteropSubscriptions = new();
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
     private LibraryImportOrchestrator? _importOrchestrator;
-    private LibraryRevisionMonitor? _libraryRevisionMonitor;
-    private RuntimeHostLease? _runtimeHostLease;
+    private OwnedLibrarySession? _session;
     private readonly AsyncLocal<RescanCompletionCapture?> _activeRescanCapture = new();
     private readonly bool _autoStartMcpServer;
     private readonly bool _enforceRuntimeHostOwnership;
@@ -1061,17 +1068,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 await BeginLibrarySwitchCoreAsync("正在切换运行数据库。");
                 await RunWithStartupLoadingAsync(async () =>
                 {
-                    HostServices services;
                     try
                     {
-                        services = await CreateOwnedHostServicesAsync(RuntimeDatabasePath);
-                        SetServices(services);
+                        OwnedLibrarySession session = await OpenLibrarySessionAsync(RuntimeDatabasePath);
+                        SetServices(session);
                     }
                     catch (Exception exception) when (IsLibraryCompatibilityError(exception))
                     {
                         ReportError(FormatLibraryCompatibilityError(exception));
                         return;
                     }
+
+                    HostServices services = _services!;
 
                     StartupLoadingStatus = "正在同步元数据查找设置…";
                     await RefreshSyncedMetadataLookupAsync(services);
@@ -1090,7 +1098,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     if (_autoStartMcpServer)
                     {
                         StartupLoadingStatus = "正在启动 MCP 服务器…";
-                        await StartMcpServerAsync(services);
+                        await StartMcpServerWithFallbackAsync();
                     }
                 });
             }
@@ -1360,8 +1368,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 }
             }
 
-            HostServices services = await CreateOwnedHostServicesAsync(databasePath);
-            SetServices(services);
+            OwnedLibrarySession session = await OpenLibrarySessionAsync(databasePath);
+            SetServices(session);
+            HostServices services = _services!;
             StartupLoadingStatus = "正在同步元数据查找设置…";
             startupActivity.UpdateDetail(StartupLoadingStatus);
             await RefreshSyncedMetadataLookupAsync(services);
@@ -1378,7 +1387,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             {
                 StartupLoadingStatus = "正在启动 MCP 服务器…";
                 startupActivity.UpdateDetail(StartupLoadingStatus);
-                await StartMcpServerAsync(services);
+                await StartMcpServerWithFallbackAsync();
             }
 
             StartupLoadingStatus = "正在加载资料库内容…";
@@ -1450,15 +1459,70 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         };
     }
 
-    private Progress<MigrationProgress> CreateMigrationProgress()
+    /// <summary>
+    /// Opens a Host-owned Library session through the Core composition seam. The Host
+    /// implementation owns the runtime-host lease, the version gate and the per-Library
+    /// host components; a failed open releases everything it acquired.
+    /// </summary>
+    private async Task<OwnedLibrarySession> OpenLibrarySessionAsync(string databasePath)
     {
-        return new Progress<MigrationProgress>(p =>
-            StartupLoadingStatus = $"正在应用数据库迁移 ({p.Ordinal}/{p.Total})：{p.Name}");
+        LibrarySessionOpenRequest request = new(
+            databasePath,
+            _enforceRuntimeHostOwnership
+                ? LibrarySessionOwnership.Desktop
+                : LibrarySessionOwnership.None,
+            _settings,
+            SettingsFilePath,
+            new Progress<object>(update =>
+            {
+                if (update is MigrationProgress migration)
+                {
+                    StartupLoadingStatus =
+                        $"正在应用数据库迁移 ({migration.Ordinal}/{migration.Total})：{migration.Name}";
+                }
+            }),
+            new Progress<object>(update =>
+            {
+                if (update is StartupStage stage)
+                {
+                    StartupLoadingStatus = DescribeStartupStage(stage);
+                }
+            }),
+            ReportUnexpectedException,
+            _activityTracker,
+            Logger,
+            _ocrComposition,
+            _hostAppPaths,
+            _hostInfrastructure,
+            services =>
+                new DesktopCitationBridge(this, ((HostServices)services).LibraryItems),
+            new DialogImportConflictPrompt(this),
+            new DialogBiblatexImportPrompt(this),
+            true);
+        // Issue #46: the open acquires the lease and composes services; keep the UI
+        // thread unblocked while the loading page is shown.
+        return await Task.Run(() => _openLibrarySession(request, CancellationToken.None));
     }
 
-    private Progress<StartupStage> CreateStartupStageProgress()
+    // Tests may substitute the session opener without changing the public constructor
+    // surface; production always goes through the Host-registered Core runtime seam.
+    private static Func<LibrarySessionOpenRequest, CancellationToken, Task<OwnedLibrarySession>>
+        _openLibrarySession = OpenViaRuntime;
+
+    internal static Func<LibrarySessionOpenRequest, CancellationToken, Task<OwnedLibrarySession>>
+        OpenLibrarySessionOverride
     {
-        return new Progress<StartupStage>(stage => StartupLoadingStatus = DescribeStartupStage(stage));
+        get => _openLibrarySession;
+        set => _openLibrarySession = value ?? OpenViaRuntime;
+    }
+
+    private static async Task<OwnedLibrarySession> OpenViaRuntime(
+        LibrarySessionOpenRequest request, CancellationToken cancellationToken)
+    {
+        // The Core seam is object-typed (Core cannot name Host types); the Host
+        // implementation already produced this closed interface instance.
+        return (OwnedLibrarySession)await LibrarySessionRuntime.Open(request, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static string DescribeStartupStage(StartupStage stage)
@@ -1491,8 +1555,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
-    private void SetServices(HostServices services)
+    private void SetServices(OwnedLibrarySession session)
     {
+        HostServices services = session.Services;
         if (ReferenceEquals(_services, services))
         {
             EnsureLibraryChangeNotifications(services);
@@ -1500,9 +1565,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         DetachLibraryChangeNotifications();
+        _session = session;
         _services = services;
         EnsureLibraryChangeNotifications(services);
-        AttachHostServices(services);
+        AttachHostServices(session, services);
         // Manual Raise: HasOpenRuntimeDatabase derives from private HostServices field _services (not an ObservableObject).
         Raise(nameof(HasOpenRuntimeDatabase));
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
@@ -1511,16 +1577,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     }
 
     /// <summary>
-    /// Creates the per-services host wrappers (MCP server host, file-search-root watcher fleet,
-    /// import orchestrator) and attaches in-process cache invalidation. Called every
-    /// time a new <see cref="HostServices"/> instance is installed.
+    /// Installs the per-Library host components owned by the <see cref="OwnedLibrarySession"/>
+    /// (MCP server host, citation interop host, file-search-root watcher fleet, import
+    /// orchestrator) and attaches in-process cache invalidation. Called every time a new
+    /// session is installed. Disposal of those components belongs to the session.
     /// </summary>
-    private void AttachHostServices(HostServices services)
+    private void AttachHostServices(OwnedLibrarySession session, HostServices services)
     {
         OcrManagedFileDialogs.EnsureAttached(this, services);
         PluginManagedFileDialogs.EnsureAttached(this, services);
         services.ObserveSettingsStore(_settingsStore);
-        McpServerHost mcpHost = new(services.CreateMcpServerHostDependencies(), ReportUnexpectedException);
+        McpServerHost mcpHost = session.McpHost;
         _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
         mcpSubs.Add(Observable.FromEventPattern<McpServerHostStatusChangedEventArgs>(
@@ -1538,8 +1605,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         // Citation interop (issue #14): per-library host + desktop bridge. A
         // start failure lands in the host's Error status (shown on the
         // 「Cite As You Write」 settings page) and never blocks library open.
-        DesktopCitationBridge citationBridge = new(this, services.LibraryItems);
-        CitationInteropHost citationInteropHost = new(services, citationBridge, ReportUnexpectedException);
+        CitationInteropHost citationInteropHost = session.CitationInteropHost;
         _citationInteropHost = citationInteropHost;
         CompositeDisposable interopSubs = new();
         interopSubs.Add(Observable.FromEventPattern<EventHandler, EventArgs>(
@@ -1551,7 +1617,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         citationInteropHost.StartAsync(_settingsStore.Current.CitationInterop)
             .Observe("host-services", "start-citation-interop");
 
-        FileSearchRootWatcherService fileSearchRootWatcher = new(services, Logger);
+        if (session.FileSearchRootWatcher is not { } fileSearchRootWatcher)
+        {
+            throw new InvalidOperationException("The Library session did not create a file-search-root watcher.");
+        }
+
         _fileSearchRootWatcher = fileSearchRootWatcher;
         CompositeDisposable watcherSubs = new();
         watcherSubs.Add(Observable.FromEventPattern<FileSearchRootRescanCompleted>(
@@ -1573,54 +1643,38 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             .Subscribe(e => OnSearchRootAvailabilityChanged(e.Sender, e.EventArgs)));
         _watcherSubscriptions.Disposable = watcherSubs;
 
-        _importOrchestrator = new LibraryImportOrchestrator(
-            services,
-            new DialogImportConflictPrompt(this),
-            new DialogBiblatexImportPrompt(this));
-
-        _libraryRevisionMonitor = services.LibraryRevisionMonitor;
+        _importOrchestrator = session.ImportOrchestrator;
     }
 
-    /// <summary>Tears down the host wrappers created by <see cref="AttachHostServices"/>.</summary>
+    /// <summary>
+    /// Detaches the UI from the per-Library host components (subscriptions and field
+    /// references). The components themselves are stopped and disposed by the owning
+    /// session's <see cref="IAsyncDisposable.DisposeAsync"/>; see <see cref="DisposeLibrarySessionAsync"/>.
+    /// </summary>
     private void DetachHostServices()
     {
         _mcpSubscriptions.Disposable = null;
-        if (_mcpHost is not null)
-        {
-            _mcpHost.DisposeAsync().AsTask().Observe("host-services", "dispose-mcp-host");
-            _mcpHost = null;
-        }
-
+        _mcpHost = null;
         _citationInteropSubscriptions.Disposable = null;
-        if (_citationInteropHost is not null)
-        {
-            // Disposal stops the listener, which aborts in-flight CAYW requests
-            // and closes the picker (issue #14 §4: library switch teardown).
-            _citationInteropHost.DisposeAsync().AsTask().Observe("host-services", "dispose-citation-interop-host");
-            _citationInteropHost = null;
-        }
-
+        _citationInteropHost = null;
         _watcherSubscriptions.Disposable = null;
-        if (_fileSearchRootWatcher is not null)
-        {
-            _fileSearchRootWatcher.DisposeAsync().AsTask().Observe("host-services", "dispose-root-watcher");
-            _fileSearchRootWatcher = null;
-        }
-
-        if (_libraryRevisionMonitor is not null)
-        {
-            _libraryRevisionMonitor.Dispose();
-            _libraryRevisionMonitor = null;
-        }
-
+        _fileSearchRootWatcher = null;
         _importOrchestrator = null;
     }
 
-    private void StopLibraryRevisionMonitor()
+    /// <summary>
+    /// Disposes the current Library session (MCP stop, watcher stop, revision monitor,
+    /// services shutdown, component disposal, lease release). Disposal is idempotent in
+    /// the session, so partial teardown paths can call this safely.
+    /// </summary>
+    private async Task DisposeLibrarySessionAsync()
     {
-        _libraryRevisionMonitor?.Stop();
-        _libraryRevisionMonitor?.Dispose();
-        _libraryRevisionMonitor = null;
+        OwnedLibrarySession? session = _session;
+        _session = null;
+        if (session is not null)
+        {
+            await session.DisposeAsync();
+        }
     }
 
     internal async Task<LibraryImportOrchestrator> ImportOrchestratorAsync()
@@ -1757,7 +1811,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         {
             if (ReferenceEquals(_services, services) && _shutdownTask is null)
             {
-                await StartMcpServerAsync(services);
+                await StartMcpServerWithFallbackAsync();
             }
         }
         finally
@@ -2272,9 +2326,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
 
         await StopMcpServerAsync();
-        StopLibraryRevisionMonitor();
-        await StopHostServicesAsync();
-        await ReleaseRuntimeHostAsync();
+        await DisposeLibrarySessionAsync();
         await DisposeSettingsStoreAsync();
         DisposeActivityTracker();
     }
@@ -2339,7 +2391,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 false),
             async context =>
             {
-                await StartMcpServerAsync(_services!);
+                await StartMcpServerWithFallbackAsync();
                 if (_mcpHost?.IsRunning != true)
                 {
                     throw new InvalidOperationException("MCP Server 未能启动。请检查状态栏中的错误详情。");
@@ -2383,7 +2435,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                 : host.StatusDetail);
         }
 
-        await PublishRuntimeHostAsync(_services!);
+        await PublishRuntimeHostAsync();
     }
 
     /// <summary>
@@ -2432,11 +2484,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         await StopMcpServerAsync(detail);
         await StopFileSearchRootWatchersAsync();
-        StopLibraryRevisionMonitor();
-        await StopHostServicesAsync();
         DetachHostServices();
         _services = null;
-        await ReleaseRuntimeHostAsync();
+        await DisposeLibrarySessionAsync();
         Interlocked.Exchange(ref _librarySwitchInProgress, 0);
         _queryRewriteEnabledPersisted = false;
         ApplyQueryRewriteEnabled(false);
@@ -2448,119 +2498,45 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
     }
 
-    private async Task StartMcpServerAsync(HostServices services)
+    /// <summary>
+    /// Starts MCP from the persisted settings through the owning session (one ephemeral-port
+    /// fallback keeps the configured settings applied), then publishes the runtime-host
+    /// discovery record when the server is running.
+    /// </summary>
+    private async Task StartMcpServerWithFallbackAsync()
     {
-        if (_mcpHost is null)
+        OwnedLibrarySession? session = _session;
+        if (session is null)
         {
             throw new InvalidOperationException("MCP Server 主机不可用。");
         }
 
-        McpServerHost host = _mcpHost;
-        await Task.Run(() => host.StartAsync());
-        if (!_mcpHost.IsRunning)
+        bool running =
+            await Task.Run(() => session.StartMcpFromPersistedSettingsAsync(true));
+        if (running)
         {
-            Result<McpServerSettings> configured = await Task.Run(() => services.McpSettings.GetSettingsAsync());
-            if (configured.IsSuccess)
-            {
-                McpServerSettings settings = configured.Value with
-                {
-                    Port = RuntimeHostCoordinator.ReserveEphemeralLoopbackPort()
-                };
-                await Task.Run(() => host.StartAsync(settings, appliedSettings: configured.Value));
-            }
-        }
-
-        if (_mcpHost.IsRunning)
-        {
-            await PublishRuntimeHostAsync(services);
+            await PublishRuntimeHostAsync();
         }
     }
 
-    private async Task PublishRuntimeHostAsync(HostServices services)
+    private async Task PublishRuntimeHostAsync()
     {
-        if (_runtimeHostLease is null || _mcpHost?.IsRunning != true)
+        OwnedLibrarySession? session = _session;
+        HostServices? services = _services;
+        if (session is null || services is null || _mcpHost?.IsRunning != true)
         {
             return;
         }
 
         int generation = LibraryGeneration;
-        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
-        if (!IsCurrentLibraryContext(services, generation) || _runtimeHostLease is null)
+        if (!IsCurrentLibraryContext(services, generation))
         {
             return;
         }
 
-        if (library.IsSuccess)
-        {
-            // Set health endpoint identity BEFORE publishing the record.
-            // The status-change callback (via ObserveOn) may run after publish;
-            // setting here ensures /health returns instanceId/libraryId immediately.
-            if (_mcpHost.Server is not null)
-            {
-                _mcpHost.Server.HostInstanceId = _runtimeHostLease.InstanceId;
-                _mcpHost.Server.HostLibraryId = library.Value.LibraryId.ToString();
-            }
-
-            await _runtimeHostLease.PublishAsync(library.Value.LibraryId.ToString(), _mcpHost.Endpoint);
-        }
-    }
-
-    private async Task<HostServices> CreateOwnedHostServicesAsync(string databasePath)
-    {
-        if (!_enforceRuntimeHostOwnership)
-        {
-            return await CreateHostServicesAsync(databasePath);
-        }
-
-        if (_runtimeHostLease is not null)
-        {
-            throw new InvalidOperationException("A runtime-host lease is already active.");
-        }
-
-        _runtimeHostLease = await RuntimeHostCoordinator.AcquireDesktopAsync(
-            databasePath, TimeSpan.FromSeconds(10));
-        try
-        {
-            return await CreateHostServicesAsync(_runtimeHostLease.DatabasePath);
-        }
-        catch
-        {
-            await ReleaseRuntimeHostAsync();
-            throw;
-        }
-    }
-
-    private Task<HostServices> CreateHostServicesAsync(string databasePath)
-    {
-        return HostServices.CreateAsync(
-            databasePath,
-            _settings,
-            SettingsFilePath,
-            CreateMigrationProgress(),
-            reportUnexpectedException: ReportUnexpectedException,
-            startupProgress: CreateStartupStageProgress(),
-            activityTracker: _activityTracker,
-            runtimeHostLease: _runtimeHostLease,
-            ocrComposition: _ocrComposition, appPaths: _hostAppPaths, infrastructure: _hostInfrastructure);
-    }
-
-    private async Task StopHostServicesAsync()
-    {
-        if (_services is not null)
-        {
-            HostServices services = _services;
-            await Task.Run(services.ShutdownAsync);
-        }
-    }
-
-    private async Task ReleaseRuntimeHostAsync()
-    {
-        RuntimeHostLease? lease = _runtimeHostLease;
-        _runtimeHostLease = null;
-        if (lease is not null)
-        {
-            await lease.DisposeAsync();
-        }
+        // The session stamps the health identity (instance/library) BEFORE publishing
+        // the discovery record, so /health answers with the binding immediately.
+        await Task.Run(() => session.PublishAsync(CancellationToken.None));
     }
 
     private void OnCitationInteropHostStatusChanged(CitationInteropHost host)
@@ -2623,13 +2599,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         if (change.Status == McpServerHostStatus.Running && _mcpHost is { } host)
         {
             SetMcpEndpoint(host.Endpoint);
-            // Expose lease InstanceId via /health for cross-namespace discovery verification.
-            if (host.Server is not null && _runtimeHostLease is not null)
-            {
-                host.Server.HostInstanceId = _runtimeHostLease.InstanceId;
-                // LibraryId for health binding: use the lease's database path to derive?
-                // The ViewModel doesn't directly track LibraryId; skip if unavailable.
-            }
+            // The owning Library session re-stamps the lease instance id on the health
+            // endpoint whenever the listener (re)starts; nothing to do here.
 
             // Manual Raise: McpRunningSettingsRevision bridges _mcpHost external status change into ViewModel PropertyChanged.
             Raise(nameof(McpRunningSettingsRevision));
@@ -2665,8 +2636,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private string BuildMcpConnectionDetail()
     {
-        long active = _mcpHost?.Server?.ActiveConnectionCount ?? 0;
-        long total = _mcpHost?.Server?.TotalConnectionCount ?? 0;
+        (long active, long total) = _session?.McpConnectionCounts ?? (0, 0);
         return $"连接数: {active} / {total}";
     }
 
@@ -2739,7 +2709,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         if (_services is not null)
         {
-            await PublishRuntimeHostAsync(_services);
+            await PublishRuntimeHostAsync();
         }
 
         bool persisted = await SaveMinerUTokenSettingsAsync(FirstRun.MinerUToken);

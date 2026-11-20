@@ -21,14 +21,6 @@ public static class HeadlessRuntimeHost
         int? portOverride = null,
         CancellationToken cancellationToken = default)
     {
-        await using RuntimeHostLease? lease = RuntimeHostCoordinator.TryAcquire(
-            databasePath, RuntimeHostKind.Headless);
-        if (lease is null)
-        {
-            Console.Error.WriteLine("[headless-host] the Library is already owned by another runtime host");
-            return 8;
-        }
-
         UnexpectedExceptions.Configure(new UI.PlatformAppPaths());
 
         static void ReportUnexpected(Exception exception, string boundary, string? operation)
@@ -44,17 +36,22 @@ public static class HeadlessRuntimeHost
             ? null
             : PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => context.Cancel = true);
         using HostActivityTracker activityTracker = new();
-        HostServices? services = null;
+        LibrarySession? session = null;
         try
         {
             string settingsPath = new UI.PlatformAppPaths().Resolve().UserSettingsPath;
-            services = await HostServices.CreateAsync(
-                lease.DatabasePath,
-                settingsPath: settingsPath,
-                reportUnexpectedException: ReportUnexpected,
-                activityTracker: activityTracker,
-                runtimeHostLease: lease);
+            session = await LibrarySession.OpenAsync(
+                new LibrarySessionOpenRequest(
+                    databasePath,
+                    LibrarySessionOwnership.Headless,
+                    SettingsPath: settingsPath,
+                    ReportUnexpected: ReportUnexpected,
+                    ActivityTracker: activityTracker,
+                    CitationBridgeFactory: _ => new UnavailableCitationDesktopBridge(),
+                    CreateWatcherAndOrchestrator: false),
+                cancellationToken);
 
+            HostServices services = session.Services;
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
             if (library.IsFailure)
             {
@@ -68,7 +65,7 @@ public static class HeadlessRuntimeHost
                 settings = settings with { Port = portOverride.Value };
             }
 
-            await using McpServerHost host = new(services.CreateMcpServerHostDependencies(), ReportUnexpected);
+            McpServerHost host = session.Mcp;
             await host.StartAsync(settings, cancellationToken);
             if (!host.IsRunning && portOverride is null)
             {
@@ -84,28 +81,21 @@ public static class HeadlessRuntimeHost
             // Citation interop (issue #14): headless hosts expose the TexPile
             // JSON-RPC subset only; interactive CAYW fails fast with
             // ui_unavailable. A failed interop bind never takes down MCP.
-            await using CitationInteropHost interop = new(
-                services, new UnavailableCitationDesktopBridge(), ReportUnexpected);
-            await interop.StartAsync(services.StartupSettings.CitationInterop, cancellationToken);
-            Console.Error.WriteLine($"[headless-host] citation interop: {interop.Status.Detail}");
+            await session.CitationInterop.StartAsync(services.StartupSettings.CitationInterop, cancellationToken);
+            Console.Error.WriteLine($"[headless-host] citation interop: {session.CitationInterop.Status.Detail}");
 
             // Expose the lease InstanceId via /health for cross-namespace discovery.
             // A CLI in a different PID namespace (e.g., another `flatpak run` instance)
             // cannot verify the host via PID, but the network namespace is shared
-            // (--share=network), so it can verify via the health endpoint.
-            if (host.Server is not null)
-            {
-                host.Server.HostInstanceId = lease.InstanceId;
-                host.Server.HostLibraryId = library.Value.LibraryId.ToString();
-            }
-
-            await lease.PublishAsync(library.Value.LibraryId.ToString(), host.Endpoint, cancellationToken);
+            // (--share=network), so it can verify via the health endpoint. PublishAsync
+            // stamps host identity first, then writes the discovery record.
+            await session.PublishAsync(cancellationToken);
             Console.Error.WriteLine($"[headless-host] listening at {host.Endpoint}");
 
             using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
-                Task takeover = lease.WaitForTakeoverRequestAsync(shutdown.Token);
+                Task takeover = session.WaitForTakeoverRequestAsync(shutdown.Token);
                 Task stopped = host.WaitForShutdownAsync(shutdown.Token);
                 Task completed = await Task.WhenAny(takeover, stopped);
                 if (completed == takeover)
@@ -115,16 +105,21 @@ public static class HeadlessRuntimeHost
                 }
 
                 shutdown.Cancel();
-                await interop.ShutdownAsync();
+                await session.CitationInterop.ShutdownAsync();
                 await host.StopAsync("Runtime host is shutting down.", CancellationToken.None);
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
             {
-                await interop.ShutdownAsync();
+                await session.CitationInterop.ShutdownAsync();
                 await host.StopAsync("Runtime host is shutting down.", CancellationToken.None);
             }
 
             return 0;
+        }
+        catch (LibrarySessionAlreadyOwnedException)
+        {
+            Console.Error.WriteLine("[headless-host] the Library is already owned by another runtime host");
+            return 8;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -143,9 +138,9 @@ public static class HeadlessRuntimeHost
         }
         finally
         {
-            if (services is not null)
+            if (session is not null)
             {
-                await services.ShutdownAsync();
+                await session.DisposeAsync();
             }
         }
     }

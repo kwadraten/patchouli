@@ -171,6 +171,25 @@ public sealed class CaywIndependentHostTests
     }
 
     [Fact]
+    public async Task Disposing_a_running_host_stops_the_listener_before_returning()
+    {
+        await using HostFixture fixture = await HostFixture.CreateAsync();
+        int port = GetFreeTcpPort();
+        CitationInteropHost host = new(
+            fixture.Services, UnavailableCitationDesktopBridge.Instance, (_, _, _) => { });
+        await host.StartAsync(new CitationInteropAppSettings(true, port));
+        host.IsRunning.Should().BeTrue();
+
+        await host.DisposeAsync();
+
+        host.IsRunning.Should().BeFalse();
+        host.Status.Status.Should().Be(CitationInteropHostStatus.Stopped);
+        LoopbackHttpResponse probe = await LoopbackHttp.SendAsync(
+            "GET", $"http://127.0.0.1:{port}/better-bibtex/cayw?probe=1");
+        probe.StatusCode.Should().Be(0, "DisposeAsync must not leave the listener bound");
+    }
+
+    [Fact]
     public async Task Stopping_the_host_cancels_an_in_flight_pick_and_frees_the_port_immediately()
     {
         await using HostFixture fixture = await HostFixture.CreateAsync();

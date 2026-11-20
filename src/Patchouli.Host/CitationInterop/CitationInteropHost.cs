@@ -188,8 +188,10 @@ public sealed class CitationInteropHost : IAsyncDisposable
             return;
         }
 
+        // Stop before flagging disposal: ShutdownAsync is a no-op once _disposed is set, which
+        // previously left the Kestrel listener running after DisposeAsync returned.
+        await StopAsync("应用正在退出，兼容服务已停止。");
         _disposed = true;
-        await ShutdownAsync();
         _lifecycleGate.Dispose();
     }
 
